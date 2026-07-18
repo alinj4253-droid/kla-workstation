@@ -1,0 +1,13 @@
+node_modules/
+dist/
+out/
+release/
+coverage/
+.vite/
+*.log
+.DS_Store
+Thumbs.db
+.env
+.env.*
+!.env.example
+K_Studio/

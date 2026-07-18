@@ -1,0 +1,22 @@
+{
+  "name": "kunqing-agent-workstation",
+  "version": "0.1.0",
+  "private": true,
+  "description": "鲲擎多智能体集成工作站",
+  "packageManager": "pnpm@11.9.0",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @kunqing/desktop dev",
+    "dev:web": "pnpm --filter @kunqing/desktop dev:web",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm --filter @kunqing/desktop test",
+    "test:watch": "pnpm --filter @kunqing/desktop test:watch",
+    "package:win": "pnpm --filter @kunqing/desktop package:win"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2"
+  }
+}

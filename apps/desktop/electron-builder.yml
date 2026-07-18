@@ -1,0 +1,15 @@
+appId: com.kunqing.workstation
+productName: 鲲擎智能体集成工作站
+directories:
+  output: release
+files:
+  - out/**/*
+asar: true
+win:
+  target:
+    - nsis
+  artifactName: ${productName}-${version}-${arch}.${ext}
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false

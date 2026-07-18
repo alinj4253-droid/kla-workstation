@@ -1,0 +1,19 @@
+@import url("../apps/desktop/src/renderer/src/styles.css");
+
+.sidebar-link b,
+.new-chat-button b,
+.composer-spark {
+  display: grid;
+  place-items: center;
+  font-style: normal;
+  font-weight: 500;
+}
+
+.agent-avatar { font-style: normal; }
+.preview-page.is-hidden { display: none; }
+.home-composer .send-button { opacity: 1; }
+.chat-send { border: 0; }
+
+@media (max-width: 1500px) {
+  .sidebar-link b { font-size: 18px; }
+}
