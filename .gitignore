@@ -11,3 +11,6 @@ Thumbs.db
 .env.*
 !.env.example
 K_Studio/
+*.tsbuildinfo
+dist-types/
+build/
