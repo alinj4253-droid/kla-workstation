@@ -1,20 +1,30 @@
 import {
   ArrowLeft,
   ChevronRight,
+  ExternalLink,
   FileArchive,
   FileSpreadsheet,
   FileText,
   Folder,
   FolderOpen,
+  GitBranch,
   MoreHorizontal,
+  Pencil,
   Plus,
   RefreshCw,
   SlidersHorizontal,
+  Trash2,
   Upload,
   X,
+  Book,
 } from 'lucide-react';
-import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import ReactMarkdown from 'react-markdown';
+import DOMPurify from 'dompurify';
+import { GraphViewer } from '../components/GraphViewer';
+import { KnowledgeJobDialog } from '../components/KnowledgeJobDialog';
+import { WikiViewer } from '../components/WikiViewer';
 
 type FileEntry = {
   name: string;
@@ -22,20 +32,19 @@ type FileEntry = {
   kind: 'file' | 'directory';
   size: number;
   modifiedAt: string;
+  fileId?: string;
+  currentVersionId?: string;
+  mimeType?: string;
+  sha256?: string;
+  knowledgeStatus?: string;
 };
 
-const projects = [
-  { id: 'annual-finance', status: 'ACTIVE', name: '年度财务报销审核', preview: 'Financial Agent: 正在校验发票真实性...', time: '14:20' },
-  { id: 'supplier-bid', status: 'ARCHIVED', name: 'Q3 供应商招投标', preview: 'Bidding Agent: 招标文件已生成，请查阅', time: 'Yesterday' },
-  { id: 'charter-review', status: 'REVIEWING', name: '项目章程审批流程', preview: 'Approval Agent: 主管已确认签字', time: 'Mon' },
-] as const;
-
-const demoEntries: FileEntry[] = [
-  { name: '差旅凭证备份', relativePath: '差旅凭证备份', kind: 'directory', size: 0, modifiedAt: '2026-07-18T02:12:00.000Z' },
-  { name: '年度财务报销审核_2024.pdf', relativePath: '年度财务报销审核_2024.pdf', kind: 'file', size: 2_516_582, modifiedAt: '2026-07-18T06:20:00.000Z' },
-  { name: '合规性审查指南 V2.0.docx', relativePath: '合规性审查指南 V2.0.docx', kind: 'file', size: 524_288, modifiedAt: '2026-07-18T02:15:00.000Z' },
-  { name: 'Q3 供应商评分汇总.xlsx', relativePath: 'Q3 供应商评分汇总.xlsx', kind: 'file', size: 1_153_434, modifiedAt: '2026-07-17T08:45:00.000Z' },
-];
+type ProjectInfo = {
+  id: string;
+  name: string;
+  status: string;
+  createdAt: string;
+};
 
 const formatSize = (size: number): string => {
   if (!size) return '—';
@@ -50,37 +59,79 @@ const fileIcon = (entry: FileEntry): React.JSX.Element => {
   return <FileText size={18} />;
 };
 
+const knowledgeStatusLabel = (status: string): string => {
+  switch (status) {
+    case 'pending': return '等待';
+    case 'ingesting': return '处理中';
+    case 'ready': return '已入库';
+    case 'error': return '失败';
+    default: return status;
+  }
+};
+
 export function WorkspacePage(): React.JSX.Element {
-  const { projectId = 'annual-finance' } = useParams();
+  const { projectId = '' } = useParams();
   const navigate = useNavigate();
   const [relativePath, setRelativePath] = useState('');
+  const [scopeType, setScopeType] = useState<'project' | 'shared'>('project');
   const [files, setFiles] = useState<FileEntry[]>([]);
+  const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState('');
   const [folderDialogOpen, setFolderDialogOpen] = useState(false);
   const [folderName, setFolderName] = useState('');
   const [folderError, setFolderError] = useState('');
 
-  const activeProject = useMemo(() => projects.find((item) => item.id === projectId) ?? projects[0], [projectId]);
+  const [actionTarget, setActionTarget] = useState<FileEntry | null>(null);
+  const [renameTarget, setRenameTarget] = useState<FileEntry | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+  const [renameError, setRenameError] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState<FileEntry | null>(null);
+  const [previewData, setPreviewData] = useState<{ kind: 'text' | 'image' | 'html'; content: string; fileName: string; mimeType: string } | null>(null);
+  const htmlIframeRef = useRef<HTMLIFrameElement>(null);
+  const [graphViewerOpen, setGraphViewerOpen] = useState(false);
+  const [wikiViewerOpen, setWikiViewerOpen] = useState(false);
+  useEffect(() => {
+    if (previewData?.kind === 'html' && htmlIframeRef.current) {
+      htmlIframeRef.current.srcdoc = previewData.content;
+    }
+  }, [previewData]);
+  const [knowledgeDetail, setKnowledgeDetail] = useState<{ fileId: string; fileName: string } | null>(null);
+
+  const activeProject = useMemo(() => projects.find((p) => p.id === projectId), [projectId, projects]);
   const pathParts = relativePath ? relativePath.split('/') : [];
+  const scopeLabel = scopeType === 'shared' ? '共享知识' : '用户原始文件';
+
+  const loadProjects = useCallback(async (): Promise<void> => {
+    try {
+      const result = await window.kunqing?.projects.list({}) as { ok: boolean; data?: ProjectInfo[] } | undefined;
+      if (result?.data) setProjects(result.data);
+    } catch { /* ignore */ }
+  }, []);
 
   const loadFiles = useCallback(async (): Promise<void> => {
+    if (!projectId) return;
     setLoading(true);
     try {
-      const result = await window.kunqing?.workspace.listFiles({ projectId, relativePath });
-      setFiles(result ?? demoEntries);
+      const result = await window.kunqing?.workspace.listFiles({ projectId, relativePath, ...(scopeType === 'shared' ? { scopeType: 'shared' as const } : {}) }) as { ok: boolean; data?: FileEntry[] } | undefined;
+      setFiles(result?.data ?? []);
       setNotice('');
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '无法读取工作区');
     } finally {
       setLoading(false);
     }
-  }, [projectId, relativePath]);
+  }, [projectId, relativePath, scopeType]);
 
+  useEffect(() => { void loadProjects(); }, [loadProjects]);
   useEffect(() => { void loadFiles(); }, [loadFiles]);
 
   const enterDirectory = (entry: FileEntry): void => {
     if (entry.kind !== 'directory') {
+      if (/\.md$/i.test(entry.name) && relativePath.includes('wiki')) {
+        void handlePreview(entry);
+        return;
+      }
       void window.kunqing?.workspace.openItem({ projectId, relativePath: entry.relativePath });
       return;
     }
@@ -89,9 +140,9 @@ export function WorkspacePage(): React.JSX.Element {
 
   const uploadFiles = async (): Promise<void> => {
     try {
-      const result = await window.kunqing?.workspace.uploadFiles({ projectId, relativePath });
-      if (!result) { setNotice('网页预览使用 Mock 数据；请在 Electron 桌面端体验真实文件上传。'); return; }
-      if (!result.cancelled) setNotice(`已导入 ${result.importedCount} 个文件到用户原始文件目录`);
+      const result = await window.kunqing?.workspace.uploadFiles({ projectId, relativePath, ...(scopeType === 'shared' ? { scopeType: 'shared' as const } : {}) }) as { cancelled: boolean; importedCount: number } | undefined;
+      if (!result) { setNotice('请在 Electron 桌面端体验真实文件上传。'); return; }
+      if (!result.cancelled) setNotice(`已导入 ${result.importedCount} 个文件`);
       await loadFiles();
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '文件导入失败');
@@ -103,7 +154,7 @@ export function WorkspacePage(): React.JSX.Element {
     const name = folderName.trim();
     if (!name) { setFolderError('请输入文件夹名称'); return; }
     try {
-      const result = await window.kunqing?.workspace.createFolder({ projectId, relativePath, name });
+      const result = await window.kunqing?.workspace.createFolder({ projectId, relativePath, name, ...(scopeType === 'shared' ? { scopeType: 'shared' as const } : {}) });
       if (!result) {
         setFiles((current) => [{ name, relativePath: [relativePath, name].filter(Boolean).join('/'), kind: 'directory', size: 0, modifiedAt: new Date().toISOString() }, ...current]);
       } else {
@@ -118,15 +169,70 @@ export function WorkspacePage(): React.JSX.Element {
     }
   };
 
+  const handleRename = async (event: FormEvent): Promise<void> => {
+    event.preventDefault();
+    if (!renameTarget || !renameValue.trim()) return;
+    try {
+      const result = await window.kunqing?.workspace.rename({ projectId, relativePath: renameTarget.relativePath, name: renameValue.trim(), ...(scopeType === 'shared' ? { scopeType: 'shared' as const } : {}) }) as { ok: boolean; error?: string } | undefined;
+      if (!result?.ok) { setRenameError(result?.error ?? '重命名失败'); return; }
+      setRenameTarget(null);
+      setRenameValue('');
+      setRenameError('');
+      await loadFiles();
+    } catch (error) {
+      setRenameError(error instanceof Error ? error.message : '重命名失败');
+    }
+  };
+
+  const handleDelete = async (): Promise<void> => {
+    if (!deleteTarget) return;
+    try {
+      await window.kunqing?.workspace.softDelete({ projectId, paths: [deleteTarget.relativePath], ...(scopeType === 'shared' ? { scopeType: 'shared' as const } : {}) });
+      setDeleteTarget(null);
+      await loadFiles();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '删除失败');
+    }
+  };
+
+  const handlePreview = async (entry: FileEntry): Promise<void> => {
+    try {
+      const result = await window.kunqing?.workspace.getPreview({ projectId, relativePath: entry.relativePath, ...(scopeType === 'shared' ? { scopeType: 'shared' as const } : {}) }) as { ok: boolean; data?: { kind: string; content?: string; dataUri?: string; mimeType?: string; error?: string } } | undefined;
+      if (!result?.ok || !result.data) { setNotice('无法预览此文件'); return; }
+      if ('error' in result.data) { setNotice(result.data.error ?? '预览出错'); return; }
+      if (result.data.kind === 'image') {
+        setPreviewData({ kind: 'image', content: result.data.dataUri ?? '', fileName: entry.name, mimeType: result.data.mimeType ?? '' });
+        return;
+      }
+      if (result.data.kind === 'html') {
+        const clean = DOMPurify.sanitize(result.data.content ?? '');
+        setPreviewData({ kind: 'html', content: clean, fileName: entry.name, mimeType: 'text/html' });
+        return;
+      }
+      if (result.data.kind !== 'text') { setNotice('仅支持文本文件预览'); return; }
+      setPreviewData({ kind: 'text', content: result.data.content ?? '', fileName: entry.name, mimeType: result.data.mimeType ?? '' });
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '预览失败');
+    }
+  };
+
+  const handleOpenWithSystem = async (entry: FileEntry): Promise<void> => {
+    try {
+      await window.kunqing?.workspace.openWithSystem({ projectId, relativePath: entry.relativePath });
+    } catch { setNotice('无法使用系统应用打开'); }
+  };
+
   return (
     <div className="workspace-layout">
       <aside className="project-panel" aria-label="协作项目">
         <div className="project-panel__header"><h2>协作项目</h2><button type="button" className="icon-button" aria-label="筛选项目"><SlidersHorizontal size={17} /></button></div>
         <div className="project-list">
-          {projects.map((project) => (
+          {projects.length === 0 ? (
+            <div className="file-empty" style={{ padding: '16px', fontSize: '13px' }}>暂无项目</div>
+          ) : projects.map((project) => (
             <button type="button" key={project.id} className={`project-list-item${project.id === projectId ? ' project-list-item--active' : ''}`} onClick={() => navigate(`/projects/${project.id}/workspace`)}>
-              <div className="project-list-item__meta"><span className={`status-pill status-pill--${project.status.toLowerCase()}`}>{project.status}</span><time>{project.time}</time></div>
-              <strong>{project.name}</strong><p>{project.preview}</p>
+              <div className="project-list-item__meta"><span className={`status-pill status-pill--${project.status.toLowerCase()}`}>{project.status}</span></div>
+              <strong>{project.name}</strong>
             </button>
           ))}
         </div>
@@ -134,30 +240,140 @@ export function WorkspacePage(): React.JSX.Element {
 
       <section className="workspace-files">
         <header className="workspace-toolbar">
-          <div className="workspace-title"><button type="button" className="icon-button" aria-label="返回群聊" onClick={() => navigate(`/projects/${projectId}/chat`)}><ArrowLeft size={18} /></button><span className="workspace-title-icon"><FolderOpen size={18} /></span><div><h2>{activeProject?.name ?? '群聊'} · 工作区</h2><p>用户原始文件</p></div></div>
-          <div className="workspace-actions"><button type="button" className="secondary-button" onClick={() => void uploadFiles()}><Upload size={15} /> 上传文件</button><button type="button" className="primary-button" onClick={() => setFolderDialogOpen(true)}><Plus size={15} /> 新建文件夹</button></div>
+          <div className="workspace-title">
+            <button type="button" className="icon-button" aria-label="返回群聊" onClick={() => navigate(`/projects/${projectId}/chat`)}><ArrowLeft size={18} /></button>
+            <span className="workspace-title-icon"><FolderOpen size={18} /></span>
+            <div><h2>{activeProject?.name ?? '工作区'} · 工作区</h2>
+              <div className="scope-toggle">
+                <button type="button" className={`scope-btn${scopeType === 'project' ? ' scope-btn--active' : ''}`} onClick={() => { setScopeType('project'); setRelativePath(''); }}>当前群聊</button>
+                <button type="button" className={`scope-btn${scopeType === 'shared' ? ' scope-btn--active' : ''}`} onClick={() => { setScopeType('shared'); setRelativePath(''); }}>共享知识</button>
+              </div>
+            </div>
+          </div>
+          <div className="workspace-actions">
+            <button type="button" className="secondary-button" onClick={() => setGraphViewerOpen(true)}><GitBranch size={15} /> 图谱可视化</button>
+            <button type="button" className="secondary-button" onClick={() => setWikiViewerOpen(true)}><FileText size={15} /> Wiki</button>
+            <button type="button" className="secondary-button" onClick={() => void uploadFiles()}><Upload size={15} /> 上传文件</button>
+            <button type="button" className="primary-button" onClick={() => setFolderDialogOpen(true)}><Plus size={15} /> 新建文件夹</button>
+          </div>
         </header>
 
         <div className="workspace-location-bar">
-          <nav aria-label="文件路径"><button type="button" onClick={() => setRelativePath('')}>K_Studio</button><ChevronRight size={13} /><span>群聊文件夹</span><ChevronRight size={13} /><span>{projectId}-workspace</span><ChevronRight size={13} /><button type="button" onClick={() => setRelativePath('')}>用户原始文件</button>{pathParts.map((part, index) => <span className="breadcrumb-part" key={`${part}-${index}`}><ChevronRight size={13} /><button type="button" onClick={() => setRelativePath(pathParts.slice(0, index + 1).join('/'))}>{part}</button></span>)}</nav>
+          <nav aria-label="文件路径">
+            <button type="button" onClick={() => setRelativePath('')}>K_Studio</button>
+            <ChevronRight size={13} />
+            {scopeType === 'shared' ? <span>共享知识</span> : <><span>群聊文件夹</span><ChevronRight size={13} /><span>{projectId}-workspace</span></>}
+            <ChevronRight size={13} />
+            <button type="button" onClick={() => setRelativePath('')}>{scopeLabel}</button>
+            {pathParts.map((part, index) => (
+              <span className="breadcrumb-part" key={`${part}-${index}`}>
+                <ChevronRight size={13} />
+                <button type="button" onClick={() => setRelativePath(pathParts.slice(0, index + 1).join('/'))}>{part}</button>
+              </span>
+            ))}
+          </nav>
           <button type="button" className="icon-button" aria-label="刷新文件" onClick={() => void loadFiles()}><RefreshCw size={16} /></button>
         </div>
 
         {notice && <div className="workspace-notice"><span>{notice}</span><button type="button" aria-label="关闭提示" onClick={() => setNotice('')}><X size={14} /></button></div>}
 
         <div className="file-table" role="table" aria-label="用户原始文件">
-          <div className="file-table-row file-table-head" role="row"><span>名称</span><span>来源</span><span>大小</span><span>最后修改</span><span>操作</span></div>
-          {loading ? <div className="file-empty">正在读取本地工作区…</div> : files.length === 0 ? <div className="file-empty"><FolderOpen size={34} /><strong>这个文件夹还是空的</strong><span>上传文件或新建文件夹，内容将只保存在本机 K_Studio 中。</span><button className="primary-button" type="button" onClick={() => void uploadFiles()}><Upload size={15} /> 上传第一个文件</button></div> : files.map((entry) => (
+          <div className="file-table-row file-table-head" role="row"><span>名称</span><span>来源</span><span>大小</span><span>最后修改</span><span>知识</span><span>操作</span></div>
+          {loading ? (
+            <div className="file-empty">正在读取本地工作区…</div>
+          ) : files.length === 0 ? (
+            <div className="file-empty"><FolderOpen size={34} /><strong>这个文件夹还是空的</strong><span>上传文件或新建文件夹，内容将只保存在本机 K_Studio 中。</span><button className="primary-button" type="button" onClick={() => void uploadFiles()}><Upload size={15} /> 上传第一个文件</button></div>
+          ) : files.map((entry) => (
             <div className="file-table-row" role="row" key={entry.relativePath} onDoubleClick={() => enterDirectory(entry)}>
-              <button className={`file-name file-name--${entry.kind}`} type="button" onClick={() => enterDirectory(entry)}>{fileIcon(entry)}<span>{entry.name}</span></button>
-              <span>用户上传</span><span>{formatSize(entry.size)}</span><time>{new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(entry.modifiedAt))}</time>
-              <button type="button" className="icon-button" aria-label={`操作 ${entry.name}`}><MoreHorizontal size={17} /></button>
+              <button className={`file-name file-name--${entry.kind}`} type="button" onClick={() => enterDirectory(entry)}>
+                {fileIcon(entry)}<span>{entry.name}</span>
+              </button>
+              <span>用户上传</span>
+              <span>{formatSize(entry.size)}</span>
+              <time>{new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(entry.modifiedAt))}</time>
+              <span className={`knowledge-badge knowledge-badge--${entry.knowledgeStatus ?? 'none'}`}>{entry.knowledgeStatus ? knowledgeStatusLabel(entry.knowledgeStatus) : '—'}</span>
+              {entry.knowledgeStatus && entry.fileId && (
+                <span className="knowledge-badge-clickable" onClick={() => setKnowledgeDetail({ fileId: entry.fileId ?? '', fileName: entry.name })} />
+              )}
+              <div className="file-actions-wrapper">
+                <button type="button" className="icon-button" aria-label={`操作 ${entry.name}`} onClick={(e) => { e.stopPropagation(); setActionTarget(actionTarget?.relativePath === entry.relativePath ? null : entry); }}>
+                  <MoreHorizontal size={17} />
+                </button>
+                {actionTarget?.relativePath === entry.relativePath && (
+                  <div className="file-action-menu" onClick={() => setActionTarget(null)}>
+                    {entry.kind === 'file' && <button type="button" onClick={() => { void handlePreview(entry); }}><FileText size={14} /> 预览</button>}
+                    <button type="button" onClick={() => { setRenameTarget(entry); setRenameValue(entry.name); }}><Pencil size={14} /> 重命名</button>
+                    {entry.kind === 'file' && <button type="button" onClick={() => { void handleOpenWithSystem(entry); }}><ExternalLink size={14} /> 系统打开</button>}
+                    <button type="button" className="action-danger" onClick={() => setDeleteTarget(entry)}><Trash2 size={14} /> 删除</button>
+                  </div>
+                )}
+              </div>
             </div>
           ))}
         </div>
       </section>
 
-      {folderDialogOpen && <div className="modal-backdrop modal-backdrop--nested" role="presentation"><form className="folder-dialog" onSubmit={(event) => void createFolder(event)}><header><div><h3>新建文件夹</h3><p>文件夹将创建在当前用户原始文件路径内</p></div><button type="button" className="icon-button" aria-label="关闭" onClick={() => setFolderDialogOpen(false)}><X size={18} /></button></header><label><span>文件夹名称</span><input autoFocus className={folderError ? 'input-invalid' : ''} value={folderName} onChange={(event) => { setFolderName(event.target.value); setFolderError(''); }} placeholder="例如：合同与附件" />{folderError && <small>{folderError}</small>}</label><footer><button type="button" className="secondary-button" onClick={() => setFolderDialogOpen(false)}>取消</button><button type="submit" className="primary-button">创建</button></footer></form></div>}
+      {folderDialogOpen && (
+        <div className="modal-backdrop modal-backdrop--nested" role="presentation" onClick={() => setFolderDialogOpen(false)}>
+          <form className="folder-dialog" onClick={(e) => e.stopPropagation()} onSubmit={(event) => void createFolder(event)}>
+            <header><div><h3>新建文件夹</h3><p>文件夹将创建在当前用户原始文件路径内</p></div><button type="button" className="icon-button" aria-label="关闭" onClick={() => setFolderDialogOpen(false)}><X size={18} /></button></header>
+            <label><span>文件夹名称</span><input autoFocus className={folderError ? 'input-invalid' : ''} value={folderName} onChange={(event) => { setFolderName(event.target.value); setFolderError(''); }} placeholder="例如：合同与附件" />{folderError && <small>{folderError}</small>}</label>
+            <footer><button type="button" className="secondary-button" onClick={() => setFolderDialogOpen(false)}>取消</button><button type="submit" className="primary-button">创建</button></footer>
+          </form>
+        </div>
+      )}
+
+      {renameTarget && (
+        <div className="modal-backdrop modal-backdrop--nested" role="presentation" onClick={() => setRenameTarget(null)}>
+          <form className="folder-dialog" onClick={(e) => e.stopPropagation()} onSubmit={(event) => void handleRename(event)}>
+            <header><div><h3>重命名</h3><p>{renameTarget.kind === 'directory' ? '文件夹' : '文件'}名称</p></div><button type="button" className="icon-button" aria-label="关闭" onClick={() => setRenameTarget(null)}><X size={18} /></button></header>
+            <label><span>新名称</span><input autoFocus className={renameError ? 'input-invalid' : ''} value={renameValue} onChange={(event) => { setRenameValue(event.target.value); setRenameError(''); }} />{renameError && <small>{renameError}</small>}</label>
+            <footer><button type="button" className="secondary-button" onClick={() => setRenameTarget(null)}>取消</button><button type="submit" className="primary-button">确认</button></footer>
+          </form>
+        </div>
+      )}
+
+      {deleteTarget && (
+        <div className="modal-backdrop modal-backdrop--nested" role="presentation" onClick={() => setDeleteTarget(null)}>
+          <div className="folder-dialog" onClick={(e) => e.stopPropagation()}>
+            <header><div><h3>确认删除</h3><p>将“{deleteTarget.name}”移入回收站？{deleteTarget.kind === 'directory' ? '目录内所有文件将一并删除。' : ''}</p></div><button type="button" className="icon-button" aria-label="关闭" onClick={() => setDeleteTarget(null)}><X size={18} /></button></header>
+            <footer><button type="button" className="secondary-button" onClick={() => setDeleteTarget(null)}>取消</button><button type="button" className="primary-button danger" onClick={() => void handleDelete()}>删除</button></footer>
+          </div>
+        </div>
+      )}
+
+      {previewData && (
+        <div className="modal-backdrop modal-backdrop--nested" role="presentation" onClick={() => setPreviewData(null)}>
+          <div className="preview-dialog" onClick={(e) => e.stopPropagation()}>
+            <header><div><h3>预览: {previewData.fileName}</h3><p>{previewData.mimeType}</p></div><button type="button" className="icon-button" aria-label="关闭" onClick={() => setPreviewData(null)}><X size={18} /></button></header>
+            {previewData.kind === 'image' ? (
+              <div className="preview-image-wrapper">
+                <img src={previewData.content} alt={previewData.fileName} className="preview-image" />
+              </div>
+            ) : previewData.kind === 'html' ? (
+              <iframe ref={htmlIframeRef} className="preview-iframe" sandbox="allow-same-origin" title="HTML 预览" />
+            ) : previewData.fileName.endsWith('.md') ? (
+              <div className="wiki-markdown wiki-markdown--preview">
+                <ReactMarkdown>{previewData.content}</ReactMarkdown>
+              </div>
+            ) : (
+              <pre className="preview-content">{previewData.content}</pre>
+            )}
+          </div>
+        </div>
+      )}
+
+      {graphViewerOpen && (
+        <GraphViewer scopeType={scopeType} scopeId={scopeType === 'shared' ? 'shared-knowledge' : projectId} projectId={projectId} onClose={() => setGraphViewerOpen(false)} />
+      )}
+
+      {wikiViewerOpen && (
+        <WikiViewer scopeType={scopeType} scopeId={projectId} projectId={projectId} onClose={() => setWikiViewerOpen(false)} />
+      )}
+
+      {knowledgeDetail && (
+        <KnowledgeJobDialog fileId={knowledgeDetail.fileId} fileName={knowledgeDetail.fileName} onClose={() => setKnowledgeDetail(null)} />
+      )}
     </div>
   );
 }

@@ -51,10 +51,15 @@ export function NewChatModal({ onClose }: { onClose: () => void }): React.JSX.El
     event.preventDefault();
     setSubmitted(true);
     if (!name.trim() || selected.length === 0) return;
-    const projectId = `group-${Date.now()}`;
-    await window.kunqing?.workspace.ensureProject({ projectId, name: name.trim() });
+    const idempotencyKey = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const result = await window.kunqing?.projects.create({
+      idempotencyKey,
+      content: { schemaVersion: 1, text: name.trim(), mentions: [], stagedUploadIds: [] },
+      requestedAgentProfileIds: selected,
+    }) as { ok: boolean; data?: { id: string } } | undefined;
+    if (!result?.ok || !result.data) return;
     onClose();
-    navigate(`/projects/${projectId}/chat`, {
+    navigate(`/projects/${result.data.id}/chat`, {
       state: { projectName: name.trim(), agentIds: selected, leaderId, description: description.trim() },
     });
   };

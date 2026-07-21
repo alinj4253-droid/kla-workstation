@@ -11,8 +11,8 @@ import {
   Sparkles,
   Users,
 } from 'lucide-react';
-import { NavLink, Outlet, useLocation } from 'react-router-dom';
-import { useState } from 'react';
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { useEffect, useRef, useState } from 'react';
 import { NewChatModal } from './NewChatModal';
 
 const navClassName = ({ isActive }: { isActive: boolean }): string =>
@@ -20,8 +20,35 @@ const navClassName = ({ isActive }: { isActive: boolean }): string =>
 
 export function AppShell(): React.JSX.Element {
   const location = useLocation();
+  const navigate = useNavigate();
   const inProject = location.pathname.startsWith('/projects/');
   const [newChatOpen, setNewChatOpen] = useState(false);
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent): void => {
+      const isMeta = e.ctrlKey || e.metaKey;
+
+      if (e.key === 'Escape') {
+        if (newChatOpen) { setNewChatOpen(false); return; }
+        return;
+      }
+
+      if (isMeta && e.key === 'k') {
+        e.preventDefault();
+        searchRef.current?.focus();
+        return;
+      }
+
+      if (isMeta && e.key === 'n') {
+        e.preventDefault();
+        navigate('/');
+        return;
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [navigate, newChatOpen]);
 
   return (
     <div className="app-shell">
@@ -77,7 +104,7 @@ export function AppShell(): React.JSX.Element {
           <div className="topbar-actions">
             <label className="global-search">
               <Search size={15} aria-hidden="true" />
-              <input aria-label="全局搜索" placeholder={inProject ? 'Search...' : '快速搜索...'} />
+              <input ref={searchRef} aria-label="全局搜索" placeholder={inProject ? 'Search...' : '快速搜索...'} />
               <kbd>⌘ K</kbd>
             </label>
             <button className="icon-button" type="button" aria-label="通知"><Bell size={18} /></button>
