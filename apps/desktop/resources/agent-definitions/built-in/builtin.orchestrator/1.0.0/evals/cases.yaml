@@ -1,0 +1,11 @@
+cases:
+  - name: direct-answer
+    input: "你好，今天天气怎么样？"
+    expected:
+      intent: "answer"
+      needsKM: false
+  - name: delegate-to-km
+    input: "帮我查一下项目文档中关于数据库设计的内容"
+    expected:
+      intent: "delegate"
+      needsKM: true

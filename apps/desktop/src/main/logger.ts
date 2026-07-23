@@ -23,7 +23,13 @@ export function getLogger(studioRoot?: string): pino.Logger {
       err: pino.stdSerializers.err,
     },
     redact: {
-      paths: ['secret', 'password', 'token', 'key', 'ciphertext', 'authorization'],
+      paths: [
+        'secret', 'password', 'token', 'key', 'ciphertext', 'authorization',
+        // CLI 认证环境变量（AC-AGENT-03）
+        '*API_KEY', '*API_TOKEN', '*_TOKEN', '*_SECRET',
+        'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'CODEX_API_KEY', 'CLAUDE_API_KEY',
+        'GEMINI_API_KEY', 'GITHUB_TOKEN', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY',
+      ],
       censor: '[REDACTED]',
     },
   });

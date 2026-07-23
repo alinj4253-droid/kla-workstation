@@ -10,6 +10,7 @@ import {
   MessageRepository,
 } from '@kunqing/database';
 import { getProjectRoot, getStudioRoot } from './paths';
+export { validateEffectivePermissions, type PermissionDefinition } from './permission-validator';
 
 const ORCHESTRATOR_PROFILE_ID = 'builtin-orchestrator-profile';
 const KNOWLEDGE_PROFILE_ID = 'builtin-knowledge-profile';
@@ -249,6 +250,56 @@ export async function createProject(
   }
 }
 
+export const FAKE_PROVIDER_ID = 'fake-provider';
+export const FAKE_REASONING_PROFILE_ID = 'fake-reasoning-profile';
+export const FAKE_FAST_PROFILE_ID = 'fake-fast-profile';
+
+export function seedFakeModelProvider(db: Database.Database): void {
+  const now = new Date().toISOString();
+
+  // 检查是否已存在
+  const existing = db.prepare('SELECT id FROM model_providers WHERE id = ?').get(FAKE_PROVIDER_ID) as { id: string } | undefined;
+  if (existing) return;
+
+  // 1. 创建 fake model_provider（openai 兼容，无密钥）
+  db.prepare(
+    `INSERT INTO model_providers (id, name, type, base_url, auth_type, secret_ref, config_json, status, last_checked_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'available', ?)`,
+  ).run(FAKE_PROVIDER_ID, 'Fake Provider', 'openai', 'http://localhost:9999/v1', 'none', null, null, now);
+
+  // 2. 创建两个 model_profiles（reasoning + fast 槽位）
+  db.prepare(
+    `INSERT INTO model_profiles (id, name, provider_id, model_id, model_slot, parameters_json, declared_capabilities_json, verified_capabilities_json, capability_tested_at, enabled)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+  ).run(
+    FAKE_REASONING_PROFILE_ID, 'Fake Reasoning', FAKE_PROVIDER_ID, 'gpt-4o-mini', 'reasoning',
+    JSON.stringify({ temperature: 0.7, maxTokens: 4096 }),
+    JSON.stringify(['streaming', 'toolCalling', 'structuredOutput']),
+    JSON.stringify(['streaming', 'toolCalling', 'structuredOutput']),
+    now,
+  );
+
+  db.prepare(
+    `INSERT INTO model_profiles (id, name, provider_id, model_id, model_slot, parameters_json, declared_capabilities_json, verified_capabilities_json, capability_tested_at, enabled)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+  ).run(
+    FAKE_FAST_PROFILE_ID, 'Fake Fast', FAKE_PROVIDER_ID, 'gpt-4o-mini', 'fast',
+    JSON.stringify({ temperature: 0.3, maxTokens: 2048 }),
+    JSON.stringify(['streaming']),
+    JSON.stringify(['streaming']),
+    now,
+  );
+
+  // 3. 绑定槽位
+  db.prepare(
+    `INSERT OR REPLACE INTO model_slot_bindings (slot, model_profile_id, updated_at) VALUES (?, ?, ?)`,
+  ).run('reasoning', FAKE_REASONING_PROFILE_ID, now);
+
+  db.prepare(
+    `INSERT OR REPLACE INTO model_slot_bindings (slot, model_profile_id, updated_at) VALUES (?, ?, ?)`,
+  ).run('fast', FAKE_FAST_PROFILE_ID, now);
+}
+
 export async function seedDefaultProfiles(db: Database.Database): Promise<void> {
   const now = new Date().toISOString();
   const profileRepo = new AgentProfileRepository(db);
@@ -259,11 +310,35 @@ export async function seedDefaultProfiles(db: Database.Database): Promise<void> 
   const hasKnowDef = existingDefs.some((d) => d.id === 'builtin.knowledge-manager');
 
   if (!hasOrchDef) {
-    defRepo.create({ id: 'builtin.orchestrator', kind: 'builtin', isBuiltin: true, manifestRelPath: 'agents/builtin-orchestrator/manifest.json' });
+    defRepo.create({
+      id: 'builtin.orchestrator',
+      kind: 'builtin',
+      isBuiltin: true,
+      manifestRelPath: 'agents/builtin-orchestrator/manifest.json',
+      maxPermissionsJson: JSON.stringify({
+        read: ['group.original-files', 'group.knowledge', 'shared.knowledge', 'group.messages'],
+        write: ['self.memory', 'group.outputs'],
+        network: 'model-gateway-only',
+        shell: 'deny',
+      }),
+      modelRequirementsJson: JSON.stringify(['streaming', 'toolCalling', 'structuredOutput']),
+    });
   }
 
   if (!hasKnowDef) {
-    defRepo.create({ id: 'builtin.knowledge-manager', kind: 'builtin', isBuiltin: true, manifestRelPath: 'agents/builtin-knowledge-manager/manifest.json' });
+    defRepo.create({
+      id: 'builtin.knowledge-manager',
+      kind: 'builtin',
+      isBuiltin: true,
+      manifestRelPath: 'agents/builtin-knowledge-manager/manifest.json',
+      maxPermissionsJson: JSON.stringify({
+        read: ['group.original-files', 'group.knowledge', 'shared.knowledge', 'group.messages'],
+        write: ['self.memory', 'group.outputs', 'group.knowledge'],
+        network: 'model-gateway-only',
+        shell: 'deny',
+      }),
+      modelRequirementsJson: JSON.stringify(['streaming']),
+    });
   }
 
   const existing = profileRepo.listByEnabled();
@@ -278,9 +353,53 @@ export async function seedDefaultProfiles(db: Database.Database): Promise<void> 
   }
 
   if (!hasKnow) {
-    db.prepare(
-      `INSERT INTO agent_profiles (id, name, definition_id, definition_version, runtime_mode, enabled, delegatable, is_system_default, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 1, 0, 0, ?, ?)`,
-    ).run(KNOWLEDGE_PROFILE_ID, '知识管理智能体', 'builtin.knowledge-manager', '1.0.0', 'native-model', now, now);
+      db.prepare(
+        `INSERT INTO agent_profiles (id, name, definition_id, definition_version, runtime_mode, enabled, delegatable, is_system_default, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 1, 0, 0, ?, ?)`,
+      ).run(KNOWLEDGE_PROFILE_ID, '知识管理智能体', 'builtin.knowledge-manager', '1.0.0', 'native-model', now, now);
+    }
   }
-}
+
+  /** 根据 agent_instance_id 解析当前 slot 绑定的模型快照，用于 Run 创建时快照 */
+  export function buildModelProfileSnapshot(db: Database.Database, agentInstanceId: string): string | null {
+    const row = db.prepare(
+      `SELECT ap.definition_id as definitionId
+       FROM project_agent_instances pai
+       JOIN agent_profiles ap ON ap.id = pai.agent_profile_id
+       WHERE pai.id = ?`,
+    ).get(agentInstanceId) as { definitionId: string } | undefined;
+
+    if (!row) return null;
+
+    const slot = row.definitionId === 'builtin.knowledge-manager' ? 'fast' : 'reasoning';
+
+    const snapshot = db.prepare(
+      `SELECT mp.id as profileId, mp.name as profileName, mp.model_id as modelId, mp.model_slot as modelSlot,
+              mp.parameters_json as parametersJson, mp.verified_capabilities_json as verifiedCapabilitiesJson,
+              prv.id as providerId, prv.name as providerName, prv.type as providerType, prv.base_url as baseUrl
+       FROM model_slot_bindings msb
+       JOIN model_profiles mp ON mp.id = msb.model_profile_id
+       JOIN model_providers prv ON prv.id = mp.provider_id
+       WHERE msb.slot = ? AND mp.enabled = 1`,
+    ).get(slot) as {
+      profileId: string; profileName: string; modelId: string; modelSlot: string | null;
+      parametersJson: string | null; verifiedCapabilitiesJson: string | null;
+      providerId: string; providerName: string; providerType: string; baseUrl: string | null;
+    } | undefined;
+
+    if (!snapshot) return null;
+
+    return JSON.stringify({
+      profileId: snapshot.profileId,
+      profileName: snapshot.profileName,
+      providerId: snapshot.providerId,
+      providerName: snapshot.providerName,
+      providerType: snapshot.providerType,
+      baseUrl: snapshot.baseUrl,
+      modelId: snapshot.modelId,
+      modelSlot: snapshot.modelSlot,
+      parameters: snapshot.parametersJson ? JSON.parse(snapshot.parametersJson) : null,
+      capabilities: snapshot.verifiedCapabilitiesJson ? JSON.parse(snapshot.verifiedCapabilitiesJson) : null,
+      capturedAt: new Date().toISOString(),
+    });
+  }

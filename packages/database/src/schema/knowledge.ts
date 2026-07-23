@@ -68,6 +68,21 @@ export const knowledgeEdges = sqliteTable('knowledge_edges', {
   index('idx_knowledge_edges_lookup').on(table.scopeType, table.scopeId, table.sourceNodeId, table.targetNodeId, table.edgeType),
 ]);
 
+export const knowledgePendingReview = sqliteTable('knowledge_pending_review', {
+  id: text('id').primaryKey(),
+  scopeType: text('scope_type', { enum: ['project', 'shared'] }).notNull(),
+  scopeId: text('scope_id').notNull(),
+  candidateType: text('candidate_type', { enum: ['entity', 'relationship'] }).notNull(),
+  dataJson: text('data_json').notNull(),
+  reason: text('reason', { enum: ['low_confidence', 'schema_mismatch', 'duplicate'] }).notNull(),
+  status: text('status', { enum: ['pending', 'reviewed', 'dismissed'] }).notNull().default('pending'),
+  reviewNote: text('review_note'),
+  reviewedAt: text('reviewed_at'),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  index('idx_knowledge_pending_scope').on(table.scopeType, table.scopeId, table.status),
+]);
+
 export const knowledgeProvenance = sqliteTable('knowledge_provenance', {
   id: text('id').primaryKey(),
   targetType: text('target_type', { enum: ['node', 'edge', 'wiki'] }).notNull(),

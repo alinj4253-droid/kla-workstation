@@ -10,6 +10,8 @@ export const channels = sqliteTable('channels', {
   secretRef: text('secret_ref'),
   lastConnectedAt: text('last_connected_at'),
   lastError: text('last_error'),
+  lastTestResult: text('last_test_result'),
+  lastTestedAt: text('last_tested_at'),
 }, (table) => [
   uniqueIndex('idx_channels_type_name').on(table.type, table.name),
 ]);

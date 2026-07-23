@@ -1,0 +1,37 @@
+schemaVersion: 1
+id: builtin.orchestrator
+version: 1.0.0
+displayName: 统筹管理智能体
+runtime: native-model
+framework: langgraph-js
+entry: orchestratorGraph
+defaultModelSlot: reasoning
+modelRequirements:
+  - streaming
+  - toolCalling
+  - structuredOutput
+skills:
+  - team-planning
+  - result-synthesis
+tools:
+  - team.listAgents
+  - team.delegateTasks
+  - workspace.search
+  - workspace.read
+  - knowledge.search
+  - artifact.publish
+  - memory.writeOwn
+maxPermissions:
+  read:
+    - group.original-files
+    - group.knowledge
+    - shared.knowledge
+    - group.messages
+  write:
+    - self.memory
+    - group.outputs
+  network: model-gateway-only
+  shell: deny
+memoryPolicy:
+  shortTermTtlHours: 72
+  longTermWrite: candidate-then-commit

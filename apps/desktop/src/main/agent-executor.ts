@@ -1,21 +1,33 @@
-import { BrowserWindow } from 'electron';
+import { BrowserWindow, app } from 'electron';
 import type Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 import { ModelGateway, type ModelSlot } from './model-gateway';
-import type { QueuedRun } from './scheduler';
+import type { QueuedRun, Scheduler } from './scheduler';
 import { MemoryManager } from './memory-manager';
-import { createProjectTools } from './agent-tools';
+import { ContextBuilder } from './context-builder';
+import { createProjectTools, registerProjectTools } from './agent-tools';
+import { ToolRegistry } from './tool-registry';
 import { runOrchestrator, type ExecContext } from './langgraph-orchestrator';
+import { runKnowledgeManager, type KMExecContext } from './langgraph-knowledge-manager';
 import { AgentRunRepository, MessageRepository } from '@kunqing/database';
 import { getLogger } from './logger';
 
-export function createAgentExecutor(db: Database.Database, window: BrowserWindow, gateway: ModelGateway) {
+export type AgentExecutor = {
+  (run: QueuedRun, signal: AbortSignal): Promise<void>;
+  setScheduler(s: Scheduler): void;
+};
+
+export function createAgentExecutor(db: Database.Database, window: BrowserWindow, gateway: ModelGateway, scheduler?: Scheduler): AgentExecutor {
   const runRepo = new AgentRunRepository(db);
   const msgRepo = new MessageRepository(db);
   const memory = new MemoryManager(db);
-  const tools = createProjectTools(db);
+  let _scheduler = scheduler;
+  let tools = createProjectTools(db, _scheduler);
+  const toolRegistry = new ToolRegistry(db);
+  registerProjectTools(toolRegistry, db, _scheduler);
 
-  return async (run: QueuedRun, signal: AbortSignal): Promise<void> => {
+  const executor = async (run: QueuedRun, signal: AbortSignal): Promise<void> => {
     const logger = getLogger();
 
     const agentInstance = db.prepare(
@@ -24,6 +36,12 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
        JOIN agent_profiles ap ON ap.id = pai.agent_profile_id
        WHERE pai.id = ?`,
     ).get(run.agentInstanceId) as { id: string; agentName: string; definitionId: string } | undefined;
+
+    runRepo.addEvent(run.runId, 'agent.started', {
+      definitionId: agentInstance?.definitionId ?? 'unknown',
+      agentName: agentInstance?.agentName,
+      instruction: run.instruction.slice(0, 200),
+    });
 
     if (agentInstance?.definitionId === 'builtin.orchestrator') {
       const ctx: ExecContext = {
@@ -38,8 +56,56 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
         signal,
         memory,
         tools,
+        toolRegistry,
+        scheduler: _scheduler,
+        contextSnapshot: null as any,
+        contextBuilder: new ContextBuilder(db),
       };
-      return runOrchestrator(ctx);
+      return runOrchestrator(ctx).then(() => {
+        runRepo.addEvent(run.runId, 'agent.completed', { definitionId: 'builtin.orchestrator' });
+      }).catch((err) => {
+        runRepo.addEvent(run.runId, 'agent.error', { definitionId: 'builtin.orchestrator', error: err instanceof Error ? err.message : String(err) });
+        throw err;
+      });
+    }
+
+    if (agentInstance?.definitionId === 'builtin.knowledge-manager') {
+      const workspaceRoot = app?.getPath?.('userData') ?? join(process.cwd(), '.runtime');
+      const kmCtx: KMExecContext = {
+        db,
+        gateway,
+        runId: run.runId,
+        projectId: run.projectId,
+        agentInstanceId: run.agentInstanceId,
+        instruction: run.instruction,
+        triggerMessageId: run.triggerMessageId,
+        signal,
+        workspaceRoot,
+      };
+      const report = await runKnowledgeManager(kmCtx);
+
+      runRepo.addEvent(run.runId, 'agent.completed', { definitionId: 'builtin.knowledge-manager', reportLength: report.length });
+
+      // 保存知识管理报告消息
+      const agentMsgId = randomUUID().toLowerCase().replace(/-/g, '').slice(0, 24);
+      const contentJson = JSON.stringify({ schemaVersion: 1, text: report, mentions: [], stagedUploadIds: [] });
+      const now = new Date().toISOString();
+      db.prepare(
+        'INSERT INTO messages (id, project_id, sender_type, sender_id, kind, content_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      ).run(agentMsgId, run.projectId, 'agent', agentInstance?.id ?? run.agentInstanceId, 'text', contentJson, 'sent', now, now);
+      runRepo.setResultMessage(run.runId, agentMsgId);
+
+      if (!window.isDestroyed()) {
+        window.webContents.send('event:dispatch', {
+          type: 'message.committed',
+          projectId: run.projectId,
+          messageId: agentMsgId,
+          senderId: agentInstance?.id ?? run.agentInstanceId,
+          content: contentJson,
+        });
+      }
+
+      return;
     }
 
     logger?.info({ runId: run.runId, agentInstanceId: run.agentInstanceId }, 'AgentExecutor: 直接模式');
@@ -125,10 +191,12 @@ ${memoryContext ? `\n${memoryContext}` : ''}`;
 
       memory.storeShortTerm(run.projectId, run.agentInstanceId, 'interaction', run.instruction.slice(0, 300), 0.5);
 
+      runRepo.addEvent(run.runId, 'agent.completed', { definitionId: 'direct', charCount: fullText.length });
       logger?.info({ runId: run.runId, agentMsgId, charCount: fullText.length }, 'AgentExecutor: 完成');
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') {
         runRepo.setStatus(run.runId, 'cancelled');
+        runRepo.addEvent(run.runId, 'agent.error', { definitionId: 'direct', error: '用户取消' });
         if (!window.isDestroyed()) {
           window.webContents.send('event:dispatch', {
             type: 'run.status',
@@ -141,4 +209,11 @@ ${memoryContext ? `\n${memoryContext}` : ''}`;
       throw err;
     }
   };
+
+  executor.setScheduler = (s: Scheduler) => {
+    _scheduler = s;
+    tools = createProjectTools(db, s);
+  };
+
+  return executor;
 }

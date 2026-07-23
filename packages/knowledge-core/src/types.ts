@@ -88,6 +88,9 @@ export interface PipelineContext {
   /** Create provenance record */
   createProvenance(targetType: string, targetId: string, sourceId: string, chunkId: string, locationJson?: string, quoteHash?: string): Promise<void>;
 
+  /** Add low-confidence / schema-mismatch candidate for manual review */
+  addPendingReview?(scopeType: string, scopeId: string, candidateType: string, dataJson: string, reason: string): void;
+
   /** Upsert a wiki page */
   upsertWikiPage(page: GeneratedWikiPage): Promise<void>;
 

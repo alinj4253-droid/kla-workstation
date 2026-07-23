@@ -106,13 +106,16 @@ describe('createProjectTools', () => {
     tools = createProjectTools(db);
   });
 
-  it('returns four tools', () => {
-    expect(tools).toHaveLength(4);
+  it('returns all project tools', () => {
+    expect(tools).toHaveLength(7);
     const names = tools.map((t) => t.name);
     expect(names).toContain('knowledge:search');
     expect(names).toContain('workspace:readFile');
     expect(names).toContain('project:search');
     expect(names).toContain('knowledge:listGraph');
+    expect(names).toContain('list_project_agents');
+    expect(names).toContain('delegate_tasks');
+    expect(names).toContain('publish_artifact');
   });
 
   it('knowledge:search returns no results for empty DB', async () => {

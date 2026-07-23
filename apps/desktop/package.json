@@ -15,7 +15,10 @@
     "package:win": "pnpm build && electron-builder --win nsis"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.16",
+    "@ai-sdk/google": "^1.0.0",
     "@ai-sdk/openai": "^4.0.16",
+    "@kunqing/agent-core": "workspace:*",
     "@kunqing/database": "workspace:*",
     "@kunqing/knowledge-core": "workspace:*",
     "@langchain/core": "^1.2.3",

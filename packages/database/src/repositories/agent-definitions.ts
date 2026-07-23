@@ -32,14 +32,14 @@ export class AgentDefinitionRepository extends BaseRepository {
     return row;
   }
 
-  create(input: { id: string; version?: string; kind?: string; manifestRelPath?: string; checksum?: string; frameworkEntry?: string | null; isBuiltin?: boolean }): AgentDefinitionRow {
+  create(input: { id: string; version?: string; kind?: string; manifestRelPath?: string; checksum?: string; frameworkEntry?: string | null; isBuiltin?: boolean; maxPermissionsJson?: string | null; modelRequirementsJson?: string | null }): AgentDefinitionRow {
     const now = this.now();
     this.db.prepare(
       `INSERT INTO agent_definitions (id, version, kind, manifest_rel_path, checksum, framework_entry, max_permissions_json, model_requirements_json, is_builtin, installed_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       input.id, input.version ?? '1.0.0', input.kind ?? 'builtin', input.manifestRelPath ?? '',
-      input.checksum ?? '', input.frameworkEntry ?? null, null, null, input.isBuiltin ? 1 : 0, now,
+      input.checksum ?? '', input.frameworkEntry ?? null, input.maxPermissionsJson ?? null, input.modelRequirementsJson ?? null, input.isBuiltin ? 1 : 0, now,
     );
     return this.getById(input.id);
   }

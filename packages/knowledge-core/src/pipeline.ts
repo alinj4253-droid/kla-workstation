@@ -102,15 +102,18 @@ export async function runIngestionPipeline(ctx: PipelineContext): Promise<void> 
       }
     }
 
-    // Create provenance records linking entities to chunks
-    for (const entity of graph.entities) {
-      const nodeId = nodeIdMap.get(entity.name);
-      if (!nodeId) continue;
-
+    // 使用 upsert 后的真实 node ID 创建 provenance
+    let provenanceCount = 0;
+    for (const [entityName, nodeId] of nodeIdMap) {
       for (const chunk of chunks) {
-        if (chunk.text.includes(entity.name)) {
-          const quoteHash = hashContent(chunk.text);
-          await ctx.createProvenance('node', nodeId, ctx.sourceId, chunk.ordinal.toString(), chunk.locationJson, quoteHash);
+        if (chunk.text.includes(entityName)) {
+          try {
+            const quoteHash = hashContent(chunk.text);
+            await ctx.createProvenance('node', nodeId, ctx.sourceId, chunk.ordinal.toString(), chunk.locationJson, quoteHash);
+            provenanceCount++;
+          } catch (err) {
+            ctx.log('provenance 写入失败', { nodeId, error: String(err) });
+          }
         }
       }
     }

@@ -510,4 +510,13 @@ const migrations: Array<{ name: string; sql: string }> = [
       INSERT INTO knowledge_chunk_fts(knowledge_chunk_fts) VALUES('rebuild');
     `,
   },
+  {
+    name: '006_channel_test_and_dedup',
+    sql: `
+      ALTER TABLE channels ADD COLUMN last_test_result TEXT;
+      ALTER TABLE channels ADD COLUMN last_tested_at TEXT;
+      ALTER TABLE channels ADD COLUMN updated_at TEXT;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_events_dedup ON channel_events(channel_id, external_event_id);
+    `,
+  },
 ];

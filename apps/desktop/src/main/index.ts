@@ -1,13 +1,21 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from 'electron';
 import type { OpenDialogOptions } from 'electron';
 import { access, copyFile, lstat, mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { basename, dirname, isAbsolute, join, normalize, resolve, sep } from 'node:path';
+import { CodexCliAdapter } from '@kunqing/agent-core';
+import { cliAgentRegistry } from './cli-agent-registry';
+import { cliExecutor } from './cli-executor';
+import { agentConnectionService } from './agent-connection-service';
+import { runKeyScan } from './key-scanner';
+import { checkVersionCompatibility } from './version-compatibility';
 import { getDatabase, runMigrations } from './db';
 import { getLogger } from './logger';
 import { getProjectRoot, getStudioRoot, setStudioRoot } from './paths';
-import { createProject, safeFileName, seedDefaultProfiles } from './project-creator';
+import { createProject, safeFileName, seedDefaultProfiles, seedFakeModelProvider, buildModelProfileSnapshot } from './project-creator';
+import { ContextBuilder } from './context-builder';
+import { SkillRegistry } from './skill-registry';
 import { FileWatcher } from './file-watcher';
 import { startMemoryCleanup } from './memory-cleanup';
 import { ModelGateway } from './model-gateway';
@@ -199,10 +207,47 @@ const installAgentDefinitions = async (root: string): Promise<void> => {
   const knowledgeDir = join(root, 'agent-definitions', 'built-in', 'builtin.knowledge-manager', '1.0.0');
   await mkdir(orchestratorDir, { recursive: true });
   await mkdir(knowledgeDir, { recursive: true });
+
+  // agent.yaml + IDENTITY
   await writeIfMissing(join(orchestratorDir, 'agent.yaml'), ORCHESTRATOR_DEF);
   await writeIfMissing(join(orchestratorDir, 'IDENTITY.template.md'), ORCHESTRATOR_IDENTITY);
   await writeIfMissing(join(knowledgeDir, 'agent.yaml'), KNOWLEDGE_DEF);
   await writeIfMissing(join(knowledgeDir, 'IDENTITY.template.md'), KNOWLEDGE_IDENTITY);
+
+  // prompts/system.md
+  const orchPromptDir = join(orchestratorDir, 'prompts');
+  const kmPromptDir = join(knowledgeDir, 'prompts');
+  await mkdir(orchPromptDir, { recursive: true });
+  await mkdir(kmPromptDir, { recursive: true });
+  await writeIfMissing(join(orchPromptDir, 'system.md'), '你是统筹智能体 (Orchestrator)，一个多智能体系统的协调者。\n\n## 职责\n- 分析用户指令，判断是否需要动用子智能体（如知识管理员）\n- 如果用户询问项目知识、文档内容、搜索信息，回复 "NEED_KM" 作为第一行\n- 如果用户询问日常对话、代码编写、一般问题，直接回复\n- 收集子智能体的结果并进行汇总\n\n## 回复格式\n使用 Markdown 格式输出。');
+  await writeIfMissing(join(kmPromptDir, 'system.md'), '你是知识管理员 (Knowledge Manager)。你负责管理项目知识库。\n\n## 可用工具\n- knowledge:search - 搜索知识库文档\n- workspace:readFile - 读取工作区文件\n- project:search - 跨项目搜索\n- knowledge:listGraph - 列出知识图谱\n- list_project_agents - 列出项目智能体\n- publish_artifact - 发布成果文件\n\n## 输出\n基于获取的信息，给出准确的回答。如果信息不足，明确告知用户。');
+
+  // orchestrator skills
+  const orchSkillsDir = join(orchestratorDir, 'skills');
+  const teamSkillDir = join(orchSkillsDir, 'team-planning');
+  const resultSkillDir = join(orchSkillsDir, 'result-synthesis');
+  await mkdir(teamSkillDir, { recursive: true });
+  await mkdir(resultSkillDir, { recursive: true });
+  await writeIfMissing(join(teamSkillDir, 'SKILL.md'), '## 团队规划 (Team Planning)\n\n作为统筹智能体，你的核心职责是：\n1. 分析用户输入，判断是否需要动用子智能体\n2. 如果需要知识管理相关能力，明确回复 "NEED_KM" 作为首行\n3. 对于不需要子智能体的任务，直接规划回答策略\n4. 对复杂任务进行步骤拆解');
+  await writeIfMissing(join(resultSkillDir, 'SKILL.md'), '## 结果汇总 (Result Synthesis)\n\n当收到子智能体的返回结果后：\n1. 仔细阅读子智能体的输出内容\n2. 提取关键信息，进行归纳总结\n3. 用清晰的结构化 Markdown 呈现最终回答\n4. 注明信息来源（如来自知识库查询）');
+
+  // knowledge-manager skills
+  const kmSkillsDir = join(knowledgeDir, 'skills');
+  for (const skillId of ['document-ingestion', 'entity-relation-extraction', 'provenance-validation', 'wiki-materialization', 'graph-projection']) {
+    const d = join(kmSkillsDir, skillId);
+    await mkdir(d, { recursive: true });
+  }
+  await writeIfMissing(join(kmSkillsDir, 'document-ingestion', 'SKILL.md'), '## 文档导入 (Document Ingestion)\n\n负责将上传的文件解析为可处理的文本：\n1. 检查文件格式和大小\n2. 调用解析器提取文本内容\n3. 对过长文档进行分块处理\n4. 保存原始文件引用');
+  await writeIfMissing(join(kmSkillsDir, 'entity-relation-extraction', 'SKILL.md'), '## 实体关系抽取 (Entity & Relation Extraction)\n\n从文档内容中提取结构化知识：\n1. 识别关键实体（人物、组织、概念、术语等）\n2. 抽取实体之间的关系\n3. 为每个实体和关系标注置信度\n4. 低置信度候选手动复核');
+  await writeIfMissing(join(kmSkillsDir, 'provenance-validation', 'SKILL.md'), '## 来源溯源 (Provenance Validation)\n\n确保每个知识片段都有清晰来源：\n1. 记录每个实体/关系对应的原始文档位置\n2. 过滤低置信度（<0.65）的候选\n3. 将待复核候选写入 review 目录\n4. 支持来源回溯查询');
+  await writeIfMissing(join(kmSkillsDir, 'wiki-materialization', 'SKILL.md'), '## Wiki 页面生成 (Wiki Materialization)\n\n基于知识图谱生成人类可读的 Wiki 页面：\n1. 为每个重要实体生成 Wiki 条目\n2. 包含实体摘要、关联关系和相关来源\n3. 使用 Markdown 格式输出\n4. 保存到工作区的 wiki 目录');
+  await writeIfMissing(join(kmSkillsDir, 'graph-projection', 'SKILL.md'), '## 图谱可视化 (Graph Projection)\n\n生成适合前端渲染的图谱投影数据：\n1. 导出所有节点和边\n2. 为每个节点添加 label 和分组信息\n3. 生成 force-graph 格式的 JSON\n4. 保存到 knowledge/projection 目录');
+
+  // evals
+  await mkdir(join(orchestratorDir, 'evals'), { recursive: true });
+  await mkdir(join(knowledgeDir, 'evals'), { recursive: true });
+  await writeIfMissing(join(orchestratorDir, 'evals', 'cases.yaml'), 'cases:\n  - name: direct-answer\n    input: "你好，今天天气怎么样？"\n    expected:\n      intent: "answer"\n      needsKM: false\n  - name: delegate-to-km\n    input: "帮我查一下项目文档中关于数据库设计的内容"\n    expected:\n      intent: "delegate"\n      needsKM: true');
+  await writeIfMissing(join(knowledgeDir, 'evals', 'cases.yaml'), 'cases:\n  - name: document-ingestion\n    input: "上传一份 PDF 文档到知识库"\n    expected:\n      action: "ingest"\n  - name: graph-query\n    input: "列出项目中的知识图谱"\n    expected:\n      action: "query"');
 };
 
 const tryAcquireLock = async (root: string): Promise<boolean> => {
@@ -767,6 +812,7 @@ const registerMessageIpc = (db: ReturnType<typeof getDatabase>): void => {
           requestedById: 'local-user',
           instruction: input.content?.text ?? '',
           triggerMessageId: data.id,
+          modelProfileSnapshotJson: buildModelProfileSnapshot(db, leaderInstance.id),
         });
         _scheduler.enqueue({ runId: run.id, projectId: input.projectId, agentInstanceId: leaderInstance.id, instruction: input.content?.text ?? '', triggerMessageId: data.id });
       }
@@ -782,6 +828,8 @@ const registerMessageIpc = (db: ReturnType<typeof getDatabase>): void => {
   });
 };
 
+type CliConnectionRow = { id: string; name: string; adapterType: string; executablePath: string; argsJson: string | null; strategyId: string | null; detectedVersion: string | null; status: string; trustTier: 'trusted' | 'sandboxed' | 'restricted' };
+
 const registerAgentIpc = (db: ReturnType<typeof getDatabase>): void => {
   registerIpc('agents:listDefinitions', async () => {
     const data = db.prepare('SELECT id, version, kind, is_builtin as isBuiltin, installed_at as installedAt FROM agent_definitions ORDER BY id').all();
@@ -789,7 +837,7 @@ const registerAgentIpc = (db: ReturnType<typeof getDatabase>): void => {
   });
   registerIpc('agents:listProfiles', async () => {
     const data = db.prepare('SELECT id, name, definition_id as definitionId, runtime_mode as runtimeMode, enabled, delegatable FROM agent_profiles ORDER BY name').all();
-    return { ok: true, data };
+    return { ok: true, data: data.map((r: any) => ({ ...r, enabled: !!r.enabled, delegatable: !!r.delegatable })) };
   });
   registerIpc('agents:getProjectInstances', async (_event, input: { projectId: string }) => {
     const data = db.prepare(
@@ -800,13 +848,226 @@ const registerAgentIpc = (db: ReturnType<typeof getDatabase>): void => {
     ).all(input.projectId);
     return { ok: true, data };
   });
-  registerIpc('agents:detectCli', async () => ({ ok: true, data: [] }));
-  registerIpc('agents:saveCliConnection', async () => ({ ok: true, data: null }));
-  registerIpc('agents:testCliConnection', async () => ({ ok: true, data: { success: true, capabilities: [] } }));
-  registerIpc('agents:saveProfile', async () => ({ ok: true, data: null }));
-  registerIpc('agents:setDefaultLeader', async () => ({ ok: true }));
-  registerIpc('agents:setProfileEnabled', async () => ({ ok: true }));
-  registerIpc('agents:upgradeProjectInstance', async () => ({ ok: true, data: null }));
+  registerIpc('agents:detectCli', async () => {
+    const results = await cliAgentRegistry.detectAll();
+    const data: Array<{ id: string; adapterType: string; executablePath: string; detectedVersion: string | null; status: string; capabilities: string[] }> = [];
+    for (const r of results) {
+      if (r.executables.length === 0) {
+        data.push({ id: `${r.type}-0`, adapterType: r.type, executablePath: '', detectedVersion: null, status: 'not_found', capabilities: [] });
+      }
+      for (let j = 0; j < r.executables.length; j++) {
+        data.push({ id: `${r.type}-${j}`, adapterType: r.type, executablePath: r.executables[j]!.executablePath, detectedVersion: r.executables[j]!.versionHint, status: 'available', capabilities: ['code-generation'] });
+      }
+    }
+    return { ok: true, data };
+  });
+  registerIpc('agents:saveCliConnection', async (_event, input: { name: string; adapterType: string; executablePath: string; detectedVersion?: string | null }) => {
+    const id = randomUUID().toLowerCase().replace(/-/g, '').slice(0, 24);
+    const now = new Date().toISOString();
+    const compatibility = checkVersionCompatibility(input.adapterType, input.detectedVersion ?? null);
+    const status = compatibility === 'compatible' ? 'compatible' : compatibility === 'experimental' ? 'experimental' : 'unknown';
+    db.prepare(`INSERT INTO cli_connections (id, name, adapter_type, executable_path, args_json, strategy_id, detected_version, status, trust_tier, created_at, updated_at) VALUES (?, ?, ?, ?, '[]', 'auto', ?, ?, 'trusted', ?, ?)`).run(id, input.name, input.adapterType, input.executablePath, input.detectedVersion ?? null, status, now, now);
+    return { ok: true, data: { id, name: input.name, adapterType: input.adapterType, executablePath: input.executablePath, status } };
+  });
+  registerIpc('agents:testCliConnection', async (_event, input: { connectionId: string }) => {
+    try {
+      const row = db.prepare('SELECT executable_path as executablePath, adapter_type as adapterType FROM cli_connections WHERE id = ?').get(input.connectionId) as { executablePath: string; adapterType: string } | undefined;
+      if (!row) return { ok: false, requestId: '-', error: { code: 'NOT_FOUND', message: 'CLI connection not found', retryable: false } };
+      const adapter = cliAgentRegistry.getAdapter(row.adapterType) ?? new CodexCliAdapter();
+      const exes = await adapter.detect({}, new AbortController().signal);
+      if (exes.length === 0) {
+        return { ok: true, data: { success: false, error: 'CLI 不可用', version: null, executablePath: '' } };
+      }
+      const versionHint = exes[0]!.versionHint;
+      const caps: string[] = adapter && 'getCapabilities' in adapter ? (adapter as any).getCapabilities() : [];
+      return { ok: true, data: { success: true, version: versionHint, executablePath: exes[0]!.executablePath, capabilities: caps } };
+    } catch (err) { return { ok: true, data: { success: false, error: String(err), version: null, executablePath: '' } }; }
+  });
+  registerIpc('agents:saveProfile', async (_event, input: { id?: string; name: string; definitionId: string; runtimeMode: string }) => {
+    const now = new Date().toISOString();
+    if (input.id) {
+      db.prepare('UPDATE agent_profiles SET name = ?, updated_at = ? WHERE id = ?').run(input.name, now, input.id);
+      return { ok: true, data: { id: input.id, name: input.name, definitionId: input.definitionId, runtimeMode: input.runtimeMode as any, enabled: true, delegatable: true } };
+    }
+    const id = randomUUID().toLowerCase().replace(/-/g, '').slice(0, 24);
+    db.prepare(`INSERT INTO agent_profiles (id, name, definition_id, definition_version, runtime_mode, enabled, delegatable, is_system_default, created_at, updated_at) VALUES (?, ?, ?, '1.0.0', ?, 1, 1, 0, ?, ?)`).run(id, input.name, input.definitionId, input.runtimeMode, now, now);
+    return { ok: true, data: { id, name: input.name, definitionId: input.definitionId, runtimeMode: input.runtimeMode as any, enabled: true, delegatable: true } };
+  });
+  registerIpc('agents:setDefaultLeader', async (_event, input: { profileId: string }) => {
+    db.prepare('UPDATE agent_profiles SET is_system_default = 0 WHERE is_system_default = 1').run();
+    db.prepare('UPDATE agent_profiles SET is_system_default = 1 WHERE id = ?').run(input.profileId);
+    return { ok: true };
+  });
+  registerIpc('agents:setProfileEnabled', async (_event, input: { profileId: string; enabled: boolean }) => {
+    db.prepare('UPDATE agent_profiles SET enabled = ? WHERE id = ?').run(input.enabled ? 1 : 0, input.profileId);
+    return { ok: true };
+  });
+  registerIpc('agents:updateProfileModel', async (_event, input: { profileId: string; modelProfileId: string }) => {
+    db.prepare('UPDATE agent_profiles SET model_profile_id = ?, updated_at = ? WHERE id = ?').run(input.modelProfileId, new Date().toISOString(), input.profileId);
+    return { ok: true };
+  });
+  registerIpc('agents:updateProfileSkills', async (_event, input: { profileId: string; enabledSkills: string[] }) => {
+    const row = db.prepare('SELECT overrides_json FROM agent_profiles WHERE id = ?').get(input.profileId) as { overrides_json: string | null } | undefined;
+    if (!row) return { ok: false, requestId: '-', error: { code: 'NOT_FOUND', message: 'Profile not found', retryable: false } };
+    const overrides = row.overrides_json ? JSON.parse(row.overrides_json) : {};
+    overrides.enabledSkills = input.enabledSkills;
+    db.prepare('UPDATE agent_profiles SET overrides_json = ?, updated_at = ? WHERE id = ?').run(JSON.stringify(overrides), new Date().toISOString(), input.profileId);
+    return { ok: true };
+  });
+  registerIpc('agents:updateProfilePermissions', async (_event, input: { profileId: string; effectivePermissions: string[] }) => {
+    const row = db.prepare('SELECT overrides_json FROM agent_profiles WHERE id = ?').get(input.profileId) as { overrides_json: string | null } | undefined;
+    if (!row) return { ok: false, requestId: '-', error: { code: 'NOT_FOUND', message: 'Profile not found', retryable: false } };
+    const overrides = row.overrides_json ? JSON.parse(row.overrides_json) : {};
+    overrides.effectivePermissions = input.effectivePermissions;
+    db.prepare('UPDATE agent_profiles SET overrides_json = ?, updated_at = ? WHERE id = ?').run(JSON.stringify(overrides), new Date().toISOString(), input.profileId);
+    return { ok: true };
+  });
+  registerIpc('agents:cloneProfile', async (_event, input: { profileId: string; name: string }) => {
+    const source = db.prepare('SELECT * FROM agent_profiles WHERE id = ?').get(input.profileId) as Record<string, any> | undefined;
+    if (!source) return { ok: false, requestId: '-', error: { code: 'NOT_FOUND', message: 'Source profile not found', retryable: false } };
+    const newId = randomUUID().toLowerCase().replace(/-/g, '').slice(0, 24);
+    const now = new Date().toISOString();
+    db.prepare(`INSERT INTO agent_profiles (id, name, definition_id, definition_version, runtime_mode, model_profile_id, cli_connection_id, overrides_json, enabled, delegatable, is_system_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`)
+      .run(newId, input.name, source.definition_id, source.definition_version, source.runtime_mode, source.model_profile_id, source.cli_connection_id, source.overrides_json, source.enabled, source.delegatable, now, now);
+    return { ok: true, data: { id: newId, name: input.name, definitionId: source.definition_id, runtimeMode: source.runtime_mode, enabled: !!source.enabled, delegatable: !!source.delegatable } };
+  });
+  registerIpc('agents:startProcess', async (_event, input: { connectionId: string; instruction: string; projectId: string }) => {
+    const window = BrowserWindow.fromWebContents(_event.sender);
+    if (!window) return { ok: false, requestId: '-', error: { code: 'NO_WINDOW', message: 'No window', retryable: false } };
+
+    const row = db.prepare('SELECT id, name, adapter_type as adapterType, executable_path as executablePath, args_json as argsJson, strategy_id as strategyId, detected_version as detectedVersion, status, trust_tier as trustTier FROM cli_connections WHERE id = ?').get(input.connectionId) as CliConnectionRow | undefined;
+    if (!row) return { ok: false, requestId: '-', error: { code: 'NOT_FOUND', message: 'CLI connection not found', retryable: false } };
+
+    const connection: import('@kunqing/agent-core').CliConnectionConfig = {
+      id: row.id, name: row.name, adapterType: row.adapterType, executablePath: row.executablePath,
+      args: row.argsJson ? JSON.parse(row.argsJson) : [], strategyId: row.strategyId ?? 'auto',
+      detectedVersion: row.detectedVersion, status: row.status, trustTier: row.trustTier,
+      capabilities: [], secretRefs: [],
+    };
+
+    try {
+      const ctxBuilder = new ContextBuilder(db);
+      const snapshot = ctxBuilder.build(input.projectId, row.id);
+      const projectRoot = getProjectRoot(input.projectId);
+      await ctxBuilder.writeContextManifest(snapshot, projectRoot);
+    } catch {
+      // 非致命：CLI 仍可执行
+    }
+
+    // AC-EXT-06: 网络出站确认
+    const adapter = cliAgentRegistry.getAdapter(row.adapterType);
+    const caps: string[] = adapter && 'getCapabilities' in adapter ? (adapter as any).getCapabilities() : [];
+    if (caps.includes('network-access') && row.trustTier !== 'trusted') {
+      try {
+        const { response } = await dialog.showMessageBox(window, {
+          type: 'warning',
+          title: '网络出站提示',
+          message: `"${row.name}" (${row.adapterType}) 是一个网络型 CLI 智能体。`,
+          detail: `它可能需要将上下文发送到网络。当前信任级别为「${row.trustTier === 'sandboxed' ? '沙箱' : '受限'}」。
+是否允许此 CLI 运行？`,
+          buttons: ['允许运行', '取消'],
+          defaultId: 1,
+          cancelId: 1,
+        });
+        if (response === 1) return { ok: true, data: { started: false, reason: '用户取消' } };
+      } catch {
+        // 对话框异常时继续执行
+      }
+    }
+
+    cliExecutor.execute({ connection, instruction: input.instruction, projectId: input.projectId, window, signal: undefined }).catch((err) => {
+      getLogger().warn({ err, connectionId: input.connectionId }, 'CLI process execution error');
+    });
+
+    return { ok: true, data: { started: true } };
+  });
+  registerIpc('agents:cancelProcess', async (_event, input: { runId: string }) => {
+    cliExecutor.cancelRun(input.runId);
+    return { ok: true };
+  });
+
+  registerIpc('agents:upgradeProjectInstance', async (_event, input: { projectId: string; instanceId: string }) => {
+    const instance = db.prepare('SELECT id, agent_profile_id as profileId, role, runtime_mode as runtimeMode FROM project_agent_instances WHERE id = ? AND project_id = ?').get(input.instanceId, input.projectId) as { id: string; profileId: string; role: string; runtimeMode: string } | undefined;
+    if (!instance) return { ok: false, requestId: '-', error: { code: 'NOT_FOUND', message: '实例不存在', retryable: false } };
+
+    const profile = db.prepare('SELECT id, definition_id as defId, definition_version as defVer FROM agent_profiles WHERE id = ?').get(instance.profileId) as { id: string; defId: string; defVer: string } | undefined;
+    if (!profile) return { ok: false, requestId: '-', error: { code: 'NOT_FOUND', message: '关联 Profile 不存在', retryable: false } };
+
+    const latestDef = db.prepare('SELECT version FROM agent_definitions WHERE id = ? ORDER BY version DESC LIMIT 1').get(profile.defId) as { version: string } | undefined;
+    if (!latestDef) return { ok: true, data: { upgraded: false, reason: '无可用更新' } };
+    if (latestDef.version === profile.defVer) return { ok: true, data: { upgraded: false, reason: '已是最新版本' } };
+
+    const now = new Date().toISOString();
+    db.prepare('UPDATE project_agent_instances SET definition_version = ?, updated_at = ? WHERE id = ?').run(latestDef.version, now, input.instanceId);
+    return { ok: true, data: { upgraded: true, fromVersion: profile.defVer, toVersion: latestDef.version } };
+  });
+  registerIpc('agents:getWizardSnapshot', async () => {
+    return { ok: true, data: agentConnectionService.snapshot };
+  });
+  registerIpc('agents:wizardStartManual', async (_event, input: { name: string; adapterType: string; executablePath: string }) => {
+    try {
+      const result = agentConnectionService.startManual(input.name, input.adapterType, input.executablePath);
+      return { ok: true, data: result.snapshot };
+    } catch (err) { return { ok: false, requestId: '-', error: { code: 'WIZARD_ERROR', message: String(err), retryable: true } }; }
+  });
+  registerIpc('agents:wizardStartAuto', async (_event, input: { adapterType: string }) => {
+    try {
+      const result = await agentConnectionService.startAuto(input.adapterType);
+      return { ok: true, data: result.snapshot };
+    } catch (err) { return { ok: false, requestId: '-', error: { code: 'WIZARD_ERROR', message: String(err), retryable: true } }; }
+  });
+  registerIpc('agents:wizardReadVersion', async () => {
+    try {
+      const result = await agentConnectionService.readVersion();
+      return { ok: true, data: result.snapshot };
+    } catch (err) { return { ok: false, requestId: '-', error: { code: 'WIZARD_ERROR', message: String(err), retryable: true } }; }
+  });
+  registerIpc('agents:wizardProbeAuth', async () => {
+    try {
+      const result = await agentConnectionService.probeAuth();
+      return { ok: true, data: result.snapshot };
+    } catch (err) { return { ok: false, requestId: '-', error: { code: 'WIZARD_ERROR', message: String(err), retryable: true } }; }
+  });
+  registerIpc('agents:wizardPrepareSmokeWorkspace', async () => {
+    try {
+      const result = await agentConnectionService.prepareSmokeWorkspace();
+      return { ok: true, data: result.snapshot };
+    } catch (err) { return { ok: false, requestId: '-', error: { code: 'WIZARD_ERROR', message: String(err), retryable: true } }; }
+  });
+  registerIpc('agents:wizardRunSmokeTest', async () => {
+    try {
+      const result = await agentConnectionService.runSmokeTest();
+      return { ok: true, data: result.snapshot };
+    } catch (err) { return { ok: false, requestId: '-', error: { code: 'WIZARD_ERROR', message: String(err), retryable: true } }; }
+  });
+  registerIpc('agents:wizardSave', async () => {
+    try {
+      const result = await agentConnectionService.save(db);
+      return { ok: true, data: result.snapshot };
+    } catch (err) { return { ok: false, requestId: '-', error: { code: 'WIZARD_ERROR', message: String(err), retryable: true } }; }
+  });
+  registerIpc('agents:wizardCancel', async () => {
+    agentConnectionService.reset();
+    return { ok: true, data: agentConnectionService.snapshot };
+  });
+  registerIpc('agents:wizardSetExecutable', async (_event, input: { executablePath: string }) => {
+    try {
+      agentConnectionService.setExecutable(input.executablePath);
+      return { ok: true, data: agentConnectionService.snapshot };
+    } catch (err) { return { ok: false, requestId: '-', error: { code: 'WIZARD_ERROR', message: String(err), retryable: true } }; }
+  });
+  registerIpc('agents:wizardSetTrustTier', async (_event, input: { tier: 'trusted' | 'sandboxed' | 'restricted' }) => {
+    try {
+      agentConnectionService.setTrustTier(input.tier);
+      return { ok: true, data: agentConnectionService.snapshot };
+    } catch (err) { return { ok: false, requestId: '-', error: { code: 'WIZARD_ERROR', message: String(err), retryable: true } }; }
+  });
+  registerIpc('agents:wizardRetry', async () => {
+    try {
+      agentConnectionService.retry();
+      return { ok: true, data: agentConnectionService.snapshot };
+    } catch (err) { return { ok: false, requestId: '-', error: { code: 'WIZARD_ERROR', message: String(err), retryable: true } }; }
+  });
 };
 
 const registerModelIpc = (db: ReturnType<typeof getDatabase>): void => {
@@ -965,19 +1226,221 @@ const registerKnowledgeIpc = (db: ReturnType<typeof getDatabase>): void => {
   });
 };
 
-const registerSettingsIpc = (): void => {
-  registerIpc('settings:getAll', async () => ({ ok: true, data: {} }));
-  registerIpc('settings:update', async () => ({ ok: true, data: {} }));
-  registerIpc('settings:saveSecret', async () => ({ ok: true, data: { secretRef: '' } }));
-  registerIpc('settings:deleteSecret', async () => ({ ok: true }));
-  registerIpc('settings:exportDiagnostics', async () => ({ ok: true }));
+const registerSettingsIpc = (db: ReturnType<typeof getDatabase>): void => {
+  registerIpc('settings:getAll', async () => {
+    try {
+      const rows = db.prepare('SELECT key, value_json as v FROM settings').all() as Array<{ key: string; v: string }>;
+      const data: Record<string, unknown> = { theme: 'system', locale: 'zh-CN' };
+      for (const row of rows) {
+        try { data[row.key] = JSON.parse(row.v).value; } catch { /* skip malformed */ }
+      }
+      return { ok: true, data };
+    } catch { return { ok: true, data: { theme: 'system', locale: 'zh-CN' } }; }
+  });
+  registerIpc('settings:update', async (_event, input: Record<string, unknown>) => {
+    try {
+      const now = new Date().toISOString();
+      for (const [key, value] of Object.entries(input)) {
+        const existing = db.prepare('SELECT 1 FROM settings WHERE key = ?').get(key);
+        if (existing) {
+          db.prepare('UPDATE settings SET value_json = ?, updated_at = ? WHERE key = ?').run(JSON.stringify({ value }), now, key);
+        } else {
+          db.prepare('INSERT INTO settings (key, value_json, updated_at) VALUES (?, ?, ?)').run(key, JSON.stringify({ value }), now);
+        }
+      }
+      return { ok: true, data: undefined };
+    } catch (err) { return { ok: false, requestId: '-', error: { code: 'DB_ERROR', message: String(err), retryable: true } }; }
+  });
+  registerIpc('settings:saveSecret', async (_event, input: { kind: string; value: string }) => {
+    try {
+      if (!safeStorage.isEncryptionAvailable()) {
+        return { ok: false, requestId: '-', error: { code: 'SAFE_STORAGE_UNAVAILABLE', message: 'safeStorage 不可用', retryable: false } };
+      }
+      const ciphertext = safeStorage.encryptString(input.value);
+      const ref = `secret-${input.kind}-${randomUUID().slice(0, 8)}`;
+      const now = new Date().toISOString();
+      db.prepare('INSERT INTO secrets (ref, kind, ciphertext, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(ref, input.kind, ciphertext, now, now);
+      return { ok: true, data: { secretRef: ref } };
+    } catch (err) { return { ok: false, requestId: '-', error: { code: 'SECRET_ERROR', message: String(err), retryable: true } }; }
+  });
+  registerIpc('settings:deleteSecret', async (_event, input: { secretRef: string }) => {
+    try {
+      db.prepare('DELETE FROM secrets WHERE ref = ?').run(input.secretRef);
+      return { ok: true, data: undefined };
+    } catch (err) { return { ok: false, requestId: '-', error: { code: 'DB_ERROR', message: String(err), retryable: true } }; }
+  });
+  registerIpc('settings:exportDiagnostics', async () => {
+    try {
+      const os = require('node:os');
+      const pkg = require('../../package.json');
+      const totalMem = os.totalmem();
+      const diag = {
+        version: pkg?.version || '0.1.0',
+        platform: os.platform(),
+        release: os.release(),
+        totalMem: `${(totalMem / 1024 / 1024 / 1024).toFixed(1)} GB`,
+        workspaceRoot: getStudioRoot(),
+        dbSize: 'N/A',
+        agentCount: (db.prepare('SELECT COUNT(*) as c FROM agent_profiles').get() as { c: number })?.c ?? 0,
+        modelProviderCount: (db.prepare('SELECT COUNT(*) as c FROM model_providers').get() as { c: number })?.c ?? 0,
+        projectCount: (db.prepare('SELECT COUNT(*) as c FROM projects').get() as { c: number })?.c ?? 0,
+        exportedAt: new Date().toISOString(),
+      };
+      getLogger().info({ diagnostics: diag }, '诊断信息已导出');
+      return { ok: true, data: diag };
+    } catch (err) { return { ok: false, requestId: '-', error: { code: 'DIAG_ERROR', message: String(err), retryable: true } }; }
+  });
+  registerIpc('settings:scanSecrets', async () => {
+    try {
+      const rootPath = getStudioRoot();
+      const logDir = join(rootPath, '.kstudio', 'logs');
+      const result = runKeyScan(db, logDir);
+      return { ok: true, data: result };
+    } catch (err) { return { ok: false, requestId: '-', error: { code: 'SCAN_ERROR', message: String(err), retryable: false } }; }
+  });
+  registerIpc('settings:listSkills', async () => {
+    try {
+      const skills = db.prepare(
+        `SELECT s.id, s.name, s.description, s.prompt_md as promptMd,
+                s.required_capabilities_json as requiredCapabilitiesJson,
+                s.enabled, s.is_builtin as isBuiltin,
+                a.agent_definition_id as agentDefinitionId
+         FROM skills s
+         LEFT JOIN agent_skills a ON a.skill_id = s.id
+         ORDER BY a.ordinal`,
+      ).all() as Array<{ id: string; name: string; description: string; promptMd: string | null; requiredCapabilitiesJson: string; enabled: boolean; isBuiltin: boolean; agentDefinitionId: string | null }>;
+      const data = skills.map((s) => ({
+        ...s,
+        requiredCapabilities: JSON.parse(s.requiredCapabilitiesJson || '[]'),
+      }));
+      return { ok: true, data };
+    } catch (err) { return { ok: false, requestId: '-', error: { code: 'SKILLS_ERROR', message: String(err), retryable: false } }; }
+  });
+  registerIpc('settings:setSkillEnabled', async (_event, input: { skillId: string; enabled: boolean }) => {
+    try {
+      db.prepare('UPDATE skills SET enabled = ? WHERE id = ?').run(input.enabled ? 1 : 0, input.skillId);
+      return { ok: true };
+    } catch (err) { return { ok: false, requestId: '-', error: { code: 'DB_ERROR', message: String(err), retryable: true } }; }
+  });
+  registerIpc('settings:listMcpServers', async () => {
+    try {
+      const row = db.prepare('SELECT value_json FROM settings WHERE key = ?').get('mcp_servers') as { value_json: string } | undefined;
+      const data = row ? (JSON.parse(row.value_json).value ?? []) : [];
+      return { ok: true, data };
+    } catch (err) { return { ok: false, requestId: '-', error: { code: 'DB_ERROR', message: String(err), retryable: true } }; }
+  });
+  registerIpc('settings:addMcpServer', async (_event, input: { name: string; transport: string; command?: string; url?: string }) => {
+    try {
+      const now = new Date().toISOString();
+      const row = db.prepare('SELECT value_json FROM settings WHERE key = ?').get('mcp_servers') as { value_json: string } | undefined;
+      const servers: Array<{ id: string; name: string; transport: string; command?: string; url?: string; enabled: boolean; status: string }> = row ? (JSON.parse(row.value_json).value ?? []) : [];
+      const newServer: { id: string; name: string; transport: string; command?: string; url?: string; enabled: boolean; status: string } = {
+        id: `mcp-${randomUUID().slice(0, 8)}`,
+        name: input.name,
+        transport: input.transport,
+        enabled: true,
+        status: 'disconnected',
+      };
+      if (input.command) newServer.command = input.command;
+      if (input.url) newServer.url = input.url;
+      servers.push(newServer);
+      db.prepare('INSERT INTO settings (key, value_json, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at')
+        .run('mcp_servers', JSON.stringify({ value: servers }), now);
+      return { ok: true, data: newServer };
+    } catch (err) { return { ok: false, requestId: '-', error: { code: 'DB_ERROR', message: String(err), retryable: true } }; }
+  });
+  registerIpc('settings:setMcpServerEnabled', async (_event, input: { serverId: string; enabled: boolean }) => {
+    try {
+      const now = new Date().toISOString();
+      const row = db.prepare('SELECT value_json FROM settings WHERE key = ?').get('mcp_servers') as { value_json: string } | undefined;
+      if (!row) return { ok: false };
+      const servers = JSON.parse(row.value_json).value ?? [];
+      const idx = servers.findIndex((s: any) => s.id === input.serverId);
+      if (idx >= 0) {
+        servers[idx].enabled = input.enabled;
+        db.prepare('INSERT INTO settings (key, value_json, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at')
+          .run('mcp_servers', JSON.stringify({ value: servers }), now);
+      }
+      return { ok: true };
+    } catch (err) { return { ok: false, requestId: '-', error: { code: 'DB_ERROR', message: String(err), retryable: true } }; }
+  });
 };
 
-const registerChannelIpc = (): void => {
-  registerIpc('channels:list', async () => ({ ok: true, data: [] }));
-  registerIpc('channels:save', async () => ({ ok: true, data: null }));
-  registerIpc('channels:test', async () => ({ ok: true, data: { success: true, message: '渠道测试功能尚未实现' } }));
-  registerIpc('channels:setEnabled', async () => ({ ok: true }));
+const registerChannelIpc = (db: ReturnType<typeof getDatabase>): void => {
+  registerIpc('channels:list', async () => {
+    const rows = db.prepare('SELECT id, type, name, enabled, status, config_json as configJson, secret_ref as secretRef, last_connected_at as lastConnectedAt, last_error as lastError FROM channels ORDER BY type, name').all();
+    return { ok: true, data: rows.map((r: any) => ({ ...r, enabled: !!r.enabled, configJson: r.configJson ? JSON.parse(r.configJson) : {} })) };
+  });
+  registerIpc('channels:save', async (_event, input: { id?: string; type: string; name: string; config: Record<string, unknown> }) => {
+    const now = new Date().toISOString();
+    const configJson = JSON.stringify(input.config || {});
+    if (input.id) {
+      db.prepare('UPDATE channels SET name = ?, type = ?, config_json = ?, updated_at = ? WHERE id = ?').run(input.name, input.type, configJson, now, input.id);
+      return { ok: true, data: { id: input.id, type: input.type, name: input.name, enabled: false, status: 'disconnected' } };
+    }
+    const id = randomUUID().toLowerCase().replace(/-/g, '').slice(0, 24);
+    db.prepare('INSERT INTO channels (id, type, name, config_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)').run(id, input.type, input.name, configJson, now, now);
+    return { ok: true, data: { id, type: input.type, name: input.name, enabled: false, status: 'disconnected' } };
+  });
+  registerIpc('channels:test', async (_event, input: { channelId: string }) => {
+    try {
+      const row = db.prepare('SELECT id, type, config_json as configJson, secret_ref as secretRef FROM channels WHERE id = ?').get(input.channelId) as { id: string; type: string; configJson: string; secretRef: string | null } | undefined;
+      if (!row) return { ok: true, data: { success: false, message: '渠道不存在' } };
+
+      const config = JSON.parse(row.configJson || '{}') as Record<string, unknown>;
+      let testUrl = '';
+      let success = false;
+      let message = '';
+      let httpStatus: number | undefined;
+      if (row.type === 'telegram' && config.token) {
+        testUrl = `https://api.telegram.org/bot${config.token}/getMe`;
+      } else if (row.type === 'dingtalk') {
+        testUrl = 'https://oapi.dingtalk.com/gettoken';
+      } else if (row.type === 'lark') {
+        testUrl = 'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal';
+      } else if (row.type === 'wecom-webhook') {
+        testUrl = 'https://qyapi.weixin.qq.com/cgi-bin/gettoken';
+      }
+
+      if (testUrl) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 5000);
+        try {
+          const resp = await fetch(testUrl, { method: 'HEAD', signal: controller.signal });
+          clearTimeout(timeout);
+          success = resp.ok || resp.status < 500;
+          httpStatus = resp.status;
+          message = success ? `${row.type} 连接正常 (${resp.status})` : `连接异常 (${resp.status})`;
+        } catch {
+          clearTimeout(timeout);
+          success = false;
+          message = `${row.type} 连接超时或不可达`;
+        }
+      } else {
+        success = true;
+        message = `${row.type} 配置已验证（无网络测试）`;
+      }
+
+      const now = new Date().toISOString();
+       const testResult = success ? 'success' : 'failure';
+      db.prepare('UPDATE channels SET last_test_result = ?, last_tested_at = ? WHERE id = ?').run(testResult, now, input.channelId);
+      return { ok: true, data: { success, message, httpStatus } };
+    } catch (err) {
+      return { ok: true, data: { success: false, message: String(err) } };
+    }
+  });
+  registerIpc('channels:setEnabled', async (_event, input: { channelId: string; enabled: boolean }) => {
+    const now = new Date().toISOString();
+    if (input.enabled) {
+      const row = db.prepare('SELECT last_test_result FROM channels WHERE id = ?').get(input.channelId) as { last_test_result: string | null } | undefined;
+      if (!row) return { ok: false, requestId: '-', error: { code: 'NOT_FOUND', message: '渠道不存在', retryable: false } };
+      if (row.last_test_result !== 'success') return { ok: false, requestId: '-', error: { code: 'CHANNEL_NOT_TESTED', message: '渠道未通过测试，无法启用', retryable: false } };
+      db.prepare('UPDATE channels SET enabled = ?, status = ?, updated_at = ? WHERE id = ?').run(1, 'connecting', now, input.channelId);
+    } else {
+      db.prepare('UPDATE channels SET enabled = ?, status = ?, updated_at = ? WHERE id = ?').run(0, 'disconnected', now, input.channelId);
+    }
+    return { ok: true };
+  });
 };
 
 const registerMissingIpc = (db: ReturnType<typeof getDatabase>): void => {
@@ -1112,6 +1575,9 @@ app.whenReady().then(async () => {
   const delayedRegisters = (): void => {
     const db = ensureDb();
     seedDefaultProfiles(db);
+    seedFakeModelProvider(db);
+    const skillRegistry = new SkillRegistry(db);
+    skillRegistry.seedBuiltinSkills();
     registerDraftIpc(db);
     registerProjectIpc(db);
     registerMessageIpc(db);
@@ -1120,8 +1586,8 @@ app.whenReady().then(async () => {
     registerModelIpc(db);
     registerMemoryIpc(db);
     registerKnowledgeIpc(db);
-    registerSettingsIpc();
-    registerChannelIpc();
+    registerSettingsIpc(db);
+    registerChannelIpc(db);
     registerMissingIpc(db);
   };
 
@@ -1138,6 +1604,11 @@ app.whenReady().then(async () => {
         _gateway = new ModelGateway(db as never);
         const executor = createAgentExecutor(db, win, _gateway);
         _scheduler = new Scheduler(db, executor);
+        executor.setScheduler(_scheduler);
+        const recoveredCount = _scheduler.recoverInterruptedRuns();
+        if (recoveredCount > 0) {
+          logger?.info({ recoveredCount }, '应用启动: 已完成未完成 Run 恢复');
+        }
       }
       const memoryCleanup = startMemoryCleanup(db);
       app.on('before-quit', () => { memoryCleanup(); });

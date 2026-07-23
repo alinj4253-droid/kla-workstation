@@ -274,6 +274,44 @@ export class KnowledgeRepository extends BaseRepository {
     return result;
   }
 
+  // ── Pending Review（低置信度候选） ──
+  listPendingReview(scopeType: string, scopeId: string, status?: string): Array<{
+    id: string; candidateType: string; dataJson: string; reason: string;
+    status: string; reviewNote: string | null; createdAt: string; reviewedAt: string | null;
+  }> {
+    if (status) {
+      return this.db.prepare(
+        `SELECT id, candidate_type as candidateType, data_json as dataJson, reason,
+                status, review_note as reviewNote, created_at as createdAt, reviewed_at as reviewedAt
+         FROM knowledge_pending_review WHERE scope_type = ? AND scope_id = ? AND status = ? ORDER BY created_at DESC`,
+      ).all(scopeType, scopeId, status) as any[];
+    }
+    return this.db.prepare(
+      `SELECT id, candidate_type as candidateType, data_json as dataJson, reason,
+              status, review_note as reviewNote, created_at as createdAt, reviewed_at as reviewedAt
+       FROM knowledge_pending_review WHERE scope_type = ? AND scope_id = ? ORDER BY created_at DESC`,
+    ).all(scopeType, scopeId) as any[];
+  }
+
+  addPendingReview(input: {
+    scopeType: string; scopeId: string; candidateType: string;
+    dataJson: string; reason: string;
+  }): void {
+    const id = randomUUID().toLowerCase().replace(/-/g, '').slice(0, 24);
+    const now = this.now();
+    this.db.prepare(
+      `INSERT INTO knowledge_pending_review (id, scope_type, scope_id, candidate_type, data_json, reason, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`,
+    ).run(id, input.scopeType, input.scopeId, input.candidateType, input.dataJson, input.reason, now);
+  }
+
+  resolvePendingReview(id: string, status: 'reviewed' | 'dismissed', reviewNote?: string): void {
+    const now = this.now();
+    this.db.prepare(
+      `UPDATE knowledge_pending_review SET status = ?, review_note = ?, reviewed_at = ? WHERE id = ?`,
+    ).run(status, reviewNote ?? null, now, id);
+  }
+
   // Search across knowledge
   search(query: string, scopeType?: string, scopeId?: string, limit = 50): { nodes: KnowledgeNodeRow[]; chunks: KnowledgeChunkRow[] } {
     const like = `%${query.replace(/%/g, '\\%').replace(/_/g, '\\_')}%`;

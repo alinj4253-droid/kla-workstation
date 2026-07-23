@@ -1,7 +1,60 @@
 // @vitest-environment node
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { ModelGateway } from './model-gateway';
+
+vi.mock('ai', () => {
+  const mockStreamResult = {
+    textStream: (async function* () { yield 'mock response'; })(),
+    text: Promise.resolve('mock response'),
+    toTextStreamResponse: () => new Response(),
+    warnings: null,
+    usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+    experimental_providerMetadata: undefined,
+    request: {},
+    response: { messages: [], body: {} },
+  };
+  return {
+    streamText: vi.fn(() => mockStreamResult),
+    generateText: vi.fn(() => Promise.resolve({
+      text: 'ok',
+      toolCalls: [{ toolName: 'get_weather', args: { city: '北京' } }],
+      finishReason: 'stop',
+      usage: { promptTokens: 2, completionTokens: 5, totalTokens: 7 },
+      steps: [{ toolCalls: [{ toolName: 'get_weather', args: { city: '北京' } }] }],
+    })),
+    generateObject: vi.fn(() => Promise.resolve({
+      object: { result: 'test' },
+      usage: { promptTokens: 2, completionTokens: 3, totalTokens: 5 },
+      finishReason: 'stop',
+    })),
+  };
+});
+
+vi.mock('@ai-sdk/openai', () => ({
+  createOpenAI: vi.fn(() => {
+    const modelFn = (_modelId: string) => ({
+      specifier: 'openai:gpt-4o-mini',
+      provider: 'openai',
+      modelId: 'gpt-4o-mini',
+      supportsUrl: false,
+      doStream: vi.fn().mockResolvedValue({
+        stream: (async function* () { yield { type: 'text-delta', textDelta: 'hello', delta: 'hello' }; })(),
+        rawResponse: new Response(),
+        warnings: null,
+      }),
+      doGenerate: vi.fn().mockResolvedValue({
+        text: 'ok',
+        toolCalls: [],
+        finishReason: 'stop',
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        rawResponse: { headers: {} },
+        warnings: null,
+      }),
+    });
+    return modelFn;
+  }),
+}));
 
 function createDb(): Database.Database {
   const db = new Database(':memory:');

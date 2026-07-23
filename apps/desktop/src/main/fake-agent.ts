@@ -1,6 +1,11 @@
-import { BrowserWindow, ipcMain } from 'electron';
+import { BrowserWindow, ipcMain, dialog } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { MessageRepository } from '@kunqing/database';
+import { cliExecutor } from './cli-executor';
+import { cliAgentRegistry } from './cli-agent-registry';
+import { ContextBuilder } from './context-builder';
+import { getProjectRoot } from './paths';
+import type { CliConnectionConfig, AdapterCapability } from '@kunqing/agent-core';
 
 interface AgentProfile {
   id: string;
@@ -42,7 +47,7 @@ const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
   });
 
 const dispatch = (window: BrowserWindow, event: Record<string, unknown>): void => {
-  window.webContents.send('event:dispatch', event);
+  try { window.webContents.send('event:dispatch', event); } catch { /* window unavailable */ }
 };
 
 const _runControllers = new Map<string, AbortController>();
@@ -51,6 +56,131 @@ export function cancelProjectRuns(projectId: string): void {
   const controller = _runControllers.get(projectId);
   if (controller) { controller.abort(); _runControllers.delete(projectId); }
 }
+
+async function runExternalCliAgent(
+  db: ReturnType<typeof import('./db').getDatabase>,
+  window: BrowserWindow,
+  projectId: string,
+  contentText: string,
+  profileId: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const now = new Date().toISOString();
+  const cliRow = db.prepare(`
+    SELECT cc.id, cc.name, cc.adapter_type as adapterType, cc.executable_path as executablePath,
+           cc.args_json as argsJson, cc.strategy_id as strategyId, cc.detected_version as detectedVersion,
+           cc.status, cc.trust_tier as trustTier
+    FROM agent_profiles ap
+    JOIN cli_connections cc ON cc.id = ap.cli_connection_id
+    WHERE ap.id = ? AND ap.runtime_mode = 'external-cli'
+  `).get(profileId) as CliConnectionRow | undefined;
+
+  if (!cliRow) return;
+
+  const connection: import('@kunqing/agent-core').CliConnectionConfig = {
+    id: cliRow.id, name: cliRow.name, adapterType: cliRow.adapterType, executablePath: cliRow.executablePath,
+    args: cliRow.argsJson ? JSON.parse(cliRow.argsJson) : [], strategyId: cliRow.strategyId ?? 'auto',
+    detectedVersion: cliRow.detectedVersion, status: cliRow.status, trustTier: cliRow.trustTier,
+    capabilities: [], secretRefs: [],
+  };
+
+  const runId = `cli-${randomUUID().slice(0, 8)}`;
+
+  // AC-EXT-06: 网络提示
+  const adapter = cliAgentRegistry.getAdapter(connection.adapterType);
+  const capabilities: AdapterCapability[] = adapter && 'getCapabilities' in adapter ? (adapter as any).getCapabilities() : [];
+  if (capabilities.includes('network-access') && connection.trustTier !== 'trusted') {
+    dispatch(window, {
+      type: 'cli.networkWarning',
+      projectId,
+      runId,
+      agentName: cliRow.name,
+      adapterType: connection.adapterType,
+      trustTier: connection.trustTier,
+      message: `CLI "${cliRow.name}" (${connection.adapterType}) 需要网络访问权限，数据可能出站。信任级别: ${connection.trustTier}。`,
+    });
+
+    // 阻断式确认对话框
+    try {
+      const { response } = await dialog.showMessageBox(window, {
+        type: 'warning',
+        title: '网络出站提示',
+        message: `"${cliRow.name}" (${connection.adapterType}) 是一个网络型 CLI 智能体。`,
+        detail: `它可能需要将以下上下文发往网络：
+• 当前对话消息
+• 项目知识库片段
+• 引用文件摘要
+
+该智能体将按照其供应商策略处理数据，不在你的本地控制范围内。
+当前信任级别为「${connection.trustTier === 'sandboxed' ? '沙箱' : '受限'}」，已限制其对本地文件的直接访问。
+
+是否允许此 CLI 运行？`,
+        buttons: ['允许运行', '取消'],
+        defaultId: 1,
+        cancelId: 1,
+      });
+      if (response === 1) {
+        dispatch(window, { type: 'run.status', projectId, run: { id: runId, agentId: profileId, status: 'cancelled' } });
+        return;
+      }
+    } catch {
+      // 对话框异常时继续执行
+    }
+  }
+
+  // 构建上下文快照并写入 context-manifest.json
+  try {
+    const ctxBuilder = new ContextBuilder(db as any);
+    const snapshot = ctxBuilder.build(projectId, profileId);
+    const projectRoot = getProjectRoot(projectId);
+    await ctxBuilder.writeContextManifest(snapshot, projectRoot);
+  } catch {
+    // 非致命：CLI 仍可执行
+  }
+
+  dispatch(window, {
+    type: 'run.status', projectId,
+    run: { id: runId, agentId: profileId, status: 'running', message: `${cliRow.name} (CLI) 正在执行...` },
+  });
+
+  const result = await cliExecutor.execute({ connection, instruction: contentText, projectId, window, signal });
+  const output = result.output.trim();
+
+  if (result.cancelled) {
+    dispatch(window, { type: 'run.status', projectId, run: { id: runId, agentId: profileId, status: 'cancelled' } });
+    return;
+  }
+
+  if (output) {
+    const agentMsgId = randomUUID().toLowerCase().replace(/-/g, '').slice(0, 24);
+
+    for (let i = 0, seq = 0; i < output.length; i += 3, seq++) {
+      if (signal?.aborted) break;
+      await sleep(10, signal).catch(() => {});
+      dispatch(window, { type: 'message.delta', projectId, messageId: agentMsgId, seq, delta: output.slice(i, i + 3) });
+    }
+
+    const agentContent = { schemaVersion: 1 as const, text: output, mentions: [], stagedUploadIds: [] };
+    db.prepare(
+      'INSERT INTO messages (id, project_id, sender_type, sender_id, kind, content_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(agentMsgId, projectId, 'agent', profileId, 'text', JSON.stringify(agentContent), 'sent', now, now);
+
+    dispatch(window, {
+      type: 'run.status', projectId,
+      run: { id: runId, agentId: profileId, status: 'completed' },
+    });
+    dispatch(window, {
+      type: 'message.committed', projectId, messageId: agentMsgId, senderId: profileId, content: JSON.stringify(agentContent),
+    });
+  } else {
+    dispatch(window, {
+      type: 'run.status', projectId,
+      run: { id: runId, agentId: profileId, status: 'completed', message: `${cliRow.name} (CLI) 执行完毕（无文本输出）` },
+    });
+  }
+}
+
+type CliConnectionRow = { id: string; name: string; adapterType: string; executablePath: string; argsJson: string | null; strategyId: string | null; detectedVersion: string | null; status: string; trustTier: 'trusted' | 'sandboxed' | 'restricted' };
 
 export async function runAgentsForUserMessage(
   db: ReturnType<typeof import('./db').getDatabase>,
@@ -151,8 +281,15 @@ export function startFakeAgentSimulator(_db: ReturnType<typeof import('./db').ge
 
     const controller = new AbortController();
     _runControllers.set(input.projectId, controller);
+
     try {
-      await runAgentsForUserMessage(_db, window, input.projectId, input.content.text ?? '', controller.signal);
+      const cliProfiles = _db.prepare("SELECT id, cli_connection_id as cliConnId FROM agent_profiles WHERE runtime_mode = 'external-cli' AND cli_connection_id IS NOT NULL").all() as Array<{ id: string; cliConnId: string }>;
+
+      if (cliProfiles.length > 0) {
+        await runExternalCliAgent(_db, window, input.projectId, input.content.text ?? '', cliProfiles[0]!.id, controller.signal);
+      } else {
+        await runAgentsForUserMessage(_db, window, input.projectId, input.content.text ?? '', controller.signal);
+      }
     } finally {
       if (_runControllers.get(input.projectId) === controller) _runControllers.delete(input.projectId);
     }

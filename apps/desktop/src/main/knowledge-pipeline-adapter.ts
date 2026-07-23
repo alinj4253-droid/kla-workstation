@@ -108,6 +108,10 @@ export function createPipelineContext(
       knowledgeRepo.createProvenance(prov);
     },
 
+    addPendingReview(scopeType: string, scopeId: string, candidateType: string, dataJson: string, reason: string): void {
+      knowledgeRepo.addPendingReview({ scopeType, scopeId, candidateType, dataJson, reason });
+    },
+
     async upsertWikiPage(page: GeneratedWikiPage): Promise<void> {
       const existing = wikiRepo.getBySlug(scopeType, scopeId, page.slug);
       if (existing) {

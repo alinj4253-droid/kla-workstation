@@ -9,6 +9,11 @@ win:
   target:
     - nsis
   artifactName: ${productName}-${version}-${arch}.${ext}
+extraResources:
+  - from: resources
+    to: resources
+    filter:
+      - "**/*"
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true

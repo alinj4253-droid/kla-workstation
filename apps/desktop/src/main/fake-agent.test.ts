@@ -20,7 +20,8 @@ interface DbMock {
 
 function makeDb(): DbMock {
   const run = vi.fn();
-  return { prepare: vi.fn(() => ({ run })) };
+  const all = vi.fn(() => []);
+  return { prepare: vi.fn(() => ({ run, all })) };
 }
 
 function getLatestHandler(): (event: unknown, input: { idempotencyKey: string; projectId: string; content: { text: string } }) => Promise<unknown> {

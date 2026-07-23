@@ -60,15 +60,16 @@ export class AgentRunRepository extends BaseRepository {
   create(input: {
     projectId: string; agentInstanceId: string; requestedByType: string; requestedById: string;
     instruction?: string; parentRunId?: string; triggerMessageId?: string; status?: RunStatus;
+    modelProfileSnapshotJson?: string | null;
   }): AgentRunRow {
     const id = randomUUID().toLowerCase().replace(/-/g, '').slice(0, 24);
     const now = this.now();
     this.db.prepare(
-      `INSERT INTO agent_runs (id, project_id, agent_instance_id, requested_by_type, requested_by_id, instruction, parent_run_id, trigger_message_id, status, attempt, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+      `INSERT INTO agent_runs (id, project_id, agent_instance_id, requested_by_type, requested_by_id, instruction, parent_run_id, trigger_message_id, status, attempt, model_profile_snapshot_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
     ).run(id, input.projectId, input.agentInstanceId, input.requestedByType, input.requestedById,
       input.instruction ?? null, input.parentRunId ?? null, input.triggerMessageId ?? null,
-      input.status ?? 'queued', now);
+      input.status ?? 'queued', input.modelProfileSnapshotJson ?? null, now);
     return this.getById(id);
   }
 
@@ -85,6 +86,41 @@ export class AgentRunRepository extends BaseRepository {
 
   setResultMessage(id: string, messageId: string): void {
     this.db.prepare('UPDATE agent_runs SET result_message_id = ? WHERE id = ?').run(messageId, id);
+  }
+
+  /** 查找所有项目中非终态（排队/运行中）的 Run */
+  listActiveRuns(): AgentRunRow[] {
+    return this.db.prepare(
+      `SELECT ${RUN_COLS} FROM agent_runs WHERE status IN ('queued', 'starting', 'running') ORDER BY created_at ASC`,
+    ).all() as AgentRunRow[];
+  }
+
+  /** 计算指定 triggerMessageId 已产生的 Run 总数 */
+  countRunsByTrigger(triggerMessageId: string): number {
+    const row = this.db.prepare(
+      'SELECT COUNT(*) as count FROM agent_runs WHERE trigger_message_id = ?',
+    ).get(triggerMessageId) as { count: number } | undefined;
+    return row?.count ?? 0;
+  }
+
+  /** 追溯父 Run 链，返回所有祖先的 agentInstanceId 列表 */
+  getAncestorChain(runId: string): AgentRunRow[] {
+    const chain: AgentRunRow[] = [];
+    let current = runId;
+    for (let i = 0; i < 10; i++) {
+      try {
+        const run = this.getById(current);
+        chain.push(run);
+        if (run.parentRunId) {
+          current = run.parentRunId;
+        } else {
+          break;
+        }
+      } catch {
+        break;
+      }
+    }
+    return chain;
   }
 
   interruptByAgent(agentInstanceId: string): void {

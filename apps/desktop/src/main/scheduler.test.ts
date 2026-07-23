@@ -27,6 +27,17 @@ function createDb(): Database.Database {
     );
     CREATE INDEX idx_runs_instance ON agent_runs(agent_instance_id);
     CREATE INDEX idx_runs_project ON agent_runs(project_id);
+
+    CREATE TABLE agent_run_events (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      seq INTEGER NOT NULL,
+      type TEXT NOT NULL,
+      payload_json TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (run_id) REFERENCES agent_runs(id)
+    );
+    CREATE INDEX idx_events_run ON agent_run_events(run_id);
   `);
   return db;
 }

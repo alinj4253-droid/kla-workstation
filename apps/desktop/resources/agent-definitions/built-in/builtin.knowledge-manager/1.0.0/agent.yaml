@@ -1,0 +1,23 @@
+schemaVersion: 1
+id: builtin.knowledge-manager
+version: 1.0.0
+displayName: 知识管理智能体
+runtime: native-model
+framework: langgraph-js
+entry: knowledgeGraph
+defaultModelSlot: reasoning
+modelRequirements:
+  - structuredOutput
+skills:
+  - document-ingestion
+  - entity-relation-extraction
+  - provenance-validation
+  - wiki-materialization
+  - graph-projection
+tools:
+  - knowledge.search
+  - knowledge.ingest
+  - memory.writeOwn
+memoryPolicy:
+  shortTermTtlHours: 72
+  longTermWrite: candidate-then-commit

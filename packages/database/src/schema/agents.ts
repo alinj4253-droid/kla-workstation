@@ -78,3 +78,26 @@ export const externalAgentSessions = sqliteTable('external_agent_sessions', {
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });
+
+export const skills = sqliteTable('skills', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  description: text('description').notNull(),
+  promptMd: text('prompt_md'),
+  requiredCapabilitiesJson: text('required_capabilities_json'),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+  isBuiltin: integer('is_builtin', { mode: 'boolean' }).notNull().default(false),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  uniqueIndex('idx_skills_name').on(table.name),
+]);
+
+export const agentSkills = sqliteTable('agent_skills', {
+  agentDefinitionId: text('agent_definition_id').notNull(),
+  agentDefinitionVersion: text('agent_definition_version').notNull(),
+  skillId: text('skill_id').notNull().references(() => skills.id),
+  ordinal: integer('ordinal').notNull(),
+}, (table) => [
+  uniqueIndex('idx_agent_skills').on(table.agentDefinitionId, table.agentDefinitionVersion, table.skillId),
+]);
