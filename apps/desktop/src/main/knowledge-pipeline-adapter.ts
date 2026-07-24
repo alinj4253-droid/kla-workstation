@@ -20,6 +20,84 @@ import { ModelGateway } from './model-gateway';
 import type { ModelSlot } from './model-gateway';
 import { getLogger } from './logger';
 
+/**
+ * 基础文本提取：不依赖 LLM，从文件名和文本块中提取实体和关系。
+ * 当 LLM 不可用（未配置模型）时作为 fallback，确保图谱和 Wiki 至少有一些数据。
+ */
+function basicExtract(fileName: string, chunks: Chunk[]): ExtractedGraph {
+  const entities: ExtractedEntity[] = [];
+  const relationships: ExtractedRelationship[] = [];
+
+  // 1. 文件本身作为根实体
+  const fileEntityName = `文件: ${fileName}`;
+  entities.push({
+    name: fileEntityName,
+    type: 'Document',
+    summary: `来自文件 ${fileName} 的知识提取`,
+    properties: { sourceFile: fileName },
+    confidence: 1.0,
+  });
+
+  // 2. 从文本块中提取高频有意义的词作为关键词实体
+  const wordFreq = new Map<string, number>();
+  const stopWords = new Set([
+    '的', '了', '在', '是', '我', '有', '和', '就', '不', '人', '都', '一', '一个',
+    '上', '也', '很', '到', '说', '要', '去', '你', '会', '着', '没有', '看', '好',
+    '自己', '这', '他', '她', '它', '们', '那', '些', '为', '与', '及', '但', '而',
+    'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+    'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should',
+    'this', 'that', 'these', 'those', 'it', 'its', 'they', 'them', 'their',
+    'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from', 'as', 'into',
+    'and', 'or', 'but', 'not', 'so', 'if', 'then', 'than', 'too', 'very',
+  ]);
+
+  for (const chunk of chunks) {
+    // 按非字母数字字符分割（对中文按字符分割）
+    const words = chunk.text.split(/[^a-zA-Z\u4e00-\u9fff]+/).filter(Boolean);
+    for (const word of words) {
+      if (word.length < 2 || stopWords.has(word.toLowerCase())) continue;
+      wordFreq.set(word, (wordFreq.get(word) ?? 0) + 1);
+    }
+  }
+
+  // 取前 10 个高频词作为实体
+  const topWords = [...wordFreq.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10);
+
+  for (const [word, freq] of topWords) {
+    const entityName = word.length > 30 ? word.slice(0, 30) + '…' : word;
+    entities.push({
+      name: entityName,
+      type: freq > 5 ? '核心概念' : '相关概念',
+      summary: `文档中出现 ${freq} 次的概念`,
+      properties: { frequency: String(freq) },
+      confidence: Math.min(0.5 + freq * 0.05, 0.9),
+    });
+
+    relationships.push({
+      source: fileEntityName,
+      target: entityName,
+      type: '涉及',
+      properties: { frequency: String(freq) },
+      confidence: Math.min(0.5 + freq * 0.05, 0.9),
+    });
+  }
+
+  // 3. 如果文件内容很少，至少保证有一个实体
+  if (entities.length === 0) {
+    entities.push({
+      name: fileEntityName,
+      type: 'Document',
+      summary: `来自文件 ${fileName} 的知识提取`,
+      properties: { sourceFile: fileName },
+      confidence: 1.0,
+    });
+  }
+
+  return { entities, relationships };
+}
+
 export function createPipelineContext(
   db: Database,
   gateway: ModelGateway,
@@ -156,7 +234,7 @@ export function createPipelineContext(
         const jsonMatch = response.match(/\{[\s\S]*\}/);
         if (!jsonMatch) {
           getLogger().warn('LLM 返回的内容中没有找到 JSON');
-          return { entities: [], relationships: [] };
+          return basicExtract(ctx.fileName, chunks);
         }
 
         const parsed = JSON.parse(jsonMatch[0]) as ExtractedGraph;
@@ -173,8 +251,8 @@ export function createPipelineContext(
           })),
         };
       } catch (err) {
-        getLogger().warn({ err }, '图谱提取 LLM 调用失败');
-        return { entities: [], relationships: [] };
+        getLogger().warn({ err }, '图谱提取 LLM 调用失败，使用基础文本提取');
+        return basicExtract(ctx.fileName, chunks);
       }
     },
 

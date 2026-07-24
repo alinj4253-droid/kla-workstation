@@ -14,3 +14,4 @@ K_Studio/
 *.tsbuildinfo
 dist-types/
 build/
+.workbuddy/
