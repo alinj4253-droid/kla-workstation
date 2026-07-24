@@ -41,12 +41,16 @@ export class FakeModelGateway extends ModelGateway {
     });
   }
 
-  async generateText(slot: ModelSlot, messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>): Promise<string> {
+  async generateText(
+    slot: ModelSlot,
+    messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+    _options?: { tools?: Record<string, { description: string; parameters: Record<string, unknown> }> },
+  ): Promise<{ text: string; toolCalls?: Array<{ name: string; args: Record<string, unknown> }> }> {
     const profile = (this as any).getSlotProfile(slot) as { providerType: string; modelId: string } | null;
     if (!profile) throw new Error(`没有为槽位 "${slot}" 配置可用的模型`);
 
     const userMessage = messages.find((m) => m.role === 'user')?.content ?? '';
-    return getFakeResponse(userMessage);
+    return { text: getFakeResponse(userMessage) };
   }
 
   async generateObject<T>(_slot: ModelSlot, _messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>): Promise<T> {

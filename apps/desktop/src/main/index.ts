@@ -14,7 +14,7 @@ import { checkVersionCompatibility } from './version-compatibility';
 import { getDatabase, runMigrations, backupDatabase, restoreDatabase, listBackups, deleteBackup } from './db';
 import { getLogger } from './logger';
 import { getProjectRoot, getStudioRoot, setStudioRoot } from './paths';
-import { createProject, safeFileName, seedDefaultProfiles, seedFakeModelProvider, buildModelProfileSnapshot } from './project-creator';
+import { createProject, safeFileName, seedDefaultProfiles, buildModelProfileSnapshot } from './project-creator';
 import { ContextBuilder } from './context-builder';
 import { SkillRegistry } from './skill-registry';
 import { FileWatcher } from './file-watcher';
@@ -25,6 +25,9 @@ import { createAgentExecutor } from './agent-executor';
 import { createPipelineContext } from './knowledge-pipeline-adapter';
 import { runIngestionPipeline } from '@kunqing/knowledge-core';
 import { registerAppFileProtocol } from './app-file-protocol';
+import { TeamMcpServer } from './team-mcp-server';
+import { ToolRegistry } from './tool-registry';
+import { registerProjectTools } from './agent-tools';
 import {
   DraftRepository,
   FileRepository,
@@ -53,6 +56,7 @@ let _fileWatcher: FileWatcher | null = null;
 let _scheduler: Scheduler | null = null;
 let _gateway: ModelGateway | null = null;
 let _channelManager: ChannelManager | null = null;
+let _mcpServer: TeamMcpServer | null = null;
 
 const getScopeRoot = async (input: { projectId: string; scopeType?: 'project' | 'shared' }): Promise<string> => {
   if (input.scopeType === 'shared') return join(getStudioRoot(), 'shared-knowledge', 'original-files');
@@ -830,15 +834,6 @@ const registerProjectIpc = (db: ReturnType<typeof getDatabase>): void => {
     if (result.ok && result.data?.id && _fileWatcher) {
       _fileWatcher.addWatch(getProjectRoot(result.data.id as string), 'project', result.data.id as string);
     }
-    if (result.ok && result.data.firstMessageId && input.content?.text) {
-      const window = BrowserWindow.fromWebContents(event.sender);
-      if (window) {
-        const { getLogger: gl } = await import('./logger');
-        const { runAgentsForUserMessage } = await import('./fake-agent');
-        const controller = new AbortController();
-        runAgentsForUserMessage(db, window, result.data.id, input.content.text, controller.signal).catch((err) => { gl()?.warn({ err, projectId: result.data.id }, '项目创建后 agent run 失败'); });
-      }
-    }
     return result;
   });
   registerIpc('projects:get', async (_event, input: { projectId: string }) => {
@@ -881,6 +876,31 @@ const registerMessageIpc = (db: ReturnType<typeof getDatabase>): void => {
         `SELECT id FROM project_agent_instances WHERE project_id = ? AND role = 'leader' LIMIT 1`,
       ).get(input.projectId) as { id: string } | undefined;
       if (leaderInstance) {
+        // 检查是否有真正可用的模型配置（slot binding + 启用 + API key 有效）
+        const hasModel = db.prepare(`
+          SELECT 1 FROM model_slot_bindings msb
+          JOIN model_profiles mp ON mp.id = msb.model_profile_id AND mp.enabled = 1
+          JOIN model_providers prv ON prv.id = mp.provider_id
+          WHERE msb.slot = ?
+            AND (prv.auth_type = 'none'
+              OR (prv.secret_ref IS NOT NULL AND EXISTS (SELECT 1 FROM secrets WHERE id = prv.secret_ref)))
+        `).get('reasoning');
+        if (!hasModel) {
+          // 没有配置模型，插入引导消息
+          const now = new Date().toISOString();
+          const msgId = randomUUID().toLowerCase().replace(/-/g, '').slice(0, 24);
+          db.prepare(
+            `INSERT INTO messages (id, project_id, sender_type, sender_id, kind, content_json, status, created_at, updated_at)
+             VALUES (?, ?, 'system', 'system', 'system', ?, 'sent', ?, ?)`,
+          ).run(
+            msgId,
+            input.projectId,
+            JSON.stringify({ schemaVersion: 1, text: '请先在 **设置 → 模型配置** 中添加一个可用的模型 Provider（如 OpenAI、Anthropic、Google 等），然后重试。' }),
+            now,
+            now,
+          );
+          return { ok: true, data: { id: msgId, status: 'sent', createdAt: now } };
+        }
         const run = runRepo.create({
           projectId: input.projectId,
           agentInstanceId: leaderInstance.id,
@@ -899,8 +919,37 @@ const registerMessageIpc = (db: ReturnType<typeof getDatabase>): void => {
     if (_scheduler && input.projectId) _scheduler.cancelProject(input.projectId);
     return { ok: true, data: null };
   });
-  registerIpc('messages:retryRun', async () => {
-    return { ok: true, data: { runId: '' } };
+  registerIpc('messages:retryRun', async (_event, input: { runId: string }) => {
+    try {
+      const originalRun = runRepo.getById(input.runId);
+      const createInput: {
+        projectId: string; agentInstanceId: string; requestedByType: string; requestedById: string;
+        instruction?: string; triggerMessageId?: string; modelProfileSnapshotJson?: string | null;
+      } = {
+        projectId: originalRun.projectId,
+        agentInstanceId: originalRun.agentInstanceId,
+        requestedByType: originalRun.requestedByType,
+        requestedById: originalRun.requestedById,
+        instruction: originalRun.instruction ?? '',
+        modelProfileSnapshotJson: originalRun.modelProfileSnapshotJson,
+      };
+      if (originalRun.triggerMessageId) {
+        createInput.triggerMessageId = originalRun.triggerMessageId;
+      }
+      const newRun = runRepo.create(createInput);
+      if (_scheduler) {
+        _scheduler.enqueue({
+          runId: newRun.id,
+          projectId: newRun.projectId,
+          agentInstanceId: newRun.agentInstanceId,
+          instruction: newRun.instruction ?? '',
+          triggerMessageId: newRun.triggerMessageId ?? '',
+        });
+      }
+      return { ok: true, data: { runId: newRun.id } };
+    } catch (err) {
+      return { ok: false, requestId: '-', error: { code: 'RETRY_FAILED', message: String(err), retryable: false } };
+    }
   });
 };
 
@@ -1335,13 +1384,13 @@ const registerSettingsIpc = (db: ReturnType<typeof getDatabase>): void => {
       const ciphertext = safeStorage.encryptString(input.value);
       const ref = `secret-${input.kind}-${randomUUID().slice(0, 8)}`;
       const now = new Date().toISOString();
-      db.prepare('INSERT INTO secrets (ref, kind, ciphertext, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(ref, input.kind, ciphertext, now, now);
+      db.prepare('INSERT INTO secrets (id, kind, ciphertext, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(ref, input.kind, ciphertext, now, now);
       return { ok: true, data: { secretRef: ref } };
     } catch (err) { return { ok: false, requestId: '-', error: { code: 'SECRET_ERROR', message: String(err), retryable: true } }; }
   });
   registerIpc('settings:deleteSecret', async (_event, input: { secretRef: string }) => {
     try {
-      db.prepare('DELETE FROM secrets WHERE ref = ?').run(input.secretRef);
+      db.prepare('DELETE FROM secrets WHERE id = ?').run(input.secretRef);
       return { ok: true, data: undefined };
     } catch (err) { return { ok: false, requestId: '-', error: { code: 'DB_ERROR', message: String(err), retryable: true } }; }
   });
@@ -1439,6 +1488,15 @@ const registerSettingsIpc = (db: ReturnType<typeof getDatabase>): void => {
       }
       return { ok: true };
     } catch (err) { return { ok: false, requestId: '-', error: { code: 'DB_ERROR', message: String(err), retryable: true } }; }
+  });
+
+  // Team MCP Server 信息
+  registerIpc('teamMcp:getInfo', async () => {
+    const server = _mcpServer;
+    if (!server || !server.isRunning) {
+      return { ok: true, data: { running: false, port: 0, token: '' } };
+    }
+    return { ok: true, data: { running: true, port: server.portNumber, token: server.bearerToken } };
   });
 };
 
@@ -1746,7 +1804,6 @@ app.whenReady().then(async () => {
   const delayedRegisters = (): void => {
     const db = ensureDb();
     seedDefaultProfiles(db);
-    seedFakeModelProvider(db);
     const skillRegistry = new SkillRegistry(db);
     skillRegistry.seedBuiltinSkills();
     registerDraftIpc(db);
@@ -1777,9 +1834,20 @@ app.whenReady().then(async () => {
       const win = BrowserWindow.getAllWindows()[0];
       if (win && !win.isDestroyed()) {
         _gateway = new ModelGateway(db as never);
-        const executor = createAgentExecutor(db, win, _gateway);
+        const toolRegistry = new ToolRegistry(db);
+        const executor = createAgentExecutor(db, win, _gateway, undefined, toolRegistry);
         _scheduler = new Scheduler(db, executor);
         executor.setScheduler(_scheduler);
+        registerProjectTools(toolRegistry, db, _scheduler);
+
+        // 启动 Team MCP Server
+        const mcpServer = new TeamMcpServer(toolRegistry, { role: 'external-cli', projectId: '', runId: '' });
+        mcpServer.start().then((info) => {
+          console.log(`[KunQing] Team MCP Server started on port ${info.port}`);
+        }).catch((err) => {
+          console.warn('[KunQing] Team MCP Server 启动失败:', err);
+        });
+        _mcpServer = mcpServer;
 
         // Channel reply: when a run completes, send the result back to the external channel
         executor.onRunCompleted((_runId, projectId, resultMessageId) => {

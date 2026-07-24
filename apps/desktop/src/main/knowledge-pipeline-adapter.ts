@@ -231,7 +231,7 @@ export function createPipelineContext(
         ]);
 
         // Try to extract JSON from the response
-        const jsonMatch = response.match(/\{[\s\S]*\}/);
+        const jsonMatch = response.text.match(/\{[\s\S]*\}/);
         if (!jsonMatch) {
           getLogger().warn('LLM 返回的内容中没有找到 JSON');
           return basicExtract(ctx.fileName, chunks);
@@ -276,7 +276,7 @@ export function createPipelineContext(
         return {
           slug: slugify(entity.name),
           title: entity.name,
-          bodyMd,
+          bodyMd: bodyMd.text,
           sourceRefs: sourceRefs.map((s) => ({ sourceId: s.sourceId, chunkId: s.chunkId })),
         };
       } catch (err) {

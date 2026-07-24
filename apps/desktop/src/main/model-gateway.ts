@@ -1,6 +1,9 @@
 import type { Database } from 'better-sqlite3';
 import { createOpenAI } from '@ai-sdk/openai';
+import { createAnthropic } from '@ai-sdk/anthropic';
+import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { streamText, generateText, generateObject, type LanguageModel } from 'ai';
+import { safeStorage } from 'electron';
 import { z } from 'zod';
 
 export type ModelSlot = 'reasoning' | 'fast' | 'embedding';
@@ -80,8 +83,14 @@ export class ModelGateway {
     if (!row) return null;
     let apiKey: string | undefined;
     if (row.secretRef) {
-      const secret = this.db.prepare('SELECT value FROM secrets WHERE ref = ?').get(row.secretRef) as { value: string } | undefined;
-      apiKey = secret?.value;
+      const secret = this.db.prepare('SELECT ciphertext FROM secrets WHERE id = ?').get(row.secretRef) as { ciphertext: Buffer } | undefined;
+      if (secret) {
+        try {
+          apiKey = safeStorage.decryptString(secret.ciphertext);
+        } catch {
+          // 解密失败，跳过
+        }
+      }
     }
     return stripUndefined({ providerType: row.providerType, baseUrl: row.baseUrl ?? undefined, modelId: row.modelId, apiKey }) as ProviderSettings;
   }
@@ -98,7 +107,11 @@ export class ModelGateway {
     return result.textStream;
   }
 
-  async generateText(slot: ModelSlot, messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>): Promise<string> {
+  async generateText(
+    slot: ModelSlot,
+    messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+    options?: { tools?: Record<string, { description: string; parameters: Record<string, unknown> }> },
+  ): Promise<{ text: string; toolCalls?: Array<{ name: string; args: Record<string, unknown> }> }> {
     const profile = this.getSlotProfile(slot);
     if (!profile) throw new Error(`没有为槽位 "${slot}" 配置可用的模型`);
 
@@ -106,8 +119,12 @@ export class ModelGateway {
     const result = await generateText({
       model: provider(profile.modelId),
       messages,
+      tools: options?.tools as any,
     });
-    return result.text;
+    return {
+      text: result.text,
+      toolCalls: result.toolCalls?.map((tc) => ({ name: tc.toolName, args: tc.input as Record<string, unknown> })),
+    };
   }
 
   async generateObject<T>(slot: ModelSlot, messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>): Promise<T> {
@@ -136,9 +153,16 @@ export class ModelGateway {
     if (!providerRow) throw new Error('Provider 不存在');
 
     const secret = providerRow.secret_ref
-      ? this.db.prepare('SELECT value FROM secrets WHERE ref = ?').get(providerRow.secret_ref) as { value: string } | undefined
+      ? this.db.prepare('SELECT ciphertext FROM secrets WHERE id = ?').get(providerRow.secret_ref) as { ciphertext: Buffer } | undefined
       : undefined;
-    const apiKey = secret?.value;
+    let apiKey: string | undefined;
+    if (secret) {
+      try {
+        apiKey = safeStorage.decryptString(secret.ciphertext);
+      } catch {
+        // 解密失败
+      }
+    }
 
     let testModelId = modelId;
     if (!testModelId) {

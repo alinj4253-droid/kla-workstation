@@ -19,14 +19,16 @@ export type AgentExecutor = {
   onRunCompleted(cb: (runId: string, projectId: string, resultMessageId: string) => void): void;
 };
 
-export function createAgentExecutor(db: Database.Database, window: BrowserWindow, gateway: ModelGateway, scheduler?: Scheduler): AgentExecutor {
+export function createAgentExecutor(db: Database.Database, window: BrowserWindow, gateway: ModelGateway, scheduler?: Scheduler, toolRegistry?: ToolRegistry): AgentExecutor {
   const runRepo = new AgentRunRepository(db);
   const msgRepo = new MessageRepository(db);
   const memory = new MemoryManager(db);
   let _scheduler = scheduler;
   let tools = createProjectTools(db, _scheduler);
-  const toolRegistry = new ToolRegistry(db);
-  registerProjectTools(toolRegistry, db, _scheduler);
+  const registry = toolRegistry ?? new ToolRegistry(db);
+  if (!toolRegistry) {
+    registerProjectTools(registry, db, _scheduler);
+  }
   let _runCompletedCallback: ((runId: string, projectId: string, resultMessageId: string) => void) | null = null;
 
   const executor = async (run: QueuedRun, signal: AbortSignal): Promise<void> => {
@@ -58,7 +60,7 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
         signal,
         memory,
         tools,
-        toolRegistry,
+        toolRegistry: registry,
         scheduler: _scheduler,
         contextSnapshot: null as any,
         contextBuilder: new ContextBuilder(db),

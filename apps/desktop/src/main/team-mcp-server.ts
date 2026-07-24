@@ -110,6 +110,10 @@ export class TeamMcpServer {
     return this.running;
   }
 
+  get portNumber(): number {
+    return this.port;
+  }
+
   get bearerToken(): string {
     return this.token;
   }
