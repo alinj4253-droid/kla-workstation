@@ -4,7 +4,7 @@
  * 用于 AC-EXT-07 契约测试，验证适配器实现与策略契约一致。
  */
 
-import type { AdapterCapability, AdapterStrategy } from './external-agent-adapter';
+import type { AdapterCapability, AdapterStrategy } from './external-agent-adapter.js';
 
 /** 策略契约：每个适配器一份 */
 export interface AdapterContract {

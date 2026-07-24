@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import { BaseRepository } from './base';
+import { BaseRepository } from './base.js';
 
 export class WorkspaceRegistryRepository extends BaseRepository {
   constructor(db: Database.Database) {

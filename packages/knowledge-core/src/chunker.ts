@@ -1,5 +1,5 @@
-import type { Chunk, ParsedDocument } from './types';
-import { hashContent } from './types';
+import type { Chunk, ParsedDocument } from './types.js';
+import { hashContent } from './types.js';
 
 export interface ChunkerOptions {
   /** Target chunk size in characters (default: 2000) */

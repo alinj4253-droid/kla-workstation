@@ -9,20 +9,20 @@ export type {
   PipelineContext,
   PipelineStage,
   PipelineProgress,
-} from './types';
+} from './types.js';
 
 // Helpers
-export { hashContent, slugify, isTextFile } from './types';
+export { hashContent, slugify, isTextFile } from './types.js';
 
 // Parsers
-export { parseDocument } from './parsers/index';
+export { parseDocument } from './parsers/index.js';
 
 // Chunker
-export { chunkDocument } from './chunker';
-export type { ChunkerOptions } from './chunker';
+export { chunkDocument } from './chunker.js';
+export type { ChunkerOptions } from './chunker.js';
 
 // Pipeline
-export { runIngestionPipeline } from './pipeline';
+export { runIngestionPipeline } from './pipeline.js';
 
 // Prompts
-export { buildGraphExtractionPrompt, buildWikiGenerationPrompt } from './prompts';
+export { buildGraphExtractionPrompt, buildWikiGenerationPrompt } from './prompts.js';

@@ -8,4 +8,4 @@
  *   ├─ strategies/
  *   └─ contract-tests/
  */
-export { ClaudeCodeCliAdapter, ClaudeCodeAutoStrategy } from './adapters/claude-code/adapter';
+export { ClaudeCodeCliAdapter, ClaudeCodeAutoStrategy } from './adapters/claude-code/adapter.js';

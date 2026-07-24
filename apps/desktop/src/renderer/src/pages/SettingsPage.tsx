@@ -123,6 +123,9 @@ const MOCK_AGENT_CARDS: AgentCardData[] = [
   { id: 'builtin.knowledge-manager', name: '知识管理智能体', definitionVersion: '1.0.0', framework: 'LangGraph.js', modelProfile: 'GPT-4o-mini (默认)', skills: ['文档解析', '知识图谱', 'Wiki 生成'], permissions: ['read', 'write'], testStatus: 'passed', referencedChats: 2, isBuiltin: true, enabled: true },
   { id: 'codex', name: 'Codex CLI', definitionVersion: '0.1.0', framework: 'external-cli', modelProfile: '-', skills: ['代码生成', '文件读写', '终端执行'], permissions: ['read', 'write', 'execute'], testStatus: 'untested', referencedChats: 0, isBuiltin: false, enabled: false, adapterType: 'codex', executablePath: 'codex', detectedVersion: '0.1.0' },
   { id: 'claude-code', name: 'Claude Code', definitionVersion: '0.1.0', framework: 'external-cli', modelProfile: '-', skills: ['代码生成', '文件读写', '搜索', '推理'], permissions: ['read', 'write'], testStatus: 'untested', referencedChats: 0, isBuiltin: false, enabled: false, adapterType: 'claude-code', executablePath: 'claude', detectedVersion: '0.1.0' },
+  { id: 'aion', name: 'Aion CLI', definitionVersion: '0.1.0', framework: 'external-cli', modelProfile: '-', skills: ['代码生成', '文件读写', '搜索'], permissions: ['read', 'write', 'delegate'], testStatus: 'untested', referencedChats: 0, isBuiltin: false, enabled: false, adapterType: 'aion', executablePath: 'aion', detectedVersion: '0.1.0' },
+  { id: 'gemini', name: 'Gemini CLI', definitionVersion: '0.1.0', framework: 'external-cli', modelProfile: '-', skills: ['代码生成', '文件读写', '搜索', '推理'], permissions: ['read', 'write'], testStatus: 'untested', referencedChats: 0, isBuiltin: false, enabled: false, adapterType: 'gemini', executablePath: 'gemini', detectedVersion: '0.1.0' },
+  { id: 'qwen-code', name: 'Qwen Code', definitionVersion: '0.1.0', framework: 'external-cli', modelProfile: '-', skills: ['代码生成', '文件读写', '搜索'], permissions: ['read', 'write'], testStatus: 'untested', referencedChats: 0, isBuiltin: false, enabled: false, adapterType: 'qwen-code', executablePath: 'qwen-code', detectedVersion: '0.1.0' },
 ];
 
 function AgentsSettings(): React.JSX.Element {
@@ -388,6 +391,9 @@ function ConnectionWizardDialog({ onClose, onAdded }: { onClose: () => void; onA
             <select value={adapterType} onChange={(e) => setAdapterType(e.target.value)}>
               <option value="codex">Codex CLI</option>
               <option value="claude-code">Claude Code</option>
+              <option value="aion">Aion CLI</option>
+              <option value="gemini">Gemini CLI</option>
+              <option value="qwen-code">Qwen Code</option>
               <option value="custom">自定义</option>
             </select>
           </label>
@@ -1823,10 +1829,25 @@ function ChannelsSettings(): React.JSX.Element {
 
   useEffect(() => { void load(); }, [load]);
 
+  // Subscribe to real-time channel events to update status
+  useEffect(() => {
+    const unsub = window.kunqing?.events.subscribeChannels((event) => {
+      if (event.type === 'channel.status') {
+        const status = (event.data as { status: string }).status;
+        setChannels((prev) => prev.map((c) =>
+          c.id === event.channelId
+            ? { ...c, status: status === 'connected' ? 'connected' : status === 'disconnected' ? 'disconnected' : status }
+            : c,
+        ));
+      }
+    });
+    return () => unsub?.();
+  }, []);
+
   const toggle = async (id: string, currentEnabled: boolean): Promise<void> => {
     try {
-      await window.kunqing?.channels.setEnabled({ channelId: id, enabled: !currentEnabled });
       setChannels((prev) => prev.map((c) => c.id === id ? { ...c, enabled: !currentEnabled, status: !currentEnabled ? 'connecting' : 'disconnected' } : c));
+      await window.kunqing?.channels.setEnabled({ channelId: id, enabled: !currentEnabled });
     } catch { /* ignore */ }
   };
 
@@ -1978,17 +1999,18 @@ function ChannelAddDialog({ onClose, onSaved }: { onClose: () => void; onSaved: 
     return channelConfig.fields.every((f) => (config[f.key] ?? '').trim().length > 0);
   };
 
+  const buildSaveInput = (): { type: string; name: string; config: Record<string, string>; secret?: string } => {
+    const cname = labelMap[type] ?? type;
+    const { app_secret, ...rest } = config as Record<string, string>;
+    return app_secret ? { type, name: cname, config: rest, secret: app_secret } : { type, name: cname, config: rest };
+  };
+
   const handleSave = async (): Promise<void> => {
     if (!allFieldsFilled()) return;
     setSaving(true);
     setTestResult(null);
     try {
-      const cname = labelMap[type] ?? type;
-      const res = await (window.kunqing?.channels.save({
-        type,
-        name: cname,
-        config,
-      }) as Promise<{ ok: boolean; data: { id: string } }> | undefined);
+      const res = await (window.kunqing?.channels.save(buildSaveInput()) as Promise<{ ok: boolean; data: { id: string } }> | undefined);
       if (res?.ok) {
         setSavedId(res.data.id);
         onSaved();
@@ -2002,12 +2024,7 @@ function ChannelAddDialog({ onClose, onSaved }: { onClose: () => void; onSaved: 
     setTesting(true);
     setTestResult(null);
     try {
-      const cname = labelMap[type] ?? type;
-      const saveRes = await (window.kunqing?.channels.save({
-        type,
-        name: cname,
-        config,
-      }) as Promise<{ ok: boolean; data: { id: string } }> | undefined);
+      const saveRes = await (window.kunqing?.channels.save(buildSaveInput()) as Promise<{ ok: boolean; data: { id: string } }> | undefined);
       if (!saveRes?.ok) {
         setTestResult({ ok: false, message: '保存渠道失败' });
         setTesting(false);
@@ -2048,6 +2065,8 @@ function ChannelAddDialog({ onClose, onSaved }: { onClose: () => void; onSaved: 
             <option value="lark">飞书 / Lark</option>
             <option value="dingtalk">钉钉</option>
             <option value="wecom-webhook">企业微信群机器人</option>
+            <option disabled>个人微信 — 即将上线</option>
+            <option disabled>企业微信自建应用 — 即将上线</option>
           </select>
         </label>
         {channelConfig.fields.map((field) => (

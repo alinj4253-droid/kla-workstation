@@ -16,6 +16,7 @@ import { getLogger } from './logger';
 export type AgentExecutor = {
   (run: QueuedRun, signal: AbortSignal): Promise<void>;
   setScheduler(s: Scheduler): void;
+  onRunCompleted(cb: (runId: string, projectId: string, resultMessageId: string) => void): void;
 };
 
 export function createAgentExecutor(db: Database.Database, window: BrowserWindow, gateway: ModelGateway, scheduler?: Scheduler): AgentExecutor {
@@ -26,6 +27,7 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
   let tools = createProjectTools(db, _scheduler);
   const toolRegistry = new ToolRegistry(db);
   registerProjectTools(toolRegistry, db, _scheduler);
+  let _runCompletedCallback: ((runId: string, projectId: string, resultMessageId: string) => void) | null = null;
 
   const executor = async (run: QueuedRun, signal: AbortSignal): Promise<void> => {
     const logger = getLogger();
@@ -94,6 +96,7 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
         'INSERT INTO messages (id, project_id, sender_type, sender_id, kind, content_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
       ).run(agentMsgId, run.projectId, 'agent', agentInstance?.id ?? run.agentInstanceId, 'text', contentJson, 'sent', now, now);
       runRepo.setResultMessage(run.runId, agentMsgId);
+      _runCompletedCallback?.(run.runId, run.projectId, agentMsgId);
 
       if (!window.isDestroyed()) {
         window.webContents.send('event:dispatch', {
@@ -173,6 +176,7 @@ ${memoryContext ? `\n${memoryContext}` : ''}`;
       ).run(agentMsgId, run.projectId, 'agent', agentInstance?.id ?? run.agentInstanceId, 'text', contentJson, 'sent', now, now);
 
       runRepo.setResultMessage(run.runId, agentMsgId);
+      _runCompletedCallback?.(run.runId, run.projectId, agentMsgId);
 
       if (!window.isDestroyed()) {
         window.webContents.send('event:dispatch', {
@@ -213,6 +217,10 @@ ${memoryContext ? `\n${memoryContext}` : ''}`;
   executor.setScheduler = (s: Scheduler) => {
     _scheduler = s;
     tools = createProjectTools(db, s);
+  };
+
+  executor.onRunCompleted = (cb: (runId: string, projectId: string, resultMessageId: string) => void) => {
+    _runCompletedCallback = cb;
   };
 
   return executor;

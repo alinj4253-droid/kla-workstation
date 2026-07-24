@@ -1,4 +1,4 @@
-import { CodexCliAdapter, ClaudeCodeCliAdapter } from '@kunqing/agent-core';
+import { CodexCliAdapter, ClaudeCodeCliAdapter, AionCliAdapter, GeminiCliAdapter, QwenCodeCliAdapter } from '@kunqing/agent-core';
 import type { ExternalAgentAdapter, DetectedExecutable, DetectInput } from '@kunqing/agent-core';
 
 export class CliAgentRegistry {
@@ -7,6 +7,9 @@ export class CliAgentRegistry {
   constructor() {
     this.register(new CodexCliAdapter());
     this.register(new ClaudeCodeCliAdapter());
+    this.register(new AionCliAdapter());
+    this.register(new GeminiCliAdapter());
+    this.register(new QwenCodeCliAdapter());
   }
 
   register(adapter: ExternalAgentAdapter): void {

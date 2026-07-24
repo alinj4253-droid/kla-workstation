@@ -1,5 +1,5 @@
 import { sqliteTable, text, integer, primaryKey, index } from 'drizzle-orm/sqlite-core';
-import { projects } from './projects';
+import { projects } from './projects.js';
 
 export const messages = sqliteTable('messages', {
   id: text('id').primaryKey(),

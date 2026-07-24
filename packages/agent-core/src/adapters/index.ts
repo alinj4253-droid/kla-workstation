@@ -9,7 +9,13 @@
  *   └─ contract-tests/    — 契约测试夹具
  */
 
-export { CodexCliAdapter } from './codex/adapter';
-export { CodexAutoStrategy } from './codex/strategies/auto';
-export { ClaudeCodeCliAdapter } from './claude-code/adapter';
-export { ClaudeCodeAutoStrategy } from './claude-code/strategies/auto';
+export { CodexCliAdapter } from './codex/adapter.js';
+export { CodexAutoStrategy } from './codex/strategies/auto.js';
+export { ClaudeCodeCliAdapter } from './claude-code/adapter.js';
+export { ClaudeCodeAutoStrategy } from './claude-code/strategies/auto.js';
+export { AionCliAdapter } from './aion/adapter.js';
+export { AionAutoStrategy } from './aion/strategies/auto.js';
+export { GeminiCliAdapter } from './gemini/adapter.js';
+export { GeminiAutoStrategy } from './gemini/strategies/auto.js';
+export { QwenCodeCliAdapter } from './qwen-code/adapter.js';
+export { QwenCodeAutoStrategy } from './qwen-code/strategies/auto.js';

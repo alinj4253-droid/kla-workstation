@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import { BaseRepository } from './base';
+import { BaseRepository } from './base.js';
 
 export interface SearchHit {
   kind: 'project' | 'message' | 'knowledge';
@@ -23,7 +23,7 @@ export class SearchRepository extends BaseRepository {
     const projects = this.db.prepare(
       `SELECT p.id, p.name, p.summary, rank
        FROM project_fts
-       JOIN projects p ON p.id = project_fts.project_id
+       JOIN projects p ON p.id = project_fts.id
        WHERE project_fts MATCH ?
        ORDER BY rank
        LIMIT ?`,
@@ -42,7 +42,7 @@ export class SearchRepository extends BaseRepository {
     const messages = this.db.prepare(
       `SELECT m.id, m.project_id, snippet(message_fts, 1, '<b>', '</b>', '…', 30) as snippet, rank
        FROM message_fts
-       JOIN messages m ON m.id = message_fts.message_id
+       JOIN messages m ON m.id = message_fts.id
        WHERE message_fts MATCH ?
        ORDER BY rank
        LIMIT ?`,
@@ -61,7 +61,7 @@ export class SearchRepository extends BaseRepository {
     const chunks = this.db.prepare(
       `SELECT c.id, snippet(knowledge_chunk_fts, 3, '<b>', '</b>', '…', 30) as snippet, rank
        FROM knowledge_chunk_fts
-       JOIN knowledge_chunks c ON c.id = knowledge_chunk_fts.chunk_id
+       JOIN knowledge_chunks c ON c.id = knowledge_chunk_fts.id
        WHERE knowledge_chunk_fts MATCH ?
        ORDER BY rank
        LIMIT ?`,

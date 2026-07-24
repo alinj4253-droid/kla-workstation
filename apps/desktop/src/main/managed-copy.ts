@@ -58,7 +58,7 @@ export class ManagedCopyService {
       return destPath;
     } catch (err) {
       logger?.warn({ err, sourcePath, runId }, 'ManagedCopy: 文件拷贝失败');
-      throw new Error(`文件拷贝失败: ${sourcePath}`);
+      throw new Error(`文件拷贝失败: ${sourcePath}`, { cause: err });
     }
   }
 

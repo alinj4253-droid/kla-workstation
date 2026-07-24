@@ -14,6 +14,7 @@ export { validateEffectivePermissions, type PermissionDefinition } from './permi
 
 const ORCHESTRATOR_PROFILE_ID = 'builtin-orchestrator-profile';
 const KNOWLEDGE_PROFILE_ID = 'builtin-knowledge-profile';
+const RESEARCHER_PROFILE_ID = 'builtin-researcher-profile';
 
 const ORCHESTRATOR_IDENTITY_TPL = `---
 schemaVersion: 1
@@ -37,6 +38,18 @@ role: teammate
 # 身份
 
 你是当前群聊的知识管理智能体，负责文档入库、实体关系提取、图谱构建和 Wiki 生成。
+`;
+
+const RESEARCHER_IDENTITY_TPL = `---
+schemaVersion: 1
+definitionId: builtin.researcher
+definitionVersion: 1.0.0
+role: teammate
+---
+
+# 身份
+
+你是当前群聊的资料调研智能体，负责信息检索、资料分析和事实核查。
 `;
 
 function extractProjectName(text: string, templateId?: string): string {
@@ -113,6 +126,7 @@ export async function createProject(
 
   const orchInstanceId = generateInstanceId(projectId, 'orch');
   const knowInstanceId = generateInstanceId(projectId, 'know');
+  const resInstanceId = generateInstanceId(projectId, 'res');
   const projectRoot = getProjectRoot(projectId);
 
   const projectRepo = new ProjectRepository(db);
@@ -130,6 +144,7 @@ export async function createProject(
 
     const leaderProfile = profileRepo.getById(ORCHESTRATOR_PROFILE_ID);
     const knowledgeProfile = profileRepo.getById(KNOWLEDGE_PROFILE_ID);
+    const researcherProfile = profileRepo.getById(RESEARCHER_PROFILE_ID);
 
     instanceRepo.create({
       id: orchInstanceId,
@@ -157,6 +172,19 @@ export async function createProject(
       ordinal: 1,
     });
 
+    instanceRepo.create({
+      id: resInstanceId,
+      projectId,
+      agentProfileId: researcherProfile.id,
+      definitionId: researcherProfile.definitionId,
+      definitionVersion: researcherProfile.definitionVersion,
+      role: 'teammate',
+      runtimeMode: 'native-model',
+      identityRelPath: `agent-identities/${resInstanceId}/IDENTITY.md`,
+      memoryRelPath: `agent-memories/${resInstanceId}`,
+      ordinal: 2,
+    });
+
     const stagedUploadIds = input.content?.stagedUploadIds ?? [];
     let firstMessageId: string | undefined;
     if (contentText) {
@@ -166,12 +194,16 @@ export async function createProject(
 
     await mkdir(join(projectRoot, 'agent-identities', orchInstanceId), { recursive: true });
     await mkdir(join(projectRoot, 'agent-identities', knowInstanceId), { recursive: true });
+    await mkdir(join(projectRoot, 'agent-identities', resInstanceId), { recursive: true });
     await mkdir(join(projectRoot, 'agent-memories', orchInstanceId, 'short-term'), { recursive: true });
     await mkdir(join(projectRoot, 'agent-memories', orchInstanceId, 'sessions'), { recursive: true });
     await mkdir(join(projectRoot, 'agent-memories', orchInstanceId, 'long-term'), { recursive: true });
     await mkdir(join(projectRoot, 'agent-memories', knowInstanceId, 'short-term'), { recursive: true });
     await mkdir(join(projectRoot, 'agent-memories', knowInstanceId, 'sessions'), { recursive: true });
     await mkdir(join(projectRoot, 'agent-memories', knowInstanceId, 'long-term'), { recursive: true });
+    await mkdir(join(projectRoot, 'agent-memories', resInstanceId, 'short-term'), { recursive: true });
+    await mkdir(join(projectRoot, 'agent-memories', resInstanceId, 'sessions'), { recursive: true });
+    await mkdir(join(projectRoot, 'agent-memories', resInstanceId, 'long-term'), { recursive: true });
     await mkdir(join(projectRoot, 'original-files'), { recursive: true });
     await mkdir(join(projectRoot, 'knowledge', 'graph', 'schema'), { recursive: true });
     await mkdir(join(projectRoot, 'knowledge', 'wiki', 'entities'), { recursive: true });
@@ -186,8 +218,9 @@ export async function createProject(
 
     await writeFile(join(projectRoot, 'agent-identities', orchInstanceId, 'IDENTITY.md'), ORCHESTRATOR_IDENTITY_TPL, 'utf8');
     await writeFile(join(projectRoot, 'agent-identities', knowInstanceId, 'IDENTITY.md'), KNOWLEDGE_IDENTITY_TPL, 'utf8');
+    await writeFile(join(projectRoot, 'agent-identities', resInstanceId, 'IDENTITY.md'), RESEARCHER_IDENTITY_TPL, 'utf8');
 
-    for (const instId of [orchInstanceId, knowInstanceId]) {
+    for (const instId of [orchInstanceId, knowInstanceId, resInstanceId]) {
       const memRoot = join(projectRoot, 'agent-memories', instId);
       const curPath = join(memRoot, 'short-term', 'current.md');
       const idxPath = join(memRoot, 'index.jsonl');
@@ -269,10 +302,10 @@ export function seedFakeModelProvider(db: Database.Database): void {
 
   // 2. 创建两个 model_profiles（reasoning + fast 槽位）
   db.prepare(
-    `INSERT INTO model_profiles (id, name, provider_id, model_id, model_slot, parameters_json, declared_capabilities_json, verified_capabilities_json, capability_tested_at, enabled)
+    `INSERT OR IGNORE INTO model_profiles (id, name, provider_id, model_id, model_slot, parameters_json, declared_capabilities_json, verified_capabilities_json, capability_tested_at, enabled)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
   ).run(
-    FAKE_REASONING_PROFILE_ID, 'Fake Reasoning', FAKE_PROVIDER_ID, 'gpt-4o-mini', 'reasoning',
+    FAKE_REASONING_PROFILE_ID, 'Fake Reasoning', FAKE_PROVIDER_ID, 'gpt-4o', 'reasoning',
     JSON.stringify({ temperature: 0.7, maxTokens: 4096 }),
     JSON.stringify(['streaming', 'toolCalling', 'structuredOutput']),
     JSON.stringify(['streaming', 'toolCalling', 'structuredOutput']),
@@ -280,7 +313,7 @@ export function seedFakeModelProvider(db: Database.Database): void {
   );
 
   db.prepare(
-    `INSERT INTO model_profiles (id, name, provider_id, model_id, model_slot, parameters_json, declared_capabilities_json, verified_capabilities_json, capability_tested_at, enabled)
+    `INSERT OR IGNORE INTO model_profiles (id, name, provider_id, model_id, model_slot, parameters_json, declared_capabilities_json, verified_capabilities_json, capability_tested_at, enabled)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
   ).run(
     FAKE_FAST_PROFILE_ID, 'Fake Fast', FAKE_PROVIDER_ID, 'gpt-4o-mini', 'fast',
@@ -312,7 +345,7 @@ export async function seedDefaultProfiles(db: Database.Database): Promise<void> 
   if (!hasOrchDef) {
     defRepo.create({
       id: 'builtin.orchestrator',
-      kind: 'builtin',
+      kind: 'built-in',
       isBuiltin: true,
       manifestRelPath: 'agents/builtin-orchestrator/manifest.json',
       maxPermissionsJson: JSON.stringify({
@@ -328,7 +361,7 @@ export async function seedDefaultProfiles(db: Database.Database): Promise<void> 
   if (!hasKnowDef) {
     defRepo.create({
       id: 'builtin.knowledge-manager',
-      kind: 'builtin',
+      kind: 'built-in',
       isBuiltin: true,
       manifestRelPath: 'agents/builtin-knowledge-manager/manifest.json',
       maxPermissionsJson: JSON.stringify({
@@ -341,9 +374,27 @@ export async function seedDefaultProfiles(db: Database.Database): Promise<void> 
     });
   }
 
+  const hasResDef = existingDefs.some((d) => d.id === 'builtin.researcher');
+  if (!hasResDef) {
+    defRepo.create({
+      id: 'builtin.researcher',
+      kind: 'built-in',
+      isBuiltin: true,
+      manifestRelPath: 'agents/builtin-researcher/manifest.json',
+      maxPermissionsJson: JSON.stringify({
+        read: ['group.knowledge', 'group.messages'],
+        write: ['self.memory'],
+        network: 'model-gateway-only',
+        shell: 'deny',
+      }),
+      modelRequirementsJson: JSON.stringify(['streaming']),
+    });
+  }
+
   const existing = profileRepo.listByEnabled();
   const hasOrch = existing.some((p) => p.definitionId === 'builtin.orchestrator');
   const hasKnow = existing.some((p) => p.definitionId === 'builtin.knowledge-manager');
+  const hasRes = existing.some((p) => p.definitionId === 'builtin.researcher');
 
   if (!hasOrch) {
     db.prepare(
@@ -353,14 +404,21 @@ export async function seedDefaultProfiles(db: Database.Database): Promise<void> 
   }
 
   if (!hasKnow) {
-      db.prepare(
-        `INSERT INTO agent_profiles (id, name, definition_id, definition_version, runtime_mode, enabled, delegatable, is_system_default, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 1, 0, 0, ?, ?)`,
-      ).run(KNOWLEDGE_PROFILE_ID, '知识管理智能体', 'builtin.knowledge-manager', '1.0.0', 'native-model', now, now);
-    }
+    db.prepare(
+      `INSERT INTO agent_profiles (id, name, definition_id, definition_version, runtime_mode, enabled, delegatable, is_system_default, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 1, 0, 0, ?, ?)`,
+    ).run(KNOWLEDGE_PROFILE_ID, '知识管理智能体', 'builtin.knowledge-manager', '1.0.0', 'native-model', now, now);
   }
 
-  /** 根据 agent_instance_id 解析当前 slot 绑定的模型快照，用于 Run 创建时快照 */
+  if (!hasRes) {
+    db.prepare(
+      `INSERT INTO agent_profiles (id, name, definition_id, definition_version, runtime_mode, enabled, delegatable, is_system_default, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 1, 0, 0, ?, ?)`,
+    ).run(RESEARCHER_PROFILE_ID, '资料调研智能体', 'builtin.researcher', '1.0.0', 'native-model', now, now);
+  }
+}
+
+/** 根据 agent_instance_id 解析当前 slot 绑定的模型快照，用于 Run 创建时快照 */
   export function buildModelProfileSnapshot(db: Database.Database, agentInstanceId: string): string | null {
     const row = db.prepare(
       `SELECT ap.definition_id as definitionId
@@ -371,7 +429,7 @@ export async function seedDefaultProfiles(db: Database.Database): Promise<void> 
 
     if (!row) return null;
 
-    const slot = row.definitionId === 'builtin.knowledge-manager' ? 'fast' : 'reasoning';
+    const slot = (row.definitionId === 'builtin.knowledge-manager' || row.definitionId === 'builtin.researcher') ? 'fast' : 'reasoning';
 
     const snapshot = db.prepare(
       `SELECT mp.id as profileId, mp.name as profileName, mp.model_id as modelId, mp.model_slot as modelSlot,

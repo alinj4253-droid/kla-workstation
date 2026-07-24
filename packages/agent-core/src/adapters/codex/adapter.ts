@@ -4,10 +4,10 @@ import type {
   ExecutableRef, VersionEvidence, CliConnectionSnapshot, AuthProbeResult,
   ExternalRunRequest, AgentEventSink, ExternalRunResult, AdapterCapability,
 } from '../../external-agent-adapter';
-import { CodexDetector } from './detect';
-import { CodexAutoStrategy } from './strategies/auto';
+import { CodexDetector } from './detect.js';
+import { CodexAutoStrategy } from './strategies/auto.js';
 
-export { CodexAutoStrategy } from './strategies/auto';
+export { CodexAutoStrategy } from './strategies/auto.js';
 
 export class CodexCliAdapter implements ExternalAgentAdapter {
   readonly type = 'codex';

@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
-import { BaseRepository } from './base';
-import { notFound } from '../errors';
+import { BaseRepository } from './base.js';
+import { notFound } from '../errors.js';
 
 export interface AgentProfileRow {
   id: string;

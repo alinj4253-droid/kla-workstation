@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, protocol, safeStorage, shell } from 'electron';
 import type { OpenDialogOptions } from 'electron';
 import { access, copyFile, lstat, mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -8,9 +8,10 @@ import { CodexCliAdapter } from '@kunqing/agent-core';
 import { cliAgentRegistry } from './cli-agent-registry';
 import { cliExecutor } from './cli-executor';
 import { agentConnectionService } from './agent-connection-service';
+import { ChannelManager } from './channel-manager';
 import { runKeyScan } from './key-scanner';
 import { checkVersionCompatibility } from './version-compatibility';
-import { getDatabase, runMigrations } from './db';
+import { getDatabase, runMigrations, backupDatabase, restoreDatabase, listBackups, deleteBackup } from './db';
 import { getLogger } from './logger';
 import { getProjectRoot, getStudioRoot, setStudioRoot } from './paths';
 import { createProject, safeFileName, seedDefaultProfiles, seedFakeModelProvider, buildModelProfileSnapshot } from './project-creator';
@@ -23,6 +24,7 @@ import { Scheduler } from './scheduler';
 import { createAgentExecutor } from './agent-executor';
 import { createPipelineContext } from './knowledge-pipeline-adapter';
 import { runIngestionPipeline } from '@kunqing/knowledge-core';
+import { registerAppFileProtocol } from './app-file-protocol';
 import {
   DraftRepository,
   FileRepository,
@@ -50,6 +52,7 @@ const MAX_BATCH_BYTES = 500 * 1024 * 1024;
 let _fileWatcher: FileWatcher | null = null;
 let _scheduler: Scheduler | null = null;
 let _gateway: ModelGateway | null = null;
+let _channelManager: ChannelManager | null = null;
 
 const getScopeRoot = async (input: { projectId: string; scopeType?: 'project' | 'shared' }): Promise<string> => {
   if (input.scopeType === 'shared') return join(getStudioRoot(), 'shared-knowledge', 'original-files');
@@ -111,6 +114,7 @@ function registerIpc(channel: string, handler: (event: Electron.IpcMainInvokeEve
       const result = await handler(_event, ...args);
       return wrapResult(result, requestId);
     } catch (error) {
+      console.error('[KunQing] IPC handler error:', error);
       logger?.warn({ err: error, channel, requestId }, 'IPC handler error');
       return wrapResult(toRpcError(error, requestId), requestId);
     }
@@ -202,17 +206,55 @@ role: teammate
 你是当前群聊的知识管理智能体，负责文档入库、实体关系提取、图谱构建和 Wiki 生成。
 `;
 
+const RESEARCHER_DEF = `schemaVersion: 1
+id: builtin.researcher
+version: 1.0.0
+displayName: 资料调研智能体
+runtime: native-model
+framework: langgraph-js
+entry: researcherGraph
+defaultModelSlot: fast
+modelRequirements:
+  - structuredOutput
+skills:
+  - information-retrieval
+  - source-analysis
+tools:
+  - knowledge.search
+  - workspace.search
+  - memory.writeOwn
+memoryPolicy:
+  shortTermTtlHours: 72
+  longTermWrite: candidate-then-commit
+`;
+
+const RESEARCHER_IDENTITY = `---
+schemaVersion: 1
+definitionId: builtin.researcher
+definitionVersion: 1.0.0
+role: teammate
+---
+
+# 身份
+
+你是当前群聊的资料调研智能体，负责信息检索、资料分析和事实核查。
+`;
+
 const installAgentDefinitions = async (root: string): Promise<void> => {
   const orchestratorDir = join(root, 'agent-definitions', 'built-in', 'builtin.orchestrator', '1.0.0');
   const knowledgeDir = join(root, 'agent-definitions', 'built-in', 'builtin.knowledge-manager', '1.0.0');
+  const researcherDir = join(root, 'agent-definitions', 'built-in', 'builtin.researcher', '1.0.0');
   await mkdir(orchestratorDir, { recursive: true });
   await mkdir(knowledgeDir, { recursive: true });
+  await mkdir(researcherDir, { recursive: true });
 
   // agent.yaml + IDENTITY
   await writeIfMissing(join(orchestratorDir, 'agent.yaml'), ORCHESTRATOR_DEF);
   await writeIfMissing(join(orchestratorDir, 'IDENTITY.template.md'), ORCHESTRATOR_IDENTITY);
   await writeIfMissing(join(knowledgeDir, 'agent.yaml'), KNOWLEDGE_DEF);
   await writeIfMissing(join(knowledgeDir, 'IDENTITY.template.md'), KNOWLEDGE_IDENTITY);
+  await writeIfMissing(join(researcherDir, 'agent.yaml'), RESEARCHER_DEF);
+  await writeIfMissing(join(researcherDir, 'IDENTITY.template.md'), RESEARCHER_IDENTITY);
 
   // prompts/system.md
   const orchPromptDir = join(orchestratorDir, 'prompts');
@@ -243,6 +285,18 @@ const installAgentDefinitions = async (root: string): Promise<void> => {
   await writeIfMissing(join(kmSkillsDir, 'wiki-materialization', 'SKILL.md'), '## Wiki 页面生成 (Wiki Materialization)\n\n基于知识图谱生成人类可读的 Wiki 页面：\n1. 为每个重要实体生成 Wiki 条目\n2. 包含实体摘要、关联关系和相关来源\n3. 使用 Markdown 格式输出\n4. 保存到工作区的 wiki 目录');
   await writeIfMissing(join(kmSkillsDir, 'graph-projection', 'SKILL.md'), '## 图谱可视化 (Graph Projection)\n\n生成适合前端渲染的图谱投影数据：\n1. 导出所有节点和边\n2. 为每个节点添加 label 和分组信息\n3. 生成 force-graph 格式的 JSON\n4. 保存到 knowledge/projection 目录');
 
+  // researcher resources
+  const resPromptDir = join(researcherDir, 'prompts');
+  await mkdir(resPromptDir, { recursive: true });
+  await writeIfMissing(join(resPromptDir, 'system.md'), '你是资料调研智能体，负责根据指令搜索知识库、分析信息并输出结构化调研报告。\n\n## 输出格式\n1. **调研摘要** — 关键发现概述\n2. **信息来源** — 引用来源 ID 和内容摘要\n3. **详细分析** — 按主题组织的信息\n4. **置信度评估** — 每个结论的可靠性标注\n\n## 限制\n- 不确定时明确告知而不是猜测');
+  const resSkillsDir = join(researcherDir, 'skills');
+  await mkdir(join(resSkillsDir, 'information-retrieval'), { recursive: true });
+  await mkdir(join(resSkillsDir, 'source-analysis'), { recursive: true });
+  await writeIfMissing(join(resSkillsDir, 'information-retrieval', 'SKILL.md'), '## 信息检索\n\n根据查询从知识库检索相关信息，对结果进行过滤和排序。');
+  await writeIfMissing(join(resSkillsDir, 'source-analysis', 'SKILL.md'), '## 来源分析\n\n评估知识条目的可靠性和相关性，交叉验证多个来源的一致性。');
+  await mkdir(join(researcherDir, 'evals'), { recursive: true });
+  await writeIfMissing(join(researcherDir, 'evals', 'cases.yaml'), 'cases:\n  - id: research-basic-query\n    instruction: "搜索关于财务报销流程的信息"');
+
   // evals
   await mkdir(join(orchestratorDir, 'evals'), { recursive: true });
   await mkdir(join(knowledgeDir, 'evals'), { recursive: true });
@@ -256,7 +310,23 @@ const tryAcquireLock = async (root: string): Promise<boolean> => {
     await writeFile(lockPath, `${process.pid}`, { encoding: 'utf8', flag: 'wx' });
     return true;
   } catch {
-    return false;
+    // 锁文件已存在，检查是否过期
+    try {
+      const existingPid = parseInt(await readFile(lockPath, 'utf8'), 10);
+      // 如果是同一进程，直接返回成功
+      if (existingPid === process.pid) return true;
+      // 检查原进程是否还在运行
+      try {
+        process.kill(existingPid, 0); // 信号 0 只检测进程是否存在，不发送信号
+        return false; // 进程仍在运行，不能获取锁
+      } catch {
+        // 进程已不存在，锁过期，覆盖
+        await writeFile(lockPath, `${process.pid}`, { encoding: 'utf8', flag: 'w' });
+        return true;
+      }
+    } catch {
+      return false;
+    }
   }
 };
 
@@ -273,6 +343,7 @@ const ensureStudioWorkspace = async (): Promise<{ workspaceId: string; isNew: bo
   await Promise.all([
     mkdir(join(root, '.kstudio', 'logs'), { recursive: true }),
     mkdir(join(root, '.kstudio', 'cache'), { recursive: true }),
+    mkdir(join(root, '.kstudio', 'backups'), { recursive: true }),
     mkdir(join(root, '.kstudio', 'temp', 'staged-uploads'), { recursive: true }),
     mkdir(join(root, 'agent-definitions', 'built-in'), { recursive: true }),
     mkdir(join(root, 'agent-definitions', 'custom'), { recursive: true }),
@@ -703,6 +774,11 @@ const registerFileIpc = (db: ReturnType<typeof getDatabase>): void => {
       const b64 = buf.toString('base64');
       const mimeMap: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp', ico: 'image/x-icon', svg: 'image/svg+xml' };
       return { ok: true, data: { kind: 'image' as const, dataUri: `data:${mimeMap[ext] ?? 'application/octet-stream'};base64,${b64}`, fileName: basename(target), size: info.size, fileId, versionId } };
+    }
+    const pdfExts = ['pdf'];
+    if (pdfExts.includes(ext)) {
+      const appFileUrl = fileId ? `app-file://file/${fileId}` : `app-file://version/${versionId}`;
+      return { ok: true, data: { kind: 'pdf' as const, appFileUrl, fileName: basename(target), size: info.size, fileId, versionId } };
     }
     return { ok: true, data: { kind: 'unknown' as const, fileName: basename(target), size: info.size, mimeType: '', fileId, versionId } };
   });
@@ -1367,64 +1443,119 @@ const registerSettingsIpc = (db: ReturnType<typeof getDatabase>): void => {
 };
 
 const registerChannelIpc = (db: ReturnType<typeof getDatabase>): void => {
+  const mgr = new ChannelManager(db);
+  _channelManager = mgr;
+  const runRepo = new AgentRunRepository(db);
+
+  mgr.onEvent((event) => {
+    const win = BrowserWindow.getAllWindows()[0];
+    console.log(`[mgr.onEvent] sending channel:event type=${event.type} channelId=${event.channelId} winExists=${!!win}`);
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('channel:event', event);
+      console.log(`[mgr.onEvent] sent successfully`);
+    }
+
+    // Handle channel.message: enqueue a run in the scheduler
+    if (event.type === 'channel.message' && _scheduler) {
+      const data = event.data as {
+        projectId: string;
+        externalConversationId: string;
+        externalUserId: string;
+        text: string;
+        externalEventId: string;
+      };
+      if (data.projectId && data.text) {
+        const leaderInstance = db.prepare(
+          `SELECT id FROM project_agent_instances WHERE project_id = ? AND role = 'leader' LIMIT 1`,
+        ).get(data.projectId) as { id: string } | undefined;
+        if (leaderInstance) {
+          try {
+            // Find the user message we just created (the most recent one for this project with matching text)
+            const userMsg = db.prepare(
+              `SELECT id FROM messages WHERE project_id = ? AND sender_type = 'user' ORDER BY created_at DESC LIMIT 1`,
+            ).get(data.projectId) as { id: string } | undefined;
+            const triggerMessageId = userMsg?.id ?? '';
+
+            const run = runRepo.create({
+              projectId: data.projectId,
+              agentInstanceId: leaderInstance.id,
+              requestedByType: 'user',
+              requestedById: data.externalUserId,
+              instruction: data.text,
+              triggerMessageId,
+              modelProfileSnapshotJson: buildModelProfileSnapshot(db, leaderInstance.id),
+            });
+            _scheduler.enqueue({ runId: run.id, projectId: data.projectId, agentInstanceId: leaderInstance.id, instruction: data.text, triggerMessageId });
+          } catch (err) {
+            getLogger()?.error({ err, projectId: data.projectId, channelId: event.channelId }, 'Failed to enqueue run for channel message');
+          }
+        }
+      }
+    }
+
+    // Handle channel.stop: cancel active runs in the scheduler
+    if (event.type === 'channel.stop' && _scheduler) {
+      const data = event.data as { projectId: string; runIds: string[] };
+      if (data.projectId) {
+        _scheduler.cancelProject(data.projectId);
+      }
+    }
+  });
+
   registerIpc('channels:list', async () => {
     const rows = db.prepare('SELECT id, type, name, enabled, status, config_json as configJson, secret_ref as secretRef, last_connected_at as lastConnectedAt, last_error as lastError FROM channels ORDER BY type, name').all();
     return { ok: true, data: rows.map((r: any) => ({ ...r, enabled: !!r.enabled, configJson: r.configJson ? JSON.parse(r.configJson) : {} })) };
   });
-  registerIpc('channels:save', async (_event, input: { id?: string; type: string; name: string; config: Record<string, unknown> }) => {
+  registerIpc('channels:save', async (_event, input: { id?: string; type: string; name: string; config: Record<string, unknown>; secret?: string }) => {
     const now = new Date().toISOString();
     const configJson = JSON.stringify(input.config || {});
+    let secretRef: string | null = null;
+
+    // Handle secret storage via safeStorage
+    if (input.secret && safeStorage.isEncryptionAvailable()) {
+      const ciphertext = safeStorage.encryptString(input.secret);
+      secretRef = `ch-secret-${randomUUID().slice(0, 8)}`;
+      // Check if channel already has a secret_ref to update
+      if (input.id) {
+        const existing = db.prepare('SELECT secret_ref FROM channels WHERE id = ?').get(input.id) as { secret_ref: string | null } | undefined;
+        if (existing?.secret_ref) {
+          // Delete old secret
+          db.prepare('DELETE FROM secrets WHERE id = ?').run(existing.secret_ref);
+        }
+      }
+      db.prepare('INSERT INTO secrets (id, kind, ciphertext, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(secretRef, input.type, ciphertext, now, now);
+    }
+
     if (input.id) {
-      db.prepare('UPDATE channels SET name = ?, type = ?, config_json = ?, updated_at = ? WHERE id = ?').run(input.name, input.type, configJson, now, input.id);
-      return { ok: true, data: { id: input.id, type: input.type, name: input.name, enabled: false, status: 'disconnected' } };
+      if (secretRef) {
+        db.prepare('UPDATE channels SET name = ?, type = ?, config_json = ?, secret_ref = ?, updated_at = ? WHERE id = ?').run(input.name, input.type, configJson, secretRef, now, input.id);
+      } else {
+        db.prepare('UPDATE channels SET name = ?, type = ?, config_json = ?, updated_at = ? WHERE id = ?').run(input.name, input.type, configJson, now, input.id);
+      }
+      return { ok: true, data: { id: input.id, type: input.type, name: input.name, enabled: false, status: 'disconnected', secretRef } };
+    }
+    // Upsert: check for existing channel with same type+name
+    const existing = db.prepare('SELECT id FROM channels WHERE type = ? AND name = ?').get(input.type, input.name) as { id: string } | undefined;
+    if (existing) {
+      if (secretRef) {
+        db.prepare('UPDATE channels SET config_json = ?, secret_ref = ?, updated_at = ? WHERE id = ?').run(configJson, secretRef, now, existing.id);
+      } else {
+        db.prepare('UPDATE channels SET config_json = ?, updated_at = ? WHERE id = ?').run(configJson, now, existing.id);
+      }
+      return { ok: true, data: { id: existing.id, type: input.type, name: input.name, enabled: false, status: 'disconnected', secretRef } };
     }
     const id = randomUUID().toLowerCase().replace(/-/g, '').slice(0, 24);
-    db.prepare('INSERT INTO channels (id, type, name, config_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)').run(id, input.type, input.name, configJson, now, now);
-    return { ok: true, data: { id, type: input.type, name: input.name, enabled: false, status: 'disconnected' } };
+    if (secretRef) {
+      db.prepare('INSERT INTO channels (id, type, name, config_json, secret_ref, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, input.type, input.name, configJson, secretRef, now, now);
+    } else {
+      db.prepare('INSERT INTO channels (id, type, name, config_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)').run(id, input.type, input.name, configJson, now, now);
+    }
+    return { ok: true, data: { id, type: input.type, name: input.name, enabled: false, status: 'disconnected', secretRef } };
   });
   registerIpc('channels:test', async (_event, input: { channelId: string }) => {
     try {
-      const row = db.prepare('SELECT id, type, config_json as configJson, secret_ref as secretRef FROM channels WHERE id = ?').get(input.channelId) as { id: string; type: string; configJson: string; secretRef: string | null } | undefined;
-      if (!row) return { ok: true, data: { success: false, message: '渠道不存在' } };
-
-      const config = JSON.parse(row.configJson || '{}') as Record<string, unknown>;
-      let testUrl = '';
-      let success = false;
-      let message = '';
-      let httpStatus: number | undefined;
-      if (row.type === 'telegram' && config.token) {
-        testUrl = `https://api.telegram.org/bot${config.token}/getMe`;
-      } else if (row.type === 'dingtalk') {
-        testUrl = 'https://oapi.dingtalk.com/gettoken';
-      } else if (row.type === 'lark') {
-        testUrl = 'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal';
-      } else if (row.type === 'wecom-webhook') {
-        testUrl = 'https://qyapi.weixin.qq.com/cgi-bin/gettoken';
-      }
-
-      if (testUrl) {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 5000);
-        try {
-          const resp = await fetch(testUrl, { method: 'HEAD', signal: controller.signal });
-          clearTimeout(timeout);
-          success = resp.ok || resp.status < 500;
-          httpStatus = resp.status;
-          message = success ? `${row.type} 连接正常 (${resp.status})` : `连接异常 (${resp.status})`;
-        } catch {
-          clearTimeout(timeout);
-          success = false;
-          message = `${row.type} 连接超时或不可达`;
-        }
-      } else {
-        success = true;
-        message = `${row.type} 配置已验证（无网络测试）`;
-      }
-
-      const now = new Date().toISOString();
-       const testResult = success ? 'success' : 'failure';
-      db.prepare('UPDATE channels SET last_test_result = ?, last_tested_at = ? WHERE id = ?').run(testResult, now, input.channelId);
-      return { ok: true, data: { success, message, httpStatus } };
+      const result = await mgr.test(input.channelId);
+      return { ok: true, data: result };
     } catch (err) {
       return { ok: true, data: { success: false, message: String(err) } };
     }
@@ -1436,14 +1567,21 @@ const registerChannelIpc = (db: ReturnType<typeof getDatabase>): void => {
       if (!row) return { ok: false, requestId: '-', error: { code: 'NOT_FOUND', message: '渠道不存在', retryable: false } };
       if (row.last_test_result !== 'success') return { ok: false, requestId: '-', error: { code: 'CHANNEL_NOT_TESTED', message: '渠道未通过测试，无法启用', retryable: false } };
       db.prepare('UPDATE channels SET enabled = ?, status = ?, updated_at = ? WHERE id = ?').run(1, 'connecting', now, input.channelId);
+      mgr.start(input.channelId).catch((err) => {
+        getLogger()?.error({ err, channelId: input.channelId }, 'Failed to start channel');
+      });
     } else {
       db.prepare('UPDATE channels SET enabled = ?, status = ?, updated_at = ? WHERE id = ?').run(0, 'disconnected', now, input.channelId);
+      mgr.stop(input.channelId).catch(() => {});
     }
     return { ok: true };
   });
 };
 
 const registerMissingIpc = (db: ReturnType<typeof getDatabase>): void => {
+  ipcMain.on('debug:preload', (_event, ...args: unknown[]) => {
+    console.log('[debug:preload]', ...args);
+  });
   registerIpc('app:search', async (_event, input: { query: string; limit?: number }) => {
     const data = new SearchRepository(db).search(input.query, input.limit);
     return { ok: true, data };
@@ -1452,41 +1590,6 @@ const registerMissingIpc = (db: ReturnType<typeof getDatabase>): void => {
     if (isSafeExternalUrl(input.url)) { await shell.openExternal(input.url); return { ok: true }; }
     throw new DatabaseError('VALIDATION_FAILED', '不允许打开非 HTTPS 外部链接');
   });
-  registerIpc('studio:getStatus', async () => {
-    const markerPath = join(getStudioRoot(), '.kstudio', 'workspace.json');
-    const initialized = existsSync(markerPath);
-    let marker: { workspaceId?: string; schemaVersion?: number } = {};
-    if (initialized) {
-      try { marker = JSON.parse(await readFile(markerPath, 'utf8')); } catch { /* ignore */ }
-    }
-    return { ok: true, data: { initialized, workspaceId: marker.workspaceId ?? '', schemaVersion: marker.schemaVersion ?? 0, rootPath: getStudioRoot() } };
-  });
-  registerIpc('studio:chooseAndInitialize', async () => {
-    const result = await dialog.showOpenDialog({ properties: ['openDirectory'], title: '选择 K_Studio 工作区根目录' });
-    if (result.canceled || result.filePaths.length === 0) return { ok: true, data: null };
-    setStudioRoot(result.filePaths[0]!);
-    const { workspaceId, isNew } = await ensureStudioWorkspace();
-    const acquired = await tryAcquireLock(result.filePaths[0]!);
-    if (!acquired) throw new DatabaseError('STUDIO_WORKSPACE_LOCKED', '工作区已被其他进程占用');
-    return { ok: true, data: { workspaceId, isNew, rootPath: result.filePaths[0] } };
-  });
-  registerIpc('studio:chooseAndOpenExisting', async () => {
-    const result = await dialog.showOpenDialog({ properties: ['openDirectory'], title: '选择已有 K_Studio 工作区' });
-    if (result.canceled || result.filePaths.length === 0) return { ok: true, data: null };
-    const markerPath = join(result.filePaths[0]!, '.kstudio', 'workspace.json');
-    if (!existsSync(markerPath)) throw new DatabaseError('STUDIO_WORKSPACE_INVALID', '所选目录不是有效的 K_Studio 工作区');
-    setStudioRoot(result.filePaths[0]!);
-    const acquired = await tryAcquireLock(result.filePaths[0]!);
-    if (!acquired) throw new DatabaseError('STUDIO_WORKSPACE_LOCKED', '工作区已被其他进程占用');
-    const marker = JSON.parse(await readFile(markerPath, 'utf8')) as { workspaceId: string };
-    return { ok: true, data: { workspaceId: marker.workspaceId, rootPath: result.filePaths[0]!, isNew: false } };
-  });
-  registerIpc('studio:validate', async () => {
-    const markerPath = join(getStudioRoot(), '.kstudio', 'workspace.json');
-    if (!existsSync(markerPath)) return { ok: true, data: { valid: false, reason: '未找到 workspace.json' } };
-    return { ok: true, data: { valid: true } };
-  });
-  registerIpc('studio:migrate', async () => ({ ok: true, data: { success: true } }));
   registerIpc('workspace:list', async () => ({ ok: true, data: [] }));
 };
 
@@ -1499,6 +1602,8 @@ const isSafeExternalUrl = (url: string): boolean => {
 };
 
 const createWindow = (): void => {
+  const preloadPath = join(__dirname, '../preload/index.cjs');
+
   const window = new BrowserWindow({
     width: 1720,
     height: 1040,
@@ -1508,7 +1613,7 @@ const createWindow = (): void => {
     backgroundColor: '#f9f9fe',
     autoHideMenuBar: true,
     webPreferences: {
-      preload: join(__dirname, '../preload/index.mjs'),
+      preload: preloadPath,
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -1531,6 +1636,11 @@ const createWindow = (): void => {
     void window.loadFile(join(__dirname, '../renderer/index.html'));
   }
 };
+
+// 注册 app-file:// 自定义协议（必须在 app ready 前调用）
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'app-file', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
+]);
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
@@ -1572,6 +1682,67 @@ app.whenReady().then(async () => {
 
   registerWorkspaceIpc();
 
+  registerIpc('studio:getStatus', async () => {
+    const markerPath = join(getStudioRoot(), '.kstudio', 'workspace.json');
+    const initialized = existsSync(markerPath);
+    let marker: { workspaceId?: string; schemaVersion?: number } = {};
+    if (initialized) {
+      try { marker = JSON.parse(await readFile(markerPath, 'utf8')); } catch { /* ignore */ }
+    }
+    return { ok: true, data: { initialized, workspaceId: marker.workspaceId ?? '', schemaVersion: marker.schemaVersion ?? 0, rootPath: getStudioRoot() } };
+  });
+  registerIpc('studio:chooseAndInitialize', async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getAllWindows()[0];
+    win?.focus();
+    const result = await dialog.showOpenDialog(win!, { properties: ['openDirectory'], title: '选择 K_Studio 工作区根目录' });
+    if (result.canceled || result.filePaths.length === 0) return { ok: true, data: null };
+    setStudioRoot(result.filePaths[0]!);
+    const { workspaceId, isNew } = await ensureStudioWorkspace();
+    const acquired = await tryAcquireLock(result.filePaths[0]!);
+    if (!acquired) throw new DatabaseError('STUDIO_WORKSPACE_LOCKED', '工作区已被其他进程占用');
+    return { ok: true, data: { workspaceId, isNew, rootPath: result.filePaths[0] } };
+  });
+  registerIpc('studio:chooseAndOpenExisting', async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getAllWindows()[0];
+    win?.focus();
+    const result = await dialog.showOpenDialog(win!, { properties: ['openDirectory'], title: '选择已有 K_Studio 工作区' });
+    if (result.canceled || result.filePaths.length === 0) return { ok: true, data: null };
+    const markerPath = join(result.filePaths[0]!, '.kstudio', 'workspace.json');
+    if (!existsSync(markerPath)) throw new DatabaseError('STUDIO_WORKSPACE_INVALID', '所选目录不是有效的 K_Studio 工作区');
+    setStudioRoot(result.filePaths[0]!);
+    const acquired = await tryAcquireLock(result.filePaths[0]!);
+    if (!acquired) throw new DatabaseError('STUDIO_WORKSPACE_LOCKED', '工作区已被其他进程占用');
+    const marker = JSON.parse(await readFile(markerPath, 'utf8')) as { workspaceId: string };
+    return { ok: true, data: { workspaceId: marker.workspaceId, rootPath: result.filePaths[0]!, isNew: false } };
+  });
+  registerIpc('studio:validate', async () => {
+    const markerPath = join(getStudioRoot(), '.kstudio', 'workspace.json');
+    if (!existsSync(markerPath)) return { ok: true, data: { valid: false, reason: '未找到 workspace.json' } };
+    return { ok: true, data: { valid: true } };
+  });
+  registerIpc('studio:migrate', async () => ({ ok: true, data: { success: true } }));
+  registerIpc('studio:backup', async () => {
+    const dbPath = join(getStudioRoot(), '.kstudio', 'k_studio.db');
+    const backupDir = join(getStudioRoot(), '.kstudio', 'backups');
+    const backupPath = backupDatabase(dbPath, backupDir);
+    return { ok: true, data: { backupPath } };
+  });
+  registerIpc('studio:backupList', async () => {
+    const backupDir = join(getStudioRoot(), '.kstudio', 'backups');
+    const entries = await listBackups(backupDir);
+    return { ok: true, data: { entries } };
+  });
+  registerIpc('studio:backupRestore', async (_event, input: { backupPath: string }) => {
+    const dbPath = join(getStudioRoot(), '.kstudio', 'k_studio.db');
+    await restoreDatabase(dbPath, input.backupPath);
+    return { ok: true, data: { success: true } };
+  });
+  registerIpc('studio:backupDelete', async (_event, input: { filename: string }) => {
+    const backupDir = join(getStudioRoot(), '.kstudio', 'backups');
+    await deleteBackup(backupDir, input.filename);
+    return { ok: true, data: { success: true } };
+  });
+
   const delayedRegisters = (): void => {
     const db = ensureDb();
     seedDefaultProfiles(db);
@@ -1592,12 +1763,16 @@ app.whenReady().then(async () => {
   };
 
   registerIpc('app:ensureStudio', async () => {
+    console.log('[KunQing] ensureStudio called, root:', getStudioRoot());
     const studioRoot = getStudioRoot();
     const markerPath = join(studioRoot, '.kstudio', 'workspace.json');
+    console.log('[KunQing] markerPath:', markerPath, 'exists:', existsSync(markerPath));
     if (!existsSync(markerPath)) throw new DatabaseError('STUDIO_WORKSPACE_INVALID', 'K_Studio 尚未初始化');
     if (!_dbInitialized) {
+      console.log('[KunQing] calling delayedRegisters...');
       delayedRegisters();
       _dbInitialized = true;
+      console.log('[KunQing] delayedRegisters done');
       const db = ensureDb();
       const win = BrowserWindow.getAllWindows()[0];
       if (win && !win.isDestroyed()) {
@@ -1605,6 +1780,34 @@ app.whenReady().then(async () => {
         const executor = createAgentExecutor(db, win, _gateway);
         _scheduler = new Scheduler(db, executor);
         executor.setScheduler(_scheduler);
+
+        // Channel reply: when a run completes, send the result back to the external channel
+        executor.onRunCompleted((_runId, projectId, resultMessageId) => {
+          if (!_channelManager) return;
+          try {
+            // Check if the result message was triggered by a channel message
+            const triggerMsg = db.prepare(
+              `SELECT content_json FROM messages WHERE id = ?`,
+            ).get(resultMessageId) as { content_json: string } | undefined;
+            if (!triggerMsg) return;
+
+            const content = JSON.parse(triggerMsg.content_json);
+            const text = typeof content.text === 'string' ? content.text : '';
+
+            // Find the user message that triggered this run (for channel context)
+            const userMsg = db.prepare(
+              `SELECT content_json FROM messages WHERE project_id = ? AND sender_type = 'user' ORDER BY created_at DESC LIMIT 1`,
+            ).get(projectId) as { content_json: string } | undefined;
+            if (!userMsg) return;
+
+            const userContent = JSON.parse(userMsg.content_json);
+            const channelId = userContent.channelId as string | undefined;
+            const externalConversationId = userContent.externalConversationId as string | undefined;
+            if (channelId && externalConversationId && text) {
+              _channelManager.send(channelId, { conversationId: externalConversationId }, { text }).catch(() => {});
+            }
+          } catch { /* ignore */ }
+        });
         const recoveredCount = _scheduler.recoverInterruptedRuns();
         if (recoveredCount > 0) {
           logger?.info({ recoveredCount }, '应用启动: 已完成未完成 Run 恢复');
@@ -1613,6 +1816,10 @@ app.whenReady().then(async () => {
       const memoryCleanup = startMemoryCleanup(db);
       app.on('before-quit', () => { memoryCleanup(); });
       ensureProjectWorkspace({ projectId: 'annual-finance', name: '年度财务报销审核' }).catch((err) => { logger?.warn({ err }, '种子项目目录创建失败'); });
+
+      if (_channelManager) {
+        _channelManager.startAll();
+      }
 
       const watcher = new FileWatcher(db);
       watcher.onIngest = (fileId) => {
@@ -1630,6 +1837,9 @@ app.whenReady().then(async () => {
     return { ok: true, data: { studioRoot } };
   });
 
+  // 注册 app-file:// 只读协议（在窗口加载前完成注册）
+  registerAppFileProtocol(() => _db);
+
   createWindow();
 
   app.on('activate', () => {
@@ -1637,6 +1847,7 @@ app.whenReady().then(async () => {
   });
 
   app.on('before-quit', async () => {
+    _channelManager?.stopAll();
     await releaseLock(getStudioRoot());
   });
 });

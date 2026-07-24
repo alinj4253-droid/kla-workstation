@@ -165,15 +165,18 @@ describe('createProject', () => {
 
     // Agent instances queryable
     const instances = instanceRepo.listByProject(projectId);
-    expect(instances.length).toBe(2);
+    expect(instances.length).toBe(3);
 
     const leader = instances.find((i) => i.role === 'leader');
     expect(leader).toBeDefined();
     expect(leader!.agentProfileId).toBe('builtin-orchestrator-profile');
 
-    const teammate = instances.find((i) => i.role === 'teammate');
-    expect(teammate).toBeDefined();
-    expect(teammate!.agentProfileId).toBe('builtin-knowledge-profile');
+    const teammates = instances.filter((i) => i.role === 'teammate');
+    expect(teammates.length).toBe(2);
+    const knowledgeTeammate = teammates.find((t) => t.agentProfileId === 'builtin-knowledge-profile');
+    expect(knowledgeTeammate).toBeDefined();
+    const researcherTeammate = teammates.find((t) => t.agentProfileId === 'builtin-researcher-profile');
+    expect(researcherTeammate).toBeDefined();
 
     // Messages queryable
     const messages = messageRepo.listByProject(projectId);
@@ -204,13 +207,17 @@ describe('createProject', () => {
     expect(leader!.agentProfileId).toBe('builtin-orchestrator-profile');
 
     const teammates = instances.filter((i) => i.role === 'teammate');
-    expect(teammates.length).toBe(1);
-    expect(teammates[0]!.agentProfileId).toBe('builtin-knowledge-profile');
+    expect(teammates.length).toBe(2);
+    const knowTeammate = teammates.find((t) => t.agentProfileId === 'builtin-knowledge-profile');
+    expect(knowTeammate).toBeDefined();
+    const resTeammate = teammates.find((t) => t.agentProfileId === 'builtin-researcher-profile');
+    expect(resTeammate).toBeDefined();
 
-    // Leader ordinal is 0, teammate ordinal is 1
+    // Leader ordinal is 0, teammates ordinal are 1,2
     const sorted = [...instances].sort((a, b) => a.ordinal - b.ordinal);
     expect(sorted[0]!.role).toBe('leader');
     expect(sorted[1]!.role).toBe('teammate');
+    expect(sorted[2]!.role).toBe('teammate');
   });
 
   it('AC-HOME-06 creates identity files and memory directories for both agents', async () => {

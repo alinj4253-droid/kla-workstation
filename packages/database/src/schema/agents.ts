@@ -1,5 +1,5 @@
 import { sqliteTable, text, integer, uniqueIndex } from 'drizzle-orm/sqlite-core';
-import { projects } from './projects';
+import { projects } from './projects.js';
 
 export const agentDefinitions = sqliteTable('agent_definitions', {
   id: text('id').notNull(),

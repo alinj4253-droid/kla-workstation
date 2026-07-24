@@ -1,4 +1,4 @@
-import type { AgentRuntimeMode } from './index';
+import type { AgentRuntimeMode } from './index.js';
 
 // ─── Shared types ───────────────────────────────────────────────────────────
 

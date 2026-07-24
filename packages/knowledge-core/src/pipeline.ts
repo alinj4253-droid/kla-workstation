@@ -1,8 +1,8 @@
-import type { PipelineContext, Chunk, ExtractedEntity, ExtractedGraph, GeneratedWikiPage } from './types';
-import { hashContent, slugify } from './types';
-import { parseDocument } from './parsers/index';
-import { chunkDocument } from './chunker';
-import { buildGraphExtractionPrompt, buildWikiGenerationPrompt } from './prompts';
+import type { PipelineContext, Chunk, ExtractedEntity, ExtractedGraph, GeneratedWikiPage } from './types.js';
+import { hashContent, slugify } from './types.js';
+import { parseDocument } from './parsers/index.js';
+import { chunkDocument } from './chunker.js';
+import { buildGraphExtractionPrompt, buildWikiGenerationPrompt } from './prompts.js';
 
 /**
  * Execute the full knowledge ingestion pipeline for a single file.

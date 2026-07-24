@@ -87,7 +87,7 @@ export function WorkspacePage(): React.JSX.Element {
   const [renameValue, setRenameValue] = useState('');
   const [renameError, setRenameError] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<FileEntry | null>(null);
-  const [previewData, setPreviewData] = useState<{ kind: 'text' | 'image' | 'html'; content: string; fileName: string; mimeType: string } | null>(null);
+  const [previewData, setPreviewData] = useState<{ kind: 'text' | 'image' | 'html' | 'pdf'; content: string; fileName: string; mimeType: string } | null>(null);
   const htmlIframeRef = useRef<HTMLIFrameElement>(null);
   const [graphViewerOpen, setGraphViewerOpen] = useState(false);
   const [wikiViewerOpen, setWikiViewerOpen] = useState(false);
@@ -197,11 +197,15 @@ export function WorkspacePage(): React.JSX.Element {
 
   const handlePreview = async (entry: FileEntry): Promise<void> => {
     try {
-      const result = await window.kunqing?.workspace.getPreview({ projectId, relativePath: entry.relativePath, ...(scopeType === 'shared' ? { scopeType: 'shared' as const } : {}) }) as { ok: boolean; data?: { kind: string; content?: string; dataUri?: string; mimeType?: string; error?: string } } | undefined;
+      const result = await window.kunqing?.workspace.getPreview({ projectId, relativePath: entry.relativePath, ...(scopeType === 'shared' ? { scopeType: 'shared' as const } : {}) }) as { ok: boolean; data?: { kind: string; content?: string; dataUri?: string; appFileUrl?: string; mimeType?: string; error?: string } } | undefined;
       if (!result?.ok || !result.data) { setNotice('无法预览此文件'); return; }
       if ('error' in result.data) { setNotice(result.data.error ?? '预览出错'); return; }
       if (result.data.kind === 'image') {
         setPreviewData({ kind: 'image', content: result.data.dataUri ?? '', fileName: entry.name, mimeType: result.data.mimeType ?? '' });
+        return;
+      }
+      if (result.data.kind === 'pdf') {
+        setPreviewData({ kind: 'pdf', content: result.data.appFileUrl ?? '', fileName: entry.name, mimeType: 'application/pdf' });
         return;
       }
       if (result.data.kind === 'html') {
@@ -350,6 +354,8 @@ export function WorkspacePage(): React.JSX.Element {
               <div className="preview-image-wrapper">
                 <img src={previewData.content} alt={previewData.fileName} className="preview-image" />
               </div>
+            ) : previewData.kind === 'pdf' ? (
+              <iframe src={previewData.content} className="preview-iframe" title="PDF 预览" />
             ) : previewData.kind === 'html' ? (
               <iframe ref={htmlIframeRef} className="preview-iframe" sandbox="allow-same-origin" title="HTML 预览" />
             ) : previewData.fileName.endsWith('.md') ? (

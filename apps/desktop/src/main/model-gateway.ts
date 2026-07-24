@@ -21,6 +21,10 @@ export const BUILTIN_AGENT_REQUIREMENTS: AgentCapabilityRequirements[] = [
     definitionId: 'builtin.knowledge-manager',
     requiredCapabilities: ['streaming', 'structuredOutput'],
   },
+  {
+    definitionId: 'builtin.researcher',
+    requiredCapabilities: ['streaming', 'structuredOutput'],
+  },
 ];
 
 /** 验证模型能力是否满足智能体要求 */

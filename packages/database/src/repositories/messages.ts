@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import { BaseRepository } from './base';
+import { BaseRepository } from './base.js';
 
 export interface MessageRow {
   id: string;

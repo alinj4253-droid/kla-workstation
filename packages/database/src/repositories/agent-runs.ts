@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import { BaseRepository } from './base';
-import { notFound } from '../errors';
+import { BaseRepository } from './base.js';
+import { notFound } from '../errors.js';
 
 export type RunStatus = 'queued' | 'starting' | 'running' | 'completed' | 'failed' | 'cancelling' | 'cancelled' | 'interrupted';
 

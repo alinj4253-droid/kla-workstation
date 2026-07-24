@@ -5,20 +5,23 @@
   "type": "module",
   "main": "./out/main/index.js",
   "scripts": {
-    "dev": "electron-vite dev",
+    "dev": "electron-rebuild -f -w better-sqlite3 && electron-vite dev",
     "dev:web": "vite --config vite.web.config.ts",
-    "build": "electron-vite build",
+    "build": "electron-rebuild -f -w better-sqlite3 && electron-vite build",
     "build:web": "vite build --config vite.web.config.ts",
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "package:win": "pnpm build && electron-builder --win nsis"
+    "test:e2e": "vitest run tests/ --config vitest.config.ts",
+    "licenses": "node scripts/generate-licenses.mjs",
+    "package:win": "pnpm build && node scripts/generate-licenses.mjs && electron-builder --win nsis"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.16",
     "@ai-sdk/google": "^1.0.0",
     "@ai-sdk/openai": "^4.0.16",
     "@kunqing/agent-core": "workspace:*",
+    "@kunqing/channel-core": "workspace:*",
     "@kunqing/database": "workspace:*",
     "@kunqing/knowledge-core": "workspace:*",
     "@langchain/core": "^1.2.3",
@@ -53,6 +56,7 @@
     "zustand": "^5.0.14"
   },
   "devDependencies": {
+    "@electron/rebuild": "^4.2.0",
     "@tailwindcss/vite": "^4.3.3",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",

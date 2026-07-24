@@ -63,9 +63,10 @@ interface PerProjectState {
 }
 
 interface PreviewData {
-  kind: 'text' | 'image' | 'unknown' | 'html';
+  kind: 'text' | 'image' | 'unknown' | 'html' | 'pdf';
   content?: string;
   dataUri?: string;
+  appFileUrl?: string;
   mimeType?: string;
   fileName: string;
   fileId?: string;
@@ -396,6 +397,8 @@ export function ChatPage(): React.JSX.Element {
                 <div className="file-empty" style={{ padding: '40px' }}><FileText size={34} /><span>{previewData.error}</span></div>
               ) : previewData.kind === 'image' && previewData.dataUri ? (
                 <div style={{ padding: '16px', textAlign: 'center' }}><img src={previewData.dataUri} alt={previewData.fileName} style={{ maxWidth: '100%', maxHeight: '70vh', objectFit: 'contain' }} /></div>
+              ) : previewData.kind === 'pdf' && previewData.appFileUrl ? (
+                <iframe src={previewData.appFileUrl} className="preview-iframe" title="PDF 预览" style={{ width: '100%', flex: 1, border: 'none' }} />
               ) : previewData.kind === 'html' && previewData.content ? (
                 <iframe srcDoc={DOMPurify.sanitize(previewData.content)} className="preview-iframe" sandbox="allow-same-origin" title="HTML 预览" style={{ width: '100%', flex: 1, border: 'none' }} />
               ) : previewData.kind === 'text' ? (

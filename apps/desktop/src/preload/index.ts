@@ -22,6 +22,10 @@ const api = {
     chooseAndOpenExisting: (): Promise<unknown> => rpc('studio:chooseAndOpenExisting'),
     validate: (input: { rootPath: string }): Promise<unknown> => rpc('studio:validate', input),
     migrate: (input: { rootPath: string }): Promise<unknown> => rpc('studio:migrate', input),
+    backup: (): Promise<unknown> => rpc('studio:backup'),
+    backupList: (): Promise<unknown> => rpc('studio:backupList'),
+    backupRestore: (input: { backupPath: string }): Promise<unknown> => rpc('studio:backupRestore', input),
+    backupDelete: (input: { filename: string }): Promise<unknown> => rpc('studio:backupDelete', input),
   },
   drafts: {
     get: (input: { scope: string; scopeId: string }): Promise<unknown> => rpc('drafts:get', input),
@@ -138,6 +142,11 @@ const api = {
       const listener = (_event: Electron.IpcRendererEvent, data: unknown): void => handler(data);
       ipcRenderer.on('event:dispatch', listener);
       return () => ipcRenderer.removeListener('event:dispatch', listener);
+    },
+    subscribeChannels: (handler: (event: { type: string; channelId: string; data: unknown }) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { type: string; channelId: string; data: unknown }): void => handler(data);
+      ipcRenderer.on('channel:event', listener);
+      return () => ipcRenderer.removeListener('channel:event', listener);
     },
   },
 } as const;

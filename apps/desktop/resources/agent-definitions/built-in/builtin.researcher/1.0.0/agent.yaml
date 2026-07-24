@@ -1,0 +1,20 @@
+schemaVersion: 1
+id: builtin.researcher
+version: 1.0.0
+displayName: 资料调研智能体
+runtime: native-model
+framework: langgraph-js
+entry: researcherGraph
+defaultModelSlot: fast
+modelRequirements:
+  - structuredOutput
+skills:
+  - information-retrieval
+  - source-analysis
+tools:
+  - knowledge.search
+  - workspace.search
+  - memory.writeOwn
+memoryPolicy:
+  shortTermTtlHours: 72
+  longTermWrite: candidate-then-commit

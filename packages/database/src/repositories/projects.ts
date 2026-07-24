@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import { BaseRepository } from './base';
-import { conflict, notFound } from '../errors';
+import { BaseRepository } from './base.js';
+import { conflict, notFound } from '../errors.js';
 
 export interface ProjectRow {
   id: string;

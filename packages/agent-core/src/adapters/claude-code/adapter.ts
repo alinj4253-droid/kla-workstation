@@ -4,10 +4,10 @@ import type {
   ExecutableRef, VersionEvidence, CliConnectionSnapshot, AuthProbeResult,
   ExternalRunRequest, AgentEventSink, ExternalRunResult, AdapterCapability,
 } from '../../external-agent-adapter';
-import { ClaudeCodeDetector } from './detect';
-import { ClaudeCodeAutoStrategy } from './strategies/auto';
+import { ClaudeCodeDetector } from './detect.js';
+import { ClaudeCodeAutoStrategy } from './strategies/auto.js';
 
-export { ClaudeCodeAutoStrategy } from './strategies/auto';
+export { ClaudeCodeAutoStrategy } from './strategies/auto.js';
 
 export class ClaudeCodeCliAdapter implements ExternalAgentAdapter {
   readonly type = 'claude-code';

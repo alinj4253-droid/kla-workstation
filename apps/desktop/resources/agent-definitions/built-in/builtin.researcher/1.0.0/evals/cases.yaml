@@ -1,0 +1,11 @@
+cases:
+  - id: research-basic-query
+    instruction: "搜索关于财务报销流程的信息"
+    expect:
+      - tool: knowledge.search
+      - maxSteps: 5
+  - id: research-cross-reference
+    instruction: "对比两份政策文件的差异"
+    expect:
+      - tool: knowledge.search
+      - maxSteps: 8

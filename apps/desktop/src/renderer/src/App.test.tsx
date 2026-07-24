@@ -104,6 +104,7 @@ function createMockKunqing(overrides?: Partial<Record<string, unknown>>): void {
     },
     events: {
       subscribe: () => () => {},
+      subscribeChannels: () => () => {},
     },
   };
   (window as unknown as Record<string, unknown>).kunqing = overrides

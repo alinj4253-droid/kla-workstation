@@ -20,7 +20,12 @@ function BootstrapGate({ children }: { children: React.ReactNode }): React.JSX.E
   const [ready, setReady] = useState<'loading' | 'welcome' | 'app'>('loading');
 
   useEffect(() => {
-    window.kunqing!.studio.getStatus()
+    if (!window.kunqing?.studio) {
+      // preload 未加载或 API 不可用，直接显示欢迎页（按钮会给出友好提示）
+      setReady('welcome');
+      return;
+    }
+    window.kunqing.studio.getStatus()
       .then((result: unknown) => {
         const status = result as { ok: boolean; data: { initialized: boolean } };
         if (status.ok && status.data.initialized) {

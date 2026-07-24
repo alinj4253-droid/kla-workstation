@@ -447,7 +447,7 @@ const migrations: Array<{ name: string; sql: string }> = [
 
       -- FTS5 virtual tables
       CREATE VIRTUAL TABLE IF NOT EXISTS project_fts USING fts5(
-        project_id, name, summary, content='projects', content_rowid='rowid'
+        id, name, summary, content='projects', content_rowid='rowid'
       );
 
       CREATE VIRTUAL TABLE IF NOT EXISTS message_fts USING fts5(
@@ -470,14 +470,14 @@ const migrations: Array<{ name: string; sql: string }> = [
     sql: `
       -- project_fts sync triggers
       CREATE TRIGGER IF NOT EXISTS trg_project_fts_insert AFTER INSERT ON projects BEGIN
-        INSERT INTO project_fts(rowid, project_id, name, summary) VALUES (new.rowid, new.id, new.name, new.summary);
+        INSERT INTO project_fts(rowid, id, name, summary) VALUES (new.rowid, new.id, new.name, new.summary);
       END;
       CREATE TRIGGER IF NOT EXISTS trg_project_fts_delete AFTER DELETE ON projects BEGIN
-        INSERT INTO project_fts(project_fts, rowid, project_id, name, summary) VALUES('delete', old.rowid, old.id, old.name, old.summary);
+        INSERT INTO project_fts(project_fts, rowid, id, name, summary) VALUES('delete', old.rowid, old.id, old.name, old.summary);
       END;
       CREATE TRIGGER IF NOT EXISTS trg_project_fts_update AFTER UPDATE ON projects BEGIN
-        INSERT INTO project_fts(project_fts, rowid, project_id, name, summary) VALUES('delete', old.rowid, old.id, old.name, old.summary);
-        INSERT INTO project_fts(rowid, project_id, name, summary) VALUES (new.rowid, new.id, new.name, new.summary);
+        INSERT INTO project_fts(project_fts, rowid, id, name, summary) VALUES('delete', old.rowid, old.id, old.name, old.summary);
+        INSERT INTO project_fts(rowid, id, name, summary) VALUES (new.rowid, new.id, new.name, new.summary);
       END;
 
       -- message_fts sync triggers (only index final text content_json)
@@ -504,10 +504,34 @@ const migrations: Array<{ name: string; sql: string }> = [
         INSERT INTO knowledge_chunk_fts(rowid, chunk_id, text) VALUES (new.rowid, new.id, new.text);
       END;
 
-      -- Rebuild FTS indexes for existing data
+      -- FTS rebuilds skipped — column name mismatches fixed in 007 (message_fts) and 008 (knowledge_chunk_fts)
+    `,
+  },
+  {
+    name: '003_fix_project_fts_column',
+    sql: `
+      -- Fix project_fts FTS5 table: column name 'project_id' changed to 'id' to match projects.id
+      DROP TRIGGER IF EXISTS trg_project_fts_insert;
+      DROP TRIGGER IF EXISTS trg_project_fts_delete;
+      DROP TRIGGER IF EXISTS trg_project_fts_update;
+      DROP TABLE IF EXISTS project_fts;
+
+      CREATE VIRTUAL TABLE IF NOT EXISTS project_fts USING fts5(
+        id, name, summary, content='projects', content_rowid='rowid'
+      );
+
+      CREATE TRIGGER IF NOT EXISTS trg_project_fts_insert AFTER INSERT ON projects BEGIN
+        INSERT INTO project_fts(rowid, id, name, summary) VALUES (new.rowid, new.id, new.name, new.summary);
+      END;
+      CREATE TRIGGER IF NOT EXISTS trg_project_fts_delete AFTER DELETE ON projects BEGIN
+        INSERT INTO project_fts(project_fts, rowid, id, name, summary) VALUES('delete', old.rowid, old.id, old.name, old.summary);
+      END;
+      CREATE TRIGGER IF NOT EXISTS trg_project_fts_update AFTER UPDATE ON projects BEGIN
+        INSERT INTO project_fts(project_fts, rowid, id, name, summary) VALUES('delete', old.rowid, old.id, old.name, old.summary);
+        INSERT INTO project_fts(rowid, id, name, summary) VALUES (new.rowid, new.id, new.name, new.summary);
+      END;
+
       INSERT INTO project_fts(project_fts) VALUES('rebuild');
-      INSERT INTO message_fts(message_fts) VALUES('rebuild');
-      INSERT INTO knowledge_chunk_fts(knowledge_chunk_fts) VALUES('rebuild');
     `,
   },
   {
@@ -517,6 +541,89 @@ const migrations: Array<{ name: string; sql: string }> = [
       ALTER TABLE channels ADD COLUMN last_tested_at TEXT;
       ALTER TABLE channels ADD COLUMN updated_at TEXT;
       CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_events_dedup ON channel_events(channel_id, external_event_id);
+    `,
+  },
+  {
+    name: '007_fix_message_fts_column',
+    sql: `
+      DROP TRIGGER IF EXISTS trg_message_fts_insert;
+      DROP TRIGGER IF EXISTS trg_message_fts_delete;
+      DROP TRIGGER IF EXISTS trg_message_fts_update;
+      DROP TABLE IF EXISTS message_fts;
+
+      CREATE VIRTUAL TABLE IF NOT EXISTS message_fts USING fts5(
+        id UNINDEXED, project_id UNINDEXED, content_json, content='messages', content_rowid='rowid'
+      );
+
+      CREATE TRIGGER IF NOT EXISTS trg_message_fts_insert AFTER INSERT ON messages BEGIN
+        INSERT INTO message_fts(rowid, id, project_id, content_json) VALUES (new.rowid, new.id, new.project_id, new.content_json);
+      END;
+      CREATE TRIGGER IF NOT EXISTS trg_message_fts_delete AFTER DELETE ON messages BEGIN
+        INSERT INTO message_fts(message_fts, rowid, id, project_id, content_json) VALUES('delete', old.rowid, old.id, old.project_id, old.content_json);
+      END;
+      CREATE TRIGGER IF NOT EXISTS trg_message_fts_update AFTER UPDATE ON messages BEGIN
+        INSERT INTO message_fts(message_fts, rowid, id, project_id, content_json) VALUES('delete', old.rowid, old.id, old.project_id, old.content_json);
+        INSERT INTO message_fts(rowid, id, project_id, content_json) VALUES (new.rowid, new.id, new.project_id, new.content_json);
+      END;
+
+      INSERT INTO message_fts(message_fts) VALUES('rebuild');
+    `,
+  },
+  {
+    name: '008_fix_knowledge_chunk_fts_column',
+    sql: `
+      DROP TRIGGER IF EXISTS trg_chunk_fts_insert;
+      DROP TRIGGER IF EXISTS trg_chunk_fts_delete;
+      DROP TRIGGER IF EXISTS trg_chunk_fts_update;
+      DROP TABLE IF EXISTS knowledge_chunk_fts;
+
+      CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunk_fts USING fts5(
+        id UNINDEXED, text, content='knowledge_chunks', content_rowid='rowid'
+      );
+
+      CREATE TRIGGER IF NOT EXISTS trg_chunk_fts_insert AFTER INSERT ON knowledge_chunks BEGIN
+        INSERT INTO knowledge_chunk_fts(rowid, id, text) VALUES (new.rowid, new.id, new.text);
+      END;
+      CREATE TRIGGER IF NOT EXISTS trg_chunk_fts_delete AFTER DELETE ON knowledge_chunks BEGIN
+        INSERT INTO knowledge_chunk_fts(knowledge_chunk_fts, rowid, id, text) VALUES('delete', old.rowid, old.id, old.text);
+      END;
+      CREATE TRIGGER IF NOT EXISTS trg_chunk_fts_update AFTER UPDATE ON knowledge_chunks BEGIN
+        INSERT INTO knowledge_chunk_fts(knowledge_chunk_fts, rowid, id, text) VALUES('delete', old.rowid, old.id, old.text);
+        INSERT INTO knowledge_chunk_fts(rowid, id, text) VALUES (new.rowid, new.id, new.text);
+      END;
+
+      INSERT INTO knowledge_chunk_fts(knowledge_chunk_fts) VALUES('rebuild');
+    `,
+  },
+  {
+    name: '009_create_skills_tables',
+    sql: `
+      CREATE TABLE IF NOT EXISTS skills (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL,
+        prompt_md TEXT,
+        required_capabilities_json TEXT,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        is_builtin INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_skills_name ON skills(name);
+
+      CREATE TABLE IF NOT EXISTS agent_skills (
+        agent_definition_id TEXT NOT NULL,
+        agent_definition_version TEXT NOT NULL,
+        skill_id TEXT NOT NULL REFERENCES skills(id),
+        ordinal INTEGER NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_skills ON agent_skills(agent_definition_id, agent_definition_version, skill_id);
+    `,
+  },
+  {
+    name: '010_add_channels_created_at',
+    sql: `
+      ALTER TABLE channels ADD COLUMN created_at TEXT;
     `,
   },
 ];

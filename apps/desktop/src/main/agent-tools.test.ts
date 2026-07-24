@@ -90,9 +90,9 @@ function createDb(): Database.Database {
       content_json TEXT,
       created_at TEXT NOT NULL
     );
-    CREATE VIRTUAL TABLE project_fts USING fts5(project_id, name, summary);
-    CREATE VIRTUAL TABLE message_fts USING fts5(message_id, project_id, content);
-    CREATE VIRTUAL TABLE knowledge_chunk_fts USING fts5(chunk_id, source_id, text);
+    CREATE VIRTUAL TABLE project_fts USING fts5(id, name, summary);
+    CREATE VIRTUAL TABLE message_fts USING fts5(id UNINDEXED, project_id UNINDEXED, content_json);
+    CREATE VIRTUAL TABLE knowledge_chunk_fts USING fts5(id UNINDEXED, text);
   `);
   return db;
 }

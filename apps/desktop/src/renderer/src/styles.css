@@ -2147,6 +2147,68 @@ button {
   font-size: 11px;
 }
 
+.privacy-notice {
+  width: 100%;
+  margin-top: 32px;
+  padding: 24px;
+  background: var(--kq-surface);
+  border: 1px solid var(--kq-border);
+  border-radius: 12px;
+  text-align: left;
+}
+
+.privacy-notice h3 {
+  margin: 0 0 16px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--kq-text);
+}
+
+.privacy-notice ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.privacy-notice li {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--kq-text-secondary);
+  padding-left: 14px;
+  border-left: 3px solid var(--kq-primary);
+}
+
+.privacy-footnote {
+  margin: 16px 0 0;
+  font-size: 11px;
+  color: var(--kq-text-tertiary);
+}
+
+.privacy-accept-btn {
+  margin-top: 24px;
+  padding: 20px 28px;
+  color: white;
+  background: linear-gradient(145deg, #5e5ce6, #3936bd);
+  border: none;
+}
+
+.privacy-accept-btn:hover {
+  border: none;
+  box-shadow: 0 14px 30px rgba(68, 65, 204, 0.35);
+  transform: translateY(-2px);
+}
+
+.privacy-accept-btn strong {
+  color: white;
+}
+
+.privacy-accept-btn span {
+  color: rgba(255, 255, 255, 0.8);
+}
+
 /* Graph Viewer */
 .graph-viewer-overlay { position: fixed; inset: 0; z-index: 1500; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.35); }
 .graph-viewer { background: var(--kq-surface); border-radius: var(--kq-radius-card); width: 92vw; height: 88vh; display: flex; flex-direction: column; box-shadow: 0 10px 25px rgba(0,0,0,.1); overflow: hidden; }

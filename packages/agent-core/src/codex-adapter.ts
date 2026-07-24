@@ -8,4 +8,4 @@
  *   ├─ strategies/
  *   └─ contract-tests/
  */
-export { CodexCliAdapter, CodexAutoStrategy } from './adapters/codex/adapter';
+export { CodexCliAdapter, CodexAutoStrategy } from './adapters/codex/adapter.js';
