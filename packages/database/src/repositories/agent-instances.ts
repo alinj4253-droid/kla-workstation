@@ -31,6 +31,7 @@ export class AgentInstanceRepository extends BaseRepository {
     definitionVersion: string;
     role: 'leader' | 'teammate';
     runtimeMode: 'native-model' | 'external-cli';
+    cliConnectionId?: string;
     identityRelPath?: string;
     memoryRelPath?: string;
     ordinal: number;
@@ -39,12 +40,12 @@ export class AgentInstanceRepository extends BaseRepository {
     this.db.prepare(
       `INSERT INTO project_agent_instances
        (id, project_id, agent_profile_id, definition_id, definition_version, role, runtime_mode,
-        identity_rel_path, memory_rel_path, ordinal, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        cli_connection_id, identity_rel_path, memory_rel_path, ordinal, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       input.id, input.projectId, input.agentProfileId,
       input.definitionId, input.definitionVersion, input.role, input.runtimeMode,
-      input.identityRelPath ?? null, input.memoryRelPath ?? null,
+      input.cliConnectionId ?? null, input.identityRelPath ?? null, input.memoryRelPath ?? null,
       input.ordinal, now,
     );
   }

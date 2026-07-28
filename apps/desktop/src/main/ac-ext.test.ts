@@ -39,14 +39,14 @@ describe('AC-EXT-01', () => {
 // AC-EXT-02: 特殊字符不会造成额外命令执行
 // ---------------------------------------------------------------------------
 describe('AC-EXT-02', () => {
-  it('CodexCliAdapter uses shell: false', async () => {
+  it('CodexCliAdapter uses shell: process.platform check', async () => {
     const source = readFileSync(resolve(import.meta.dirname, '../../../../packages/agent-core/src/adapters/codex/adapter.ts'), 'utf-8');
-    expect(source).toContain('shell: false');
+    expect(source).toContain('shell: process.platform');
   });
 
-  it('ClaudeCodeCliAdapter uses shell: false', async () => {
+  it('ClaudeCodeCliAdapter uses shell: process.platform check', async () => {
     const source = readFileSync(resolve(import.meta.dirname, '../../../../packages/agent-core/src/adapters/claude-code/adapter.ts'), 'utf-8');
-    expect(source).toContain('shell: false');
+    expect(source).toContain('shell: process.platform');
   });
 
   it('cli-executor source uses spawn not exec', () => {

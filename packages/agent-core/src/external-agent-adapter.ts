@@ -19,7 +19,7 @@ export type SpawnSpec = {
   cwd: string;
   env: Record<string, string>;
   stdin?: Uint8Array;
-  shell: false;
+  shell: boolean;
 };
 
 // ─── Detect ─────────────────────────────────────────────────────────────────

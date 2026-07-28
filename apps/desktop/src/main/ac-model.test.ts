@@ -8,6 +8,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import Database from 'better-sqlite3';
 import { ModelGateway, validateModelForAgent, BUILTIN_AGENT_REQUIREMENTS } from './model-gateway';
+import type { ModelCapability } from './model-gateway';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -167,7 +168,7 @@ describe('AC-MODEL-01: 模型能力校验', () => {
       // 验证该 profile 满足 orchestrator 的能力要求
       const profileRow = db.prepare('SELECT verified_capabilities_json FROM model_profiles WHERE id = ?').get(profileA) as { verified_capabilities_json: string };
       const caps = JSON.parse(profileRow.verified_capabilities_json) as string[];
-      const validation = validateModelForAgent('builtin.orchestrator', caps);
+      const validation = validateModelForAgent('builtin.orchestrator', caps as ModelCapability[]);
       expect(validation.allowed).toBe(true);
     });
 
@@ -183,7 +184,7 @@ describe('AC-MODEL-01: 模型能力校验', () => {
       const profileRow = db.prepare('SELECT verified_capabilities_json FROM model_profiles WHERE id = ?').get('prof-text') as { verified_capabilities_json: string };
       const caps = JSON.parse(profileRow.verified_capabilities_json) as string[];
 
-      const validation = validateModelForAgent('builtin.orchestrator', caps);
+      const validation = validateModelForAgent('builtin.orchestrator', caps as ModelCapability[]);
       expect(validation.allowed).toBe(false);
     });
   });

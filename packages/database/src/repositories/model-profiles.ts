@@ -40,6 +40,18 @@ export class ModelProfileRepository extends BaseRepository {
     return this.getById(id);
   }
 
+  update(id: string, changes: { name?: string; providerId?: string; modelId?: string; modelSlot?: string | null }): void {
+    const sets: string[] = [];
+    const params: unknown[] = [];
+    if (changes.name !== undefined) { sets.push('name = ?'); params.push(changes.name); }
+    if (changes.providerId !== undefined) { sets.push('provider_id = ?'); params.push(changes.providerId); }
+    if (changes.modelId !== undefined) { sets.push('model_id = ?'); params.push(changes.modelId); }
+    if (changes.modelSlot !== undefined) { sets.push('model_slot = ?'); params.push(changes.modelSlot); }
+    if (sets.length === 0) return;
+    params.push(id);
+    this.db.prepare(`UPDATE model_profiles SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+  }
+
   updateVerification(id: string, capabilities: string[], testedAt: string): void {
     this.db.prepare(
       'UPDATE model_profiles SET verified_capabilities_json = ?, capability_tested_at = ? WHERE id = ?',

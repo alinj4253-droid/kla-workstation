@@ -40,9 +40,14 @@ export class ModelProviderRepository extends BaseRepository {
     return this.getById(id);
   }
 
-  update(id: string, changes: { status?: string; lastCheckedAt?: string; secretRef?: string }): void {
+  update(id: string, changes: { name?: string; type?: string; baseUrl?: string | null; authType?: string; configJson?: string | null; status?: string; lastCheckedAt?: string; secretRef?: string }): void {
     const sets: string[] = [];
     const params: unknown[] = [];
+    if (changes.name !== undefined) { sets.push('name = ?'); params.push(changes.name); }
+    if (changes.type !== undefined) { sets.push('type = ?'); params.push(changes.type); }
+    if (changes.baseUrl !== undefined) { sets.push('base_url = ?'); params.push(changes.baseUrl); }
+    if (changes.authType !== undefined) { sets.push('auth_type = ?'); params.push(changes.authType); }
+    if (changes.configJson !== undefined) { sets.push('config_json = ?'); params.push(changes.configJson); }
     if (changes.status !== undefined) { sets.push('status = ?'); params.push(changes.status); }
     if (changes.lastCheckedAt !== undefined) { sets.push('last_checked_at = ?'); params.push(changes.lastCheckedAt); }
     if (changes.secretRef !== undefined) { sets.push('secret_ref = ?'); params.push(changes.secretRef); }

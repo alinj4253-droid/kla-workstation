@@ -126,6 +126,11 @@ const MOCK_AGENT_CARDS: AgentCardData[] = [
   { id: 'aion', name: 'Aion CLI', definitionVersion: '0.1.0', framework: 'external-cli', modelProfile: '-', skills: ['代码生成', '文件读写', '搜索'], permissions: ['read', 'write', 'delegate'], testStatus: 'untested', referencedChats: 0, isBuiltin: false, enabled: false, adapterType: 'aion', executablePath: 'aion', detectedVersion: '0.1.0' },
   { id: 'gemini', name: 'Gemini CLI', definitionVersion: '0.1.0', framework: 'external-cli', modelProfile: '-', skills: ['代码生成', '文件读写', '搜索', '推理'], permissions: ['read', 'write'], testStatus: 'untested', referencedChats: 0, isBuiltin: false, enabled: false, adapterType: 'gemini', executablePath: 'gemini', detectedVersion: '0.1.0' },
   { id: 'qwen-code', name: 'Qwen Code', definitionVersion: '0.1.0', framework: 'external-cli', modelProfile: '-', skills: ['代码生成', '文件读写', '搜索'], permissions: ['read', 'write'], testStatus: 'untested', referencedChats: 0, isBuiltin: false, enabled: false, adapterType: 'qwen-code', executablePath: 'qwen-code', detectedVersion: '0.1.0' },
+  { id: 'opencode', name: 'Opencode', definitionVersion: '0.1.0', framework: 'external-cli', modelProfile: '-', skills: ['代码生成', '文件读写', '搜索', '网络访问'], permissions: ['read', 'write'], testStatus: 'untested', referencedChats: 0, isBuiltin: false, enabled: false, adapterType: 'opencode', executablePath: 'opencode', detectedVersion: '0.1.0' },
+  { id: 'codegeex', name: 'CodeGeeX', definitionVersion: '0.1.0', framework: 'external-cli', modelProfile: '-', skills: ['代码生成', '文件读写', '搜索'], permissions: ['read', 'write'], testStatus: 'untested', referencedChats: 0, isBuiltin: false, enabled: false, adapterType: 'codegeex', executablePath: 'codegeex', detectedVersion: '0.1.0' },
+  { id: 'kimi', name: 'Kimi', definitionVersion: '0.1.0', framework: 'external-cli', modelProfile: '-', skills: ['代码生成', '文件读写', '搜索', '推理'], permissions: ['read', 'write'], testStatus: 'untested', referencedChats: 0, isBuiltin: false, enabled: false, adapterType: 'kimi', executablePath: 'kimi', detectedVersion: '0.1.0' },
+  { id: 'minimax', name: 'MiniMax', definitionVersion: '0.1.0', framework: 'external-cli', modelProfile: '-', skills: ['代码生成', '文件读写', '搜索'], permissions: ['read', 'write'], testStatus: 'untested', referencedChats: 0, isBuiltin: false, enabled: false, adapterType: 'minimax', executablePath: 'minimax', detectedVersion: '0.1.0' },
+  { id: 'marcode', name: 'MarsCode', definitionVersion: '0.1.0', framework: 'external-cli', modelProfile: '-', skills: ['代码生成', '文件读写', '搜索'], permissions: ['read', 'write'], testStatus: 'untested', referencedChats: 0, isBuiltin: false, enabled: false, adapterType: 'marcode', executablePath: 'marcode', detectedVersion: '0.1.0' },
 ];
 
 function AgentsSettings(): React.JSX.Element {
@@ -134,22 +139,22 @@ function AgentsSettings(): React.JSX.Element {
   const [query, setQuery] = useState('');
   const [testing, setTesting] = useState<string>();
   const [addOpen, setAddOpen] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [agentDialog, setAgentDialog] = useState<{ type: 'switchModel' | 'manageSkills' | 'tightenPermissions' | 'cloneProfile'; agent: AgentCardData } | null>(null);
 
-  const loadAgents = useCallback(async (): Promise<void> => {
-    setLoading(true);
-    try {
-      const [cliRes, profRes, defRes] = await Promise.all([
-        (window.kunqing?.agents.detectCli() as Promise<{ ok: boolean; data: Array<{ id: string; adapterType: string; executablePath: string; detectedVersion: string | null; status: string }> }> | undefined) ?? Promise.resolve({ ok: true, data: [] }),
-        (window.kunqing?.agents.listProfiles() as Promise<{ ok: boolean; data: Array<{ id: string; name: string; runtimeMode: string; enabled: boolean; definitionId?: string }> }> | undefined) ?? Promise.resolve({ ok: true, data: [] }),
-        (window.kunqing?.agents.listDefinitions() as Promise<{ ok: boolean; data: Array<{ id: string; version: string; kind: string; isBuiltin: boolean }> }> | undefined) ?? Promise.resolve({ ok: true, data: [] }),
-      ]);
+  // 构建卡片的辅助函数，复用逻辑
+  const buildCards = useCallback((
+    cliData: Array<{ id: string; adapterType: string; executablePath: string; detectedVersion: string | null; status: string }>,
+    connData: Array<{ id: string; name: string; adapterType: string; executablePath: string; detectedVersion: string | null; status: string }>,
+    profData: Array<{ id: string; name: string; runtimeMode: string; enabled: boolean; definitionId?: string }>,
+    defData: Array<{ id: string; version: string; kind: string; isBuiltin: boolean }>
+  ): AgentCardData[] => {
+    const defMap = new Map(defData.map((d) => [d.id, d]));
+    const savedTypes = new Set(connData.map((c) => c.adapterType));
 
-      const defMap = new Map((defRes?.data ?? []).map((d) => [d.id, d]));
-
-      // 从 CLI 检测结果构建卡片
-      const cliCards: AgentCardData[] = (cliRes?.data ?? []).map((c) => {
+    const cliCards: AgentCardData[] = cliData
+      .filter((c) => !savedTypes.has(c.adapterType))
+      .map((c) => {
         const card: AgentCardData = {
           id: c.id,
           name: c.adapterType,
@@ -169,48 +174,125 @@ function AgentsSettings(): React.JSX.Element {
         return card;
       });
 
-      // 从 Profile 构建内置卡片
-      const profCards: AgentCardData[] = (profRes?.data ?? [])
-        .filter((p) => p.runtimeMode === 'external-cli' || p.runtimeMode === 'native-model')
-        .map((p) => {
-          const def = defMap.get(p.definitionId ?? '');
-          return {
-            id: p.id,
-            name: p.name,
-            definitionVersion: def?.version ?? '-',
-            framework: p.runtimeMode === 'native-model' ? 'LangGraph.js' : 'external-cli',
-            modelProfile: '-',
-            skills: [],
-            permissions: [],
-            testStatus: 'passed' as const,
-            referencedChats: 0,
-            isBuiltin: def?.isBuiltin ?? true,
-            enabled: p.enabled,
-          };
-        });
+    const connCards: AgentCardData[] = connData.map((c) => {
+      const card: AgentCardData = {
+        id: c.id,
+        name: c.name || c.adapterType,
+        definitionVersion: defMap.get(c.adapterType)?.version ?? '-',
+        framework: 'external-cli',
+        modelProfile: '-',
+        skills: [],
+        permissions: [],
+        testStatus: 'untested' as const,
+        referencedChats: 0,
+        isBuiltin: false,
+        enabled: true,
+        adapterType: c.adapterType,
+        executablePath: c.executablePath,
+      };
+      if (c.detectedVersion != null) card.detectedVersion = c.detectedVersion;
+      return card;
+    });
 
-      const cards = [...cliCards, ...profCards];
-      // 如果没有真实数据，使用 mock 数据
+    const profCards: AgentCardData[] = profData
+      .filter((p) => p.runtimeMode === 'external-cli' || p.runtimeMode === 'native-model')
+      .map((p) => {
+        const def = defMap.get(p.definitionId ?? '');
+        return {
+          id: p.id,
+          name: p.name,
+          definitionVersion: def?.version ?? '-',
+          framework: p.runtimeMode === 'native-model' ? 'LangGraph.js' : 'external-cli',
+          modelProfile: '-',
+          skills: [],
+          permissions: [],
+          testStatus: 'passed' as const,
+          referencedChats: 0,
+          isBuiltin: def?.isBuiltin ?? true,
+          enabled: p.enabled,
+        };
+      });
+
+    return [...connCards, ...cliCards, ...profCards];
+  }, []);
+
+  // 只加载已保存的连接，不检测 PATH
+  const loadSavedAgents = useCallback(async (): Promise<void> => {
+    // 先展示 mock 数据，不显示 loading
+    setAgents(MOCK_AGENT_CARDS);
+
+    try {
+      const [connRes, profRes, defRes] = await Promise.all([
+        (window.kunqing?.agents.listCliConnections() as Promise<{ ok: boolean; data: Array<{ id: string; name: string; adapterType: string; executablePath: string; detectedVersion: string | null; status: string }> }> | undefined) ?? Promise.resolve({ ok: true, data: [] }),
+        (window.kunqing?.agents.listProfiles() as Promise<{ ok: boolean; data: Array<{ id: string; name: string; runtimeMode: string; enabled: boolean; definitionId?: string }> }> | undefined) ?? Promise.resolve({ ok: true, data: [] }),
+        (window.kunqing?.agents.listDefinitions() as Promise<{ ok: boolean; data: Array<{ id: string; version: string; kind: string; isBuiltin: boolean }> }> | undefined) ?? Promise.resolve({ ok: true, data: [] }),
+      ]);
+
+      const cards = buildCards([], connRes?.data ?? [], profRes?.data ?? [], defRes?.data ?? []);
+      setAgents(cards.length > 0 ? cards : MOCK_AGENT_CARDS);
+    } catch { /* ignore */ }
+  }, [buildCards]);
+
+  // 完整重新检测（用户主动点击）
+  const loadAgents = useCallback(async (): Promise<void> => {
+    setLoading(true);
+    try {
+      const [cliRes, connRes, profRes, defRes] = await Promise.all([
+        (window.kunqing?.agents.detectCli() as Promise<{ ok: boolean; data: Array<{ id: string; adapterType: string; executablePath: string; detectedVersion: string | null; status: string }> }> | undefined) ?? Promise.resolve({ ok: true, data: [] }),
+        (window.kunqing?.agents.listCliConnections() as Promise<{ ok: boolean; data: Array<{ id: string; name: string; adapterType: string; executablePath: string; detectedVersion: string | null; status: string }> }> | undefined) ?? Promise.resolve({ ok: true, data: [] }),
+        (window.kunqing?.agents.listProfiles() as Promise<{ ok: boolean; data: Array<{ id: string; name: string; runtimeMode: string; enabled: boolean; definitionId?: string }> }> | undefined) ?? Promise.resolve({ ok: true, data: [] }),
+        (window.kunqing?.agents.listDefinitions() as Promise<{ ok: boolean; data: Array<{ id: string; version: string; kind: string; isBuiltin: boolean }> }> | undefined) ?? Promise.resolve({ ok: true, data: [] }),
+      ]);
+
+      const cards = buildCards(cliRes?.data ?? [], connRes?.data ?? [], profRes?.data ?? [], defRes?.data ?? []);
       setAgents(cards.length > 0 ? cards : MOCK_AGENT_CARDS);
     } catch { setAgents(MOCK_AGENT_CARDS); }
     setLoading(false);
-  }, []);
+  }, [buildCards]);
 
-  useEffect(() => { void loadAgents(); }, [loadAgents]);
+  useEffect(() => {
+    // 页面加载时，只加载已保存的连接，不检测 PATH
+    void loadSavedAgents();
+  }, [loadSavedAgents]);
 
-  const filtered = useMemo(() => agents.filter((agent) => {
-    const matchFilter = filter === '内置智能体' ? agent.isBuiltin : filter === 'CLI 智能体' ? !agent.isBuiltin && agent.framework === 'external-cli' : !agent.isBuiltin && agent.framework !== 'external-cli';
-    const matchQuery = agent.name.toLowerCase().includes(query.toLowerCase());
-    return matchFilter && matchQuery;
-  }), [agents, filter, query]);
+  const filtered = useMemo(() => {
+    return agents.filter((agent) => {
+      const matchFilter = filter === '内置智能体' ? agent.isBuiltin : filter === 'CLI 智能体' ? !agent.isBuiltin && agent.framework === 'external-cli' : !agent.isBuiltin && agent.framework !== 'external-cli';
+      const matchQuery = agent.name.toLowerCase().includes(query.toLowerCase());
+      return matchFilter && matchQuery;
+    });
+  }, [agents, filter, query]);
 
   const testAgent = async (id: string): Promise<void> => {
     setTesting(id);
     try {
-      await window.kunqing?.agents.testCliConnection({ connectionId: id });
-      setAgents((current) => current.map((agent) => agent.id === id ? { ...agent, testStatus: 'passed' as const } : agent));
-    } catch { /* ignore */ }
+      const result = await window.kunqing?.agents.testCliConnection({ connectionId: id });
+      const resultData = result as { ok: boolean; data: { success: boolean; version: string | null; error?: string } };
+      if (resultData?.ok && resultData?.data?.success) {
+        setAgents((current) => current.map((agent) => {
+          if (agent.id !== id) return agent;
+          const updated: AgentCardData = { ...agent, testStatus: 'passed' as const };
+          if (resultData.data.version) {
+            updated.detectedVersion = resultData.data.version;
+          }
+          return updated;
+        }));
+      } else {
+        setAgents((current) => current.map((agent) => agent.id === id ? { ...agent, testStatus: 'failed' as const } : agent));
+      }
+    } catch { 
+      setAgents((current) => current.map((agent) => agent.id === id ? { ...agent, testStatus: 'failed' as const } : agent));
+    }
     setTesting(undefined);
+  };
+
+  const deleteAgent = async (id: string): Promise<void> => {
+    try {
+      // 先更新 UI，立即从列表中移除该记录，避免用户等待
+      setAgents(prev => prev.filter(agent => agent.id !== id));
+      // 然后执行删除操作
+      await window.kunqing?.agents.deleteCliConnection({ connectionId: id });
+    } catch { /* ignore */ }
   };
 
   const frameworkIcon = (fw: string): React.ReactNode => {
@@ -274,14 +356,22 @@ function AgentsSettings(): React.JSX.Element {
                   <button type="button" className="secondary-button secondary-button--small" title="克隆为自定义 Profile" onClick={() => setAgentDialog({ type: 'cloneProfile', agent })}><Copy size={13} /> 克隆</button>
                 </div>
               ) : (
-                <span className="agent-card__cli-path" title={agent.executablePath}>{agent.executablePath}</span>
+                <div className="agent-card__cli-actions">
+                  <span className="agent-card__cli-path" title={agent.executablePath}>
+                    {agent.executablePath}
+                    {agent.detectedVersion && <span className="agent-card__version">v{agent.detectedVersion}</span>}
+                  </span>
+                  <button type="button" className="secondary-button secondary-button--small" title="删除" onClick={() => void deleteAgent(agent.id)}>
+                    <Trash2 size={13} /> 删除
+                  </button>
+                </div>
               )}
             </footer>
           </article>
         ))}
       </div>
       <button type="button" className="add-agent-button" onClick={() => setAddOpen(true)}><Plus size={17} /> 添加自定义智能体</button>
-      {addOpen && <ConnectionWizardDialog onClose={() => setAddOpen(false)} onAdded={() => { setAddOpen(false); void loadAgents(); }} />}
+      {addOpen && <ConnectionWizardDialog onClose={() => setAddOpen(false)} onAdded={() => { setAddOpen(false); setFilter('CLI 智能体'); void loadSavedAgents(); }} />}
       {agentDialog && <AgentActionDialog dialog={agentDialog} onClose={() => setAgentDialog(null)} onRefresh={loadAgents} />}
       </>
       )}
@@ -318,6 +408,10 @@ function ConnectionWizardDialog({ onClose, onAdded }: { onClose: () => void; onA
     try {
       const res = await (window.kunqing?.agents.wizardStartAuto({ adapterType }) as Promise<{ ok: boolean; data: WizardSnapshot }>);
       updateSnap(res);
+      if (res?.data?.step === 'readingVersion') {
+        const step2 = await (window.kunqing?.agents.wizardReadVersion() as Promise<{ ok: boolean; data: WizardSnapshot }>);
+        updateSnap(step2);
+      }
     } catch { /* ignore */ }
     setWorking(false);
   };
@@ -394,6 +488,11 @@ function ConnectionWizardDialog({ onClose, onAdded }: { onClose: () => void; onA
               <option value="aion">Aion CLI</option>
               <option value="gemini">Gemini CLI</option>
               <option value="qwen-code">Qwen Code</option>
+              <option value="opencode">Opencode</option>
+              <option value="codegeex">CodeGeeX</option>
+              <option value="kimi">Kimi</option>
+              <option value="minimax">MiniMax</option>
+              <option value="marcode">MarsCode</option>
               <option value="custom">自定义</option>
             </select>
           </label>
@@ -419,8 +518,7 @@ function ConnectionWizardDialog({ onClose, onAdded }: { onClose: () => void; onA
     );
   }
 
-  if (snap.step === 'readingVersion' || snap.step === 'selectingStrategy') {
-    const s = snap as WizardSnapshot & { step: 'readingVersion' | 'selectingStrategy' };
+  if (snap.step === 'readingVersion') {
     return (
       <div className="modal-backdrop" role="presentation">
         <div className="agent-dialog">
@@ -430,17 +528,33 @@ function ConnectionWizardDialog({ onClose, onAdded }: { onClose: () => void; onA
           </header>
           <div style={{ padding: '20px 0', textAlign: 'center' }}>
             <Loader2 size={24} className="spin" />
-            <p style={{ marginTop: 8, color: 'var(--kq-text-tertiary)' }}>路径: {s.executablePath}</p>
-            {s.detectedVersion && <p>检测到版本: {s.detectedVersion}</p>}
+            <p style={{ marginTop: 8, color: 'var(--kq-text-tertiary)' }}>路径: {snap.executablePath}</p>
           </div>
-          {s.step === 'selectingStrategy' && (
-            <footer>
-              <button type="button" className="secondary-button" onClick={() => void handleCancel()}>取消</button>
-              <button type="button" className="primary-button" onClick={() => void handleNext('probeAuth')} disabled={working}>
-                {working ? '处理中…' : '下一步：认证探测'}
-              </button>
-            </footer>
-          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (snap.step === 'selectingStrategy') {
+    const s = snap as WizardSnapshot & { step: 'selectingStrategy' };
+    return (
+      <div className="modal-backdrop" role="presentation">
+        <div className="agent-dialog">
+          <header>
+            <div><h3>接入智能体</h3><p style={{ color: 'var(--kq-primary)' }}>版本信息已获取</p></div>
+            <button type="button" className="icon-button" aria-label="关闭" onClick={() => void handleCancel()}><X size={18} /></button>
+          </header>
+          <div style={{ padding: '20px 0', textAlign: 'center' }}>
+            <div style={{ fontSize: 40, color: 'var(--kq-primary)', marginBottom: 8 }}>✓</div>
+            <p>路径: {s.executablePath}</p>
+            {s.detectedVersion && <p>版本: {s.detectedVersion}</p>}
+          </div>
+          <footer>
+            <button type="button" className="secondary-button" onClick={() => void handleCancel()}>取消</button>
+            <button type="button" className="primary-button" onClick={() => void handleNext('probeAuth')} disabled={working}>
+              {working ? '处理中…' : '下一步：认证探测'}
+            </button>
+          </footer>
         </div>
       </div>
     );
@@ -467,16 +581,16 @@ function ConnectionWizardDialog({ onClose, onAdded }: { onClose: () => void; onA
       <div className="modal-backdrop" role="presentation">
         <div className="agent-dialog">
           <header>
-            <div><h3>接入智能体</h3><p>正在准备 Smoke 测试工作区…</p></div>
+            <div><h3>接入智能体</h3><p style={{ color: 'var(--kq-primary)' }}>认证探测完成</p></div>
             <button type="button" className="icon-button" aria-label="关闭" onClick={() => void handleCancel()}><X size={18} /></button>
           </header>
           <div style={{ padding: '20px 0', textAlign: 'center' }}>
-            <Loader2 size={24} className="spin" />
-            <p style={{ marginTop: 8, color: 'var(--kq-text-tertiary)', fontSize: 10 }}>创建沙箱目录并写入固定输入</p>
+            <div style={{ fontSize: 40, color: 'var(--kq-primary)', marginBottom: 8 }}>✓</div>
+            <p style={{ fontSize: 10, color: 'var(--kq-text-tertiary)' }}>将创建沙箱目录并运行 Smoke 测试</p>
           </div>
           <footer>
             <button type="button" className="secondary-button" onClick={() => void handleCancel()}>取消</button>
-            <button type="button" className="primary-button" onClick={() => void handleNext('runSmokeTest')} disabled={working}>
+            <button type="button" className="primary-button" onClick={() => void handleNext('prepareSmokeWorkspace')} disabled={working}>
               {working ? '处理中…' : '下一步：运行 Smoke 测试'}
             </button>
           </footer>
@@ -490,12 +604,11 @@ function ConnectionWizardDialog({ onClose, onAdded }: { onClose: () => void; onA
       <div className="modal-backdrop" role="presentation">
         <div className="agent-dialog">
           <header>
-            <div><h3>接入智能体</h3><p>正在运行 Smoke 测试…</p></div>
+            <div><h3>接入智能体</h3><p>准备运行 Smoke 测试</p></div>
             <button type="button" className="icon-button" aria-label="关闭" onClick={() => void handleCancel()}><X size={18} /></button>
           </header>
           <div style={{ padding: '20px 0', textAlign: 'center' }}>
-            <Loader2 size={24} className="spin" />
-            <p style={{ marginTop: 8, color: 'var(--kq-text-tertiary)', fontSize: 10 }}>
+            <p style={{ fontSize: 10, color: 'var(--kq-text-tertiary)' }}>
               工作区: {snap.smokeWorkspaceDir || '-'}
             </p>
           </div>
@@ -810,8 +923,12 @@ function ModelsSettings(): React.JSX.Element {
   const [loading, setLoading] = useState(true);
   const [testingId, setTestingId] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<Record<string, { success: boolean; latencyMs: number; error?: string }>>({});
+  const [modelIdInput, setModelIdInput] = useState<Record<string, string>>({});
   const [providerDialogOpen, setProviderDialogOpen] = useState(false);
+  const [editingProvider, setEditingProvider] = useState<Record<string, unknown> | null>(null);
   const [profileDialogOpen, setProfileDialogOpen] = useState(false);
+  const [editingProfile, setEditingProfile] = useState<Record<string, unknown> | null>(null);
+  const [deletingProfileId, setDeletingProfileId] = useState<string | null>(null);
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true);
@@ -828,11 +945,16 @@ function ModelsSettings(): React.JSX.Element {
 
   useEffect(() => { void load(); }, [load]);
 
-  const testProvider = async (id: string): Promise<void> => {
+  const testProvider = async (id: string, modelId?: string): Promise<void> => {
     setTestingId(id);
     try {
-      const res = await (window.kunqing?.models.testProvider({ providerId: id }) as Promise<{ ok: boolean; data: { success: boolean; latencyMs: number; error?: string } }> | undefined);
-      if (res?.data) setTestResult(prev => ({ ...prev, [id]: res.data }));
+      const params: { providerId: string; modelId?: string } = { providerId: id };
+      if (modelId !== undefined) params.modelId = modelId;
+      const res = await (window.kunqing?.models.testProvider(params) as Promise<{ ok: boolean; data: { success: boolean; latencyMs: number; error?: string } }> | undefined);
+      if (res?.data) {
+        setTestResult(prev => ({ ...prev, [id]: res.data }));
+        if (res.data.success) setModelIdInput(prev => ({ ...prev, [id]: '' }));
+      }
     } catch {
       setTestResult(prev => ({ ...prev, [id]: { success: false, latencyMs: 0, error: '调用失败' } }));
     }
@@ -858,8 +980,10 @@ function ModelsSettings(): React.JSX.Element {
             {providers.length === 0 && <p className="model-empty">尚未添加供应商</p>}
             {providers.map((p) => {
               const result = testResult[p.id as string];
+              const needsModelId = result && !result.success && result.error?.includes('未提供 modelId');
+              const pid = p.id as string;
               return (
-              <article className="model-provider-card" key={p.id as string}>
+              <article className="model-provider-card" key={pid}>
                 <header>
                   <span className="model-provider-badge">{p.type as string}</span>
                   <span className={`connection-status connection-status--${(p.status as string) === 'available' ? 'ok' : 'off'}`}>
@@ -870,35 +994,56 @@ function ModelsSettings(): React.JSX.Element {
                 <p className="model-provider-url">{(p.baseUrl as string) ?? '默认地址'}</p>
                 <footer>
                   <div className="model-provider-actions">
-                    {result && (
+                    {result && !needsModelId && (
                       <span className={`test-badge test-badge--${result.success ? 'ok' : 'error'}`}>
                         {result.success ? `连通 (${result.latencyMs}ms)` : (result.error ?? '测试失败')}
                       </span>
                     )}
-                    <button type="button" className="secondary-button secondary-button--small" onClick={() => void testProvider(p.id as string)} disabled={testingId === p.id}>
-                      {testingId === p.id ? '测试中…' : '测试连接'}
-                    </button>
+                    {needsModelId ? (
+                      <div className="model-id-prompt">
+                        <span className="test-badge test-badge--error">缺少模型 ID</span>
+                        <div className="model-id-input-row">
+                          <input
+                            value={modelIdInput[pid] ?? ''}
+                            onChange={(e) => setModelIdInput(prev => ({ ...prev, [pid]: e.target.value }))}
+                            placeholder="输入模型 ID，如 gpt-4o"
+                          />
+                          <button type="button" className="primary-button primary-button--small" onClick={() => void testProvider(pid, modelIdInput[pid]?.trim())} disabled={testingId === pid || !modelIdInput[pid]?.trim()}>
+                            {testingId === pid ? '测试中…' : '测试'}
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <button type="button" className="secondary-button secondary-button--small" onClick={() => void testProvider(pid)} disabled={testingId === pid}>
+                          {testingId === pid ? '测试中…' : '测试连接'}
+                        </button>
+                        <button type="button" className="secondary-button secondary-button--small" onClick={() => { setEditingProvider(p as Record<string, unknown>); setProviderDialogOpen(true); }}>编辑</button>
+                        <button type="button" className="secondary-button secondary-button--small" style={{ color: 'var(--kq-danger)' }} onClick={() => { if (confirm('确认删除此供应商及其所有 Profile？')) { window.kunqing?.models.deleteProvider({ id: pid }); void load(); } }}>删除</button>
+                      </>
+                    )}
                   </div>
                 </footer>
               </article>);
             })}
           </div>
-          <button type="button" className="add-agent-button" onClick={() => setProviderDialogOpen(true)}><Plus size={17} /> 添加供应商</button>
-          {providerDialogOpen && <ProviderDialog onClose={() => setProviderDialogOpen(false)} onSaved={() => { setProviderDialogOpen(false); void load(); }} />}
+          <button type="button" className="add-agent-button" onClick={() => { setEditingProvider(null); setProviderDialogOpen(true); }}><Plus size={17} /> 添加供应商</button>
+          {providerDialogOpen && <ProviderDialog editProvider={editingProvider} onClose={() => { setProviderDialogOpen(false); setEditingProvider(null); }} onSaved={() => { setProviderDialogOpen(false); setEditingProvider(null); void load(); }} />}
         </>
       ) : (
-        <ProfilesTab profiles={profiles} providers={providers} onRefresh={load} />
+        <ProfilesTab profiles={profiles} providers={providers} onRefresh={load} onAddProfile={() => { setEditingProfile(null); setProfileDialogOpen(true); }} onEditProfile={(p) => { setEditingProfile(p); setProfileDialogOpen(true); }} onDeleteProfile={(id) => { if (confirm('确认删除此 Profile？')) { window.kunqing?.models.deleteProfile({ id }); void load(); } }} />
       )}
-      {profileDialogOpen && <ProfileDialog providers={providers} onClose={() => setProfileDialogOpen(false)} onSaved={() => { setProfileDialogOpen(false); void load(); }} />}
+      {profileDialogOpen && <ProfileDialog editProfile={editingProfile} providers={providers} onClose={() => { setProfileDialogOpen(false); setEditingProfile(null); }} onSaved={() => { setProfileDialogOpen(false); setEditingProfile(null); void load(); }} />}
     </div>
   );
 }
 
-function ProviderDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }): React.JSX.Element {
-  const [name, setName] = useState('');
-  const [type, setType] = useState('openai');
-  const [baseUrl, setBaseUrl] = useState('');
-  const [authType, setAuthType] = useState('api-key');
+function ProviderDialog({ editProvider, onClose, onSaved }: { editProvider?: Record<string, unknown> | null; onClose: () => void; onSaved: () => void }): React.JSX.Element {
+  const isEdit = !!editProvider;
+  const [name, setName] = useState((editProvider?.name as string) ?? '');
+  const [type, setType] = useState((editProvider?.type as string) ?? 'openai');
+  const [baseUrl, setBaseUrl] = useState((editProvider?.baseUrl as string) ?? '');
+  const [authType, setAuthType] = useState((editProvider?.authType as string) ?? 'api-key');
   const [apiKey, setApiKey] = useState('');
   const [saving, setSaving] = useState(false);
 
@@ -907,12 +1052,22 @@ function ProviderDialog({ onClose, onSaved }: { onClose: () => void; onSaved: ()
     if (!name.trim()) return;
     setSaving(true);
     try {
-      const res = await window.kunqing?.models.saveProvider({ name: name.trim(), type, baseUrl: baseUrl.trim() || 'https://api.openai.com/v1', authType }) as { ok: boolean; data?: { id: string } } | undefined;
-      if (apiKey.trim() && res?.data?.id) {
-        await window.kunqing?.settings.saveSecret({ kind: `provider-${type}`, value: apiKey.trim() });
+      if (isEdit) {
+        const updateParams: { id: string; name?: string; type?: string; baseUrl?: string | null; authType?: string; apiKey?: string } = { id: editProvider.id as string, name: name.trim(), type, baseUrl: baseUrl.trim() || null, authType };
+        if (apiKey.trim()) updateParams.apiKey = apiKey.trim();
+        const updateRes = await (window.kunqing?.models.updateProvider(updateParams) as Promise<{ ok: boolean; error?: { message: string } }> | undefined);
+        if (updateRes && !updateRes.ok) throw new Error(updateRes.error?.message ?? '更新供应商失败');
+      } else {
+        const providerParams: { name: string; type: string; baseUrl: string; authType: string; apiKey?: string } = { name: name.trim(), type, baseUrl: baseUrl.trim() || 'https://api.openai.com/v1', authType };
+        if (apiKey.trim()) providerParams.apiKey = apiKey.trim();
+        const saveRes = await (window.kunqing?.models.saveProvider(providerParams) as Promise<{ ok: boolean; error?: { message: string } }> | undefined);
+        if (saveRes && !saveRes.ok) throw new Error(saveRes.error?.message ?? '保存供应商失败');
       }
       onSaved();
-    } catch { /* ignore */ }
+    } catch (err) {
+      console.error('保存供应商失败', err);
+      alert(`保存失败：${err instanceof Error ? err.message : String(err)}`);
+    }
     setSaving(false);
   };
 
@@ -920,7 +1075,7 @@ function ProviderDialog({ onClose, onSaved }: { onClose: () => void; onSaved: ()
     <div className="modal-backdrop" role="presentation">
       <form className="model-dialog" onSubmit={(e) => void submit(e)}>
         <header>
-          <div><h3>添加供应商</h3><p>供应商是模型 API 的提供方，如 OpenAI、Ollama 等。</p></div>
+          <div><h3>{isEdit ? '编辑供应商' : '添加供应商'}</h3><p>供应商是模型 API 的提供方，如 OpenAI、Ollama 等。</p></div>
           <button type="button" className="icon-button" aria-label="关闭" onClick={onClose}><X size={18} /></button>
         </header>
         <label><span>名称 *</span><input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：我的 OpenAI" /></label>
@@ -941,7 +1096,7 @@ function ProviderDialog({ onClose, onSaved }: { onClose: () => void; onSaved: ()
             <option value="custom">自定义</option>
           </select>
         </label>
-        <label><span><Key size={14} /> API Key（可选，将加密保存）</span><input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="sk-..." /></label>
+        <label><span><Key size={14} /> {isEdit ? '新 API Key（留空则不修改）' : 'API Key（可选，将加密保存）'}</span><input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="sk-..." /></label>
         <footer>
           <button type="button" className="secondary-button" onClick={onClose}>取消</button>
           <button type="submit" className="primary-button" disabled={saving || !name.trim()}>{saving ? '保存中…' : '保存'}</button>
@@ -951,11 +1106,12 @@ function ProviderDialog({ onClose, onSaved }: { onClose: () => void; onSaved: ()
   );
 }
 
-function ProfileDialog({ providers, onClose, onSaved }: { providers: Record<string, unknown>[]; onClose: () => void; onSaved: () => void }): React.JSX.Element {
-  const [name, setName] = useState('');
-  const [providerId, setProviderId] = useState('');
-  const [modelId, setModelId] = useState('');
-  const [modelSlot, setModelSlot] = useState('');
+function ProfileDialog({ editProfile, providers, onClose, onSaved }: { editProfile?: Record<string, unknown> | null; providers: Record<string, unknown>[]; onClose: () => void; onSaved: () => void }): React.JSX.Element {
+  const isEdit = !!editProfile;
+  const [name, setName] = useState((editProfile?.name as string) ?? '');
+  const [providerId, setProviderId] = useState((editProfile?.providerId as string) ?? '');
+  const [modelId, setModelId] = useState((editProfile?.modelId as string) ?? '');
+  const [modelSlot, setModelSlot] = useState((editProfile?.modelSlot as string) ?? '');
   const [saving, setSaving] = useState(false);
 
   const submit = async (event: FormEvent): Promise<void> => {
@@ -963,9 +1119,12 @@ function ProfileDialog({ providers, onClose, onSaved }: { providers: Record<stri
     if (!name.trim() || !providerId || !modelId.trim()) return;
     setSaving(true);
     try {
-      await window.kunqing?.models.saveProfile({ name: name.trim(), providerId, modelId: modelId.trim(), modelSlot });
+      const profileParams: { id?: string; name: string; providerId: string; modelId: string; modelSlot?: string } = { name: name.trim(), providerId, modelId: modelId.trim() };
+      if (isEdit) profileParams.id = editProfile.id as string;
+      if (modelSlot) profileParams.modelSlot = modelSlot;
+      await window.kunqing?.models.saveProfile(profileParams);
       onSaved();
-    } catch { /* ignore */ }
+    } catch (err) { console.error('保存 Profile 失败', err); }
     setSaving(false);
   };
 
@@ -973,7 +1132,7 @@ function ProfileDialog({ providers, onClose, onSaved }: { providers: Record<stri
     <div className="modal-backdrop" role="presentation">
       <form className="model-dialog" onSubmit={(e) => void submit(e)}>
         <header>
-          <div><h3>添加模型 Profile</h3><p>Profile 绑定供应商和具体模型 ID，可选分配到智能体槽位。</p></div>
+          <div><h3>{isEdit ? '编辑模型 Profile' : '添加模型 Profile'}</h3><p>Profile 绑定供应商和具体模型 ID，可选分配到智能体槽位。</p></div>
           <button type="button" className="icon-button" aria-label="关闭" onClick={onClose}><X size={18} /></button>
         </header>
         <label><span>名称 *</span><input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：GPT-4o 快速" /></label>
@@ -1001,7 +1160,7 @@ function ProfileDialog({ providers, onClose, onSaved }: { providers: Record<stri
   );
 }
 
-function ProfilesTab({ profiles, providers, onRefresh }: { profiles: Record<string, unknown>[]; providers: Record<string, unknown>[]; onRefresh: () => Promise<void> }): React.JSX.Element {
+function ProfilesTab({ profiles, providers, onRefresh, onAddProfile, onEditProfile, onDeleteProfile }: { profiles: Record<string, unknown>[]; providers: Record<string, unknown>[]; onRefresh: () => Promise<void>; onAddProfile: () => void; onEditProfile: (p: Record<string, unknown>) => void; onDeleteProfile: (id: string) => void }): React.JSX.Element {
   const [editingSlot, setEditingSlot] = useState<string | null>(null);
   const [assigningProfileId, setAssigningProfileId] = useState('');
 
@@ -1049,6 +1208,7 @@ function ProfilesTab({ profiles, providers, onRefresh }: { profiles: Record<stri
       </div>
       <div className="model-profile-header">
         <h4>已保存的 Profile</h4>
+        <button type="button" className="secondary-button secondary-button--small" onClick={onAddProfile}><Plus size={14} /> 添加 Profile</button>
         <button type="button" className="secondary-button secondary-button--small" onClick={() => void onRefresh()}><RefreshCw size={14} /> 刷新</button>
       </div>
       <div className="model-profile-list">
@@ -1059,6 +1219,10 @@ function ProfilesTab({ profiles, providers, onRefresh }: { profiles: Record<stri
             <span className="profile-provider">{(p.providerName as string) ?? p.providerId as string}</span>
             <span className="profile-model">{p.modelId as string}</span>
             <span className="profile-slot">{(p.modelSlot as string) ? slotLabels[p.modelSlot as string] ?? (p.modelSlot as string) : '未分配'}</span>
+            <div className="profile-row-actions">
+              <button type="button" className="secondary-button secondary-button--small" onClick={() => onEditProfile(p as Record<string, unknown>)}>编辑</button>
+              <button type="button" className="secondary-button secondary-button--small" style={{ color: 'var(--kq-danger)' }} onClick={() => onDeleteProfile(p.id as string)}>删除</button>
+            </div>
           </div>
         ))}
       </div>

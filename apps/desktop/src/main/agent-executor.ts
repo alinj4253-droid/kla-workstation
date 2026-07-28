@@ -1,4 +1,4 @@
-import { BrowserWindow, app } from 'electron';
+import { BrowserWindow, app, dialog } from 'electron';
 import type Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
@@ -8,10 +8,13 @@ import { MemoryManager } from './memory-manager';
 import { ContextBuilder } from './context-builder';
 import { createProjectTools, registerProjectTools } from './agent-tools';
 import { ToolRegistry } from './tool-registry';
-import { runOrchestrator, type ExecContext } from './langgraph-orchestrator';
+import { runOrchestrator } from './langgraph-orchestrator';
 import { runKnowledgeManager, type KMExecContext } from './langgraph-knowledge-manager';
+import { cliExecutor } from './cli-executor';
+import { cliAgentRegistry } from './cli-agent-registry';
 import { AgentRunRepository, MessageRepository } from '@kunqing/database';
 import { getLogger } from './logger';
+import { getProjectRoot } from './paths';
 
 export type AgentExecutor = {
   (run: QueuedRun, signal: AbortSignal): Promise<void>;
@@ -35,11 +38,12 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
     const logger = getLogger();
 
     const agentInstance = db.prepare(
-      `SELECT pai.id, ap.name as agentName, ap.definition_id as definitionId
+      `SELECT pai.id, pai.runtime_mode as runtimeMode, pai.cli_connection_id as cliConnectionId,
+              ap.name as agentName, ap.definition_id as definitionId
        FROM project_agent_instances pai
        JOIN agent_profiles ap ON ap.id = pai.agent_profile_id
        WHERE pai.id = ?`,
-    ).get(run.agentInstanceId) as { id: string; agentName: string; definitionId: string } | undefined;
+    ).get(run.agentInstanceId) as { id: string; runtimeMode: string; cliConnectionId: string | null; agentName: string; definitionId: string } | undefined;
 
     runRepo.addEvent(run.runId, 'agent.started', {
       definitionId: agentInstance?.definitionId ?? 'unknown',
@@ -48,27 +52,23 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
     });
 
     if (agentInstance?.definitionId === 'builtin.orchestrator') {
-      const ctx: ExecContext = {
-        db,
-        gateway,
-        window,
-        runId: run.runId,
-        projectId: run.projectId,
-        agentInstanceId: run.agentInstanceId,
-        instruction: run.instruction,
-        triggerMessageId: run.triggerMessageId,
-        signal,
-        memory,
-        tools,
-        toolRegistry: registry,
-        scheduler: _scheduler,
-        contextSnapshot: null as any,
-        contextBuilder: new ContextBuilder(db),
-      };
-      return runOrchestrator(ctx).then(() => {
+      const contextBuilder = new ContextBuilder(db);
+      return runOrchestrator(
+        db, gateway, window,
+        run.runId, run.projectId, run.agentInstanceId,
+        run.instruction, run.triggerMessageId, signal,
+        memory, registry, contextBuilder, _scheduler,
+      ).then(() => {
         runRepo.addEvent(run.runId, 'agent.completed', { definitionId: 'builtin.orchestrator' });
       }).catch((err) => {
         runRepo.addEvent(run.runId, 'agent.error', { definitionId: 'builtin.orchestrator', error: err instanceof Error ? err.message : String(err) });
+        if (!window.isDestroyed()) {
+          window.webContents.send('event:dispatch', {
+            type: 'run.status',
+            projectId: run.projectId,
+            run: { id: run.runId, agentId: run.agentInstanceId, status: 'failed', error: err instanceof Error ? err.message : String(err) },
+          });
+        }
         throw err;
       });
     }
@@ -113,6 +113,135 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
       return;
     }
 
+    // ── 外部 CLI 智能体执行 ──
+    if (agentInstance?.runtimeMode === 'external-cli' && agentInstance.cliConnectionId) {
+      const cliRow = db.prepare(`
+        SELECT cc.id, cc.name, cc.adapter_type as adapterType, cc.executable_path as executablePath,
+               cc.args_json as argsJson, cc.strategy_id as strategyId, cc.detected_version as detectedVersion,
+               cc.status, cc.trust_tier as trustTier
+        FROM cli_connections cc
+        WHERE cc.id = ?
+      `).get(agentInstance.cliConnectionId) as {
+        id: string; name: string; adapterType: string; executablePath: string;
+        argsJson: string | null; strategyId: string | null; detectedVersion: string | null;
+        status: string; trustTier: 'trusted' | 'sandboxed' | 'restricted';
+      } | undefined;
+
+      if (cliRow) {
+        const connection: import('@kunqing/agent-core').CliConnectionConfig = {
+          id: cliRow.id, name: cliRow.name, adapterType: cliRow.adapterType,
+          executablePath: cliRow.executablePath,
+          args: cliRow.argsJson ? JSON.parse(cliRow.argsJson) : [],
+          strategyId: cliRow.strategyId ?? 'auto',
+          detectedVersion: cliRow.detectedVersion, status: cliRow.status,
+          trustTier: cliRow.trustTier, capabilities: [], secretRefs: [],
+        };
+
+        // AC-EXT-06: 网络出站提示
+        const adapter = cliAgentRegistry.getAdapter(connection.adapterType);
+        const caps: string[] = adapter && 'getCapabilities' in adapter ? (adapter as any).getCapabilities() : [];
+        if (caps.includes('network-access') && connection.trustTier !== 'trusted') {
+          try {
+            const { response } = await dialog.showMessageBox(window, {
+              type: 'warning',
+              title: '网络出站提示',
+              message: `"${cliRow.name}" (${connection.adapterType}) 是一个网络型 CLI 智能体。`,
+              detail: `它可能需要将上下文发往网络。当前信任级别为「${connection.trustTier}」。是否允许运行？`,
+              buttons: ['允许运行', '取消'],
+              defaultId: 1,
+              cancelId: 1,
+            });
+            if (response === 1) {
+              runRepo.setStatus(run.runId, 'cancelled');
+              if (!window.isDestroyed()) {
+                window.webContents.send('event:dispatch', {
+                  type: 'run.status', projectId: run.projectId,
+                  run: { id: run.runId, agentId: run.agentInstanceId, status: 'cancelled' },
+                });
+              }
+              runRepo.addEvent(run.runId, 'agent.error', { definitionId: agentInstance.definitionId, error: '用户取消' });
+              return;
+            }
+          } catch { /* 对话框异常时继续 */ }
+        }
+
+        // 构建上下文快照
+        try {
+          const ctxBuilder = new ContextBuilder(db);
+          const snapshot = ctxBuilder.build(run.projectId, agentInstance.id);
+          const projectRoot = getProjectRoot(run.projectId);
+          await ctxBuilder.writeContextManifest(snapshot, projectRoot);
+        } catch { /* 非致命 */ }
+
+        if (!window.isDestroyed()) {
+          window.webContents.send('event:dispatch', {
+            type: 'run.status', projectId: run.projectId,
+            run: { id: run.runId, agentId: run.agentInstanceId, status: 'running', message: `${cliRow.name} (CLI) 正在执行...` },
+          });
+        }
+
+        const result = await cliExecutor.execute({
+          connection, instruction: run.instruction, projectId: run.projectId, window, signal,
+        });
+
+        const output = result.output.trim();
+
+        if (result.cancelled) {
+          runRepo.setStatus(run.runId, 'cancelled');
+          if (!window.isDestroyed()) {
+            window.webContents.send('event:dispatch', {
+              type: 'run.status', projectId: run.projectId,
+              run: { id: run.runId, agentId: run.agentInstanceId, status: 'cancelled' },
+            });
+          }
+          return;
+        }
+
+        if (output) {
+          const agentMsgId = randomUUID().toLowerCase().replace(/-/g, '').slice(0, 24);
+
+          for (let i = 0, seq = 0; i < output.length; i += 3, seq++) {
+            if (signal?.aborted) break;
+            if (!window.isDestroyed()) {
+              window.webContents.send('event:dispatch', {
+                type: 'message.delta', projectId: run.projectId, messageId: agentMsgId, seq, delta: output.slice(i, i + 3),
+              });
+            }
+          }
+
+          const agentContent = { schemaVersion: 1 as const, text: output, mentions: [], stagedUploadIds: [] };
+          const contentJson = JSON.stringify(agentContent);
+          const now = new Date().toISOString();
+          db.prepare(
+            'INSERT INTO messages (id, project_id, sender_type, sender_id, kind, content_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          ).run(agentMsgId, run.projectId, 'agent', agentInstance.id, 'text', contentJson, 'sent', now, now);
+
+          runRepo.setResultMessage(run.runId, agentMsgId);
+          _runCompletedCallback?.(run.runId, run.projectId, agentMsgId);
+
+          if (!window.isDestroyed()) {
+            window.webContents.send('event:dispatch', {
+              type: 'run.status', projectId: run.projectId,
+              run: { id: run.runId, agentId: run.agentInstanceId, status: 'completed' },
+            });
+            window.webContents.send('event:dispatch', {
+              type: 'message.committed', projectId: run.projectId, messageId: agentMsgId, senderId: agentInstance.id, content: contentJson,
+            });
+          }
+        } else {
+          if (!window.isDestroyed()) {
+            window.webContents.send('event:dispatch', {
+              type: 'run.status', projectId: run.projectId,
+              run: { id: run.runId, agentId: run.agentInstanceId, status: 'completed', message: `${cliRow.name} (CLI) 执行完毕（无文本输出）` },
+            });
+          }
+        }
+
+        runRepo.addEvent(run.runId, 'agent.completed', { definitionId: agentInstance.definitionId, cli: true, charCount: output.length });
+        return;
+      }
+    }
+
     logger?.info({ runId: run.runId, agentInstanceId: run.agentInstanceId }, 'AgentExecutor: 直接模式');
 
     try {
@@ -131,16 +260,13 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
 你的回复应该专业、准确。使用 Markdown 格式输出。
 ${memoryContext ? `\n${memoryContext}` : ''}`;
 
-      const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
-        { role: 'system', content: systemMsg },
-        ...recentMessages.reverse().slice(-15).map((m) => ({
-          role: m.senderType === 'user' ? 'user' as const : 'assistant' as const,
-          content: (() => { try { return JSON.parse(m.contentJson).text ?? m.contentJson; } catch { return m.contentJson; } })(),
-        })),
-      ];
+      const messages: Array<{ role: 'user' | 'assistant'; content: string }> = recentMessages.reverse().slice(-15).map((m) => ({
+        role: m.senderType === 'user' ? 'user' as const : 'assistant' as const,
+        content: (() => { try { return JSON.parse(m.contentJson).text ?? m.contentJson; } catch { return m.contentJson; } })(),
+      }));
 
       const slot: ModelSlot = agentInstance?.definitionId === 'builtin.knowledge-manager' ? 'fast' : 'reasoning';
-      const stream = await gateway.streamText(slot, messages);
+      const stream = await gateway.streamText(slot, messages, systemMsg);
       const reader = stream.getReader();
       const agentMsgId = randomUUID().toLowerCase().replace(/-/g, '').slice(0, 24);
 

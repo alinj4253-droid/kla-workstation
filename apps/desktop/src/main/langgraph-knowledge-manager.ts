@@ -714,9 +714,9 @@ async function buildVisualizationProjection(state: KMState, config: any): Promis
 }
 
 /**
- * Node 10: report — 生成最终报告
+ * Node 10: generateReport — 生成最终报告
  */
-async function report(state: KMState, _config: any): Promise<Partial<KMState>> {
+async function generateReport(state: KMState, _config: any): Promise<Partial<KMState>> {
   if (state.error && !state.pipelineCompleted) {
     const reportText = state.error.includes('内容过短')
       ? `## 知识入库完成\n\n**文件**: ${basename(state.sourceFilePath || '')}\n\n文档内容过短，跳过知识提取。`
@@ -742,7 +742,7 @@ let _compiledKMGraph: ReturnType<typeof buildKMGraph> | null = null;
  * 根据 10.8 节规范构建 11 节点固定工作流：
  * discoverSource → extractText → normalizeAndChunk → extractEntitiesAndRelations
  * → validateSchema → upsertGraph → buildProvenance → buildWikiPages
- * → materializeGraphFiles → buildVisualizationProjection → report
+ * → materializeGraphFiles → buildVisualizationProjection → generateReport
  *
  * provenance 必须放在 upsertGraph 之后，这样能使用 DB 分配的真实 node/edge ID
  */
@@ -758,20 +758,20 @@ function buildKMGraph() {
     .addNode('buildWikiPages', buildWikiPages as any)
     .addNode('materializeGraphFiles', materializeGraphFiles as any)
     .addNode('buildVisualizationProjection', buildVisualizationProjection as any)
-    .addNode('report', report as any)
-    // 主链路：每个节点根据 error 状态路由到下一个节点或 report
+    .addNode('generateReport', generateReport as any)
+    // 主链路：每个节点根据 error 状态路由到下一个节点或 generateReport
     .addEdge('__start__' as const, 'discoverSource')
-    .addConditionalEdges('discoverSource', (s: KMState) => s.error ? 'report' : 'extractText', ['extractText', 'report'] as const)
-    .addConditionalEdges('extractText', (s: KMState) => s.error ? 'report' : 'normalizeAndChunk', ['normalizeAndChunk', 'report'] as const)
-    .addConditionalEdges('normalizeAndChunk', (s: KMState) => s.error ? 'report' : 'extractEntitiesAndRelations', ['extractEntitiesAndRelations', 'report'] as const)
-    .addConditionalEdges('extractEntitiesAndRelations', (s: KMState) => s.error ? 'report' : 'validateSchema', ['validateSchema', 'report'] as const)
-    .addConditionalEdges('validateSchema', (s: KMState) => s.error ? 'report' : 'upsertGraph', ['upsertGraph', 'report'] as const)
-    .addConditionalEdges('upsertGraph', (s: KMState) => s.error ? 'report' : 'buildProvenance', ['buildProvenance', 'report'] as const)
-    .addConditionalEdges('buildProvenance', (s: KMState) => s.error ? 'report' : 'buildWikiPages', ['buildWikiPages', 'report'] as const)
-    .addConditionalEdges('buildWikiPages', (s: KMState) => s.error ? 'report' : 'materializeGraphFiles', ['materializeGraphFiles', 'report'] as const)
-    .addConditionalEdges('materializeGraphFiles', (s: KMState) => s.error ? 'report' : 'buildVisualizationProjection', ['buildVisualizationProjection', 'report'] as const)
-    .addConditionalEdges('buildVisualizationProjection', (s: KMState) => 'report', ['report'] as const)
-    .addEdge('report', END);
+    .addConditionalEdges('discoverSource', (s: KMState) => s.error ? 'generateReport' : 'extractText', ['extractText', 'generateReport'] as const)
+    .addConditionalEdges('extractText', (s: KMState) => s.error ? 'generateReport' : 'normalizeAndChunk', ['normalizeAndChunk', 'generateReport'] as const)
+    .addConditionalEdges('normalizeAndChunk', (s: KMState) => s.error ? 'generateReport' : 'extractEntitiesAndRelations', ['extractEntitiesAndRelations', 'generateReport'] as const)
+    .addConditionalEdges('extractEntitiesAndRelations', (s: KMState) => s.error ? 'generateReport' : 'validateSchema', ['validateSchema', 'generateReport'] as const)
+    .addConditionalEdges('validateSchema', (s: KMState) => s.error ? 'generateReport' : 'upsertGraph', ['upsertGraph', 'generateReport'] as const)
+    .addConditionalEdges('upsertGraph', (s: KMState) => s.error ? 'generateReport' : 'buildProvenance', ['buildProvenance', 'generateReport'] as const)
+    .addConditionalEdges('buildProvenance', (s: KMState) => s.error ? 'generateReport' : 'buildWikiPages', ['buildWikiPages', 'generateReport'] as const)
+    .addConditionalEdges('buildWikiPages', (s: KMState) => s.error ? 'generateReport' : 'materializeGraphFiles', ['materializeGraphFiles', 'generateReport'] as const)
+    .addConditionalEdges('materializeGraphFiles', (s: KMState) => s.error ? 'generateReport' : 'buildVisualizationProjection', ['buildVisualizationProjection', 'generateReport'] as const)
+    .addConditionalEdges('buildVisualizationProjection', (s: KMState) => 'generateReport', ['generateReport'] as const)
+    .addEdge('generateReport', END);
 
   return builder.compile();
 }

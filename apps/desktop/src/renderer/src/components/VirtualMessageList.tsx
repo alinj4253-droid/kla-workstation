@@ -93,7 +93,17 @@ export function VirtualMessageList({
       case 'loading': return 120;
       case 'empty': return 200;
       case 'run': return 80;
-      default: return 140;
+      case 'stream': {
+        // ~50 chars/line × 19px line-height + bubble padding(30) + sender(22) + margin(24)
+        const lines = Math.max(Math.ceil(item.content.length / 50), 1);
+        return 76 + lines * 19;
+      }
+      case 'message': {
+        const { text } = parseContent(item.msg.contentJson);
+        const lines = Math.max(Math.ceil(text.length / 50), 1);
+        return 76 + lines * 19;
+      }
+      default: return 160;
     }
   }, [allItems]);
 

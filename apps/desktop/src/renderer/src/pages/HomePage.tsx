@@ -5,24 +5,15 @@ import { AgentAvatar } from '../components/AgentAvatar';
 
 type MentionRef = { target: { scope: 'profile'; id: string }; label: string; start: number; end: number };
 
-const AGENT_OPTIONS = [
-  { id: 'orchestrator', name: '统筹管理智能体' },
-  { id: 'knowledge', name: '知识管理智能体' },
-  { id: 'finance', name: '企业本地化专家' },
-  { id: 'devops', name: 'DevOps 流程专家' },
-  { id: 'creative', name: '创意洞察大脑' },
-  { id: 'codex', name: 'Codex CLI' },
-];
-
 const MENTION_RE = /@([\u4e00-\u9fff\w]+)/g;
 
-function extractMentions(text: string): MentionRef[] {
+function extractMentions(text: string, agentOptions: Array<{ id: string; name: string }>): MentionRef[] {
   const mentions: MentionRef[] = [];
   let match: RegExpExecArray | null;
   MENTION_RE.lastIndex = 0;
   while ((match = MENTION_RE.exec(text)) !== null) {
     const matchedName = match[1]!;
-    const agent = AGENT_OPTIONS.find((a) => a.name === matchedName);
+    const agent = agentOptions.find((a) => a.name === matchedName);
     if (agent) {
       mentions.push({ target: { scope: 'profile', id: agent.id }, label: agent.name, start: match.index, end: match.index + matchedName.length + 1 });
     }
@@ -88,11 +79,18 @@ export function HomePage(): React.JSX.Element {
   const [attaching, setAttaching] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [initialLoading, setInitialLoading] = useState(true);
+  const [agentOptions, setAgentOptions] = useState<Array<{ id: string; name: string }>>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const generateIdempotencyKey = (): string =>
     `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
+  const loadAgents = useCallback(async () => {
+    const profRes = await ((window.kunqing?.agents.listProfiles() as Promise<{ ok: boolean; data: Array<{ id: string; name: string; runtimeMode: string }> }> | undefined) ?? Promise.resolve({ ok: true, data: [] }));
+    const options: Array<{ id: string; name: string }> = (profRes?.data ?? []).map((p) => ({ id: p.id, name: p.name }));
+    setAgentOptions(options);
+  }, []);
 
   useEffect(() => {
     window.kunqing?.drafts.get({ scope: 'home', scopeId: 'home' }).then((result) => {
@@ -106,6 +104,7 @@ export function HomePage(): React.JSX.Element {
         }
       }
     }).finally(() => setInitialLoading(false));
+    void loadAgents();
     return () => {
       if (draftTimerRef.current) clearTimeout(draftTimerRef.current);
     };
@@ -152,12 +151,18 @@ export function HomePage(): React.JSX.Element {
     setSubmitting(true);
 
     const idempotencyKey = generateIdempotencyKey();
-    const content = { schemaVersion: 1 as const, text, mentions: extractMentions(text), stagedUploadIds };
+    const mentions = extractMentions(text, agentOptions);
+    const content = { schemaVersion: 1 as const, text, mentions, stagedUploadIds };
+    const mentionedProfileIds = mentions
+      .filter((m) => m.target.scope === 'profile')
+      .map((m) => m.target.id)
+      .filter((id) => id !== 'orchestrator');
+    const profileIds = [...new Set([...(overrides?.agentProfileIds ?? ['orchestrator']), ...mentionedProfileIds])];
     const result = await window.kunqing?.projects.create({
       idempotencyKey,
       content,
       templateId: overrides?.templateId ?? '',
-      requestedAgentProfileIds: overrides?.agentProfileIds ?? ['orchestrator'],
+      requestedAgentProfileIds: profileIds,
     });
 
     setSubmitting(false);
@@ -202,7 +207,7 @@ export function HomePage(): React.JSX.Element {
     });
   };
 
-  const filteredAgents = AGENT_OPTIONS.filter((a) =>
+  const filteredAgents = agentOptions.filter((a) =>
     a.name.toLowerCase().includes(mentionQuery.toLowerCase()),
   );
 

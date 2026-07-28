@@ -1,121 +1,52 @@
 import type Database from 'better-sqlite3';
 import { MemoryRepository } from '@kunqing/database';
+import { MemoryManager as CoreMemoryManager } from '@kunqing/memory-core';
+import type { IMemoryRepository, MemoryRecord, CreateMemoryInput, UpdateMemoryInput, MemoryScope, MemoryStatus } from '@kunqing/memory-core';
 
-const SHORT_TERM_CONSOLIDATION_THRESHOLD = 10;
-const LONG_TERM_CONFIDENCE_THRESHOLD = 0.7;
-
-export class MemoryManager {
+class DatabaseMemoryRepository implements IMemoryRepository {
   private repo: MemoryRepository;
 
-  constructor(private db: Database.Database) {
+  constructor(db: Database.Database) {
     this.repo = new MemoryRepository(db);
   }
 
-  buildMemoryContext(projectId: string, agentInstanceId: string): string {
-    const shortTerm = this.repo.list(projectId, agentInstanceId, 'short-term', 'active');
-    const longTerm = this.repo.list(projectId, agentInstanceId, 'long-term', 'active');
-
-    const parts: string[] = [];
-    if (shortTerm.length > 0) {
-      parts.push(`最近交互记忆：\n${shortTerm.slice(0, 5).map((m) => `- [${m.type}] ${m.content.slice(0, 300)}`).join('\n')}`);
-    }
-    if (longTerm.length > 0) {
-      parts.push(`长期知识：\n${longTerm.slice(0, 3).map((m) => `- ${m.content.slice(0, 500)}`).join('\n')}`);
-    }
-    return parts.join('\n\n');
+  list(projectId: string, agentInstanceId: string, scope?: MemoryScope, status?: MemoryStatus): MemoryRecord[] {
+    return this.repo.list(projectId, agentInstanceId, scope, status) as MemoryRecord[];
   }
 
-  storeShortTerm(projectId: string, agentInstanceId: string, type: string, content: string, confidence = 0.5): void {
-    this.repo.create({
-      projectId,
-      agentInstanceId,
-      scope: 'short-term',
-      type,
-      content,
-      confidence,
-      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-    });
+  get(id: string): MemoryRecord | null {
+    return this.repo.get(id) as MemoryRecord | null;
   }
 
-  consolidateShortTerm(projectId: string, agentInstanceId: string): number {
-    const active = this.repo.list(projectId, agentInstanceId, 'short-term', 'active');
-    if (active.length < SHORT_TERM_CONSOLIDATION_THRESHOLD) return 0;
-
-    const byType = new Map<string, typeof active>();
-    for (const m of active) {
-      const list = byType.get(m.type) ?? [];
-      list.push(m);
-      byType.set(m.type, list);
-    }
-
-    let consolidated = 0;
-    for (const [, group] of byType) {
-      if (group.length < 3) continue;
-      const merged = group.map((m) => m.content).join('\n').slice(0, 1000);
-      const avgConfidence = group.reduce((s, m) => s + m.confidence, 0) / group.length;
-
-      const firstType = group[0]?.type ?? 'unknown';
-      this.repo.create({
-        projectId,
-        agentInstanceId,
-        scope: 'short-term',
-        type: `merged:${firstType}`,
-        content: merged,
-        confidence: avgConfidence,
-        expiresAt: new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString(),
-      });
-
-      for (const m of group) {
-        this.repo.update(m.id, { status: 'expired' });
-      }
-      consolidated++;
-    }
-    return consolidated;
+  create(input: CreateMemoryInput): MemoryRecord {
+    const opts: Record<string, unknown> = {
+      projectId: input.projectId,
+      agentInstanceId: input.agentInstanceId,
+      scope: input.scope,
+      type: input.type,
+      content: input.content,
+    };
+    if (input.confidence !== undefined) opts.confidence = input.confidence;
+    if (input.sourceRefsJson !== undefined) opts.sourceRefsJson = input.sourceRefsJson;
+    if (input.expiresAt !== undefined) opts.expiresAt = input.expiresAt;
+    return this.repo.create(opts as any) as MemoryRecord;
   }
 
-  extractLongTerm(projectId: string, agentInstanceId: string): number {
-    const active = this.repo.list(projectId, agentInstanceId, 'short-term', 'active');
-    const highConfidence = active.filter((m) => m.confidence >= LONG_TERM_CONFIDENCE_THRESHOLD);
-
-    let extracted = 0;
-    for (const m of highConfidence) {
-      const existing = this.repo.list(projectId, agentInstanceId, 'long-term', 'active');
-      const isDuplicate = existing.some(
-        (e) => e.type === m.type && e.content.slice(0, 50) === m.content.slice(0, 50),
-      );
-      if (isDuplicate) continue;
-
-      this.repo.create({
-        projectId,
-        agentInstanceId,
-        scope: 'long-term',
-        type: m.type,
-        content: m.content,
-        confidence: m.confidence,
-        sourceRefsJson: JSON.stringify([m.id]),
-      });
-
-      this.repo.update(m.id, { status: 'expired' });
-      extracted++;
-    }
-    return extracted;
+  update(id: string, changes: UpdateMemoryInput): void {
+    this.repo.update(id, changes as any);
   }
 
-  recallRelevant(query: string, projectId: string, agentInstanceId: string, limit = 5): string[] {
-    const keywords = query.toLowerCase().split(/\s+/).filter((w) => w.length > 1);
-    const all = this.repo.list(projectId, agentInstanceId, 'short-term', 'active')
-      .concat(this.repo.list(projectId, agentInstanceId, 'long-term', 'active'));
+  remove(id: string): void {
+    this.repo.remove(id);
+  }
 
-    const scored = all.map((m) => {
-      const lower = m.content.toLowerCase();
-      const score = keywords.filter((k) => lower.includes(k)).length / keywords.length;
-      return { record: m, score };
-    });
+  expireAll(agentInstanceId: string): void {
+    this.repo.expireAll(agentInstanceId);
+  }
+}
 
-    return scored
-      .filter((s) => s.score > 0)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, limit)
-      .map((s) => `[${s.record.scope}][${s.record.type}] ${s.record.content.slice(0, 400)}`);
+export class MemoryManager extends CoreMemoryManager {
+  constructor(db: Database.Database) {
+    super(new DatabaseMemoryRepository(db));
   }
 }

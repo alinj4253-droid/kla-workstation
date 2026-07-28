@@ -13,6 +13,8 @@ export type CliRunOptions = {
   projectId: string;
   window: BrowserWindow;
   signal: AbortSignal | undefined;
+  /** 适配器策略生成的参数，用于替代默认的 [instruction] */
+  args?: string[];
 };
 
 export type CliRunResult = {
@@ -34,11 +36,11 @@ export class CliExecutor {
     const projectRoot = getProjectRoot(projectId);
     const spec: SpawnSpec = {
       executable: connection.executablePath,
-      args: [instruction],
+      args: options.args ?? [instruction],
       cwd: projectRoot,
       env: sanitizeEnv(process.env as Record<string, string>),
       stdin: instruction,
-      shell: false,
+      shell: process.platform === 'win32',
     };
 
     let output = '';

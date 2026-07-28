@@ -4,7 +4,7 @@ import { access, copyFile, lstat, mkdir, readdir, readFile, rename, writeFile } 
 import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { basename, dirname, isAbsolute, join, normalize, resolve, sep } from 'node:path';
-import { CodexCliAdapter } from '@kunqing/agent-core';
+import { CodexCliAdapter, VersionEvidence } from '@kunqing/agent-core';
 import { cliAgentRegistry } from './cli-agent-registry';
 import { cliExecutor } from './cli-executor';
 import { agentConnectionService } from './agent-connection-service';
@@ -118,8 +118,7 @@ function registerIpc(channel: string, handler: (event: Electron.IpcMainInvokeEve
       const result = await handler(_event, ...args);
       return wrapResult(result, requestId);
     } catch (error) {
-      console.error('[KunQing] IPC handler error:', error);
-      logger?.warn({ err: error, channel, requestId }, 'IPC handler error');
+      logger?.error({ err: error, channel, requestId }, 'IPC handler error');
       return wrapResult(toRpcError(error, requestId), requestId);
     }
   });
@@ -830,7 +829,12 @@ const registerProjectIpc = (db: ReturnType<typeof getDatabase>): void => {
     return { ok: true, data };
   });
   registerIpc('projects:create', async (event, input: { idempotencyKey: string; content: { schemaVersion?: number; text?: string; mentions?: unknown[]; stagedUploadIds?: string[] }; templateId?: string; requestedAgentProfileIds: string[] }) => {
-    const result = await createProject(db, Object.assign({ idempotencyKey: input.idempotencyKey, content: input.content }, input.templateId ? { templateId: input.templateId } : {}));
+    const result = await createProject(db, {
+      idempotencyKey: input.idempotencyKey,
+      content: input.content,
+      ...(input.templateId ? { templateId: input.templateId } : {}),
+      requestedAgentProfileIds: input.requestedAgentProfileIds,
+    });
     if (result.ok && result.data?.id && _fileWatcher) {
       _fileWatcher.addWatch(getProjectRoot(result.data.id as string), 'project', result.data.id as string);
     }
@@ -889,17 +893,21 @@ const registerMessageIpc = (db: ReturnType<typeof getDatabase>): void => {
           // 没有配置模型，插入引导消息
           const now = new Date().toISOString();
           const msgId = randomUUID().toLowerCase().replace(/-/g, '').slice(0, 24);
+          const contentJson = JSON.stringify({ schemaVersion: 1, text: '请先在 **设置 → 模型配置** 中添加一个可用的模型 Provider（如 OpenAI、Anthropic、Google 等），然后重试。' });
           db.prepare(
             `INSERT INTO messages (id, project_id, sender_type, sender_id, kind, content_json, status, created_at, updated_at)
              VALUES (?, ?, 'system', 'system', 'system', ?, 'sent', ?, ?)`,
-          ).run(
-            msgId,
-            input.projectId,
-            JSON.stringify({ schemaVersion: 1, text: '请先在 **设置 → 模型配置** 中添加一个可用的模型 Provider（如 OpenAI、Anthropic、Google 等），然后重试。' }),
-            now,
-            now,
-          );
-          return { ok: true, data: { id: msgId, status: 'sent', createdAt: now } };
+          ).run(msgId, input.projectId, contentJson, now, now);
+          // 发送事件通知 UI
+          const win = BrowserWindow.getAllWindows()[0];
+          if (win && !win.isDestroyed()) {
+            win.webContents.send('event:dispatch', {
+              type: 'message.created',
+              projectId: input.projectId,
+              message: { id: msgId, senderType: 'system', senderId: 'system', kind: 'system', contentJson, status: 'sent', createdAt: now },
+            });
+          }
+          return { ok: true, data };
         }
         const run = runRepo.create({
           projectId: input.projectId,
@@ -961,7 +969,14 @@ const registerAgentIpc = (db: ReturnType<typeof getDatabase>): void => {
     return { ok: true, data };
   });
   registerIpc('agents:listProfiles', async () => {
-    const data = db.prepare('SELECT id, name, definition_id as definitionId, runtime_mode as runtimeMode, enabled, delegatable FROM agent_profiles ORDER BY name').all();
+    const data = db.prepare(
+      `SELECT ap.id, ap.name, ap.definition_id as definitionId, ap.runtime_mode as runtimeMode,
+              ap.enabled, ap.delegatable, ap.cli_connection_id as cliConnectionId,
+              cc.name as cliConnectionName, cc.adapter_type as adapterType
+       FROM agent_profiles ap
+       LEFT JOIN cli_connections cc ON cc.id = ap.cli_connection_id
+       ORDER BY ap.name`,
+    ).all();
     return { ok: true, data: data.map((r: any) => ({ ...r, enabled: !!r.enabled, delegatable: !!r.delegatable })) };
   });
   registerIpc('agents:getProjectInstances', async (_event, input: { projectId: string }) => {
@@ -986,27 +1001,60 @@ const registerAgentIpc = (db: ReturnType<typeof getDatabase>): void => {
     }
     return { ok: true, data };
   });
+  registerIpc('agents:listCliConnections', async () => {
+    const rows = db.prepare('SELECT id, name, adapter_type as adapterType, executable_path as executablePath, detected_version as detectedVersion, status, trust_tier as trustTier FROM cli_connections ORDER BY created_at DESC').all() as Array<{ id: string; name: string; adapterType: string; executablePath: string; detectedVersion: string | null; status: string; trustTier: string }>;
+    const data = rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      adapterType: r.adapterType,
+      executablePath: r.executablePath,
+      detectedVersion: r.detectedVersion,
+      status: r.status,
+      capabilities: [],
+    }));
+    return { ok: true, data };
+  });
+
+  registerIpc('agents:deleteCliConnection', async (_event, input: { connectionId: string }) => {
+    db.prepare('DELETE FROM agent_profiles WHERE cli_connection_id = ?').run(input.connectionId);
+    db.prepare('DELETE FROM cli_connections WHERE id = ?').run(input.connectionId);
+    return { ok: true };
+  });
   registerIpc('agents:saveCliConnection', async (_event, input: { name: string; adapterType: string; executablePath: string; detectedVersion?: string | null }) => {
     const id = randomUUID().toLowerCase().replace(/-/g, '').slice(0, 24);
     const now = new Date().toISOString();
     const compatibility = checkVersionCompatibility(input.adapterType, input.detectedVersion ?? null);
     const status = compatibility === 'compatible' ? 'compatible' : compatibility === 'experimental' ? 'experimental' : 'unknown';
     db.prepare(`INSERT INTO cli_connections (id, name, adapter_type, executable_path, args_json, strategy_id, detected_version, status, trust_tier, created_at, updated_at) VALUES (?, ?, ?, ?, '[]', 'auto', ?, ?, 'trusted', ?, ?)`).run(id, input.name, input.adapterType, input.executablePath, input.detectedVersion ?? null, status, now, now);
+    // 同时创建对应的 agent_profiles 记录，使 CLI 智能体出现在 @ 列表和创建群聊对话框中
+    const profileId = randomUUID().toLowerCase().replace(/-/g, '').slice(0, 24);
+    db.prepare(`INSERT INTO agent_profiles (id, name, definition_id, definition_version, runtime_mode, cli_connection_id, enabled, delegatable, is_system_default, created_at, updated_at) VALUES (?, ?, ?, '1.0.0', 'external-cli', ?, 1, 0, 0, ?, ?)`)
+      .run(profileId, input.name, `custom.${input.adapterType}`, id, now, now);
     return { ok: true, data: { id, name: input.name, adapterType: input.adapterType, executablePath: input.executablePath, status } };
   });
   registerIpc('agents:testCliConnection', async (_event, input: { connectionId: string }) => {
     try {
       const row = db.prepare('SELECT executable_path as executablePath, adapter_type as adapterType FROM cli_connections WHERE id = ?').get(input.connectionId) as { executablePath: string; adapterType: string } | undefined;
       if (!row) return { ok: false, requestId: '-', error: { code: 'NOT_FOUND', message: 'CLI connection not found', retryable: false } };
+      const logger = getLogger('testCliConnection');
+      logger.info({ executablePath: row.executablePath, adapterType: row.adapterType }, 'Testing CLI connection');
       const adapter = cliAgentRegistry.getAdapter(row.adapterType) ?? new CodexCliAdapter();
-      const exes = await adapter.detect({}, new AbortController().signal);
-      if (exes.length === 0) {
-        return { ok: true, data: { success: false, error: 'CLI 不可用', version: null, executablePath: '' } };
-      }
-      const versionHint = exes[0]!.versionHint;
+      // 使用已保存的路径直接测试，而不是重新 detect 扫描 PATH
+      await access(row.executablePath);
+      logger.info('File access successful, reading version');
+      const evidence = await adapter.readVersion({ executablePath: row.executablePath }, new AbortController().signal);
+      const versionHint = evidence.rawVersion || null;
+      logger.info({ version: versionHint }, 'Version read successfully');
       const caps: string[] = adapter && 'getCapabilities' in adapter ? (adapter as any).getCapabilities() : [];
-      return { ok: true, data: { success: true, version: versionHint, executablePath: exes[0]!.executablePath, capabilities: caps } };
-    } catch (err) { return { ok: true, data: { success: false, error: String(err), version: null, executablePath: '' } }; }
+      return { ok: true, data: { success: true, version: versionHint, executablePath: row.executablePath, capabilities: caps } };
+    } catch (err) {
+      const logger = getLogger('testCliConnection');
+      logger.error({ err }, 'Test failed');
+      if (err && typeof err === 'object' && 'code' in err && err.code === 'ENOENT') {
+        return { ok: true, data: { success: false, error: '可执行文件不存在', version: null, executablePath: '' } };
+      }
+      return { ok: true, data: { success: false, error: String(err), version: null, executablePath: '' } };
+    }
   });
   registerIpc('agents:saveProfile', async (_event, input: { id?: string; name: string; definitionId: string; runtimeMode: string }) => {
     const now = new Date().toISOString();
@@ -1070,17 +1118,44 @@ const registerAgentIpc = (db: ReturnType<typeof getDatabase>): void => {
       capabilities: [], secretRefs: [],
     };
 
+    const projectRoot = getProjectRoot(input.projectId);
+
+    // 使用适配器策略构建参数，替代默认的 [instruction]
+    const adapter = cliAgentRegistry.getAdapter(row.adapterType);
+    let execArgs: string[] | undefined;
+    if (adapter) {
+      try {
+        const evidence: VersionEvidence = {
+          rawVersion: row.detectedVersion ?? '',
+          semver: null,
+          source: 'stdout',
+        };
+        const strategy = adapter.selectStrategy(evidence);
+        if (strategy) {
+          const spec = strategy.buildRun({
+            executablePath: row.executablePath,
+            instruction: input.instruction,
+            args: connection.args,
+            env: {},
+            workspaceRoot: projectRoot,
+            capabilities: strategy.capabilities,
+          });
+          execArgs = spec.args;
+        }
+      } catch {
+        // 回退到默认 [instruction]
+      }
+    }
+
     try {
       const ctxBuilder = new ContextBuilder(db);
       const snapshot = ctxBuilder.build(input.projectId, row.id);
-      const projectRoot = getProjectRoot(input.projectId);
       await ctxBuilder.writeContextManifest(snapshot, projectRoot);
     } catch {
       // 非致命：CLI 仍可执行
     }
 
     // AC-EXT-06: 网络出站确认
-    const adapter = cliAgentRegistry.getAdapter(row.adapterType);
     const caps: string[] = adapter && 'getCapabilities' in adapter ? (adapter as any).getCapabilities() : [];
     if (caps.includes('network-access') && row.trustTier !== 'trusted') {
       try {
@@ -1100,7 +1175,7 @@ const registerAgentIpc = (db: ReturnType<typeof getDatabase>): void => {
       }
     }
 
-    cliExecutor.execute({ connection, instruction: input.instruction, projectId: input.projectId, window, signal: undefined }).catch((err) => {
+    cliExecutor.execute({ connection, instruction: input.instruction, ...(execArgs ? { args: execArgs } : {}), projectId: input.projectId, window, signal: undefined }).catch((err) => {
       getLogger().warn({ err, connectionId: input.connectionId }, 'CLI process execution error');
     });
 
@@ -1210,25 +1285,67 @@ const registerModelIpc = (db: ReturnType<typeof getDatabase>): void => {
     ).all();
     return { ok: true, data };
   });
-  registerIpc('models:saveProvider', async (_event, input: { name: string; type: string; baseUrl?: string; authType?: string }) => {
+  registerIpc('models:saveProvider', async (_event, input: { name: string; type: string; baseUrl?: string; authType?: string; apiKey?: string }) => {
     const repo = new ModelProviderRepository(db);
-    const row = repo.create({ name: input.name, type: input.type, baseUrl: input.baseUrl, authType: input.authType ?? 'api-key' } as never);
+    let secretRef: string | undefined;
+    if (input.apiKey && safeStorage.isEncryptionAvailable()) {
+      const ciphertext = safeStorage.encryptString(input.apiKey);
+      const ref = `secret-provider-${randomUUID().slice(0, 8)}`;
+      const now = new Date().toISOString();
+      db.prepare('INSERT INTO secrets (id, kind, ciphertext, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(ref, `provider-${input.type}`, ciphertext, now, now);
+      secretRef = ref;
+    }
+    const row = repo.create({ name: input.name, type: input.type, baseUrl: input.baseUrl, authType: input.authType ?? 'api-key', secretRef } as never);
     return { ok: true, data: row };
   });
-  registerIpc('models:testProvider', async (_event, input: { providerId: string }) => {
+  registerIpc('models:updateProvider', async (_event, input: { id: string; name?: string; type?: string; baseUrl?: string | null; authType?: string; apiKey?: string }) => {
+    const repo = new ModelProviderRepository(db);
+    const changes: Record<string, unknown> = {};
+    if (input.name !== undefined) changes.name = input.name;
+    if (input.type !== undefined) changes.type = input.type;
+    if (input.baseUrl !== undefined) changes.baseUrl = input.baseUrl;
+    if (input.authType !== undefined) changes.authType = input.authType;
+    if (input.apiKey !== undefined) {
+      const existing = db.prepare('SELECT secret_ref FROM model_providers WHERE id = ?').get(input.id) as { secret_ref: string | null } | undefined;
+      if (existing?.secret_ref) {
+        db.prepare('DELETE FROM secrets WHERE id = ?').run(existing.secret_ref);
+      }
+      if (input.apiKey) {
+        if (!safeStorage.isEncryptionAvailable()) {
+          throw new Error('safeStorage 不可用，无法加密保存 API Key');
+        }
+        const ciphertext = safeStorage.encryptString(input.apiKey);
+        const ref = `secret-provider-${randomUUID().slice(0, 8)}`;
+        const now = new Date().toISOString();
+        db.prepare('INSERT INTO secrets (id, kind, ciphertext, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(ref, `provider-${input.type ?? 'openai'}`, ciphertext, now, now);
+        changes.secretRef = ref;
+      } else {
+        changes.secretRef = null;
+      }
+    }
+    repo.update(input.id, changes as Parameters<typeof repo.update>[1]);
+    return { ok: true, data: repo.getById(input.id) };
+  });
+  registerIpc('models:testProvider', async (_event, input: { providerId: string; modelId?: string }) => {
     if (!_gateway) return { ok: true, data: { success: false, latencyMs: 0, error: 'ModelGateway 未初始化' } };
     const start = Date.now();
     try {
-      const caps = await _gateway.testCapabilities(input.providerId);
+      const caps = await _gateway.testCapabilities(input.providerId, input.modelId);
       const repo = new ModelProviderRepository(db);
       repo.update(input.providerId, { status: caps.streaming ? 'available' : 'error', lastCheckedAt: new Date().toISOString() });
-      return { ok: true, data: { success: caps.streaming, latencyMs: Date.now() - start, capabilities: caps, error: caps.streaming ? undefined : '测试失败' } };
+      return { ok: true, data: { success: caps.streaming, latencyMs: Date.now() - start, capabilities: caps, error: caps.error ?? (caps.streaming ? undefined : '测试失败（无详细信息）') } };
     } catch (err) {
       return { ok: true, data: { success: false, latencyMs: Date.now() - start, error: err instanceof Error ? err.message : String(err) } };
     }
   });
-  registerIpc('models:saveProfile', async (_event, input: { name: string; providerId: string; modelId: string; modelSlot?: string }) => {
+  registerIpc('models:saveProfile', async (_event, input: { id?: string; name: string; providerId: string; modelId: string; modelSlot?: string }) => {
     const repo = new ModelProfileRepository(db);
+    if (input.id) {
+      const changes: Record<string, unknown> = { name: input.name, providerId: input.providerId, modelId: input.modelId };
+      if (input.modelSlot !== undefined) changes.modelSlot = input.modelSlot;
+      repo.update(input.id, changes as Parameters<typeof repo.update>[1]);
+      return { ok: true, data: repo.getById(input.id) };
+    }
     const row = repo.create({ name: input.name, providerId: input.providerId, modelId: input.modelId, modelSlot: input.modelSlot } as never);
     return { ok: true, data: row };
   });
@@ -1236,9 +1353,19 @@ const registerModelIpc = (db: ReturnType<typeof getDatabase>): void => {
     if (!_gateway) return { ok: true, data: { capabilities: ['streaming'], profileId: input.profileId } };
     const profile = new ModelProfileRepository(db).getById(input.profileId);
     const caps = await _gateway.testCapabilities(profile.providerId);
-    const capsList = Object.entries(caps).filter(([, v]) => v).map(([k]) => k);
+    const capsList = Object.entries(caps).filter(([k, v]) => k !== 'error' && v).map(([k]) => k);
     new ModelProfileRepository(db).updateVerification(input.profileId, capsList, new Date().toISOString());
     return { ok: true, data: { capabilities: capsList, profileId: input.profileId } };
+  });
+  registerIpc('models:deleteProfile', async (_event, input: { id: string }) => {
+    new ModelProfileRepository(db).delete(input.id);
+    return { ok: true };
+  });
+  registerIpc('models:deleteProvider', async (_event, input: { id: string }) => {
+    db.prepare('DELETE FROM model_slot_bindings WHERE model_profile_id IN (SELECT id FROM model_profiles WHERE provider_id = ?)').run(input.id);
+    db.prepare('DELETE FROM model_profiles WHERE provider_id = ?').run(input.id);
+    new ModelProviderRepository(db).delete(input.id);
+    return { ok: true };
   });
   registerIpc('models:setSlot', async (_event, input: { slot: string; modelProfileId: string }) => {
     db.prepare('INSERT OR REPLACE INTO model_slot_bindings (slot, model_profile_id, updated_at) VALUES (?, ?, ?)').run(input.slot, input.modelProfileId, new Date().toISOString());
@@ -1507,10 +1634,9 @@ const registerChannelIpc = (db: ReturnType<typeof getDatabase>): void => {
 
   mgr.onEvent((event) => {
     const win = BrowserWindow.getAllWindows()[0];
-    console.log(`[mgr.onEvent] sending channel:event type=${event.type} channelId=${event.channelId} winExists=${!!win}`);
+    getLogger().debug({ type: event.type, channelId: event.channelId, winExists: !!win }, 'channel:event forwarding to renderer');
     if (win && !win.isDestroyed()) {
       win.webContents.send('channel:event', event);
-      console.log(`[mgr.onEvent] sent successfully`);
     }
 
     // Handle channel.message: enqueue a run in the scheduler
@@ -1638,7 +1764,7 @@ const registerChannelIpc = (db: ReturnType<typeof getDatabase>): void => {
 
 const registerMissingIpc = (db: ReturnType<typeof getDatabase>): void => {
   ipcMain.on('debug:preload', (_event, ...args: unknown[]) => {
-    console.log('[debug:preload]', ...args);
+    getLogger().debug({ args }, 'debug:preload from renderer');
   });
   registerIpc('app:search', async (_event, input: { query: string; limit?: number }) => {
     const data = new SearchRepository(db).search(input.query, input.limit);
@@ -1820,16 +1946,16 @@ app.whenReady().then(async () => {
   };
 
   registerIpc('app:ensureStudio', async () => {
-    console.log('[KunQing] ensureStudio called, root:', getStudioRoot());
-    const studioRoot = getStudioRoot();
+    const root = getStudioRoot();
+    getLogger().info({ root }, 'app:ensureStudio called');
+    const studioRoot = root;
     const markerPath = join(studioRoot, '.kstudio', 'workspace.json');
-    console.log('[KunQing] markerPath:', markerPath, 'exists:', existsSync(markerPath));
+    getLogger().debug({ markerPath, exists: existsSync(markerPath) }, 'app:ensureStudio marker');
     if (!existsSync(markerPath)) throw new DatabaseError('STUDIO_WORKSPACE_INVALID', 'K_Studio 尚未初始化');
     if (!_dbInitialized) {
-      console.log('[KunQing] calling delayedRegisters...');
+      getLogger().info({}, 'Initializing delayed registers');
       delayedRegisters();
       _dbInitialized = true;
-      console.log('[KunQing] delayedRegisters done');
       const db = ensureDb();
       const win = BrowserWindow.getAllWindows()[0];
       if (win && !win.isDestroyed()) {
@@ -1843,9 +1969,9 @@ app.whenReady().then(async () => {
         // 启动 Team MCP Server
         const mcpServer = new TeamMcpServer(toolRegistry, { role: 'external-cli', projectId: '', runId: '' });
         mcpServer.start().then((info) => {
-          console.log(`[KunQing] Team MCP Server started on port ${info.port}`);
+          getLogger().info({ port: info.port }, 'Team MCP Server started');
         }).catch((err) => {
-          console.warn('[KunQing] Team MCP Server 启动失败:', err);
+          getLogger().warn({ err }, 'Team MCP Server start failed');
         });
         _mcpServer = mcpServer;
 

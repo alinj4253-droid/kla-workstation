@@ -25,7 +25,7 @@ describe('Visual — design tokens', () => {
 });
 
 describe('Visual — minimum viewport', () => {
-  it('has min-width 1280px', () => {
-    expect(css).toContain('min-width: 1280px');
+  it('has min-width 960px', () => {
+    expect(css).toContain('min-width: 960px');
   });
 });

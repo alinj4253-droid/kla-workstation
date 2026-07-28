@@ -3,6 +3,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { ModelGateway } from './model-gateway';
 
+vi.mock('electron', () => ({
+  safeStorage: { isEncryptionAvailable: () => true, encryptString: (s: string) => Buffer.from(s), decryptString: (b: Buffer) => b.toString(), isEncrypted: () => true },
+  app: { getPath: () => '/tmp/test', getVersion: () => '0.1.0-test' },
+  ipcMain: { handle: vi.fn() },
+  BrowserWindow: { fromWebContents: vi.fn() },
+  shell: { openPath: vi.fn(), openExternal: vi.fn() },
+  dialog: { showOpenDialog: vi.fn() },
+}));
+
 vi.mock('ai', () => {
   const mockStreamResult = {
     textStream: (async function* () { yield 'mock response'; })(),
@@ -92,9 +101,11 @@ function createDb(): Database.Database {
       updated_at TEXT NOT NULL
     );
     CREATE TABLE secrets (
-      ref TEXT PRIMARY KEY,
-      value TEXT NOT NULL,
-      created_at TEXT NOT NULL
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      ciphertext TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
     );
   `);
   return db;
@@ -102,7 +113,7 @@ function createDb(): Database.Database {
 
 function seedData(db: Database.Database): void {
   const now = new Date().toISOString();
-  db.prepare("INSERT INTO secrets (ref, value, created_at) VALUES ('sk-test', 'test-key-123', ?)").run(now);
+  db.prepare("INSERT INTO secrets (id, kind, ciphertext, created_at, updated_at) VALUES ('sk-test', 'api_key', 'test-key-123', ?, ?)").run(now, now);
   db.prepare("INSERT INTO model_providers (id, name, type, base_url, secret_ref, status, created_at, updated_at) VALUES ('prov-1', 'TestProvider', 'openai', 'https://api.example.com', 'sk-test', 'available', ?, ?)").run(now, now);
   db.prepare("INSERT INTO model_providers (id, name, type, base_url, status, created_at, updated_at) VALUES ('prov-2', 'NoKeyProvider', 'openai', NULL, 'unknown', ?, ?)").run(now, now);
   db.prepare("INSERT INTO model_profiles (id, name, provider_id, model_id, enabled, created_at, updated_at) VALUES ('prof-1', 'GPT-4o-mini', 'prov-1', 'gpt-4o-mini', 1, ?, ?)").run(now, now);

@@ -20,7 +20,7 @@ function getFakeResponse(input: string): string {
  * 继承自 ModelGateway 以复用槽位解析逻辑，仅覆盖流式/生成方法。
  */
 export class FakeModelGateway extends ModelGateway {
-  async streamText(slot: ModelSlot, messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>): Promise<ReadableStream<string>> {
+  async streamText(slot: ModelSlot, messages: Array<{ role: 'user' | 'assistant'; content: string }>, _system?: string): Promise<ReadableStream<string>> {
     const profile = (this as any).getSlotProfile(slot) as { providerType: string; modelId: string } | null;
     if (!profile) throw new Error(`没有为槽位 "${slot}" 配置可用的模型`);
 
@@ -43,8 +43,8 @@ export class FakeModelGateway extends ModelGateway {
 
   async generateText(
     slot: ModelSlot,
-    messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
-    _options?: { tools?: Record<string, { description: string; parameters: Record<string, unknown> }> },
+    messages: Array<{ role: 'user' | 'assistant'; content: string }>,
+    _options?: { system?: string; tools?: Record<string, { description: string; parameters: Record<string, unknown> }> },
   ): Promise<{ text: string; toolCalls?: Array<{ name: string; args: Record<string, unknown> }> }> {
     const profile = (this as any).getSlotProfile(slot) as { providerType: string; modelId: string } | null;
     if (!profile) throw new Error(`没有为槽位 "${slot}" 配置可用的模型`);
@@ -53,7 +53,7 @@ export class FakeModelGateway extends ModelGateway {
     return { text: getFakeResponse(userMessage) };
   }
 
-  async generateObject<T>(_slot: ModelSlot, _messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>): Promise<T> {
+  async generateObject<T>(_slot: ModelSlot, _messages: Array<{ role: 'user' | 'assistant'; content: string }>, _system?: string): Promise<T> {
     return { result: 'fake' } as unknown as T;
   }
 

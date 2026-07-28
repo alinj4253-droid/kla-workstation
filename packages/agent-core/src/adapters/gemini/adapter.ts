@@ -78,7 +78,7 @@ export class GeminiCliAdapter implements ExternalAgentAdapter {
   }
 
   private spawnAndCollect(
-    spec: { executable: string; args: string[]; cwd: string; env: Record<string, string>; shell: false; stdin?: Uint8Array },
+    spec: { executable: string; args: string[]; cwd: string; env: Record<string, string>; shell: boolean; stdin?: Uint8Array },
     signal: AbortSignal,
     sink?: AgentEventSink,
   ): Promise<ExternalRunResult> {
@@ -87,7 +87,7 @@ export class GeminiCliAdapter implements ExternalAgentAdapter {
       const child = spawn(spec.executable, spec.args, {
         cwd: spec.cwd,
         env: { ...process.env, ...spec.env },
-        shell: false,
+        shell: spec.shell,
         stdio: ['pipe', 'pipe', 'pipe'],
         signal,
       });

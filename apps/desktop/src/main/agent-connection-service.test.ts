@@ -126,6 +126,13 @@ describe('AgentConnectionService', () => {
         execute: vi.fn(),
         getCapabilities: vi.fn().mockReturnValue(['code-generation']),
         parseVersion: vi.fn().mockReturnValue('1.0.0'),
+        selectStrategy: vi.fn().mockReturnValue({
+          id: 'auto', versionRange: '>=0.1.0',
+          capabilities: { nonInteractive: true, structuredOutput: false, resumableSession: false, processScopedMcp: false, reliableCancellation: false },
+          buildVersionProbe: vi.fn().mockReturnValue({ executable: process.execPath, args: ['--version'], cwd: '/tmp', env: {}, shell: false }),
+          buildAuthProbe: vi.fn(), buildRun: vi.fn(),
+          parseStdout: vi.fn(), classifyExit: vi.fn(),
+        }),
       },
     });
     // 直接设置状态机到 smokeTesting
@@ -153,6 +160,13 @@ describe('AgentConnectionService', () => {
         execute: vi.fn(),
         getCapabilities: vi.fn().mockReturnValue([]),
         parseVersion: vi.fn().mockReturnValue(null),
+        selectStrategy: vi.fn().mockReturnValue({
+          id: 'auto', versionRange: '>=0.1.0',
+          capabilities: { nonInteractive: true, structuredOutput: false, resumableSession: false, processScopedMcp: false, reliableCancellation: false },
+          buildVersionProbe: vi.fn().mockReturnValue({ executable: '/nonexistent/command', args: ['--version'], cwd: '/tmp', env: {}, shell: false }),
+          buildAuthProbe: vi.fn(), buildRun: vi.fn(),
+          parseStdout: vi.fn(), classifyExit: vi.fn(),
+        }),
       },
     });
     (badService as any).state = {
@@ -243,11 +257,11 @@ describe('AgentConnectionService', () => {
     await expect(service.save({} as any)).rejects.toThrow('当前状态不允许');
   });
 
-  it('retry from failed resets to selectingExecutable', async () => {
+  it('retry from failed resets to idling for detecting failure', async () => {
     await service.startAuto('claude-code');
     expect(service.snapshot.step).toBe('failed');
     service.retry();
-    expect(service.snapshot.step).toBe('selectingExecutable');
+    expect(service.snapshot.step).toBe('idle');
   });
 
   it('terry from not failed throws', () => {

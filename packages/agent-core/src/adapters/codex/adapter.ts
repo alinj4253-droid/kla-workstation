@@ -78,16 +78,17 @@ export class CodexCliAdapter implements ExternalAgentAdapter {
   }
 
   private spawnAndCollect(
-    spec: { executable: string; args: string[]; cwd: string; env: Record<string, string>; shell: false; stdin?: Uint8Array },
+    spec: { executable: string; args: string[]; cwd: string; env: Record<string, string>; shell: boolean; stdin?: Uint8Array },
     signal: AbortSignal,
     sink?: AgentEventSink,
+    timeoutMs = 15_000,
   ): Promise<ExternalRunResult> {
     const start = Date.now();
     return new Promise((resolve) => {
       const child = spawn(spec.executable, spec.args, {
         cwd: spec.cwd,
         env: { ...process.env, ...spec.env },
-        shell: false,
+        shell: spec.shell,
         stdio: ['pipe', 'pipe', 'pipe'],
         signal,
       });
@@ -95,6 +96,21 @@ export class CodexCliAdapter implements ExternalAgentAdapter {
       let stdout = '';
       let stderr = '';
       let exitCode: number | null = null;
+      let settled = false;
+
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (!child.killed) child.kill('SIGTERM');
+        resolve({ stdout, stderr, exitCode, durationMs: Date.now() - start });
+      };
+
+      const timer = setTimeout(() => {
+        stderr += '\n[TIMEOUT] 子进程未在 ' + (timeoutMs / 1000) + ' 秒内退出';
+        if (!child.killed) child.kill('SIGKILL');
+        finish();
+      }, timeoutMs);
 
       if (spec.stdin) {
         child.stdin?.write(spec.stdin);
@@ -113,8 +129,8 @@ export class CodexCliAdapter implements ExternalAgentAdapter {
         sink?.onStderr?.(text);
       });
 
-      child.on('exit', (code) => { exitCode = code; resolve({ stdout, stderr, exitCode, durationMs: Date.now() - start }); });
-      child.on('error', () => resolve({ stdout, stderr, exitCode, durationMs: Date.now() - start }));
+      child.on('exit', (code) => { exitCode = code; finish(); });
+      child.on('error', () => { finish(); });
     });
   }
 }

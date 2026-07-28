@@ -13,6 +13,30 @@ const ADAPTER_RANGES: Record<string, KnownVersionRange[]> = {
   'claude-code': [
     { min: '0.1.0', max: '9.99.99', label: '>=0.1.0 <=9.99.99' },
   ],
+  'opencode': [
+    { min: '0.1.0', max: '9.99.99', label: '>=0.1.0 <=9.99.99' },
+  ],
+  'codegeex': [
+    { min: '0.1.0', max: '9.99.99', label: '>=0.1.0 <=9.99.99' },
+  ],
+  'kimi': [
+    { min: '0.1.0', max: '9.99.99', label: '>=0.1.0 <=9.99.99' },
+  ],
+  'minimax': [
+    { min: '0.1.0', max: '9.99.99', label: '>=0.1.0 <=9.99.99' },
+  ],
+  'marcode': [
+    { min: '0.1.0', max: '9.99.99', label: '>=0.1.0 <=9.99.99' },
+  ],
+  'aion': [
+    { min: '0.1.0', max: '9.99.99', label: '>=0.1.0 <=9.99.99' },
+  ],
+  'gemini': [
+    { min: '0.1.0', max: '9.99.99', label: '>=0.1.0 <=9.99.99' },
+  ],
+  'qwen-code': [
+    { min: '0.1.0', max: '9.99.99', label: '>=0.1.0 <=9.99.99' },
+  ],
 };
 
 function parseSemver(v: string): { major: number; minor: number; patch: number } | null {

@@ -17,7 +17,7 @@ export class CodexAutoStrategy implements VersionStrategy {
       args: ['--version'],
       cwd: process.cwd(),
       env: {},
-      shell: false,
+      shell: process.platform === 'win32',
     };
   }
 
@@ -31,7 +31,7 @@ export class CodexAutoStrategy implements VersionStrategy {
       args: ['run', input.instruction, ...input.args],
       cwd: input.workspaceRoot,
       env: input.env,
-      shell: false,
+      shell: process.platform === 'win32',
     };
   }
 

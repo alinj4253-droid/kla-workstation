@@ -26,9 +26,9 @@ describe('DB migration — clean install', () => {
     runMigrations(dbPath);
     const db = new Database(dbPath);
     const rows = db.prepare('SELECT name FROM _migrations ORDER BY id').all() as Array<{ name: string }>;
-    expect(rows.length).toBe(8);
+    expect(rows.length).toBe(10);
     expect(rows[0]!.name).toBe('001_initial');
-    expect(rows[7]!.name).toBe('010_add_channels_created_at');
+    expect(rows[9]!.name).toBe('012_fix_cli_connections_trust_tier_check');
     db.close();
   });
 
@@ -54,7 +54,7 @@ describe('DB migration — clean install', () => {
     runMigrations(dbPath);
     const db = new Database(dbPath);
     const rows = db.prepare('SELECT name FROM _migrations ORDER BY id').all() as Array<{ name: string }>;
-    expect(rows.length).toBe(8);
+    expect(rows.length).toBe(10);
     db.close();
   });
 
@@ -101,7 +101,7 @@ describe('DB migration — schema upgrade', () => {
 
     const checkDb = new Database(dbPath);
     const rows = checkDb.prepare('SELECT name FROM _migrations ORDER BY id').all() as Array<{ name: string }>;
-    expect(rows.length).toBe(8);
+    expect(rows.length).toBe(10);
     const names = rows.map((r) => r.name);
     expect(names.filter((n) => n === '009_create_skills_tables').length).toBe(1);
     checkDb.close();

@@ -1,36 +1,95 @@
 import { Bot, Check, CirclePlus, Crown, Rocket, Search, Sparkles, X } from 'lucide-react';
-import { FormEvent, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-type AgentOption = {
+type AgentProfile = {
   id: string;
   name: string;
-  description: string;
-  badge: string;
-  tone: string;
+  definitionId: string;
+  runtimeMode: 'native-model' | 'external-cli';
+  enabled: boolean;
+  delegatable: boolean;
+  cliConnectionId: string | null;
+  cliConnectionName: string | null;
+  adapterType: string | null;
 };
 
-const agentOptions: AgentOption[] = [
-  { id: 'orchestrator', name: '统筹管理智能体', description: '拆解目标、安排协作并综合团队结论。', badge: 'BUILT-IN', tone: 'indigo' },
-  { id: 'knowledge', name: '知识管理智能体', description: '处理文档、构建 Wiki 与可追溯知识图谱。', badge: 'BUILT-IN', tone: 'cyan' },
-  { id: 'finance', name: '企业本地化专家', description: '支持本地业务资料归纳、核验与分析。', badge: 'PRO', tone: 'green' },
-  { id: 'devops', name: 'DevOps 流程专家', description: '监控研发状态，协助处理 CI/CD 异常。', badge: 'TECH', tone: 'violet' },
-  { id: 'creative', name: '创意洞察大脑', description: '发现跨领域线索并提出创新方向。', badge: 'IDEA', tone: 'orange' },
-  { id: 'codex', name: 'Codex CLI', description: '调用本地 Codex CLI 进行代码协作。', badge: 'CLI', tone: 'slate' },
-];
+const BUILTIN_DESCRIPTIONS: Record<string, string> = {
+  'builtin.orchestrator': '拆解目标、安排协作并综合团队结论。',
+  'builtin.knowledge-manager': '处理文档、构建 Wiki 与可追溯知识图谱。',
+  'builtin.researcher': '信息检索、资料分析和事实核查。',
+};
+
+const BUILTIN_TONES: Record<string, string> = {
+  'builtin.orchestrator': 'indigo',
+  'builtin.knowledge-manager': 'cyan',
+  'builtin.researcher': 'green',
+};
+
+function getBadge(runtimeMode: string, delegatable: boolean): string {
+  if (runtimeMode === 'external-cli') return 'CLI';
+  if (delegatable) return 'LEADER';
+  return 'BUILT-IN';
+}
+
+function getTone(agent: AgentProfile): string {
+  if (agent.runtimeMode === 'external-cli') return 'slate';
+  const builtinTone = BUILTIN_TONES[agent.definitionId];
+  if (builtinTone) return builtinTone;
+  return 'violet';
+}
+
+function getDescription(agent: AgentProfile): string {
+  if (agent.runtimeMode === 'external-cli') {
+    return agent.cliConnectionName
+      ? `通过 ${agent.cliConnectionName}（${agent.adapterType ?? '未知'}）接入的外部 CLI 智能体`
+      : '外部 CLI 智能体';
+  }
+  return BUILTIN_DESCRIPTIONS[agent.definitionId] ?? '内置智能体';
+}
 
 export function NewChatModal({ onClose }: { onClose: () => void }): React.JSX.Element {
   const navigate = useNavigate();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [query, setQuery] = useState('');
-  const [selected, setSelected] = useState<string[]>(['orchestrator']);
-  const [leaderId, setLeaderId] = useState('orchestrator');
+  const [selected, setSelected] = useState<string[]>([]);
+  const [leaderId, setLeaderId] = useState('');
   const [submitted, setSubmitted] = useState(false);
+  const [profiles, setProfiles] = useState<AgentProfile[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchProfiles = async (): Promise<void> => {
+      try {
+        const result = await window.kunqing?.agents.listProfiles() as
+          { ok: boolean; data?: AgentProfile[] } | undefined;
+        if (result?.ok && result.data) {
+          const enabledProfiles = result.data.filter((p) => p.enabled);
+          setProfiles(enabledProfiles);
+          // 默认选中第一个可委派的 Leader
+          const defaultLeader = enabledProfiles.find(
+            (p) => p.runtimeMode === 'native-model' && p.delegatable,
+          );
+          if (defaultLeader) {
+            setSelected([defaultLeader.id]);
+            setLeaderId(defaultLeader.id);
+          }
+        }
+      } catch {
+        // 静默失败
+      } finally {
+        setLoading(false);
+      }
+    };
+    void fetchProfiles();
+  }, []);
 
   const filteredAgents = useMemo(
-    () => agentOptions.filter((agent) => `${agent.name}${agent.description}`.toLowerCase().includes(query.toLowerCase())),
-    [query],
+    () => profiles.filter(
+      (agent) => `${agent.name}${getDescription(agent)}`.toLowerCase().includes(query.toLowerCase()),
+    ),
+    [profiles, query],
   );
   const nameInvalid = submitted && !name.trim();
   const agentsInvalid = submitted && selected.length === 0;
@@ -81,21 +140,28 @@ export function NewChatModal({ onClose }: { onClose: () => void }): React.JSX.El
 
         <div className="agent-picker-grid">
           <button type="button" className="custom-agent-card"><CirclePlus size={27} /><strong>自定义智能体</strong><span>Create a tailored assistant</span></button>
-          {filteredAgents.map((agent) => {
+          {loading && <div className="loading-hint">加载智能体列表中…</div>}
+          {!loading && filteredAgents.map((agent) => {
             const isSelected = selected.includes(agent.id);
             const isLeader = leaderId === agent.id;
+            const tone = getTone(agent);
             return (
               <article key={agent.id} className={`agent-option-card${isSelected ? ' agent-option-card--selected' : ''}`}>
                 {isLeader && <span className="leader-ribbon"><Crown size={10} /> LEADER</span>}
                 <button type="button" className="agent-card-select" onClick={() => toggleAgent(agent.id)} aria-label={`${isSelected ? '取消选择' : '选择'}${agent.name}`}>
-                  <span className={`agent-option-icon agent-option-icon--${agent.tone}`}><Bot size={18} /></span>
+                  <span className={`agent-option-icon agent-option-icon--${tone}`}><Bot size={18} /></span>
                   <span className="agent-check">{isSelected && <Check size={12} />}</span>
-                  <strong>{agent.name}</strong><p>{agent.description}</p><em>{agent.badge}</em>
+                  <strong>{agent.name}</strong><p>{getDescription(agent)}</p><em>{getBadge(agent.runtimeMode, agent.delegatable)}</em>
                 </button>
-                {isSelected && <button type="button" className="set-leader-button" onClick={() => setLeaderId(agent.id)} aria-label={`设为 Leader：${agent.name}`} title="设为 Leader"><Crown size={14} /></button>}
+                {isSelected && agent.delegatable && agent.runtimeMode !== 'external-cli' && (
+                  <button type="button" className="set-leader-button" onClick={() => setLeaderId(agent.id)} aria-label={`设为 Leader：${agent.name}`} title="设为 Leader"><Crown size={14} /></button>
+                )}
               </article>
             );
           })}
+          {!loading && filteredAgents.length === 0 && (
+            <div className="empty-hint">没有匹配的智能体</div>
+          )}
         </div>
 
         <footer className="new-chat-footer">

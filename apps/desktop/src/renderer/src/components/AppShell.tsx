@@ -12,8 +12,9 @@ import {
   Users,
 } from 'lucide-react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { NewChatModal } from './NewChatModal';
+import { GlobalSearchDialog } from './GlobalSearchDialog';
 
 const navClassName = ({ isActive }: { isActive: boolean }): string =>
   `sidebar-link${isActive ? ' sidebar-link--active' : ''}`;
@@ -23,20 +24,21 @@ export function AppShell(): React.JSX.Element {
   const navigate = useNavigate();
   const inProject = location.pathname.startsWith('/projects/');
   const [newChatOpen, setNewChatOpen] = useState(false);
-  const searchRef = useRef<HTMLInputElement>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
       const isMeta = e.ctrlKey || e.metaKey;
 
       if (e.key === 'Escape') {
+        if (searchOpen) { setSearchOpen(false); return; }
         if (newChatOpen) { setNewChatOpen(false); return; }
         return;
       }
 
       if (isMeta && e.key === 'k') {
         e.preventDefault();
-        searchRef.current?.focus();
+        setSearchOpen(true);
         return;
       }
 
@@ -48,7 +50,7 @@ export function AppShell(): React.JSX.Element {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [navigate, newChatOpen]);
+  }, [navigate, newChatOpen, searchOpen]);
 
   return (
     <div className="app-shell">
@@ -102,11 +104,11 @@ export function AppShell(): React.JSX.Element {
         <header className="top-app-bar">
           <h1>{inProject ? '鲲擎多智能体平台' : '鲲擎多智能体平台'}</h1>
           <div className="topbar-actions">
-            <label className="global-search">
-              <Search size={15} aria-hidden="true" />
-              <input ref={searchRef} aria-label="全局搜索" placeholder={inProject ? 'Search...' : '快速搜索...'} />
-              <kbd>⌘ K</kbd>
-            </label>
+            <button className="search-button" type="button" onClick={() => setSearchOpen(true)} aria-label="全局搜索">
+              <Search size={15} />
+              <span>搜索</span>
+              <kbd>⌘K</kbd>
+            </button>
             <button className="icon-button" type="button" aria-label="通知"><Bell size={18} /></button>
             <button className="icon-button" type="button" aria-label="帮助"><CircleHelp size={18} /></button>
             <button className="top-profile" type="button" aria-label="个人中心"><CircleUserRound size={29} /></button>
@@ -117,6 +119,7 @@ export function AppShell(): React.JSX.Element {
         </main>
       </div>
       {newChatOpen && <NewChatModal onClose={() => setNewChatOpen(false)} />}
+      {searchOpen && <GlobalSearchDialog onClose={() => setSearchOpen(false)} />}
     </div>
   );
 }

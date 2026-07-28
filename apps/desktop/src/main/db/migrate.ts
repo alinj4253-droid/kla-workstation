@@ -626,4 +626,47 @@ const migrations: Array<{ name: string; sql: string }> = [
       ALTER TABLE channels ADD COLUMN created_at TEXT;
     `,
   },
+  {
+    name: '011_add_cli_connections_timestamps',
+    sql: `
+      ALTER TABLE cli_connections ADD COLUMN created_at TEXT;
+      ALTER TABLE cli_connections ADD COLUMN updated_at TEXT;
+    `,
+  },
+  {
+    name: '012_fix_cli_connections_trust_tier_check',
+    sql: `
+      CREATE TABLE cli_connections_new (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        adapter_type TEXT NOT NULL,
+        executable_path TEXT NOT NULL,
+        args_json TEXT,
+        strategy_id TEXT,
+        detected_version TEXT,
+        auth_mode TEXT,
+        secret_refs_json TEXT,
+        trust_tier TEXT NOT NULL DEFAULT 'trusted' CHECK(trust_tier IN ('trusted','sandboxed','restricted')),
+        status TEXT NOT NULL DEFAULT 'unknown' CHECK(status IN ('unknown','compatible','incompatible','experimental')),
+        capabilities_json TEXT,
+        last_checked_at TEXT,
+        created_at TEXT,
+        updated_at TEXT
+      );
+      INSERT INTO cli_connections_new SELECT * FROM cli_connections;
+      DROP TABLE cli_connections;
+      ALTER TABLE cli_connections_new RENAME TO cli_connections;
+      CREATE INDEX IF NOT EXISTS idx_cli_connections_exec ON cli_connections(executable_path, strategy_id);
+    `,
+  },
+  {
+    name: '013_create_profiles_for_existing_cli',
+    sql: `
+      INSERT INTO agent_profiles (id, name, definition_id, definition_version, runtime_mode, cli_connection_id, enabled, delegatable, is_system_default, created_at, updated_at)
+      SELECT cc.id || '-profile', cc.name, 'custom.' || cc.adapter_type, '1.0.0', 'external-cli', cc.id, 1, 0, 0, COALESCE(cc.created_at, datetime('now')), COALESCE(cc.updated_at, datetime('now'))
+      FROM cli_connections cc
+      LEFT JOIN agent_profiles ap ON ap.cli_connection_id = cc.id
+      WHERE ap.id IS NULL;
+    `,
+  },
 ];

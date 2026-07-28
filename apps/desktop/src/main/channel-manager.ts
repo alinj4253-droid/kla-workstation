@@ -4,6 +4,7 @@ import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import type pino from 'pino';
 import type {
   ChannelAdapter,
   ChannelType,
@@ -19,6 +20,7 @@ import type {
 import { TelegramAdapter, LarkAdapter, DingTalkAdapter, WeComWebhookAdapter } from '@kunqing/channel-core';
 import { FileRepository, MessageRepository } from '@kunqing/database';
 import { getProjectRoot } from './paths';
+import { getLogger } from './logger';
 
 const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024; // 100 MB
 
@@ -67,6 +69,7 @@ type EventCallback = (event: { type: string; channelId: string; data: unknown })
 
 export class ChannelManager {
   private readonly db: Database.Database;
+  private readonly logger: pino.Logger;
   private readonly adapters: Map<string, ChannelAdapter> = new Map();
   private readonly activeChannels: Map<string, {
     adapter: ChannelAdapter;
@@ -84,6 +87,7 @@ export class ChannelManager {
 
   constructor(db: Database.Database) {
     this.db = db;
+    this.logger = getLogger();
     this._registerAdapters();
   }
 
@@ -143,23 +147,23 @@ export class ChannelManager {
     if (!adapter) throw new Error(`不支持的渠道类型: ${row.type}`);
     const config = this._resolveConfig(row);
     this.db.prepare('UPDATE channels SET status = ?, updated_at = ? WHERE id = ?').run('connecting', new Date().toISOString(), channelId);
-    console.log(`[ChannelManager] start(${channelId}) — calling adapter.start()`);
+    this.logger.info({ channelId }, 'ChannelManager.start: calling adapter.start()');
     try {
       await adapter.start(config, {
         onEvent: (event) => this._handleInbound(channelId, event),
         onError: (error) => this._handleError(channelId, error),
         onStatusChange: (status) => this._updateStatus(channelId, status),
       });
-      console.log(`[ChannelManager] start(${channelId}) — adapter.start() resolved OK`);
+      this.logger.info({ channelId }, 'ChannelManager.start: adapter.start() resolved OK');
       this.activeChannels.set(channelId, { adapter, channelId, startedAt: Date.now() });
       this._resetRetry(channelId);
       const now = new Date().toISOString();
       this.db.prepare('UPDATE channels SET status = ?, last_connected_at = ?, updated_at = ? WHERE id = ?').run('connected', now, now, channelId);
-      console.log(`[ChannelManager] start(${channelId}) — DB updated, emitting event`);
+      this.logger.info({ channelId }, 'ChannelManager.start: DB updated, emitting event');
       this._emitEvent({ type: 'channel.status', channelId, data: { status: 'connected' } });
-      console.log(`[ChannelManager] start(${channelId}) — event emitted`);
+      this.logger.info({ channelId }, 'ChannelManager.start: event emitted');
     } catch (err) {
-      console.log(`[ChannelManager] start(${channelId}) — CAUGHT ERROR:`, err);
+      this.logger.error({ err, channelId }, 'ChannelManager.start: CAUGHT ERROR');
       this.db.prepare('UPDATE channels SET status = ?, last_error = ?, updated_at = ? WHERE id = ?').run('error', String(err), new Date().toISOString(), channelId);
       this._emitEvent({ type: 'channel.status', channelId, data: { status: 'error', error: String(err) } });
       throw err;
@@ -267,7 +271,7 @@ export class ChannelManager {
     for (const row of rows) {
       if (row.status !== 'connected') {
         this.start(row.id).catch((err) => {
-          console.error(`[ChannelManager] Failed to start channel ${row.id}:`, err);
+          this.logger.error({ err, channelId: row.id }, 'ChannelManager.startAll: failed to start channel');
         });
       }
     }
@@ -430,7 +434,7 @@ export class ChannelManager {
     // Async processing: download attachments → write message → route to agent
     this._startProcessingStatus(channelId, event.externalConversationId);
     this._processInboundAsync(channelId, event, binding.projectId).catch((err) => {
-      console.error(`[ChannelManager] Error processing inbound message for ${channelId}:`, err);
+      this.logger.error({ err, channelId }, 'ChannelManager: error processing inbound message');
     });
     this.markProcessed(channelId, event.externalEventId);
   }
@@ -524,7 +528,7 @@ export class ChannelManager {
       try {
         await this.send(channelId, { conversationId }, { text: chunk });
       } catch (err) {
-        console.error(`[ChannelManager] Failed to send reply to ${channelId}/${conversationId}:`, err);
+        this.logger.error({ err, channelId, conversationId }, 'ChannelManager: failed to send reply');
       }
     }
   }
@@ -568,13 +572,13 @@ export class ChannelManager {
   } | null> {
     // Validate size
     if (attachment.sizeBytes > MAX_ATTACHMENT_BYTES) {
-      console.warn(`[ChannelManager] Attachment too large: ${attachment.fileName} (${attachment.sizeBytes} bytes)`);
+      this.logger.warn({ fileName: attachment.fileName, sizeBytes: attachment.sizeBytes }, 'ChannelManager: attachment too large');
       return null;
     }
 
     // Validate MIME
     if (!this._validateMime(attachment.mimeType)) {
-      console.warn(`[ChannelManager] Unsupported MIME type: ${attachment.mimeType}`);
+      this.logger.warn({ mimeType: attachment.mimeType }, 'ChannelManager: unsupported MIME type');
       return null;
     }
 
@@ -590,7 +594,7 @@ export class ChannelManager {
     try {
       const resp = await fetch(attachment.downloadUrl, { signal: AbortSignal.timeout(30000) });
       if (!resp.ok) {
-        console.warn(`[ChannelManager] Failed to download attachment: ${resp.status} ${resp.statusText}`);
+        this.logger.warn({ status: resp.status, statusText: resp.statusText, fileName: attachment.fileName }, 'ChannelManager: failed to download attachment');
         return null;
       }
       const buf = Buffer.from(await resp.arrayBuffer());
@@ -598,13 +602,13 @@ export class ChannelManager {
       // Verify actual MIME from response headers
       const actualMime = resp.headers.get('content-type') ?? attachment.mimeType;
       if (!this._validateMime(actualMime)) {
-        console.warn(`[ChannelManager] Actual MIME type not allowed: ${actualMime}`);
+        this.logger.warn({ actualMime, fileName: attachment.fileName }, 'ChannelManager: actual MIME type not allowed');
         return null;
       }
 
       // Verify actual size
       if (buf.length > MAX_ATTACHMENT_BYTES) {
-        console.warn(`[ChannelManager] Downloaded file too large: ${buf.length} bytes`);
+        this.logger.warn({ size: buf.length, fileName: attachment.fileName }, 'ChannelManager: downloaded file too large');
         return null;
       }
 
@@ -613,7 +617,7 @@ export class ChannelManager {
 
       return { localPath, sha256, size: buf.length, mimeType: actualMime };
     } catch (err) {
-      console.warn(`[ChannelManager] Download error for ${attachment.fileName}:`, err);
+      this.logger.warn({ err, fileName: attachment.fileName }, 'ChannelManager: download error');
       return null;
     }
   }
@@ -654,7 +658,7 @@ export class ChannelManager {
       fileRepo.markReady(file.id);
       return file.id;
     } catch (err) {
-      console.warn(`[ChannelManager] Failed to import attachment ${fileName}:`, err);
+      this.logger.warn({ err, fileName }, 'ChannelManager: failed to import attachment');
       return null;
     }
   }
@@ -729,7 +733,7 @@ export class ChannelManager {
     const retryCount = (this.retryCounts.get(channelId) ?? 0) + 1;
     this.retryCounts.set(channelId, retryCount);
 
-    console.log(`[ChannelManager] Scheduling retry for ${channelId} in ${delay}ms (attempt ${retryCount})`);
+    this.logger.info({ channelId, delay, retryCount }, 'ChannelManager: scheduling retry');
 
     const timer = setTimeout(() => {
       this.retryTimers.delete(channelId);
@@ -765,7 +769,7 @@ export class ChannelManager {
   }
 
   private _emitEvent(event: { type: string; channelId: string; data: unknown }): void {
-    console.log(`[ChannelManager] _emitEvent — type=${event.type} channelId=${event.channelId} data=${JSON.stringify(event.data)}`);
+    this.logger.debug({ type: event.type, channelId: event.channelId, data: event.data }, 'ChannelManager._emitEvent');
     this.eventCallback?.(event);
   }
 }

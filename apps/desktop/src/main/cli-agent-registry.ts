@@ -1,4 +1,4 @@
-import { CodexCliAdapter, ClaudeCodeCliAdapter, AionCliAdapter, GeminiCliAdapter, QwenCodeCliAdapter } from '@kunqing/agent-core';
+import { CodexCliAdapter, ClaudeCodeCliAdapter, AionCliAdapter, GeminiCliAdapter, QwenCodeCliAdapter, OpencodeCliAdapter, CodeGeeXCliAdapter, KimiCliAdapter, MiniMaxCliAdapter, MarsCodeCliAdapter } from '@kunqing/agent-core';
 import type { ExternalAgentAdapter, DetectedExecutable, DetectInput } from '@kunqing/agent-core';
 
 export class CliAgentRegistry {
@@ -10,6 +10,11 @@ export class CliAgentRegistry {
     this.register(new AionCliAdapter());
     this.register(new GeminiCliAdapter());
     this.register(new QwenCodeCliAdapter());
+    this.register(new OpencodeCliAdapter());
+    this.register(new CodeGeeXCliAdapter());
+    this.register(new KimiCliAdapter());
+    this.register(new MiniMaxCliAdapter());
+    this.register(new MarsCodeCliAdapter());
   }
 
   register(adapter: ExternalAgentAdapter): void {
@@ -21,17 +26,17 @@ export class CliAgentRegistry {
   }
 
   async detectAll(input?: DetectInput): Promise<Array<{ type: string; executables: DetectedExecutable[] }>> {
-    const results: Array<{ type: string; executables: DetectedExecutable[] }> = [];
     const controller = new AbortController();
-    for (const [type, adapter] of this.adapters) {
-      try {
+    const entries = [...this.adapters.entries()];
+    const settled = await Promise.allSettled(
+      entries.map(async ([type, adapter]) => {
         const executables = await adapter.detect(input ?? {}, controller.signal);
-        results.push({ type, executables });
-      } catch {
-        results.push({ type, executables: [] });
-      }
-    }
-    return results;
+        return { type, executables };
+      }),
+    );
+    return settled.map((r, i) =>
+      r.status === 'fulfilled' ? r.value : { type: entries[i]![0], executables: [] },
+    );
   }
 }
 

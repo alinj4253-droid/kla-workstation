@@ -1,5 +1,5 @@
 import {
-  AlertTriangle, Brain, FileText, FolderOpen, Loader2, MoreVertical, Paperclip, Send, SlidersHorizontal, Smile, Sparkles, X,
+  AlertTriangle, Brain, FileText, FolderOpen, Loader2, MoreVertical, PanelRightClose, PanelRightOpen, Paperclip, Send, SlidersHorizontal, Sparkles, X,
 } from 'lucide-react';
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -10,25 +10,15 @@ import { MemoryManager } from '../components/MemoryManager';
 
 type MentionRef = { target: { scope: 'profile'; id: string }; label: string; start: number; end: number };
 
-const AGENT_NAMES = ['统筹管理智能体', '知识管理智能体', '企业本地化专家', 'DevOps 流程专家', '创意洞察大脑', 'Codex CLI'];
-const AGENT_ID_MAP: Record<string, string> = {
-  '统筹管理智能体': 'orchestrator',
-  '知识管理智能体': 'knowledge',
-  '企业本地化专家': 'finance',
-  'DevOps 流程专家': 'devops',
-  '创意洞察大脑': 'creative',
-  'Codex CLI': 'codex',
-};
-
-function extractMentions(text: string): MentionRef[] {
+function extractMentions(text: string, agents: Array<{ id: string; agentName: string }>): MentionRef[] {
   const mentions: MentionRef[] = [];
   const re = /@([\u4e00-\u9fff\w]+)/g;
   let match: RegExpExecArray | null;
   while ((match = re.exec(text)) !== null) {
     const name = match[1]!;
-    const id = AGENT_ID_MAP[name];
-    if (id) {
-      mentions.push({ target: { scope: 'profile', id }, label: name, start: match.index, end: match.index + name.length + 1 });
+    const agent = agents.find((a) => a.agentName === name);
+    if (agent) {
+      mentions.push({ target: { scope: 'profile', id: agent.id }, label: name, start: match.index, end: match.index + name.length + 1 });
     }
   }
   return mentions;
@@ -40,6 +30,16 @@ type ProjectItem = {
   status: string;
   lastActiveAt: string;
 };
+
+type AgentInstance = {
+  id: string;
+  projectId: string;
+  agentName: string;
+  role: string;
+  runtimeMode: string;
+};
+
+const AGENT_TONES: Array<'indigo' | 'cyan' | 'green' | 'violet' | 'orange'> = ['indigo', 'cyan', 'green', 'violet', 'orange'];
 
 type MessageItem = {
   id: string;
@@ -74,7 +74,7 @@ interface PreviewData {
   error?: string;
 }
 
-const DEFAULT_PROJECT_STATE: PerProjectState = { draft: '', previewOpen: true, scrollOffset: 0 };
+const DEFAULT_PROJECT_STATE: PerProjectState = { draft: '', previewOpen: false, scrollOffset: 0 };
 
 export function ChatPage(): React.JSX.Element {
   const { projectId } = useParams();
@@ -82,7 +82,7 @@ export function ChatPage(): React.JSX.Element {
   const [projects, setProjects] = useState<ProjectItem[]>([]);
   const [messages, setMessages] = useState<MessageItem[]>([]);
   const [draft, setDraft] = useState('');
-  const [previewOpen, setPreviewOpen] = useState(true);
+  const [previewOpen, setPreviewOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [hasMore, setHasMore] = useState(false);
@@ -95,7 +95,45 @@ export function ChatPage(): React.JSX.Element {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [memoryManagerOpen, setMemoryManagerOpen] = useState(false);
   const [sharedKnowledge, setSharedKnowledge] = useState(true);
+  const [projectPanelOpen, setProjectPanelOpen] = useState(true);
+  const [panelWidth, setPanelWidth] = useState(300);
+  const [projectAgents, setProjectAgents] = useState<AgentInstance[]>([]);
+  const [showMentions, setShowMentions] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState('');
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const resizingRef = useRef(false);
   const projectStateRef = useRef<Record<string, PerProjectState>>({});
+
+  // Apply panel width CSS variable
+  useEffect(() => {
+    document.documentElement.style.setProperty('--kq-project-panel-width', `${panelWidth}px`);
+  }, [panelWidth]);
+
+  const startResize = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    resizingRef.current = true;
+    const startX = e.clientX;
+    const startWidth = panelWidth;
+
+    const onMove = (ev: MouseEvent) => {
+      if (!resizingRef.current) return;
+      const newWidth = Math.max(200, Math.min(600, startWidth + ev.clientX - startX));
+      setPanelWidth(newWidth);
+    };
+
+    const onUp = () => {
+      resizingRef.current = false;
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }, [panelWidth]);
 
   const loadProjects = useCallback(async () => {
     const result = await window.kunqing?.projects.list({} as Record<string, never>);
@@ -142,9 +180,14 @@ export function ChatPage(): React.JSX.Element {
       setPreviewOpen(true);
       void openPreview(previewPath);
     }
+    setProjectAgents([]);
     setLoading(true);
     void loadProjects();
     void loadMessages();
+    window.kunqing?.agents.getProjectInstances({ projectId }).then((result) => {
+      const r = result as { ok: boolean; data?: AgentInstance[] } | undefined;
+      if (r?.ok && r.data) setProjectAgents(r.data);
+    });
   }, [projectId]);
 
   useEffect(() => {
@@ -169,9 +212,22 @@ export function ChatPage(): React.JSX.Element {
           break;
         }
         case 'run.status': {
-          const { run } = event as { type: 'run.status'; projectId: string; run: { id: string; agentId: string; status: string } };
+          const { run } = event as { type: 'run.status'; projectId: string; run: { id: string; agentId: string; status: string; error?: string } };
           setRunStatuses((prev) => ({ ...prev, [run.id]: { status: run.status, agentName: run.agentId } }));
-          if (['completed', 'failed', 'cancelled', 'interrupted'].includes(run.status)) {
+          if (run.status === 'failed') {
+            // 添加错误消息到聊天
+            const errorMsg: MessageItem = {
+              id: `err-${run.id}`,
+              senderType: 'system',
+              senderId: 'system',
+              kind: 'system',
+              contentJson: JSON.stringify({ schemaVersion: 1, text: run.error ? `运行出错：${run.error}` : '智能体运行失败，请检查模型配置。' }),
+              status: 'sent',
+              createdAt: new Date().toISOString(),
+            };
+            setMessages((prev) => (prev.some((m) => m.id === errorMsg.id) ? prev : [...prev, errorMsg]));
+          }
+          if (['completed', 'cancelled', 'interrupted'].includes(run.status)) {
             setRunStatuses((prev) => { const next = { ...prev }; delete next[run.id]; return next; });
           }
           break;
@@ -196,13 +252,40 @@ export function ChatPage(): React.JSX.Element {
   const generateIdempotencyKey = (): string =>
     `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
+  const handlePromptChange = (value: string): void => {
+    setDraft(value);
+    const lastAtIndex = value.lastIndexOf('@', value.length - 1);
+    if (lastAtIndex >= 0 && (lastAtIndex === 0 || value[lastAtIndex - 1] === ' ')) {
+      const afterAt = value.slice(lastAtIndex + 1);
+      if (!afterAt.includes(' ')) {
+        setShowMentions(true);
+        setMentionQuery(afterAt);
+        return;
+      }
+    }
+    setShowMentions(false);
+  };
+
+  const insertMention = (agentName: string): void => {
+    const lastAtIndex = draft.lastIndexOf('@');
+    if (lastAtIndex >= 0) {
+      const before = draft.slice(0, lastAtIndex);
+      const afterAt = draft.slice(lastAtIndex + 1);
+      const restIndex = afterAt.indexOf(' ');
+      const rest = restIndex >= 0 ? afterAt.slice(restIndex) : '';
+      setDraft(`${before}@${agentName}${rest} `);
+    }
+    setShowMentions(false);
+    textareaRef.current?.focus();
+  };
+
   const sendMessage = async (event: FormEvent): Promise<void> => {
     event.preventDefault();
     const text = draft.trim();
     if (!text || sending) return;
     setSending(true);
 
-    const content = { schemaVersion: 1 as const, text, mentions: extractMentions(text), stagedUploadIds: [] };
+    const content = { schemaVersion: 1 as const, text, mentions: extractMentions(text, projectAgents), stagedUploadIds: [] };
     const result = await window.kunqing?.messages.send({
       idempotencyKey: generateIdempotencyKey(),
       projectId: projectId ?? '',
@@ -292,12 +375,18 @@ export function ChatPage(): React.JSX.Element {
   };
 
   return (
-    <div className={`chat-workspace${previewOpen ? '' : ' chat-workspace--preview-closed'}`}>
-      <aside className="project-panel" aria-label="协作项目">
+    <div className={`chat-workspace${previewOpen ? '' : ' chat-workspace--preview-closed'}${projectPanelOpen ? '' : ' chat-workspace--panel-closed'}`}>
+      <aside className={`project-panel${projectPanelOpen ? ' project-panel--open' : ''}`} aria-label="协作项目">
         <div className="project-panel__header">
           <h2>协作项目</h2>
           <button type="button" className="icon-button" aria-label="筛选项目"><SlidersHorizontal size={17} /></button>
         </div>
+        {projectPanelOpen && (
+          <button type="button" className="project-panel__toggle" aria-label="收起项目面板" onClick={() => setProjectPanelOpen(false)}>
+            <PanelRightClose size={18} />
+          </button>
+        )}
+        <div className="project-panel__resize-handle" onMouseDown={startResize} />
         <div className="project-list">
           {projects.length === 0 && <div className="file-empty" style={{ padding: '24px 16px' }}>暂无项目</div>}
           {projects.map((project) => (
@@ -322,22 +411,26 @@ export function ChatPage(): React.JSX.Element {
         <header className="conversation-header">
           <div className="conversation-title">
             <div className="avatar-stack avatar-stack--header">
-              <AgentAvatar label="FA" tone="indigo" size="sm" />
-              <AgentAvatar label="MA" tone="cyan" size="sm" overlap />
-              <AgentAvatar label="KM" tone="violet" size="sm" overlap />
+              {projectAgents.map((agent, i) => (
+                <AgentAvatar key={agent.id} label={agent.agentName} tone={AGENT_TONES[i % AGENT_TONES.length]!} size="sm" overlap={i > 0} />
+              ))}
             </div>
             <div>
               <h2>{activeProject.name}</h2>
-              <p><span className="online-dot" /> 智能体等待中</p>
+              <p><span className="online-dot" /> {projectAgents.length} 个智能体{projectAgents.length > 0 ? '待命中' : ''}</p>
             </div>
           </div>
           <div className="conversation-actions">
+            <button type="button" className="icon-button" aria-label={projectPanelOpen ? '收起项目面板' : '展开项目面板'} onClick={() => setProjectPanelOpen((v) => !v)}><PanelRightClose size={18} /></button>
             <button type="button" className="icon-button" aria-label="打开工作区" onClick={() => navigate(`/projects/${projectId}/workspace`)}><FolderOpen size={18} /></button>
             <button type="button" className="icon-button" aria-label="记忆管理" onClick={() => setMemoryManagerOpen(true)} title="记忆"><Brain size={18} /></button>
             <label className="shared-knowledge-toggle" title={sharedKnowledge ? '共享知识已开启' : '共享知识已关闭'}>
               <input type="checkbox" checked={sharedKnowledge} onChange={(e) => { setSharedKnowledge(e.target.checked); void window.kunqing?.projects.setSharedKnowledge({ projectId: projectId ?? '', enabled: e.target.checked }); }} />
               <span>共享知识</span>
             </label>
+            {!previewOpen && (
+              <button type="button" className="icon-button" aria-label="打开预览" onClick={() => setPreviewOpen(true)}><FileText size={18} /></button>
+            )}
             <button type="button" className="icon-button" aria-label="更多操作"><MoreVertical size={18} /></button>
           </div>
         </header>
@@ -362,17 +455,26 @@ export function ChatPage(): React.JSX.Element {
         {activeRuns.length > 0 && <div className="composer-status-bar"><Loader2 size={14} className="spin" />{activeRuns.length} 个运行中</div>}
         <form className="chat-composer-wrap" onSubmit={(e) => void sendMessage(e)}>
           <div className="chat-composer">
-            <button type="button" className="composer-tool" aria-label="更多输入方式" disabled><Sparkles size={18} /></button>
             <textarea
+              ref={textareaRef}
               aria-label="发送消息给智能体小组"
               placeholder="发送消息给智能体小组..."
               value={draft}
-              onChange={(event) => setDraft(event.target.value)}
+              onChange={(event) => handlePromptChange(event.target.value)}
               disabled={sending}
             />
-            <button type="button" className="composer-tool" aria-label="添加附件" disabled><Paperclip size={17} /></button>
-            <button type="button" className="composer-tool" aria-label="语音输入" disabled><Sparkles size={17} /></button>
-            <button type="button" className="composer-tool" aria-label="表情" disabled><Smile size={17} /></button>
+            {showMentions && (
+              <div className="mention-popup">
+                {projectAgents
+                  .filter((a) => a.agentName.toLowerCase().includes(mentionQuery.toLowerCase()))
+                  .map((agent) => (
+                    <button type="button" key={agent.id} className="mention-option" onMouseDown={() => insertMention(agent.agentName)}>
+                      {agent.agentName}
+                    </button>
+                  ))}
+              </div>
+            )}
+            <button type="button" className="composer-tool" aria-label="添加附件" onClick={() => { if (projectId) void window.kunqing?.workspace.uploadFiles({ projectId }); }}><Paperclip size={17} /></button>
             <button className="chat-send" type="submit" disabled={!draft.trim() || sending} aria-label="发送消息">
               {sending ? <Sparkles size={17} /> : <Send size={17} />}
             </button>

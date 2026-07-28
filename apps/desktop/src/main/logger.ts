@@ -3,6 +3,11 @@ import { join } from 'node:path';
 
 let _logger: pino.Logger | null = null;
 
+function resolveLogLevel(): string {
+  if (process.env.NODE_ENV === 'test') return 'silent';
+  return process.env.LOG_LEVEL || 'info';
+}
+
 export function getLogger(studioRoot?: string): pino.Logger {
   if (_logger) return _logger;
 
@@ -11,7 +16,7 @@ export function getLogger(studioRoot?: string): pino.Logger {
     : join('K_Studio', '.kstudio', 'logs');
 
   _logger = pino({
-    level: process.env.NODE_ENV === 'test' ? 'silent' : 'info',
+    level: resolveLogLevel(),
     transport: {
       target: 'pino/file',
       options: {
@@ -25,7 +30,6 @@ export function getLogger(studioRoot?: string): pino.Logger {
     redact: {
       paths: [
         'secret', 'password', 'token', 'key', 'ciphertext', 'authorization',
-        // CLI 认证环境变量（AC-AGENT-03）
         '*API_KEY', '*API_TOKEN', '*_TOKEN', '*_SECRET',
         'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'CODEX_API_KEY', 'CLAUDE_API_KEY',
         'GEMINI_API_KEY', 'GITHUB_TOKEN', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY',
@@ -34,9 +38,14 @@ export function getLogger(studioRoot?: string): pino.Logger {
     },
   });
 
+  _logger.info({ level: resolveLogLevel(), logDir }, 'Logger initialized');
+
   return _logger;
 }
 
 export function closeLogger(): void {
-  _logger = null;
+  if (_logger) {
+    _logger.info('Logger closing');
+    _logger = null;
+  }
 }

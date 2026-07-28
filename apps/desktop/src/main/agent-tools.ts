@@ -253,7 +253,7 @@ export function createProjectTools(db: Database.Database, scheduler?: Scheduler)
         type: 'object',
         properties: {
           projectId: { type: 'string', description: '项目 ID' },
-          relativePath: { type: 'string', description: '文件相对路径（如 docs/report.md）' },
+          relativePath: { type: 'string', description: '文件相对路径（如 outputs/report.md）' },
           content: { type: 'string', description: '文件内容' },
           note: { type: 'string', description: '成果说明（可选）' },
         },
@@ -527,14 +527,14 @@ export function registerProjectTools(registry: ToolRegistry, db: Database.Databa
         type: 'object',
         properties: {
           projectId: { type: 'string', description: '项目 ID' },
-          relativePath: { type: 'string', description: '文件相对路径（如 docs/report.md）' },
+          relativePath: { type: 'string', description: '文件相对路径，必须以 outputs/ 开头（如 outputs/plans/report.md）' },
           content: { type: 'string', description: '文件内容' },
           note: { type: 'string', description: '成果说明（可选）' },
         },
         required: ['projectId', 'relativePath', 'content'],
       },
       requiredCapabilities: ['write:output'],
-      allowedPathPrefixes: ['outputs/'],
+      allowedPathPrefixes: ['outputs/', 'docs/', 'reports/', 'plans/', 'notes/'],
       maxContentLength: 50000,
       async execute(args) {
         const { projectId, relativePath, content, note } = args as {

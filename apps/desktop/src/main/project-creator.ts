@@ -110,6 +110,7 @@ export async function createProject(
     idempotencyKey?: string;
     content: { schemaVersion?: number; text?: string; mentions?: unknown[]; stagedUploadIds?: string[] };
     templateId?: string;
+    requestedAgentProfileIds?: string[];
   },
 ): Promise<{ ok: true; data: { id: string; status: string; createdAt: string; firstMessageId?: string } } | { ok: false; error: { code: string; message: string; retryable: boolean } }> {
   if (input.idempotencyKey) {
@@ -184,6 +185,43 @@ export async function createProject(
       memoryRelPath: `agent-memories/${resInstanceId}`,
       ordinal: 2,
     });
+
+    // 仅创建用户选择的 CLI 智能体（排除内置智能体 profile ID）
+    const BUILTIN_PROFILE_IDS = new Set([
+      ORCHESTRATOR_PROFILE_ID,  // 'builtin-orchestrator-profile'
+      KNOWLEDGE_PROFILE_ID,     // 'builtin-knowledge-profile'
+      RESEARCHER_PROFILE_ID,    // 'builtin-researcher-profile'
+    ]);
+    const requestedIds = input.requestedAgentProfileIds ?? [];
+    const cliRequestedIds = requestedIds.filter((id) => !BUILTIN_PROFILE_IDS.has(id));
+
+    if (cliRequestedIds.length > 0) {
+      const placeholders = cliRequestedIds.map(() => '?').join(',');
+      const cliProfiles = db.prepare(
+        `SELECT id, name, definition_id as definitionId, definition_version as definitionVersion,
+                cli_connection_id as cliConnectionId
+         FROM agent_profiles
+         WHERE runtime_mode = 'external-cli' AND enabled = 1 AND cli_connection_id IS NOT NULL
+           AND id IN (${placeholders})
+         ORDER BY name`,
+      ).all(...cliRequestedIds) as Array<{ id: string; name: string; definitionId: string; definitionVersion: string; cliConnectionId: string }>;
+
+      let cliOrdinal = 3;
+      for (const cliProfile of cliProfiles) {
+        const cliInstanceId = generateInstanceId(projectId, `cli-${cliProfile.id.slice(0, 8)}`);
+        instanceRepo.create({
+          id: cliInstanceId,
+          projectId,
+          agentProfileId: cliProfile.id,
+          definitionId: cliProfile.definitionId,
+          definitionVersion: cliProfile.definitionVersion,
+          role: 'teammate',
+          runtimeMode: 'external-cli',
+          cliConnectionId: cliProfile.cliConnectionId,
+          ordinal: cliOrdinal++,
+        });
+      }
+    }
 
     const stagedUploadIds = input.content?.stagedUploadIds ?? [];
     let firstMessageId: string | undefined;

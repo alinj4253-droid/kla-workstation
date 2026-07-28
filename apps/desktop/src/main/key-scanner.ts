@@ -1,6 +1,8 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import type pino from 'pino';
 import type Database from 'better-sqlite3';
+import { getLogger } from './logger';
 
 export interface ScanFinding {
   location: string;
@@ -68,11 +70,14 @@ function getTextColumns(db: Database.Database): TableInfo[] {
   return result;
 }
 
+const _keyLogger: pino.Logger = getLogger();
+
 export function scanDatabase(db: Database.Database): { findings: ScanFinding[]; scannedTables: number; scannedRows: number } {
   const findings: ScanFinding[] = [];
   let scannedRows = 0;
 
   const tables = getTextColumns(db);
+  _keyLogger.info({ tableCount: tables.length }, 'KeyScanner: scanning database');
 
   for (const table of tables) {
     const rows = db.prepare(`SELECT * FROM "${table.name}"`).all() as Array<Record<string, unknown>>;
@@ -87,6 +92,7 @@ export function scanDatabase(db: Database.Database): { findings: ScanFinding[]; 
     }
   }
 
+  _keyLogger.info({ findingsCount: findings.length, scannedTables: tables.length, scannedRows }, 'KeyScanner: database scan complete');
   return { findings, scannedTables: tables.length, scannedRows };
 }
 
@@ -96,6 +102,7 @@ export function scanLogFiles(logDir: string): { findings: ScanFinding[]; scanned
 
   try {
     const entries = readdirSync(logDir);
+    _keyLogger.info({ logDir, entryCount: entries.length }, 'KeyScanner: scanning log files');
     for (const entry of entries) {
       const fullPath = join(logDir, entry);
       try {
@@ -108,20 +115,25 @@ export function scanLogFiles(logDir: string): { findings: ScanFinding[]; scanned
     }
   } catch { /* log dir not found */ }
 
+  _keyLogger.info({ findingsCount: findings.length, scannedFiles }, 'KeyScanner: log file scan complete');
   return { findings, scannedFiles };
 }
 
 export function runKeyScan(db: Database.Database, logDir?: string): ScanResult {
+  _keyLogger.info({ logDir: logDir ?? '(none)' }, 'KeyScanner: runKeyScan started');
   const dbResult = scanDatabase(db);
   const logResult = logDir ? scanLogFiles(logDir) : { findings: [], scannedFiles: 0 };
 
   const allFindings = [...dbResult.findings, ...logResult.findings];
 
-  return {
+  const result: ScanResult = {
     passed: allFindings.length === 0,
     findings: allFindings,
     scannedTables: dbResult.scannedTables,
     scannedRows: dbResult.scannedRows,
     scannedLogFiles: logResult.scannedFiles,
   };
+
+  _keyLogger.info({ passed: result.passed, findingCount: allFindings.length }, 'KeyScanner: runKeyScan complete');
+  return result;
 }

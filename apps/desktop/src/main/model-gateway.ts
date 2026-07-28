@@ -5,51 +5,13 @@ import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { streamText, generateText, generateObject, type LanguageModel } from 'ai';
 import { safeStorage } from 'electron';
 import { z } from 'zod';
+import type pino from 'pino';
+import { BUILTIN_AGENT_REQUIREMENTS, validateModelForAgent } from '@kunqing/model-core';
+import type { ModelCapability, ModelSlot, ModelMessage } from '@kunqing/model-core';
+import { getLogger } from './logger';
 
-export type ModelSlot = 'reasoning' | 'fast' | 'embedding';
-
-/** 智能体定义对模型的能力要求 */
-export type AgentCapabilityRequirements = {
-  definitionId: string;
-  requiredCapabilities: string[];
-};
-
-/** 内置智能体的模型能力要求映射 */
-export const BUILTIN_AGENT_REQUIREMENTS: AgentCapabilityRequirements[] = [
-  {
-    definitionId: 'builtin.orchestrator',
-    requiredCapabilities: ['streaming', 'toolCalling', 'structuredOutput'],
-  },
-  {
-    definitionId: 'builtin.knowledge-manager',
-    requiredCapabilities: ['streaming', 'structuredOutput'],
-  },
-  {
-    definitionId: 'builtin.researcher',
-    requiredCapabilities: ['streaming', 'structuredOutput'],
-  },
-];
-
-/** 验证模型能力是否满足智能体要求 */
-export function validateModelForAgent(
-  definitionId: string,
-  verifiedCapabilities: string[],
-): { allowed: boolean; reason?: string } {
-  const req = BUILTIN_AGENT_REQUIREMENTS.find((r) => r.definitionId === definitionId);
-  if (!req) {
-    return { allowed: true };
-  }
-
-  const missing = req.requiredCapabilities.filter((cap) => !verifiedCapabilities.includes(cap));
-  if (missing.length > 0) {
-    return {
-      allowed: false,
-      reason: `模型缺少必要能力: ${missing.join(', ')}。智能体 ${definitionId} 需要: ${req.requiredCapabilities.join(', ')}`,
-    };
-  }
-
-  return { allowed: true };
-}
+export type { ModelSlot, ModelCapability, ModelMessage };
+export { BUILTIN_AGENT_REQUIREMENTS, validateModelForAgent };
 
 type ProviderSettings = { providerType: string; baseUrl?: string; modelId: string; apiKey?: string };
 
@@ -68,7 +30,11 @@ const testObjectSchema = z.object({
 });
 
 export class ModelGateway {
-  constructor(private db: Database) {}
+  protected readonly logger: pino.Logger;
+
+  constructor(protected db: Database) {
+    this.logger = getLogger();
+  }
 
   private getSlotProfile(slot: ModelSlot): ProviderSettings | null {
     const row = this.db.prepare(
@@ -80,7 +46,10 @@ export class ModelGateway {
        WHERE msb.slot = ? AND mp.enabled = 1`,
     ).get(slot) as { id: string; modelId: string; providerId: string; providerType: string; baseUrl: string | null; secretRef: string | null } | undefined;
 
-    if (!row) return null;
+    if (!row) {
+      this.logger.warn({ slot }, 'ModelGateway: no profile found for slot');
+      return null;
+    }
     let apiKey: string | undefined;
     if (row.secretRef) {
       const secret = this.db.prepare('SELECT ciphertext FROM secrets WHERE id = ?').get(row.secretRef) as { ciphertext: Buffer } | undefined;
@@ -88,37 +57,42 @@ export class ModelGateway {
         try {
           apiKey = safeStorage.decryptString(secret.ciphertext);
         } catch {
-          // 解密失败，跳过
+          this.logger.warn({ slot, secretRef: row.secretRef }, 'ModelGateway: failed to decrypt API key');
         }
       }
     }
     return stripUndefined({ providerType: row.providerType, baseUrl: row.baseUrl ?? undefined, modelId: row.modelId, apiKey }) as ProviderSettings;
   }
 
-  async streamText(slot: ModelSlot, messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>): Promise<ReadableStream<string>> {
+  async streamText(slot: ModelSlot, messages: Array<{ role: 'user' | 'assistant'; content: string }>, system?: string): Promise<ReadableStream<string>> {
     const profile = this.getSlotProfile(slot);
     if (!profile) throw new Error(`没有为槽位 "${slot}" 配置可用的模型`);
 
+    this.logger.info({ slot, modelId: profile.modelId, providerType: profile.providerType, msgCount: messages.length }, 'ModelGateway.streamText');
     const provider = this.buildProvider(profile);
     const result = streamText({
       model: provider(profile.modelId),
       messages,
+      ...(system !== undefined ? { system } : {}),
     });
     return result.textStream;
   }
 
   async generateText(
     slot: ModelSlot,
-    messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
-    options?: { tools?: Record<string, { description: string; parameters: Record<string, unknown> }> },
+    messages: Array<{ role: 'user' | 'assistant'; content: string }>,
+    options?: { system?: string; tools?: Record<string, { description: string; parameters: Record<string, unknown> }> },
   ): Promise<{ text: string; toolCalls?: Array<{ name: string; args: Record<string, unknown> }> }> {
     const profile = this.getSlotProfile(slot);
     if (!profile) throw new Error(`没有为槽位 "${slot}" 配置可用的模型`);
 
+    this.logger.info({ slot, modelId: profile.modelId, providerType: profile.providerType, msgCount: messages.length }, 'ModelGateway.generateText');
     const provider = this.buildProvider(profile);
+    const { system: sys } = options ?? {};
     const result = await generateText({
       model: provider(profile.modelId),
       messages,
+      ...(sys !== undefined ? { system: sys } : {}),
       tools: options?.tools as any,
     });
     return {
@@ -127,14 +101,16 @@ export class ModelGateway {
     };
   }
 
-  async generateObject<T>(slot: ModelSlot, messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>): Promise<T> {
+  async generateObject<T>(slot: ModelSlot, messages: Array<{ role: 'user' | 'assistant'; content: string }>, system?: string): Promise<T> {
     const profile = this.getSlotProfile(slot);
     if (!profile) throw new Error(`没有为槽位 "${slot}" 配置可用的模型`);
 
+    this.logger.info({ slot, modelId: profile.modelId, providerType: profile.providerType, msgCount: messages.length }, 'ModelGateway.generateObject');
     const provider = this.buildProvider(profile);
     const result = await generateObject({
       model: provider(profile.modelId),
       messages,
+      ...(system !== undefined ? { system } : {}),
       output: 'no-schema',
     } as never);
     return result.object as T;
@@ -146,7 +122,8 @@ export class ModelGateway {
    * - toolCalling: 提供工具定义，验证模型是否调用工具
    * - structuredOutput: 使用 schema 验证模型能否输出结构化结果
    */
-  async testCapabilities(providerId: string, modelId?: string): Promise<{ streaming: boolean; toolCalling: boolean; structuredOutput: boolean }> {
+  async testCapabilities(providerId: string, modelId?: string): Promise<{ streaming: boolean; toolCalling: boolean; structuredOutput: boolean; error?: string }> {
+    this.logger.info({ providerId, modelId }, 'ModelGateway.testCapabilities');
     const providerRow = this.db.prepare(
       'SELECT type, base_url, secret_ref FROM model_providers WHERE id = ?',
     ).get(providerId) as { type: string; base_url: string | null; secret_ref: string | null } | undefined;
@@ -156,12 +133,18 @@ export class ModelGateway {
       ? this.db.prepare('SELECT ciphertext FROM secrets WHERE id = ?').get(providerRow.secret_ref) as { ciphertext: Buffer } | undefined
       : undefined;
     let apiKey: string | undefined;
+    if (!providerRow.secret_ref) {
+      return { streaming: false, toolCalling: false, structuredOutput: false, error: '未配置 API Key，请在编辑中设置' };
+    }
     if (secret) {
       try {
         apiKey = safeStorage.decryptString(secret.ciphertext);
       } catch {
-        // 解密失败
+        return { streaming: false, toolCalling: false, structuredOutput: false, error: 'API Key 解密失败，请重新设置' };
       }
+    }
+    if (!apiKey) {
+      return { streaming: false, toolCalling: false, structuredOutput: false, error: 'API Key 为空或解密后为空，请在编辑中重新设置' };
     }
 
     let testModelId = modelId;
@@ -173,24 +156,19 @@ export class ModelGateway {
     const profile = stripUndefined({ providerType: providerRow.type, baseUrl: providerRow.base_url ?? undefined, modelId: testModelId, apiKey }) as ProviderSettings;
     const provider = this.buildProvider(profile);
 
-    const results = { streaming: false, toolCalling: false, structuredOutput: false };
-    const testSignal = AbortSignal.timeout(15000);
+    const results: { streaming: boolean; toolCalling: boolean; structuredOutput: boolean; error?: string } = { streaming: false, toolCalling: false, structuredOutput: false };
+    const testSignal = AbortSignal.timeout(30000);
 
-    // 1. 测试流式文本
+    // 1. 测试基本连通性（用 generateText 获取明确错误）
     try {
-      const streamResult = streamText({
+      const textResult = await generateText({
         model: provider(profile.modelId),
         messages: [{ role: 'user', content: 'Hi' }],
         abortSignal: testSignal,
       });
-      for await (const _chunk of streamResult.textStream) {
-        results.streaming = true;
-        break;
-      }
-    } catch { /* streaming not supported */ }
+      results.streaming = true;
 
-    // 2. 测试工具调用
-    if (results.streaming) {
+      // 2. 测试工具调用
       try {
         const toolResult = await generateText({
           model: provider(profile.modelId),
@@ -203,14 +181,11 @@ export class ModelGateway {
           },
           abortSignal: testSignal,
         } as any);
-        // 检查是否有 tool call
         results.toolCalling = (toolResult.toolCalls?.length ?? 0) > 0
           || (toolResult.steps?.some((s) => (s.toolCalls?.length ?? 0) > 0) ?? false);
       } catch { /* tool calling not supported */ }
-    }
 
-    // 3. 测试结构化输出
-    if (results.streaming) {
+      // 3. 测试结构化输出
       try {
         const objResult = await generateObject({
           model: provider(profile.modelId),
@@ -222,13 +197,18 @@ export class ModelGateway {
           && objResult.object !== null
           && 'summary' in objResult.object;
       } catch { /* structured output not supported */ }
+    } catch (err) {
+      results.error = err instanceof Error ? err.message : String(err);
+      this.logger.warn({ err: results.error, providerId, modelId: testModelId }, 'ModelGateway.testCapabilities: connectivity failed');
     }
 
+    this.logger.info({ providerId, ...results }, 'ModelGateway.testCapabilities result');
     return results;
   }
 
   private buildProvider(profile: { providerType?: string; baseUrl?: string; apiKey?: string }): (modelId: string) => LanguageModel {
     const type = profile.providerType ?? 'openai';
+    this.logger.debug({ providerType: type, hasBaseUrl: !!profile.baseUrl, hasApiKey: !!profile.apiKey }, 'ModelGateway.buildProvider');
 
     switch (type) {
       case 'openai':
@@ -236,7 +216,8 @@ export class ModelGateway {
         const opts: Record<string, string> = {};
         if (profile.apiKey) opts.apiKey = profile.apiKey;
         if (profile.baseUrl) opts.baseURL = profile.baseUrl;
-        return createOpenAI(opts as never) as unknown as (modelId: string) => LanguageModel;
+        const provider = createOpenAI(opts as never);
+        return (modelId: string) => (provider as any).chat(modelId);
       }
 
       case 'anthropic': {
@@ -256,6 +237,7 @@ export class ModelGateway {
       }
 
       default:
+        this.logger.error({ providerType: type }, 'ModelGateway.buildProvider: unsupported provider type');
         throw new Error(`不支持的 Provider 类型: ${type}。支持的: openai, openai-compatible, anthropic, google`);
     }
   }

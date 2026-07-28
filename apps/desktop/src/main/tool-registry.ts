@@ -143,6 +143,15 @@ export class ToolRegistry {
       return `未知工具: ${name}`;
     }
 
+    // 0. Inject projectId from execution context if the schema requires it but args omit it
+    if (context.projectId && (args.projectId === undefined || args.projectId === null)) {
+      const schema = tool.parameters as Record<string, unknown>;
+      const required = (schema as any)?.required as string[] | undefined;
+      if (required?.includes('projectId')) {
+        args.projectId = context.projectId;
+      }
+    }
+
     // 1. Schema validation（基础参数校验）
     const schemaErrors = this.validateArgs(tool, args);
     if (schemaErrors.length > 0) {

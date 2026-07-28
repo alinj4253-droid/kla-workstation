@@ -8,7 +8,7 @@ export type SpawnSpec = {
   cwd: string;
   env: Record<string, string>;
   stdin?: string;
-  shell: false;
+  shell: boolean;
 };
 
 export type SpawnOptions = {
@@ -65,7 +65,7 @@ export class ProcessSupervisor {
     const child = spawn(spec.executable, spec.args, {
       cwd: spec.cwd,
       env: spec.env,
-      shell: false as const,
+      shell: spec.shell,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
       detached: true,

@@ -44,6 +44,16 @@ export {
   GeminiAutoStrategy,
   QwenCodeCliAdapter,
   QwenCodeAutoStrategy,
+  OpencodeCliAdapter,
+  OpencodeAutoStrategy,
+  CodeGeeXCliAdapter,
+  CodeGeeXAutoStrategy,
+  KimiCliAdapter,
+  KimiAutoStrategy,
+  MiniMaxCliAdapter,
+  MiniMaxAutoStrategy,
+  MarsCodeCliAdapter,
+  MarsCodeAutoStrategy,
 } from './adapters/index.js';
 
 // 向后兼容别名（通过旧路径重导出）
