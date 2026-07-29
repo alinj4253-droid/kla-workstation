@@ -33,6 +33,12 @@ describe('IGraphContext interface', () => {
         getRunStatus(_runId) {
           return { status: 'completed', resultMessageId: 'msg-1' };
         },
+        getParentRunId(_runId) {
+          return null;
+        },
+        getRunAgentInstanceId(_runId) {
+          return null;
+        },
         createSubRun(_input) {
           return 'sub-run-id';
         },
@@ -97,6 +103,8 @@ describe('IGraphContext interface', () => {
         setResultMessage() {},
         addRunEvent() {},
         getRunStatus() { return { status: 'completed' }; },
+        getParentRunId() { return null; },
+        getRunAgentInstanceId() { return null; },
         createSubRun() { return 'sub-id'; },
         enqueueRun() {},
         emitEvent() {},

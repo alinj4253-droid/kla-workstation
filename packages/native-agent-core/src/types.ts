@@ -71,6 +71,10 @@ export interface IGraphContext {
 
     getRunStatus(runId: string): { status: string; resultMessageId?: string; errorMessage?: string };
 
+    getParentRunId(runId: string): string | null;
+
+    getRunAgentInstanceId(runId: string): string | null;
+
     createSubRun(input: CreateSubRunInput): string;
 
     enqueueRun(params: SubRunParams): void;

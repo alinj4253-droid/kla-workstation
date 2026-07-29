@@ -12,6 +12,7 @@ import { AgentRunRepository, FileRepository } from '@kunqing/database';
 import { getLogger } from './logger';
 import { getProjectRoot } from './paths';
 import { Scheduler } from './scheduler';
+import { processMessageMentions } from './message-router';
 import { randomUUID } from 'node:crypto';
 
 export type ExecContext = IGraphContext;
@@ -102,6 +103,13 @@ export async function runOrchestrator(
         db.prepare(
           'INSERT INTO messages (id, project_id, sender_type, sender_id, kind, content_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
         ).run(id, projectId, 'agent', senderId, kind, contentJson, 'sent', now, now);
+
+        // 以本条消息的 ID 作为 triggerMessageId 传递给 processMessageMentions，
+        // 这样被 @mention 触发的子智能体 Run 的 triggerMessageId 会指向本条消息
+        if (scheduler) {
+          processMessageMentions(db, runRepo, scheduler, projectId, contentJson, id, senderId, runId, 'agent');
+        }
+
         return id;
       },
 
@@ -127,6 +135,24 @@ export async function runOrchestrator(
           resultMessageId: run.resultMessageId ?? undefined,
           errorMessage: run.errorMessage ?? undefined,
         } as { status: string; resultMessageId?: string; errorMessage?: string };
+      },
+
+      getParentRunId(runId: string): string | null {
+        try {
+          const run = runRepo.getById(runId);
+          return run.parentRunId ?? null;
+        } catch {
+          return null;
+        }
+      },
+
+      getRunAgentInstanceId(runId: string): string | null {
+        try {
+          const run = runRepo.getById(runId);
+          return run.agentInstanceId;
+        } catch {
+          return null;
+        }
       },
 
       createSubRun(input: CreateSubRunInput): string {

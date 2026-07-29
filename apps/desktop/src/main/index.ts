@@ -15,6 +15,7 @@ import { getDatabase, runMigrations, backupDatabase, restoreDatabase, listBackup
 import { getLogger } from './logger';
 import { getProjectRoot, getStudioRoot, setStudioRoot } from './paths';
 import { createProject, safeFileName, seedDefaultProfiles, buildModelProfileSnapshot } from './project-creator';
+import { processMessageMentions } from './message-router';
 import { ContextBuilder } from './context-builder';
 import { SkillRegistry } from './skill-registry';
 import { FileWatcher } from './file-watcher';
@@ -873,52 +874,42 @@ const registerMessageIpc = (db: ReturnType<typeof getDatabase>): void => {
     const data = messageRepo.listByProject(input.projectId, input.before, input.limit ?? 50);
     return { ok: true, data };
   });
-  registerIpc('messages:send', async (_event, input: { idempotencyKey: string; projectId: string; content: { text?: string } }) => {
+  registerIpc('messages:send', async (_event, input: { idempotencyKey: string; projectId: string; content: { text?: string; mentions?: Array<{ target: { scope: string; id: string } }> } }) => {
     const data = messageRepo.createUserMessage(input.projectId, JSON.stringify(input.content));
     if (_scheduler) {
-      const leaderInstance = db.prepare(
-        `SELECT id FROM project_agent_instances WHERE project_id = ? AND role = 'leader' LIMIT 1`,
-      ).get(input.projectId) as { id: string } | undefined;
-      if (leaderInstance) {
-        // 检查是否有真正可用的模型配置（slot binding + 启用 + API key 有效）
-        const hasModel = db.prepare(`
-          SELECT 1 FROM model_slot_bindings msb
-          JOIN model_profiles mp ON mp.id = msb.model_profile_id AND mp.enabled = 1
-          JOIN model_providers prv ON prv.id = mp.provider_id
-          WHERE msb.slot = ?
-            AND (prv.auth_type = 'none'
-              OR (prv.secret_ref IS NOT NULL AND EXISTS (SELECT 1 FROM secrets WHERE id = prv.secret_ref)))
-        `).get('reasoning');
-        if (!hasModel) {
-          // 没有配置模型，插入引导消息
-          const now = new Date().toISOString();
-          const msgId = randomUUID().toLowerCase().replace(/-/g, '').slice(0, 24);
-          const contentJson = JSON.stringify({ schemaVersion: 1, text: '请先在 **设置 → 模型配置** 中添加一个可用的模型 Provider（如 OpenAI、Anthropic、Google 等），然后重试。' });
-          db.prepare(
-            `INSERT INTO messages (id, project_id, sender_type, sender_id, kind, content_json, status, created_at, updated_at)
-             VALUES (?, ?, 'system', 'system', 'system', ?, 'sent', ?, ?)`,
-          ).run(msgId, input.projectId, contentJson, now, now);
-          // 发送事件通知 UI
-          const win = BrowserWindow.getAllWindows()[0];
-          if (win && !win.isDestroyed()) {
-            win.webContents.send('event:dispatch', {
-              type: 'message.created',
-              projectId: input.projectId,
-              message: { id: msgId, senderType: 'system', senderId: 'system', kind: 'system', contentJson, status: 'sent', createdAt: now },
-            });
-          }
-          return { ok: true, data };
+      const mentions = input.content?.mentions ?? [];
+      const instanceMentions = mentions.filter((m) => m.target.scope === 'instance');
+
+      // 有 @mention 时路由到对应智能体
+      if (instanceMentions.length > 0) {
+        processMessageMentions(
+          db, runRepo, _scheduler, input.projectId,
+          JSON.stringify(input.content), data.id,
+          'local-user', undefined, 'user',
+        );
+      } else {
+        // 无 @mention 时自动触发统筹智能体处理（保持原有行为）
+        const leaderInstance = db.prepare(
+          `SELECT id FROM project_agent_instances WHERE project_id = ? AND role = 'leader' LIMIT 1`,
+        ).get(input.projectId) as { id: string } | undefined;
+        if (leaderInstance) {
+          const run = runRepo.create({
+            projectId: input.projectId,
+            agentInstanceId: leaderInstance.id,
+            requestedByType: 'user',
+            requestedById: 'local-user',
+            instruction: JSON.stringify(input.content),
+            triggerMessageId: data.id,
+            modelProfileSnapshotJson: buildModelProfileSnapshot(db, leaderInstance.id),
+          });
+          _scheduler.enqueue({
+            runId: run.id,
+            projectId: input.projectId,
+            agentInstanceId: leaderInstance.id,
+            instruction: JSON.stringify(input.content),
+            triggerMessageId: data.id,
+          });
         }
-        const run = runRepo.create({
-          projectId: input.projectId,
-          agentInstanceId: leaderInstance.id,
-          requestedByType: 'user',
-          requestedById: 'local-user',
-          instruction: input.content?.text ?? '',
-          triggerMessageId: data.id,
-          modelProfileSnapshotJson: buildModelProfileSnapshot(db, leaderInstance.id),
-        });
-        _scheduler.enqueue({ runId: run.id, projectId: input.projectId, agentInstanceId: leaderInstance.id, instruction: input.content?.text ?? '', triggerMessageId: data.id });
       }
     }
     return { ok: true, data };

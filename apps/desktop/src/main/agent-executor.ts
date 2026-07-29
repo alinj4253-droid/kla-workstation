@@ -15,6 +15,103 @@ import { cliAgentRegistry } from './cli-agent-registry';
 import { AgentRunRepository, MessageRepository } from '@kunqing/database';
 import { getLogger } from './logger';
 import { getProjectRoot } from './paths';
+import { processMessageMentions } from './message-router';
+
+/**
+ * 查询智能体实例的显示名称
+ */
+function lookupAgentName(db: Database.Database, agentInstanceId: string): string | null {
+  try {
+    const row = db.prepare(
+      `SELECT ap.name FROM project_agent_instances pai
+       JOIN agent_profiles ap ON ap.id = pai.agent_profile_id
+       WHERE pai.id = ?`,
+    ).get(agentInstanceId) as { name: string } | undefined;
+    return row?.name ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 查询触发者（用户或智能体）的显示名称
+ */
+function lookupTriggeredByName(db: Database.Database, runRepo: AgentRunRepository, runId: string): { triggeredBy: string; triggeredByName: string | null } | null {
+  try {
+    const run = runRepo.getById(runId);
+    if (run.requestedByType === 'user') {
+      return { triggeredBy: 'user', triggeredByName: '用户' };
+    }
+    if (run.requestedByType === 'agent' && run.requestedById) {
+      const name = lookupAgentName(db, run.requestedById);
+      return { triggeredBy: run.requestedById, triggeredByName: name };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 统一发送 run.status 事件，自动补充 agentName 和 triggeredBy 信息
+ */
+function dispatchRunStatus(
+  db: Database.Database,
+  runRepo: AgentRunRepository,
+  window: BrowserWindow,
+  run: QueuedRun,
+  status: string,
+  extra?: { error?: string; message?: string },
+): void {
+  if (window.isDestroyed()) return;
+  const agentName = lookupAgentName(db, run.agentInstanceId);
+  const triggered = lookupTriggeredByName(db, runRepo, run.runId);
+  window.webContents.send('event:dispatch', {
+    type: 'run.status',
+    projectId: run.projectId,
+    run: {
+      id: run.runId,
+      agentId: run.agentInstanceId,
+      agentName,
+      status,
+      triggeredBy: triggered?.triggeredBy ?? null,
+      triggeredByName: triggered?.triggeredByName ?? null,
+      ...extra,
+    },
+  });
+}
+
+/**
+ * 查询当前 Run 的父 Run，如果存在则返回父智能体的 @mention 条目。
+ * 用于子智能体执行完成后自动 @回父智能体，形成链式协作。
+ */
+function buildParentMention(
+  db: Database.Database,
+  runRepo: AgentRunRepository,
+  runId: string,
+): Array<{ target: { scope: string; id: string }; label: string; start: number; end: number }> {
+  try {
+    const currentRun = runRepo.getById(runId);
+    if (!currentRun.parentRunId) return [];
+
+    const parentRun = runRepo.getById(currentRun.parentRunId);
+    const parentInstance = db.prepare(
+      `SELECT ap.name FROM project_agent_instances pai
+       JOIN agent_profiles ap ON ap.id = pai.agent_profile_id
+       WHERE pai.id = ?`,
+    ).get(parentRun.agentInstanceId) as { name: string } | undefined;
+    if (!parentInstance) return [];
+
+    return [{
+      target: { scope: 'instance', id: parentRun.agentInstanceId },
+      label: parentInstance.name,
+      start: 0,
+      end: 0,
+    }];
+  } catch {
+    return [];
+  }
+}
 
 export type AgentExecutor = {
   (run: QueuedRun, signal: AbortSignal): Promise<void>;
@@ -62,13 +159,7 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
         runRepo.addEvent(run.runId, 'agent.completed', { definitionId: 'builtin.orchestrator' });
       }).catch((err) => {
         runRepo.addEvent(run.runId, 'agent.error', { definitionId: 'builtin.orchestrator', error: err instanceof Error ? err.message : String(err) });
-        if (!window.isDestroyed()) {
-          window.webContents.send('event:dispatch', {
-            type: 'run.status',
-            projectId: run.projectId,
-            run: { id: run.runId, agentId: run.agentInstanceId, status: 'failed', error: err instanceof Error ? err.message : String(err) },
-          });
-        }
+        dispatchRunStatus(db, runRepo, window, run, 'failed', { error: err instanceof Error ? err.message : String(err) });
         throw err;
       });
     }
@@ -92,7 +183,7 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
 
       // 保存知识管理报告消息
       const agentMsgId = randomUUID().toLowerCase().replace(/-/g, '').slice(0, 24);
-      const contentJson = JSON.stringify({ schemaVersion: 1, text: report, mentions: [], stagedUploadIds: [] });
+      const contentJson = JSON.stringify({ schemaVersion: 1, text: report, mentions: buildParentMention(db, runRepo, run.runId), stagedUploadIds: [] });
       const now = new Date().toISOString();
       db.prepare(
         'INSERT INTO messages (id, project_id, sender_type, sender_id, kind, content_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
@@ -108,6 +199,12 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
           senderId: agentInstance?.id ?? run.agentInstanceId,
           content: contentJson,
         });
+      }
+
+      // 处理消息中的 @mention，触发目标智能体调度
+      if (_scheduler) {
+        const currentRun = runRepo.getById(run.runId);
+        processMessageMentions(db, runRepo, _scheduler, run.projectId, contentJson, run.triggerMessageId, run.agentInstanceId, currentRun.parentRunId ?? undefined);
       }
 
       return;
@@ -153,12 +250,7 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
             });
             if (response === 1) {
               runRepo.setStatus(run.runId, 'cancelled');
-              if (!window.isDestroyed()) {
-                window.webContents.send('event:dispatch', {
-                  type: 'run.status', projectId: run.projectId,
-                  run: { id: run.runId, agentId: run.agentInstanceId, status: 'cancelled' },
-                });
-              }
+              dispatchRunStatus(db, runRepo, window, run, 'cancelled');
               runRepo.addEvent(run.runId, 'agent.error', { definitionId: agentInstance.definitionId, error: '用户取消' });
               return;
             }
@@ -173,27 +265,41 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
           await ctxBuilder.writeContextManifest(snapshot, projectRoot);
         } catch { /* 非致命 */ }
 
-        if (!window.isDestroyed()) {
-          window.webContents.send('event:dispatch', {
-            type: 'run.status', projectId: run.projectId,
-            run: { id: run.runId, agentId: run.agentInstanceId, status: 'running', message: `${cliRow.name} (CLI) 正在执行...` },
+        dispatchRunStatus(db, runRepo, window, run, 'running', { message: `${cliRow.name} (CLI) 正在执行...` });
+
+        // 使用适配器的 run 方法（含策略构建 args），兜底用 cliExecutor
+        let result: import('./cli-executor').CliRunResult;
+        if (adapter && 'run' in adapter) {
+          const projectRoot = getProjectRoot(run.projectId);
+          try {
+            const externalResult = await adapter.run(
+              { connection: { ...connection, capabilities: [], secretRefs: [] }, instruction: run.instruction, workspaceRoot: projectRoot },
+              {},
+              signal ?? new AbortController().signal,
+            );
+            result = {
+              exitCode: externalResult.exitCode,
+              output: externalResult.stdout + (externalResult.stderr ? '\n' + externalResult.stderr : ''),
+              durationMs: externalResult.durationMs,
+              cancelled: externalResult.exitCode === null,
+            };
+          } catch (err) {
+            runRepo.setStatus(run.runId, 'failed');
+            dispatchRunStatus(db, runRepo, window, run, 'failed', { error: err instanceof Error ? err.message : String(err) });
+            runRepo.addEvent(run.runId, 'agent.error', { definitionId: agentInstance.definitionId, error: err instanceof Error ? err.message : String(err) });
+            return;
+          }
+        } else {
+          result = await cliExecutor.execute({
+            connection, instruction: run.instruction, projectId: run.projectId, window, signal,
           });
         }
-
-        const result = await cliExecutor.execute({
-          connection, instruction: run.instruction, projectId: run.projectId, window, signal,
-        });
 
         const output = result.output.trim();
 
         if (result.cancelled) {
           runRepo.setStatus(run.runId, 'cancelled');
-          if (!window.isDestroyed()) {
-            window.webContents.send('event:dispatch', {
-              type: 'run.status', projectId: run.projectId,
-              run: { id: run.runId, agentId: run.agentInstanceId, status: 'cancelled' },
-            });
-          }
+          dispatchRunStatus(db, runRepo, window, run, 'cancelled');
           return;
         }
 
@@ -209,7 +315,7 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
             }
           }
 
-          const agentContent = { schemaVersion: 1 as const, text: output, mentions: [], stagedUploadIds: [] };
+          const agentContent = { schemaVersion: 1 as const, text: output, mentions: buildParentMention(db, runRepo, run.runId), stagedUploadIds: [] };
           const contentJson = JSON.stringify(agentContent);
           const now = new Date().toISOString();
           db.prepare(
@@ -219,22 +325,20 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
           runRepo.setResultMessage(run.runId, agentMsgId);
           _runCompletedCallback?.(run.runId, run.projectId, agentMsgId);
 
+          // 处理消息中的 @mention，触发目标智能体调度
+          if (_scheduler) {
+            const currentRun = runRepo.getById(run.runId);
+            processMessageMentions(db, runRepo, _scheduler, run.projectId, contentJson, run.triggerMessageId, run.agentInstanceId, currentRun.parentRunId ?? undefined);
+          }
+
+          dispatchRunStatus(db, runRepo, window, run, 'completed');
           if (!window.isDestroyed()) {
-            window.webContents.send('event:dispatch', {
-              type: 'run.status', projectId: run.projectId,
-              run: { id: run.runId, agentId: run.agentInstanceId, status: 'completed' },
-            });
             window.webContents.send('event:dispatch', {
               type: 'message.committed', projectId: run.projectId, messageId: agentMsgId, senderId: agentInstance.id, content: contentJson,
             });
           }
         } else {
-          if (!window.isDestroyed()) {
-            window.webContents.send('event:dispatch', {
-              type: 'run.status', projectId: run.projectId,
-              run: { id: run.runId, agentId: run.agentInstanceId, status: 'completed', message: `${cliRow.name} (CLI) 执行完毕（无文本输出）` },
-            });
-          }
+          dispatchRunStatus(db, runRepo, window, run, 'completed', { message: `${cliRow.name} (CLI) 执行完毕（无文本输出）` });
         }
 
         runRepo.addEvent(run.runId, 'agent.completed', { definitionId: agentInstance.definitionId, cli: true, charCount: output.length });
@@ -296,7 +400,7 @@ ${memoryContext ? `\n${memoryContext}` : ''}`;
           : '已收到消息，正在处理中。';
       }
 
-      const contentJson = JSON.stringify({ schemaVersion: 1, text: fullText, mentions: [], stagedUploadIds: [] });
+      const contentJson = JSON.stringify({ schemaVersion: 1, text: fullText, mentions: buildParentMention(db, runRepo, run.runId), stagedUploadIds: [] });
       const now = new Date().toISOString();
 
       db.prepare(
@@ -306,12 +410,14 @@ ${memoryContext ? `\n${memoryContext}` : ''}`;
       runRepo.setResultMessage(run.runId, agentMsgId);
       _runCompletedCallback?.(run.runId, run.projectId, agentMsgId);
 
+      // 处理消息中的 @mention，触发目标智能体调度
+      if (_scheduler) {
+        const currentRun = runRepo.getById(run.runId);
+        processMessageMentions(db, runRepo, _scheduler, run.projectId, contentJson, run.triggerMessageId, run.agentInstanceId, currentRun.parentRunId ?? undefined);
+      }
+
+      dispatchRunStatus(db, runRepo, window, run, 'completed');
       if (!window.isDestroyed()) {
-        window.webContents.send('event:dispatch', {
-          type: 'run.status',
-          projectId: run.projectId,
-          run: { id: run.runId, agentId: agentInstance?.id ?? run.agentInstanceId, status: 'completed' },
-        });
         window.webContents.send('event:dispatch', {
           type: 'message.committed',
           projectId: run.projectId,
@@ -329,13 +435,7 @@ ${memoryContext ? `\n${memoryContext}` : ''}`;
       if (err instanceof DOMException && err.name === 'AbortError') {
         runRepo.setStatus(run.runId, 'cancelled');
         runRepo.addEvent(run.runId, 'agent.error', { definitionId: 'direct', error: '用户取消' });
-        if (!window.isDestroyed()) {
-          window.webContents.send('event:dispatch', {
-            type: 'run.status',
-            projectId: run.projectId,
-            run: { id: run.runId, agentId: run.agentInstanceId, status: 'cancelled' },
-          });
-        }
+        dispatchRunStatus(db, runRepo, window, run, 'cancelled');
         return;
       }
       throw err;

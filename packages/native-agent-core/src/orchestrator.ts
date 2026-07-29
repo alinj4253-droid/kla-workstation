@@ -132,6 +132,38 @@ async function analyzeIntent(state: GraphState, config: { configurable: { ctx: I
   const messages = buildMessages(ctx, ORCHESTRATOR_SYSTEM_PROMPT, snapshot, snapshotText, memoryContext);
   const tools = buildAiTools(ctx, 'orchestrator');
 
+  // 链式上下文检测：如果当前 Run 是由子智能体 @mention 触发，直接从上下文读取子智能体结果
+  const parentRunId = ctx.services.getParentRunId(ctx.runId);
+  if (parentRunId) {
+    // 尝试从触发消息中读取子智能体结果
+    const triggerMessage = snapshot.messages.find((m) => {
+      try {
+        const parsed = JSON.parse(m.content);
+        if (!parsed || !Array.isArray(parsed.mentions)) return false;
+        return parsed.mentions.some((mt: { target: { scope: string; id: string } }) => mt.target?.id === ctx.agentInstanceId);
+      } catch { return false; }
+    });
+
+    if (triggerMessage) {
+      let subAgentText = '';
+      try {
+        const parsed = JSON.parse(triggerMessage.content);
+        subAgentText = parsed.text ?? triggerMessage.content;
+      } catch {
+        subAgentText = triggerMessage.content;
+      }
+
+      sendProgress(ctx, '汇总子智能体结果', 50);
+      return {
+        messages: [{ role: 'system', content: `子智能体结果: ${subAgentText}` }],
+        needsKnowledgeManager: false,
+        finalResponse: '',
+        subAgentResult: subAgentText,
+        artifacts: [],
+      };
+    }
+  }
+
   const result = await ctx.services.generateText('reasoning', messages, { tools });
 
   let needsKM: boolean;
@@ -196,66 +228,31 @@ async function delegateToKM(state: GraphState, config: { configurable: { ctx: IG
     return { subAgentResult: '知识管理员已被禁用，跳过知识处理', messages: [{ role: 'system', content: 'delegate: KM 已禁用' }] };
   }
 
-  const subRunId = ctx.services.createSubRun({
-    projectId: ctx.projectId,
-    agentInstanceId: kmInstance.id,
-    instruction: ctx.instruction,
-    requestedByType: 'agent',
-    requestedById: ctx.agentInstanceId,
-    parentRunId: ctx.runId,
-    modelProfileSnapshotJson: null,
+  // 消息模式委派：发送消息 @知识管理员，然后结束当前 Run
+  // KM 被 @mention 触发后自动执行，完成后 @回统筹智能体
+  const mentions = [{
+    target: { scope: 'instance', id: kmInstance.id } as const,
+    label: kmInstance.id,
+    start: 0,
+    end: 0,
+  }];
+
+  const contentJson = JSON.stringify({
+    schemaVersion: 1,
+    text: ctx.instruction,
+    mentions,
+    stagedUploadIds: [],
   });
 
-  ctx.services.addRunEvent(ctx.runId, 'delegate', {
-    subRunId,
-    agentInstanceId: kmInstance.id,
-    instruction: ctx.instruction.slice(0, 200),
-  });
+  // 通过 insertMessage 发送消息，它会自动触发 processMessageMentions 调度 KM
+  await ctx.services.insertMessage(ctx.projectId, ctx.agentInstanceId, 'text', contentJson);
 
-  ctx.services.enqueueRun({
-    runId: subRunId,
-    projectId: ctx.projectId,
-    agentInstanceId: kmInstance.id,
-    instruction: ctx.instruction,
-    triggerMessageId: ctx.triggerMessageId,
-    modelProfileSnapshotJson: null,
-  });
+  logger.info(`Orchestrator 已通过消息委派 KM (project=${ctx.projectId}, km=${kmInstance.id})`);
 
-  sendProgress(ctx, '等待子智能体', 40);
-
-  const pollTimeout = 120000;
-  const deadline = Date.now() + pollTimeout;
-
-  while (Date.now() < deadline) {
-    ctx.signal.throwIfAborted();
-
-    const run = ctx.services.getRunStatus(subRunId);
-    if (['completed', 'failed', 'cancelled', 'interrupted'].includes(run.status)) {
-      if (run.status !== 'completed') {
-        const errMsg = run.errorMessage || `子 Run 状态: ${run.status}`;
-        return { subAgentResult: `知识管理员执行未完成: ${errMsg}`, messages: [{ role: 'system', content: 'delegate: KM 未完成' }] };
-      }
-
-      let resultText = '';
-      if (run.resultMessageId) {
-        const messageContent = ctx.services.getMessageContent(run.resultMessageId);
-        if (messageContent) {
-          resultText = messageContent;
-        }
-      }
-
-      if (!resultText) {
-        resultText = '知识管理员已完成处理但未返回文本结果。';
-      }
-
-      logger.info(`异步委派 KM 完成 (subRun=${subRunId})`);
-      return { subAgentResult: resultText, messages: [{ role: 'system', content: 'delegate: KM 异步返回结果' }] };
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 200));
-  }
-
-  throw new Error(`子 Run ${subRunId} 在 ${pollTimeout}ms 内未完成`);
+  return {
+    subAgentResult: '',
+    messages: [{ role: 'system', content: `委派给知识管理员: ${ctx.instruction}` }],
+  };
 }
 
 async function synthesize(state: GraphState, config: { configurable: { ctx: IGraphContext } }): Promise<Partial<GraphState>> {
@@ -272,7 +269,7 @@ async function synthesize(state: GraphState, config: { configurable: { ctx: IGra
   messages.push({ role: 'assistant', content: assistantContent });
 
   if (state.subAgentResult) {
-    messages.push({ role: 'user', content: `知识管理员返回了以下结果：\n\n${state.subAgentResult}\n\n请根据这些信息给出最终回复。` });
+    messages.push({ role: 'user', content: `子智能体返回了以下结果：\n\n${state.subAgentResult}\n\n请根据这些信息给出最终回复。` });
   } else {
     messages.push({ role: 'user', content: '请直接回复用户。' });
   }
@@ -309,7 +306,23 @@ async function respond(state: GraphState, config: { configurable: { ctx: IGraphC
     (a) => `📄 **${a.relativePath}** 已发布到工作区\n\`\`\`\n${a.content}\n\`\`\``,
   );
   const combinedText = artifactLines.length > 0 ? text + '\n\n---\n\n' + artifactLines.join('\n\n') : text;
-  const contentJson = JSON.stringify({ schemaVersion: 1, text: combinedText, mentions: [], stagedUploadIds: [] });
+
+  // 子智能体完成时 @回父智能体
+  const mentions: Array<{ target: { scope: string; id: string }; label: string; start: number; end: number }> = [];
+  const parentRunId = ctx.services.getParentRunId(ctx.runId);
+  if (parentRunId) {
+    const parentAgentId = ctx.services.getRunAgentInstanceId(parentRunId);
+    if (parentAgentId) {
+      mentions.push({
+        target: { scope: 'instance', id: parentAgentId },
+        label: parentAgentId,
+        start: 0,
+        end: 0,
+      });
+    }
+  }
+
+  const contentJson = JSON.stringify({ schemaVersion: 1, text: combinedText, mentions, stagedUploadIds: [] });
 
   const agentMsgId = await ctx.services.insertMessage(ctx.projectId, ctx.agentInstanceId, 'text', contentJson);
   ctx.services.setResultMessage(ctx.runId, agentMsgId);
@@ -335,7 +348,13 @@ async function respond(state: GraphState, config: { configurable: { ctx: IGraphC
 }
 
 function routeAfterAnalyze(state: GraphState): string {
-  return state.needsKnowledgeManager ? 'delegateToKM' : 'respond';
+  if (state.needsKnowledgeManager) return 'delegateToKM';
+  if (state.subAgentResult) return 'synthesize';
+  return 'respond';
+}
+
+function routeAfterDelegate(state: GraphState): string {
+  return state.subAgentResult ? 'synthesize' : 'respond';
 }
 
 function buildOrchestratorGraph() {
@@ -346,7 +365,7 @@ function buildOrchestratorGraph() {
     .addNode('respond', respond as any)
     .addEdge('__start__', 'analyzeIntent')
     .addConditionalEdges('analyzeIntent', routeAfterAnalyze, ['delegateToKM', 'respond'])
-    .addEdge('delegateToKM', 'synthesize')
+    .addConditionalEdges('delegateToKM', routeAfterDelegate, ['synthesize', 'respond'])
     .addEdge('synthesize', 'respond')
     .addEdge('respond', END);
 

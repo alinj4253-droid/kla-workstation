@@ -25,6 +25,7 @@ interface VirtualMessageListProps {
   messages: MessageItem[];
   streamMap: Record<string, string>;
   activeRuns: Array<{ runId: string; status: string; agentName: string | undefined }>;
+  projectAgents: Array<{ id: string; agentName: string }>;
   hasMore: boolean;
   loading: boolean;
   projectId: string | undefined;
@@ -48,6 +49,7 @@ export function VirtualMessageList({
   messages,
   streamMap,
   activeRuns,
+  projectAgents,
   hasMore,
   loading,
   projectId,
@@ -159,7 +161,10 @@ export function VirtualMessageList({
 
   const senderDisplay = (msg: MessageItem): string => {
     if (msg.senderType === 'user') return '项目负责人 (You)';
-    if (msg.senderType === 'agent') return msg.senderId;
+    if (msg.senderType === 'agent') {
+      const agent = projectAgents.find((a) => a.id === msg.senderId);
+      return agent?.agentName ?? msg.senderId;
+    }
     return '系统';
   };
 
@@ -221,9 +226,9 @@ export function VirtualMessageList({
                 <article className="message-row message-row--system">
                   <div className="message-agent-icon message-agent-icon--system"><Loader2 size={16} className="spin" /></div>
                   <div className="message-body">
-                    <div className="message-sender"><strong>系统</strong></div>
+                    <div className="message-sender"><strong>{item.agentName || '智能体'}</strong></div>
                     <div className="message-bubble message-bubble--status">
-                      <span>{item.agentName || '智能体'} {item.status === 'queued' ? '排队中...' : item.status === 'starting' ? '启动中...' : '运行中...'}</span>
+                      <span>{item.status === 'queued' ? '排队中...' : item.status === 'starting' ? '启动中...' : '运行中...'}</span>
                       <button type="button" className="composer-tool" aria-label="取消运行" onClick={() => onCancelRun(item.runId)}><Square size={14} /></button>
                     </div>
                   </div>

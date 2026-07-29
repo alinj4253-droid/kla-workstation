@@ -8,7 +8,7 @@ import { AgentAvatar } from '../components/AgentAvatar';
 import { VirtualMessageList } from '../components/VirtualMessageList';
 import { MemoryManager } from '../components/MemoryManager';
 
-type MentionRef = { target: { scope: 'profile'; id: string }; label: string; start: number; end: number };
+type MentionRef = { target: { scope: 'instance'; id: string }; label: string; start: number; end: number };
 
 function extractMentions(text: string, agents: Array<{ id: string; agentName: string }>): MentionRef[] {
   const mentions: MentionRef[] = [];
@@ -18,7 +18,7 @@ function extractMentions(text: string, agents: Array<{ id: string; agentName: st
     const name = match[1]!;
     const agent = agents.find((a) => a.agentName === name);
     if (agent) {
-      mentions.push({ target: { scope: 'profile', id: agent.id }, label: name, start: match.index, end: match.index + name.length + 1 });
+      mentions.push({ target: { scope: 'instance', id: agent.id }, label: name, start: match.index, end: match.index + name.length + 1 });
     }
   }
   return mentions;
@@ -203,17 +203,17 @@ export function ChatPage(): React.JSX.Element {
           break;
         }
         case 'message.committed': {
-          const { messageId, content } = event as { type: 'message.committed'; projectId: string; messageId: string; content: string };
+          const { messageId, senderId, content } = event as { type: 'message.committed'; projectId: string; messageId: string; senderId: string; content: string };
           setStreamMap((prev) => { const next = { ...prev }; delete next[messageId]; return next; });
           setMessages((prev) => {
             if (prev.some((m) => m.id === messageId)) return prev;
-            return [...prev, { id: messageId, senderType: 'agent', senderId: '', kind: 'text', contentJson: content, status: 'sent', createdAt: new Date().toISOString() }];
+            return [...prev, { id: messageId, senderType: 'agent', senderId: senderId ?? '', kind: 'text', contentJson: content, status: 'sent', createdAt: new Date().toISOString() }];
           });
           break;
         }
         case 'run.status': {
-          const { run } = event as { type: 'run.status'; projectId: string; run: { id: string; agentId: string; status: string; error?: string } };
-          setRunStatuses((prev) => ({ ...prev, [run.id]: { status: run.status, agentName: run.agentId } }));
+          const { run } = event as { type: 'run.status'; projectId: string; run: { id: string; agentId: string; agentName: string; status: string; error?: string } };
+          setRunStatuses((prev) => ({ ...prev, [run.id]: { status: run.status, agentName: run.agentName ?? run.agentId } }));
           if (run.status === 'failed') {
             // 添加错误消息到聊天
             const errorMsg: MessageItem = {
@@ -440,6 +440,7 @@ export function ChatPage(): React.JSX.Element {
           messages={messages}
           streamMap={streamMap}
           activeRuns={activeRuns}
+          projectAgents={projectAgents}
           hasMore={hasMore}
           loading={loading}
           projectId={projectId}
