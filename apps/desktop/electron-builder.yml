@@ -5,7 +5,14 @@ directories:
 files:
   - out/**/*
   - package.json
+  - node_modules/**/*
 asar: true
+asarUnpack:
+  - node_modules/better-sqlite3/**
+  - node_modules/pino/**
+  - node_modules/thread-stream/**
+  - node_modules/sonic-boom/**
+  - node_modules/real-require/**
 win:
   target:
     - nsis

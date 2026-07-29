@@ -1,5 +1,6 @@
 import pino from 'pino';
 import { join } from 'node:path';
+import { app } from 'electron';
 
 let _logger: pino.Logger | null = null;
 
@@ -13,7 +14,7 @@ export function getLogger(studioRoot?: string): pino.Logger {
 
   const logDir = studioRoot
     ? join(studioRoot, '.kstudio', 'logs')
-    : join('K_Studio', '.kstudio', 'logs');
+    : join(app.getPath('userData'), '.kstudio', 'logs');
 
   _logger = pino({
     level: resolveLogLevel(),

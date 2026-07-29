@@ -1,4 +1,4 @@
-import { readFile, writeFile } from 'node:fs/promises';
+﻿import { readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolve, dirname } from 'node:path';
@@ -63,17 +63,61 @@ const newCode = `        await fs.rm(dir, { recursive: true, force: true });
 
 let patched = content;
 
-// Fix 1: extractArchive - release lock before rename
-if (patched.includes('// Patch: release lock before rename')) {
-  console.log('extractArchive: already patched');
-} else if (!patched.includes(oldCode)) {
-  console.error('extractArchive: patch target not found, may have changed');
-  process.exit(1);
+// Fix 1: extractArchive - retry rename on Windows
+if (patched.includes('// Patch: retry rename with backoff for Windows/Defender handle latency; fallback to cmd move')) {
+  console.log('extractArchive: already patched (latest)');
+} else if (patched.includes('// Patch: release lock before rename (Windows cannot rename a dir with open handles inside)')) {
+  const ob = [
+    '        await fs.rm(dir, { recursive: true, force: true });',
+    '        // Patch: release lock before rename (Windows cannot rename a dir with open handles inside)',
+    '        await release();',
+    '        await fs.rename(tmpDir, dir);',
+    '    }',
+    '    finally {',
+    '        // Lock already released in try block; finalizer is only for error path.',
+    '    }',
+  ].join("\n");
+  const nb = [
+    '        await fs.rm(dir, { recursive: true, force: true });',
+    '        await release();',
+    '        // Patch: retry rename with backoff for Windows/Defender handle latency; fallback to cmd move',
+    '        for (let attempt = 0; ; attempt++) {',
+    '            try {',
+    '                await fs.rename(tmpDir, dir);',
+    '                break;',
+    '            } catch (e) {',
+    '                if (attempt >= 5) {',
+    '                    const { execSync } = require(\'child_process\');',
+    '                    execSync(`move /Y "${tmpDir}" "${dir}"`, { shell: \'cmd.exe\', timeout: 30000 });',
+    '                    break;',
+    '                }',
+    '                await new Promise(r => setTimeout(r, 500 * (attempt + 1)));',
+    '            }',
+    '        }',
+    '    }',
+    '    finally {',
+    '        // Lock already released in try block; finalizer is only for error path.',
+    '    }',
+  ].join("\n");
+  patched = patched.replace(ob, nb);
+  console.log('extractArchive: upgraded to retry-based patch');
 } else {
-  patched = patched.replace(oldCode, newCode);
-  console.log('extractArchive: patched');
+  const origB = [
+    '        await fs.rm(dir, { recursive: true, force: true });',
+    '        await fs.rename(tmpDir, dir);',
+    '    }',
+    '    finally {',
+    '        await release().catch(err => builder_util_1.log.warn({ err }, "failed to release lockfile"));',
+    '    }',
+  ].join("\n");
+  if (patched.includes(origB)) {
+    patched = patched.replace(origB, nb);
+    console.log('extractArchive: patched (original -> latest)');
+  } else {
+    console.error('extractArchive: patch target not found, may have changed');
+    process.exit(1);
+  }
 }
-
 // Also fix resolveCacheMode: @electron/get@3.x doesn't export ElectronDownloadCacheMode
 // Replace usage with hardcoded values: ReadWrite=0, ReadOnly=1, WriteOnly=2, Bypass=3
 const oldResolve = `    return get_1.ElectronDownloadCacheMode.ReadWrite;

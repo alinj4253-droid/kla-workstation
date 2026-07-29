@@ -1331,14 +1331,21 @@ const registerModelIpc = (db: ReturnType<typeof getDatabase>): void => {
   });
   registerIpc('models:saveProfile', async (_event, input: { id?: string; name: string; providerId: string; modelId: string; modelSlot?: string }) => {
     const repo = new ModelProfileRepository(db);
+    let profileId: string;
     if (input.id) {
       const changes: Record<string, unknown> = { name: input.name, providerId: input.providerId, modelId: input.modelId };
       if (input.modelSlot !== undefined) changes.modelSlot = input.modelSlot;
       repo.update(input.id, changes as Parameters<typeof repo.update>[1]);
-      return { ok: true, data: repo.getById(input.id) };
+      profileId = input.id;
+    } else {
+      const row = repo.create({ name: input.name, providerId: input.providerId, modelId: input.modelId, modelSlot: input.modelSlot } as never);
+      profileId = row.id;
     }
-    const row = repo.create({ name: input.name, providerId: input.providerId, modelId: input.modelId, modelSlot: input.modelSlot } as never);
-    return { ok: true, data: row };
+    // 同步更新 model_slot_bindings 表，确保 ModelGateway 能正确解析槽位
+    if (input.modelSlot) {
+      db.prepare('INSERT OR REPLACE INTO model_slot_bindings (slot, model_profile_id, updated_at) VALUES (?, ?, ?)').run(input.modelSlot, profileId, new Date().toISOString());
+    }
+    return { ok: true, data: repo.getById(profileId) };
   });
   registerIpc('models:testCapabilities', async (_event, input: { profileId: string }) => {
     if (!_gateway) return { ok: true, data: { capabilities: ['streaming'], profileId: input.profileId } };
