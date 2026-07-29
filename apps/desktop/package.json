@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "main": "./out/main/index.js",
+  "main": "./out/main/index.cjs",
   "scripts": {
     "dev": "electron-rebuild -f -w better-sqlite3 && electron-vite dev",
     "dev:web": "vite --config vite.web.config.ts",
@@ -14,7 +14,9 @@
     "test:watch": "vitest",
     "test:e2e": "vitest run tests/ --config vitest.config.ts",
     "licenses": "node scripts/generate-licenses.mjs",
-    "package:win": "pnpm build && node scripts/generate-licenses.mjs && electron-builder --win nsis"
+    "postinstall": "node scripts/patch-electron-builder.mjs",
+    "clean": "node scripts/clean-release.mjs",
+    "package:win": "pnpm clean && pnpm build && node scripts/generate-licenses.mjs && powershell -Command \"if (Test-Path 'D:\\temp\\kunqing-release\\win-unpacked') { Remove-Item 'D:\\temp\\kunqing-release\\win-unpacked' -Recurse -Force; Write-Host 'Removed stale win-unpacked' }\" && electron-builder --win nsis"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.16",

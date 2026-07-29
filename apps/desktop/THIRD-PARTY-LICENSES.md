@@ -40,8 +40,17 @@
 - **@ai-sdk/provider** — (no description)
 - **@ai-sdk/provider-utils** — (no description)
 - **@drizzle-team/brocli** — Modern type-safe way of building CLIs
+- **@eslint/config-array** — General purpose glob-based configuration matching.
+- **@eslint/config-helpers** — Helper utilities for creating ESLint configuration
+- **@eslint/core** — Runtime-agnostic core of ESLint
+- **@eslint/object-schema** — An object schema merger/validator
+- **@eslint/plugin-kit** — Utilities for building ESLint plugins.
+- **@humanfs/core** — The core of the humanfs library.
+- **@humanfs/node** — The Node.js bindings of the humanfs library.
+- **@humanfs/types** — The TypeScript types for the hfs project.
+- **@humanwhocodes/module-importer** — Universal module importer for Node.js
+- **@humanwhocodes/retry** — A utility to retry failed async methods.
 - **@malept/cross-spawn-promise** — Promisified version of cross-spawn
-- **@typescript/typescript-win32-x64** — TypeScript is a language for application scale JavaScript development
 - **@vercel/oidc** — Runtime OIDC helpers intended for use with Vercel Functions
 - **@workflow/serde** — Serialization symbols for custom class serialization in Workflow SDK
 - **ai** — AI SDK by Vercel - build apps like ChatGPT, Claude, Gemini, and more with a single interface for any model using the Vercel AI Gateway or go direct to OpenAI, Anthropic, Google, or any other model provider.
@@ -51,6 +60,7 @@
 - **detect-libc** — Node.js module to detect the C standard library (libc) implementation family and version
 - **drizzle-orm** — Drizzle ORM package for SQL databases
 - **ejs** — Embedded JavaScript templates
+- **eslint-visitor-keys** — Constants and utilities about visitor keys to traverse AST.
 - **expect-type** — (no description)
 - **exponential-backoff** — A utility that allows retrying a function with an exponential delay between attempts.
 - **filelist** — Lazy-evaluating list of files, based on globs or regex patterns
@@ -70,7 +80,13 @@
 - **dotenv** — Loads environment variables from .env file
 - **dotenv-expand** — Expand environment variables using dotenv
 - **entities** — Encode & decode XML and HTML entities with ease & speed
+- **eslint-scope** — ECMAScript scope analyzer for ESLint
+- **espree** — An Esprima-compatible JavaScript parser built on Acorn
+- **esrecurse** — ECMAScript AST recursive visitor
+- **estraverse** — ECMAScript JS AST traversal functions
+- **esutils** — utility box for ECMAScript language tools
 - **http-cache-semantics** — Parses Cache-Control and other headers. Helps building correct HTTP caches and proxies
+- **uri-js** — An RFC 3986/3987 compliant, scheme extendable URI/IRI parsing/validating/resolving library for JavaScript.
 - **webidl-conversions** — Implements the WebIDL algorithms for converting to and from JavaScript values
 
 ## BSD-3-Clause
@@ -87,6 +103,7 @@
 - **asn1js** — asn1js is a pure JavaScript library implementing this standard. ASN.1 is the basis of all X.509 related data structures and numerous other protocols used on the web
 - **bytestreamjs** — ByteStream is a library making possible to manipulates single bytes and bits on pure JavaScript
 - **duplexer2** — Like duplexer but using streams3
+- **esquery** — A query library for ECMAScript AST using a CSS selector like query language.
 - **fast-uri** — Dependency-free RFC 3986 URI toolbox
 - **global-agent** — Global HTTP/HTTPS proxy configurable using environment variables.
 - **ieee754** — Read/write IEEE754 floating point numbers from/to a Buffer or array-like object
@@ -104,9 +121,12 @@
 
 - **chownr** — like `chown -R`
 - **isexe** — Minimal module to check if a file is executable.
+- **jackspeak** — A very strict and proper argument parser.
 - **lru-cache** — A cache object that deletes the least-recently-used items.
 - **minimatch** — a glob matcher in javascript
 - **minipass** — minimal implementation of a PassThrough stream
+- **package-json-from-dist** — Load the local package.json from either src or dist folder
+- **path-scurry** — walk paths fast and efficiently
 - **sax** — An evented streaming XML parser in JavaScript
 - **tar** — tar for node
 - **yallist** — Yet Another Linked List
@@ -121,6 +141,7 @@
 
 ## ISC
 
+- **@isaacs/cliui** — easily create complex multi-column command-line-interfaces
 - **@isaacs/fs-minipass** — fs read and write streams based on minipass
 - **@ungap/structured-clone** — A structuredClone polyfill
 - **abbrev** — Like ruby's abbrev module, but in js
@@ -128,9 +149,12 @@
 - **chownr** — like `chown -R`
 - **cliui** — easily create complex multi-column command-line-interfaces
 - **electron-to-chromium** — Provides a list of electron-to-chromium version mappings
+- **flatted** — A super light and fast circular JSON parser.
+- **foreground-child** — Run a child as if it's the foreground process. Give it stdio. Exit when it exits.
 - **fs.realpath** — Use node's fs.realpath, but fall back to the JS implementation if the native one fails
 - **get-caller-file** — (no description)
-- **glob** — a little globber
+- **glob** — the most correct and second fastest glob implementation in JavaScript
+- **glob-parent** — Extract the non-magic parent path from a glob string.
 - **graceful-fs** — A drop-in replacement for fs, making various improvements.
 - **hosted-git-info** — Provides metadata and conversions from repository urls for GitHub, Bitbucket and GitLab
 - **inflight** — Add callbacks to requests in flight to avoid async duplication
@@ -197,6 +221,9 @@
 - **@esbuild-kit/core-utils** — (no description)
 - **@esbuild-kit/esm-loader** — Node.js loader for compiling TypeScript modules to ESM
 - **@esbuild/win32-x64** — The Windows 64-bit binary for esbuild, a JavaScript bundler.
+- **@eslint-community/eslint-utils** — Utilities for ESLint plugins.
+- **@eslint-community/regexpp** — Regular expression parser for ECMAScript.
+- **@eslint/js** — ESLint JavaScript language implementation
 - **@exodus/bytes** — Various operations on Uint8Array data
 - **@floating-ui/core** — Positioning library for floating elements: tooltips, popovers, dropdowns, and more
 - **@floating-ui/dom** — Floating UI for the web
@@ -221,6 +248,7 @@
 - **@peculiar/utils** — Modern byte, encoding, converter registry, and PEM utilities for TypeScript projects.
 - **@peculiar/webcrypto** — A WebCrypto Polyfill for NodeJS
 - **@pinojs/redact** — Redact JS objects
+- **@pkgjs/parseargs** — Polyfill of future proposal for `util.parseArgs()`
 - **@radix-ui/number** — (no description)
 - **@radix-ui/primitive** — (no description)
 - **@radix-ui/react-arrow** — (no description)
@@ -278,6 +306,7 @@
 - **@types/chai** — TypeScript definitions for chai
 - **@types/debug** — TypeScript definitions for debug
 - **@types/deep-eql** — TypeScript definitions for deep-eql
+- **@types/esrecurse** — TypeScript definitions for esrecurse
 - **@types/estree** — TypeScript definitions for estree
 - **@types/estree-jsx** — TypeScript definitions for estree-jsx
 - **@types/fs-extra** — TypeScript definitions for fs-extra
@@ -293,6 +322,13 @@
 - **@types/responselike** — TypeScript definitions for responselike
 - **@types/trusted-types** — TypeScript definitions for trusted-types
 - **@types/unist** — TypeScript definitions for unist
+- **@typescript-eslint/parser** — An ESLint custom parser which leverages TypeScript ESTree
+- **@typescript-eslint/project-service** — Standalone TypeScript project service wrapper for linting.
+- **@typescript-eslint/scope-manager** — TypeScript scope analyser for ESLint
+- **@typescript-eslint/tsconfig-utils** — Utilities for collecting TSConfigs for linting scenarios.
+- **@typescript-eslint/types** — Types for the TypeScript-ESTree AST spec
+- **@typescript-eslint/typescript-estree** — A parser that converts TypeScript source code into an ESTree compatible form
+- **@typescript-eslint/visitor-keys** — Visitor keys used to help traverse the TypeScript-ESTree AST
 - **@vitejs/plugin-react** — The default Vite plugin for React projects
 - **@vitest/expect** — Jest's expect matchers as a Chai plugin
 - **@vitest/mocker** — Vitest module mocker implementation
@@ -302,6 +338,8 @@
 - **@vitest/spy** — Lightweight Jest compatible spy implementation
 - **@vitest/utils** — Shared Vitest utility functions
 - **@xmldom/xmldom** — A pure JavaScript W3C standard-based (XML DOM Level 2 Core) DOMParser and XMLSerializer module.
+- **acorn** — ECMAScript parser
+- **acorn-jsx** — Modern, fast React.js JSX parser
 - **agent-base** — Turn a function into an `http.Agent` instance
 - **ajv** — Another JSON Schema Validator
 - **ansi-regex** — Regular expression for matching ANSI escape codes
@@ -371,6 +409,7 @@
 - **decompress-response** — Decompress a HTTP response if needed
 - **deep-eql** — Improved deep equality testing for Node.js and the browser.
 - **deep-extend** — Recursive object extending
+- **deep-is** — node's assert.deepEqual algorithm except for NaN being equal to NaN
 - **defer-to-connect** — The safe way to handle the `connect` socket event
 - **define-data-property** — Define a data property on an object. Will fall back to assignment in an engine without descriptors.
 - **define-properties** — Define multiple non-enumerable properties at once. Uses `Object.defineProperty` when available; falls back to standard assignment in older engines.
@@ -384,6 +423,7 @@
 - **dom-accessibility-api** — Implements https://w3c.github.io/accname/
 - **drizzle-kit** — (no description)
 - **dunder-proto** — If available, the `Object.prototype.__proto__` accessor and mutator, call-bound
+- **eastasianwidth** — Get East Asian Width from a character.
 - **electron** — Build cross platform desktop apps with JavaScript, HTML, and CSS
 - **electron-builder** — A complete solution to package and build a ready for distribution Electron app for MacOS, Windows and Linux with “auto update” support out of the box
 - **electron-builder-squirrel-windows** — (no description)
@@ -404,13 +444,19 @@
 - **esbuild** — An extremely fast JavaScript and CSS bundler and minifier.
 - **escalade** — A tiny (183B to 210B) and fast utility to ascend parent directories
 - **escape-string-regexp** — Escape RegExp special characters
+- **eslint** — An AST-based pattern checker for JavaScript.
 - **estree-util-is-identifier-name** — Check if something can be an ecmascript (javascript) identifier name
 - **estree-walker** — Traverse an ESTree-compliant AST
 - **eventemitter3** — EventEmitter3 focuses on performance while maintaining a Node.js AND browser compatible interface.
 - **eventsource-parser** — Streaming, source-agnostic EventSource/Server-Sent Events parser
 - **fast-deep-equal** — Fast deep equal
+- **fast-json-stable-stringify** — deterministic `JSON.stringify()` - a faster version of substack's json-stable-strigify without jsonify
+- **fast-levenshtein** — Efficient implementation of Levenshtein algorithm  with locale-specific collator support.
 - **fdir** — The fastest directory crawler & globbing alternative to glob, fast-glob, & tiny-glob. Crawls 1m files in < 1s
+- **file-entry-cache** — Super simple cache for file metadata, useful for process that work o a given series of files and that only need to repeat the job on the changed ones since the previous run of the process
 - **file-uri-to-path** — Convert a file: URI to a file path
+- **find-up** — Find a file or directory by walking up parent directories
+- **flat-cache** — A stupidly simple key/value storage using files to persist some data
 - **follow-redirects** — HTTP and HTTPS modules that follow redirects.
 - **form-data** — A library to create readable "multipart/form-data" streams. Can be used to submit forms and file uploads to other web applications.
 - **fs-constants** — Require constants across node and the browser
@@ -423,6 +469,7 @@
 - **get-stream** — Get a stream as a string, buffer, or array
 - **get-tsconfig** — Find and parse the tsconfig.json file from a directory path
 - **github-from-package** — return the github url from a package.json file
+- **globals** — Global identifiers from different JavaScript environments
 - **globalthis** — ECMAScript spec-compliant polyfill/shim for `globalThis`
 - **gopd** — `Object.getOwnPropertyDescriptor`, but accounts for IE's broken implementation.
 - **got** — Human-friendly and powerful HTTP request library for Node.js
@@ -444,12 +491,16 @@
 - **http-proxy-agent** — An HTTP(s) proxy `http.Agent` implementation for HTTP
 - **http2-wrapper** — HTTP2 client, just with the familiar `https` API
 - **https-proxy-agent** — An HTTP(s) proxy `http.Agent` implementation for HTTPS
+- **ignore** — Ignore is a manager and filter for .gitignore rules, the one used by eslint, gitbook and many others.
+- **imurmurhash** — An incremental implementation of MurmurHash3
 - **indent-string** — Indent each line in a string
 - **inline-style-parser** — An inline style parser.
 - **is-alphabetical** — Check if a character is alphabetical
 - **is-alphanumerical** — Check if a character is alphanumerical
 - **is-decimal** — Check if a character is decimal
+- **is-extglob** — Returns true if a string has an extglob.
 - **is-fullwidth-code-point** — Check if the character represented by a given Unicode code point is fullwidth
+- **is-glob** — Returns `true` if the given string looks like a glob pattern or an extglob pattern. This makes it easy to create code that only uses external modules like node-glob when necessary, resulting in much faster code execution and initialization time, and a better user experience.
 - **is-hexadecimal** — Check if a character is hexadecimal
 - **is-network-error** — Check if a value is a Fetch network error
 - **is-plain-obj** — Check if a value is a plain object
@@ -464,11 +515,14 @@
 - **jsesc** — Given some data, jsesc returns the shortest possible stringified & ASCII-safe representation of that data.
 - **json-buffer** — JSON parse & stringify that supports binary via bops & base64
 - **json-schema-traverse** — Traverse JSON Schema passing each schema object to callback
+- **json-stable-stringify-without-jsonify** — deterministic JSON.stringify() with custom sorting to get deterministic hashes from stringified results, with no public domain dependencies
 - **json5** — JSON for Humans
 - **jsonfile** — Easily read/write JSON files.
 - **keyv** — Simple key-value storage with support for multiple backends
 - **langsmith** — Client library to connect to the LangSmith Observability and Evaluation Platform.
 - **lazy-val** — (no description)
+- **levn** — Light ECMAScript (JavaScript) Value Notation - human written, concise, typed, flexible
+- **locate-path** — Get the first path that exists on disk of multiple paths
 - **lodash** — Lodash modular utilities.
 - **lodash.identity** — The modern build of lodash’s `_.identity` as a module.
 - **lodash.merge** — The Lodash method `_.merge` exported as a module.
@@ -537,6 +591,7 @@
 - **mustache** — Logic-less {{mustache}} templates with JavaScript
 - **nanoid** — A tiny (118 bytes), secure URL-friendly unique string ID generator
 - **napi-build-utils** — A set of utilities to assist developers of tools that build N-API native add-ons
+- **natural-compare** — Compare strings containing a mix of letters and numbers in the way a human being would in sort order.
 - **node-abi** — Get the Node ABI for a given target and runtime, and vice versa.
 - **node-api-version** — Gets the supported Node-API version for a specific node or electron version
 - **node-gyp** — Node.js native addon build tool
@@ -547,14 +602,17 @@
 - **object-keys** — An Object.keys replacement, in case Object.keys is not available. From https://github.com/es-shims/es5-shim
 - **obug** — A lightweight JavaScript debugging utility, forked from debug, featuring TypeScript and ESM support.
 - **on-exit-leak-free** — Execute a function on exit without leaking memory, allowing all objects to be garbage collected
+- **optionator** — option parsing and help generation
 - **p-cancelable** — Create a promise that can be canceled
 - **p-finally** — `Promise#finally()` ponyfill - Invoked when the promise is settled regardless of outcome
 - **p-limit** — Run multiple promise-returning & async functions with limited concurrency
+- **p-locate** — Get the first fulfilled promise that satisfies the provided testing function
 - **p-queue** — Promise queue with concurrency control
 - **p-retry** — Retry a promise-returning or async function
 - **p-timeout** — Timeout a promise after a specified amount of time
 - **parse-entities** — Parse HTML character references
 - **parse5** — HTML parser and serializer.
+- **path-exists** — Check if a path exists
 - **path-is-absolute** — Node.js 0.12 path.isAbsolute() ponyfill
 - **path-key** — Get the PATH environment variable key cross-platform
 - **pathe** — Universal filesystem path utils
@@ -568,6 +626,7 @@
 - **postcss** — Tool for transforming styles with JS plugins
 - **postject** — Easily inject arbitrary read-only resources into executable formats (Mach-O, PE, ELF) and use it at runtime.
 - **prebuild-install** — A command line tool to easily install prebuilt binaries for multiple version of node/iojs on a specific platform
+- **prelude-ls** — prelude.ls is a functionally oriented utility library. It is powerful and flexible. Almost all of its functions are curried. It is written in, and is the recommended base library for, LiveScript.
 - **pretty-format** — Stringify any JavaScript value.
 - **process-nextick-args** — process.nextTick but always with args
 - **process-warning** — A small utility for creating warnings and emitting them.
@@ -664,7 +723,9 @@
 - **tr46** — An implementation of the Unicode UTS #46: Unicode IDNA Compatibility Processing
 - **trim-lines** — Remove spaces and tabs around line-breaks
 - **trough** — `trough` is middleware
+- **ts-api-utils** — Utility functions for working with TypeScript's API. Successor to the wonderful tsutils. 🛠️️
 - **tsx** — TypeScript Execute (tsx): Node.js enhanced with esbuild to run TypeScript & ESM files
+- **type-check** — type-check allows you to check the types of JavaScript values at runtime with a Haskell like type syntax.
 - **ulid** — A universally-unique, lexicographically-sortable, identifier generator
 - **undici** — An HTTP/1.1 client, written from scratch for Node.js
 - **undici-types** — A stand-alone types package for Undici
@@ -692,6 +753,7 @@
 - **whatwg-mimetype** — Parses, serializes, and manipulates MIME types, according to the WHATWG MIME Sniffing Standard
 - **whatwg-url** — An implementation of the WHATWG URL Standard's URL API and parsing machinery
 - **why-is-node-running** — Node is running but you don't know why? why-is-node-running is here to help you.
+- **word-wrap** — Wrap words to a specified length.
 - **wrap-ansi** — Wordwrap a string with ANSI escape codes
 - **ws** — Simple to use, blazing fast and thoroughly tested websocket client and server for Node.js
 - **xmlbuilder** — An XML builder for node.js
@@ -729,5 +791,5 @@
 - **truncate-utf8-bytes** — Truncate string to given length in bytes
 
 ---
-生成时间: 2026-07-24T05:43:08.572Z
-总包数: 662
+生成时间: 2026-07-29T09:06:22.392Z
+总包数: 724
