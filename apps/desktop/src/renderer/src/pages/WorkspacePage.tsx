@@ -1,5 +1,6 @@
 import {
   ArrowLeft,
+  ChevronLeft,
   ChevronRight,
   ExternalLink,
   FileArchive,
@@ -102,6 +103,7 @@ export function WorkspacePage(): React.JSX.Element {
   const [previewData, setPreviewData] = useState<{ kind: 'text' | 'image' | 'html' | 'pdf'; content: string; fileName: string; mimeType: string } | null>(null);
   const htmlIframeRef = useRef<HTMLIFrameElement>(null);
   const [graphViewerOpen, setGraphViewerOpen] = useState(false);
+  const [projectPanelOpen, setProjectPanelOpen] = useState(true);
   const [wikiViewerOpen, setWikiViewerOpen] = useState(false);
   useEffect(() => {
     if (previewData?.kind === 'html' && htmlIframeRef.current) {
@@ -265,9 +267,9 @@ export function WorkspacePage(): React.JSX.Element {
   };
 
   return (
-    <div className="workspace-layout">
-      <aside className="project-panel" aria-label="协作项目">
-        <div className="project-panel__header"><h2>协作项目</h2><button type="button" className="icon-button" aria-label="筛选项目"><SlidersHorizontal size={17} /></button></div>
+    <div className={`workspace-layout${projectPanelOpen ? '' : ' workspace-layout--panel-closed'}`}>
+      <aside className={`project-panel${projectPanelOpen ? ' project-panel--open' : ''}`} aria-label="协作项目">
+        <div className="project-panel__header"><h2>协作项目</h2><div className="project-panel__header-actions"><button type="button" className="icon-button" aria-label="筛选项目"><SlidersHorizontal size={17} /></button><button type="button" className="icon-button" aria-label="收起项目面板" onClick={() => setProjectPanelOpen(false)}><ChevronLeft size={17} /></button></div></div>
         <div className="project-list">
           {projects.length === 0 ? (
             <div className="file-empty" style={{ padding: '16px', fontSize: '13px' }}>暂无项目</div>
@@ -281,6 +283,11 @@ export function WorkspacePage(): React.JSX.Element {
       </aside>
 
       <section className="workspace-files">
+        {!projectPanelOpen && (
+          <button type="button" className="workspace-panel-reopen" aria-label="展开项目面板" onClick={() => setProjectPanelOpen(true)}>
+            <ChevronRight size={16} />
+          </button>
+        )}
         <header className="workspace-toolbar">
           <div className="workspace-title">
             <button type="button" className="icon-button" aria-label="返回群聊" onClick={() => navigate(`/projects/${projectId}/chat`)}><ArrowLeft size={18} /></button>

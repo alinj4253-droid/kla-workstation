@@ -695,6 +695,7 @@ button {
 }
 
 .project-panel {
+  position: relative;
   z-index: 4;
   overflow: hidden;
   background: rgba(249, 249, 254, 0.96);
@@ -715,6 +716,11 @@ button {
   font-size: 20px;
   line-height: 28px;
   font-weight: 630;
+}
+.project-panel__header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .project-panel__toggle {
@@ -1917,8 +1923,21 @@ button {
   height: 100%;
   background: #fbfbff;
 }
+.workspace-layout--panel-closed {
+  grid-template-columns: 0 minmax(0, 1fr);
+}
 
-.workspace-files { min-width: 0; min-height: 0; overflow: hidden; }
+.workspace-files { position: relative; z-index: 5; min-width: 0; min-height: 0; overflow: visible; }
+.workspace-panel-reopen {
+  position: absolute; z-index: 6; left: -17px; top: 50%; transform: translateY(-50%);
+  display: grid; place-items: center;
+  width: 34px; height: 34px;
+  color: var(--kq-text-secondary); background: white;
+  border: 1px solid var(--kq-border); border-radius: 8px 0 0 8px;
+  cursor: pointer;
+  box-shadow: -2px 0 6px rgba(35,33,67,0.08);
+}
+.workspace-panel-reopen:hover { color: var(--kq-primary); background: var(--kq-surface-muted); }
 .workspace-toolbar {
   display: flex;
   align-items: center;
@@ -2011,7 +2030,7 @@ button {
 
 .file-actions-wrapper { position: relative; }
 .file-action-menu {
-  position: absolute; right: 100%; top: 0; z-index: 50;
+  position: absolute; right: 0; top: 100%; z-index: 50;
   display: flex; flex-direction: column; gap: 2px;
   min-width: 120px; padding: 4px;
   background: white; border: 1px solid var(--kq-border-strong); border-radius: 8px;

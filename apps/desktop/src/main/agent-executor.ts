@@ -181,9 +181,13 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
 
       runRepo.addEvent(run.runId, 'agent.completed', { definitionId: 'builtin.knowledge-manager', reportLength: report.length });
 
+      // 知识入库失败时不 @mention 编排器，避免死循环
+      const isErrorReport = report.startsWith('## 知识入库失败');
+      const mentions = isErrorReport ? [] : buildParentMention(db, runRepo, run.runId);
+
       // 保存知识管理报告消息
       const agentMsgId = randomUUID().toLowerCase().replace(/-/g, '').slice(0, 24);
-      const contentJson = JSON.stringify({ schemaVersion: 1, text: report, mentions: buildParentMention(db, runRepo, run.runId), stagedUploadIds: [] });
+      const contentJson = JSON.stringify({ schemaVersion: 1, text: report, mentions, stagedUploadIds: [] });
       const now = new Date().toISOString();
       db.prepare(
         'INSERT INTO messages (id, project_id, sender_type, sender_id, kind, content_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
@@ -202,11 +206,12 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
       }
 
       // 处理消息中的 @mention，触发目标智能体调度
-      if (_scheduler) {
+      if (_scheduler && mentions.length > 0) {
         const currentRun = runRepo.getById(run.runId);
         processMessageMentions(db, runRepo, _scheduler, run.projectId, contentJson, run.triggerMessageId, run.agentInstanceId, currentRun.parentRunId ?? undefined);
       }
 
+      dispatchRunStatus(db, runRepo, window, run, 'completed');
       return;
     }
 
