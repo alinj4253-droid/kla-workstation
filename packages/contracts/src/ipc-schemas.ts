@@ -211,6 +211,7 @@ export const workspaceListInputSchema = z.object({
   projectId: z.string().min(1).max(64),
   relativePath: z.string().optional(),
   filter: z.enum(['all', 'files', 'directories']).optional(),
+  scopeType: z.enum(['project', 'shared']).optional(),
 });
 
 export const workspaceEntrySchema = z.object({
@@ -220,23 +221,30 @@ export const workspaceEntrySchema = z.object({
   size: z.number(),
   mimeType: z.string().nullable().optional(),
   modifiedAt: z.string(),
+  fileId: z.string().optional(),
+  currentVersionId: z.string().optional(),
+  sha256: z.string().optional(),
+  knowledgeStatus: z.string().optional(),
 });
 
 export const createFolderInputSchema = z.object({
   projectId: z.string().min(1).max(64),
   name: z.string().min(1).max(255),
   relativePath: z.string().optional(),
+  scopeType: z.enum(['project', 'shared']).optional(),
 });
 
 export const renameFileInputSchema = z.object({
   projectId: z.string().min(1).max(64),
-  fileId: z.string().min(1).max(64),
-  newName: z.string().min(1).max(255),
+  relativePath: z.string().min(1),
+  name: z.string().min(1).max(255),
+  scopeType: z.enum(['project', 'shared']).optional(),
 });
 
 export const deleteFilesInputSchema = z.object({
   projectId: z.string().min(1).max(64),
-  fileIds: z.array(z.string().min(1).max(64)).min(1).max(100),
+  paths: z.array(z.string().min(1)).min(1).max(100),
+  scopeType: z.enum(['project', 'shared']).optional(),
 });
 
 export const agentDefinitionSummarySchema = z.object({

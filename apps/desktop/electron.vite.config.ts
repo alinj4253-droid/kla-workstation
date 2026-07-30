@@ -18,7 +18,7 @@ export default defineConfig({
   preload: {
     build: {
       rollupOptions: {
-        input: 'src/preload/index.cjs',
+        input: 'src/preload/index.ts',
         external: [/.*/],
         output: {
           format: 'cjs',

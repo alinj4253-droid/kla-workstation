@@ -1,4 +1,4 @@
-import { ModelGateway, type ModelSlot } from './model-gateway';
+import { ModelGateway, noModelError, type ModelSlot } from './model-gateway';
 
 const FAKE_DEFAULT = '收到你的消息。我是统筹智能体，正在分析你的需求。如果需要查阅知识库，我会协调知识管理员协助。';
 
@@ -22,7 +22,7 @@ function getFakeResponse(input: string): string {
 export class FakeModelGateway extends ModelGateway {
   async streamText(slot: ModelSlot, messages: Array<{ role: 'user' | 'assistant'; content: string }>, _system?: string): Promise<ReadableStream<string>> {
     const profile = (this as any).getSlotProfile(slot) as { providerType: string; modelId: string } | null;
-    if (!profile) throw new Error(`没有为槽位 "${slot}" 配置可用的模型`);
+    if (!profile) throw new Error(noModelError(slot));
 
     const userMessage = messages.find((m) => m.role === 'user')?.content ?? '';
     const text = getFakeResponse(userMessage);
@@ -47,7 +47,7 @@ export class FakeModelGateway extends ModelGateway {
     _options?: { system?: string; tools?: Record<string, { description: string; parameters: Record<string, unknown> }> },
   ): Promise<{ text: string; toolCalls?: Array<{ name: string; args: Record<string, unknown> }> }> {
     const profile = (this as any).getSlotProfile(slot) as { providerType: string; modelId: string } | null;
-    if (!profile) throw new Error(`没有为槽位 "${slot}" 配置可用的模型`);
+    if (!profile) throw new Error(noModelError(slot));
 
     const userMessage = messages.find((m) => m.role === 'user')?.content ?? '';
     return { text: getFakeResponse(userMessage) };

@@ -37,6 +37,8 @@ type FileEntry = {
   mimeType?: string;
   sha256?: string;
   knowledgeStatus?: string;
+  system?: boolean;
+  physicalName?: string;
 };
 
 type ProjectInfo = {
@@ -69,10 +71,20 @@ const knowledgeStatusLabel = (status: string): string => {
   }
 };
 
+const SYSTEM_DIR_LABELS: Record<string, string> = {
+  'agent-identities': '智能体身份',
+  'agent-memories': '智能体记忆',
+  'original-files': '原始文件',
+  knowledge: '知识',
+  'graph-visualization': '图谱可视化',
+  outputs: '成果',
+};
+
 export function WorkspacePage(): React.JSX.Element {
   const { projectId = '' } = useParams();
   const navigate = useNavigate();
   const [relativePath, setRelativePath] = useState('');
+  const [systemDir, setSystemDir] = useState<string | null>(null);
   const [scopeType, setScopeType] = useState<'project' | 'shared'>('project');
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
@@ -100,7 +112,7 @@ export function WorkspacePage(): React.JSX.Element {
 
   const activeProject = useMemo(() => projects.find((p) => p.id === projectId), [projectId, projects]);
   const pathParts = relativePath ? relativePath.split('/') : [];
-  const scopeLabel = scopeType === 'shared' ? '共享知识' : '用户原始文件';
+  const scopeLabel = scopeType === 'shared' ? '共享知识' : (systemDir ? SYSTEM_DIR_LABELS[systemDir] ?? systemDir : '群聊根目录');
 
   const loadProjects = useCallback(async (): Promise<void> => {
     try {
@@ -113,29 +125,55 @@ export function WorkspacePage(): React.JSX.Element {
     if (!projectId) return;
     setLoading(true);
     try {
-      const result = await window.kunqing?.workspace.listFiles({ projectId, relativePath, ...(scopeType === 'shared' ? { scopeType: 'shared' as const } : {}) }) as { ok: boolean; data?: FileEntry[] } | undefined;
-      setFiles(result?.data ?? []);
+      if (scopeType === 'shared') {
+        const result = await window.kunqing?.workspace.listFiles({ projectId, relativePath, scopeType: 'shared' }) as { ok: boolean; data?: FileEntry[] } | undefined;
+        setFiles(result?.data ?? []);
+      } else if (!systemDir) {
+        const result = await window.kunqing?.workspace.listSystemDirs({ projectId }) as { ok: boolean; data?: FileEntry[] } | undefined;
+        setFiles(result?.data ?? []);
+      } else if (systemDir === 'original-files') {
+        const result = await window.kunqing?.workspace.listFiles({ projectId, relativePath }) as { ok: boolean; data?: FileEntry[] } | undefined;
+        setFiles(result?.data ?? []);
+      } else {
+        const dirPath = systemDir + (relativePath ? '/' + relativePath : '');
+        const result = await window.kunqing?.workspace.listProjectDir({ projectId, relativePath: dirPath }) as { ok: boolean; data?: FileEntry[] } | undefined;
+        setFiles(result?.data ?? []);
+      }
       setNotice('');
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '无法读取工作区');
     } finally {
       setLoading(false);
     }
-  }, [projectId, relativePath, scopeType]);
+  }, [projectId, relativePath, scopeType, systemDir]);
 
   useEffect(() => { void loadProjects(); }, [loadProjects]);
   useEffect(() => { void loadFiles(); }, [loadFiles]);
 
   const enterDirectory = (entry: FileEntry): void => {
     if (entry.kind !== 'directory') {
-      if (/\.md$/i.test(entry.name) && relativePath.includes('wiki')) {
-        void handlePreview(entry);
+      if (systemDir) {
+        if (/\.md$/i.test(entry.name) && relativePath.includes('wiki')) {
+          void handlePreview(entry);
+          return;
+        }
+        // Non-original-files system dirs are read-only for now
+        void window.kunqing?.workspace.openWithSystem({ projectId, relativePath: entry.relativePath, scopeType });
         return;
       }
       void window.kunqing?.workspace.openItem({ projectId, relativePath: entry.relativePath });
       return;
     }
-    setRelativePath(entry.relativePath.replaceAll('\\', '/'));
+    if (entry.system && entry.physicalName) {
+      setSystemDir(entry.physicalName);
+      setRelativePath('');
+      return;
+    }
+    if (systemDir) {
+      setRelativePath(entry.relativePath.replaceAll('\\', '/'));
+    } else {
+      setRelativePath(entry.relativePath.replaceAll('\\', '/'));
+    }
   };
 
   const uploadFiles = async (): Promise<void> => {
@@ -249,26 +287,46 @@ export function WorkspacePage(): React.JSX.Element {
             <span className="workspace-title-icon"><FolderOpen size={18} /></span>
             <div><h2>{activeProject?.name ?? '工作区'} · 工作区</h2>
               <div className="scope-toggle">
-                <button type="button" className={`scope-btn${scopeType === 'project' ? ' scope-btn--active' : ''}`} onClick={() => { setScopeType('project'); setRelativePath(''); }}>当前群聊</button>
-                <button type="button" className={`scope-btn${scopeType === 'shared' ? ' scope-btn--active' : ''}`} onClick={() => { setScopeType('shared'); setRelativePath(''); }}>共享知识</button>
+                <button type="button" className={`scope-btn${scopeType === 'project' ? ' scope-btn--active' : ''}`} onClick={() => { setScopeType('project'); setSystemDir(null); setRelativePath(''); }}>当前群聊</button>
+                <button type="button" className={`scope-btn${scopeType === 'shared' ? ' scope-btn--active' : ''}`} onClick={() => { setScopeType('shared'); setSystemDir(null); setRelativePath(''); }}>共享知识</button>
               </div>
             </div>
           </div>
           <div className="workspace-actions">
             <button type="button" className="secondary-button" onClick={() => setGraphViewerOpen(true)}><GitBranch size={15} /> 图谱可视化</button>
             <button type="button" className="secondary-button" onClick={() => setWikiViewerOpen(true)}><FileText size={15} /> Wiki</button>
-            <button type="button" className="secondary-button" onClick={() => void uploadFiles()}><Upload size={15} /> 上传文件</button>
-            <button type="button" className="primary-button" onClick={() => setFolderDialogOpen(true)}><Plus size={15} /> 新建文件夹</button>
+            {(scopeType === 'shared' || systemDir === 'original-files') && (
+              <>
+                <button type="button" className="secondary-button" onClick={() => void uploadFiles()}><Upload size={15} /> 上传文件</button>
+                <button type="button" className="primary-button" onClick={() => setFolderDialogOpen(true)}><Plus size={15} /> 新建文件夹</button>
+              </>
+            )}
           </div>
         </header>
 
         <div className="workspace-location-bar">
           <nav aria-label="文件路径">
-            <button type="button" onClick={() => setRelativePath('')}>K_Studio</button>
+            <button type="button" onClick={() => { setSystemDir(null); setRelativePath(''); }}>K_Studio</button>
             <ChevronRight size={13} />
-            {scopeType === 'shared' ? <span>共享知识</span> : <><span>群聊文件夹</span><ChevronRight size={13} /><span>{projectId}-workspace</span></>}
+            {scopeType === 'shared' ? (
+              <span>共享知识</span>
+            ) : (
+              <>
+                <span>群聊文件夹</span>
+                <ChevronRight size={13} />
+                {systemDir ? (
+                  <button type="button" onClick={() => { setSystemDir(null); setRelativePath(''); }}>{activeProject?.name ?? projectId}</button>
+                ) : (
+                  <span>{activeProject?.name ?? projectId}</span>
+                )}
+              </>
+            )}
             <ChevronRight size={13} />
-            <button type="button" onClick={() => setRelativePath('')}>{scopeLabel}</button>
+            {systemDir ? (
+              <button type="button" onClick={() => { setSystemDir(systemDir); setRelativePath(''); }}>{scopeLabel}</button>
+            ) : (
+              <span>{scopeLabel}</span>
+            )}
             {pathParts.map((part, index) => (
               <span className="breadcrumb-part" key={`${part}-${index}`}>
                 <ChevronRight size={13} />
@@ -286,24 +344,26 @@ export function WorkspacePage(): React.JSX.Element {
           {loading ? (
             <div className="file-empty">正在读取本地工作区…</div>
           ) : files.length === 0 ? (
-            <div className="file-empty"><FolderOpen size={34} /><strong>这个文件夹还是空的</strong><span>上传文件或新建文件夹，内容将只保存在本机 K_Studio 中。</span><button className="primary-button" type="button" onClick={() => void uploadFiles()}><Upload size={15} /> 上传第一个文件</button></div>
+            <div className="file-empty"><FolderOpen size={34} /><strong>这个文件夹还是空的</strong><span>{scopeType === 'project' && !systemDir ? '系统目录将在此列出' : '上传文件或新建文件夹，内容将只保存在本机 K_Studio 中。'}</span>{!systemDir && scopeType === 'shared' ? <button className="primary-button" type="button" onClick={() => void uploadFiles()}><Upload size={15} /> 上传第一个文件</button> : null}</div>
           ) : files.map((entry) => (
             <div className="file-table-row" role="row" key={entry.relativePath} onDoubleClick={() => enterDirectory(entry)}>
               <button className={`file-name file-name--${entry.kind}`} type="button" onClick={() => enterDirectory(entry)}>
                 {fileIcon(entry)}<span>{entry.name}</span>
               </button>
-              <span>用户上传</span>
+              <span>{entry.system ? '系统目录' : (systemDir && systemDir !== 'original-files' ? '系统文件' : '用户上传')}</span>
               <span>{formatSize(entry.size)}</span>
               <time>{new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(entry.modifiedAt))}</time>
-              <span className={`knowledge-badge knowledge-badge--${entry.knowledgeStatus ?? 'none'}`}>{entry.knowledgeStatus ? knowledgeStatusLabel(entry.knowledgeStatus) : '—'}</span>
-              {entry.knowledgeStatus && entry.fileId && (
-                <span className="knowledge-badge-clickable" onClick={() => setKnowledgeDetail({ fileId: entry.fileId ?? '', fileName: entry.name })} />
-              )}
+              <span style={{ position: 'relative' }}>
+                <span className={`knowledge-badge knowledge-badge--${entry.knowledgeStatus ?? 'none'}`}>{entry.knowledgeStatus ? knowledgeStatusLabel(entry.knowledgeStatus) : '—'}</span>
+                {entry.knowledgeStatus && entry.fileId && (
+                  <span className="knowledge-badge-clickable" onClick={() => setKnowledgeDetail({ fileId: entry.fileId ?? '', fileName: entry.name })} />
+                )}
+              </span>
               <div className="file-actions-wrapper">
                 <button type="button" className="icon-button" aria-label={`操作 ${entry.name}`} onClick={(e) => { e.stopPropagation(); setActionTarget(actionTarget?.relativePath === entry.relativePath ? null : entry); }}>
                   <MoreHorizontal size={17} />
                 </button>
-                {actionTarget?.relativePath === entry.relativePath && (
+                {actionTarget?.relativePath === entry.relativePath && !entry.system && (
                   <div className="file-action-menu" onClick={() => setActionTarget(null)}>
                     {entry.kind === 'file' && <button type="button" onClick={() => { void handlePreview(entry); }}><FileText size={14} /> 预览</button>}
                     <button type="button" onClick={() => { setRenameTarget(entry); setRenameValue(entry.name); }}><Pencil size={14} /> 重命名</button>

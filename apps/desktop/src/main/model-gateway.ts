@@ -11,7 +11,7 @@ import type { ModelCapability, ModelSlot, ModelMessage } from '@kunqing/model-co
 import { getLogger } from './logger';
 
 export type { ModelSlot, ModelCapability, ModelMessage };
-export { BUILTIN_AGENT_REQUIREMENTS, validateModelForAgent };
+export { BUILTIN_AGENT_REQUIREMENTS, validateModelForAgent, noModelError };
 
 type ProviderSettings = { providerType: string; baseUrl?: string; modelId: string; apiKey?: string };
 
@@ -21,6 +21,19 @@ function stripUndefined<T extends Record<string, unknown>>(obj: T): { [K in keyo
     if (result[key] === undefined) delete result[key];
   }
   return result as ReturnType<typeof stripUndefined<T>>;
+}
+
+/** 用户友好的槽位名称映射 */
+const SLOT_LABELS: Record<string, string> = {
+  reasoning: '推理',
+  fast: '快速',
+  embedding: '嵌入',
+};
+
+/** 生成用户友好的模型未配置错误消息 */
+function noModelError(slot: string): string {
+  const label = SLOT_LABELS[slot] ?? slot;
+  return `模型未配置：请先在「设置 → 模型管理」中为「${label}」绑定一个可用模型，然后重试。`;
 }
 
 /** 结构化输出的测试 schema */
@@ -66,7 +79,7 @@ export class ModelGateway {
 
   async streamText(slot: ModelSlot, messages: Array<{ role: 'user' | 'assistant'; content: string }>, system?: string): Promise<ReadableStream<string>> {
     const profile = this.getSlotProfile(slot);
-    if (!profile) throw new Error(`没有为槽位 "${slot}" 配置可用的模型`);
+    if (!profile) throw new Error(noModelError(slot));
 
     this.logger.info({ slot, modelId: profile.modelId, providerType: profile.providerType, msgCount: messages.length }, 'ModelGateway.streamText');
     const provider = this.buildProvider(profile);
@@ -84,7 +97,7 @@ export class ModelGateway {
     options?: { system?: string; tools?: Record<string, { description: string; parameters: Record<string, unknown> }> },
   ): Promise<{ text: string; toolCalls?: Array<{ name: string; args: Record<string, unknown> }> }> {
     const profile = this.getSlotProfile(slot);
-    if (!profile) throw new Error(`没有为槽位 "${slot}" 配置可用的模型`);
+    if (!profile) throw new Error(noModelError(slot));
 
     this.logger.info({ slot, modelId: profile.modelId, providerType: profile.providerType, msgCount: messages.length }, 'ModelGateway.generateText');
     const provider = this.buildProvider(profile);
@@ -103,7 +116,7 @@ export class ModelGateway {
 
   async generateObject<T>(slot: ModelSlot, messages: Array<{ role: 'user' | 'assistant'; content: string }>, system?: string): Promise<T> {
     const profile = this.getSlotProfile(slot);
-    if (!profile) throw new Error(`没有为槽位 "${slot}" 配置可用的模型`);
+    if (!profile) throw new Error(noModelError(slot));
 
     this.logger.info({ slot, modelId: profile.modelId, providerType: profile.providerType, msgCount: messages.length }, 'ModelGateway.generateObject');
     const provider = this.buildProvider(profile);

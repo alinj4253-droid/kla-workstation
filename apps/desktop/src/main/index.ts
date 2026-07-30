@@ -442,8 +442,20 @@ const registerWorkspaceIpc = (): void => {
   });
 
   registerIpc('workspace:openWithSystem', async (_event, input: WorkspaceRequest) => {
-    const root = await getOriginalFilesRoot(input.projectId);
-    const target = resolveInside(root, input.relativePath);
+    const st = input.scopeType ?? 'project';
+    const scopeRoot = await getScopeRoot(input);
+    let target: string;
+    try {
+      target = resolveInside(scopeRoot, input.relativePath);
+      await access(target);
+    } catch {
+      if (st === 'project') {
+        target = resolveInside(getProjectRoot(input.projectId), input.relativePath);
+      } else {
+        // For shared scope, only the scope root is valid
+        throw new DatabaseError('NOT_FOUND', '文件不存在');
+      }
+    }
     await assertNoSymlink(target);
     const message = await shell.openPath(target);
     if (message) throw new Error(message);
@@ -534,7 +546,7 @@ const registerFileIpc = (db: ReturnType<typeof getDatabase>): void => {
         knowledgeStatus,
       };
     }));
-    return result.sort((left, right) => left.kind === right.kind ? right.modifiedAt.localeCompare(left.modifiedAt) : left.kind === 'directory' ? -1 : 1);
+    return { ok: true, data: result.sort((left, right) => left.kind === right.kind ? right.modifiedAt.localeCompare(left.modifiedAt) : left.kind === 'directory' ? -1 : 1) };
   });
 
   registerIpc('workspace:uploadFiles', async (event, input: WorkspaceRequest) => {
@@ -785,6 +797,57 @@ const registerFileIpc = (db: ReturnType<typeof getDatabase>): void => {
       return { ok: true, data: { kind: 'pdf' as const, appFileUrl, fileName: basename(target), size: info.size, fileId, versionId } };
     }
     return { ok: true, data: { kind: 'unknown' as const, fileName: basename(target), size: info.size, mimeType: '', fileId, versionId } };
+  });
+
+  registerIpc('workspace:listSystemDirs', async (_event, input: { projectId: string }) => {
+    const projectRoot = getProjectRoot(input.projectId);
+    const systemDirs = [
+      { name: '智能体身份', physicalName: 'agent-identities' },
+      { name: '智能体记忆', physicalName: 'agent-memories' },
+      { name: '原始文件', physicalName: 'original-files' },
+      { name: '知识', physicalName: 'knowledge' },
+      { name: '图谱可视化', physicalName: 'graph-visualization' },
+      { name: '成果', physicalName: 'outputs' },
+    ];
+    const entries = [];
+    for (const dir of systemDirs) {
+      try {
+        await access(join(projectRoot, dir.physicalName));
+        entries.push({
+          name: dir.name,
+          physicalName: dir.physicalName,
+          relativePath: dir.physicalName,
+          kind: 'directory' as const,
+          system: true,
+          size: 0,
+          modifiedAt: new Date().toISOString(),
+        });
+      } catch {
+        // skip if directory doesn't exist yet
+      }
+    }
+    return { ok: true, data: entries };
+  });
+
+  registerIpc('workspace:listProjectDir', async (_event, input: { projectId: string; relativePath: string }) => {
+    const projectRoot = getProjectRoot(input.projectId);
+    const directory = resolveInside(projectRoot, input.relativePath);
+    await assertNoSymlink(directory);
+    const entries = await readdir(directory, { withFileTypes: true });
+    const result = await Promise.all(entries.filter((entry) => !entry.isSymbolicLink()).map(async (entry) => {
+      const entryPath = join(directory, entry.name);
+      const info = await lstat(entryPath);
+      return {
+        name: entry.name,
+        physicalName: entry.name,
+        relativePath: join(input.relativePath, entry.name).replaceAll('\\', '/'),
+        kind: entry.isDirectory() ? 'directory' as const : 'file' as const,
+        system: false,
+        size: entry.isDirectory() ? 0 : info.size,
+        modifiedAt: info.mtime.toISOString(),
+      };
+    }));
+    return { ok: true, data: result.sort((left, right) => left.kind === right.kind ? right.modifiedAt.localeCompare(left.modifiedAt) : left.kind === 'directory' ? -1 : 1) };
   });
 };
 

@@ -184,14 +184,14 @@ describe('ModelGateway', () => {
   }, 10000);
 
   it('streamText throws for unconfigured slot', async () => {
-    await expect(gateway.streamText('reasoning', [{ role: 'user', content: 'hi' }])).rejects.toThrow('没有为槽位');
+    await expect(gateway.streamText('reasoning', [{ role: 'user', content: 'hi' }])).rejects.toThrow('模型未配置');
   });
 
   it('generateText throws for unconfigured slot', async () => {
-    await expect(gateway.generateText('fast', [{ role: 'user', content: 'hi' }])).rejects.toThrow('没有为槽位');
+    await expect(gateway.generateText('fast', [{ role: 'user', content: 'hi' }])).rejects.toThrow('模型未配置');
   });
 
   it('generateObject throws for unconfigured slot', async () => {
-    await expect(gateway.generateObject('embedding', [{ role: 'user', content: 'hi' }])).rejects.toThrow('没有为槽位');
+    await expect(gateway.generateObject('embedding', [{ role: 'user', content: 'hi' }])).rejects.toThrow('模型未配置');
   });
 });
