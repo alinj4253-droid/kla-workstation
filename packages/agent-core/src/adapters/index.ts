@@ -29,3 +29,5 @@ export { MiniMaxCliAdapter } from './minimax/adapter.js';
 export { MiniMaxAutoStrategy } from './minimax/strategies/auto.js';
 export { MarsCodeCliAdapter } from './marcode/adapter.js';
 export { MarsCodeAutoStrategy } from './marcode/strategies/auto.js';
+export { CodeBuddyCliAdapter } from './codebuddy/adapter.js';
+export { CodeBuddyAutoStrategy } from './codebuddy/strategies/auto.js';

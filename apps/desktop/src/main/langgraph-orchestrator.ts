@@ -235,6 +235,23 @@ export async function runOrchestrator(
         return row;
       },
 
+      getProjectDelegatableAgents(projectId: string) {
+        const rows = db.prepare(
+          `SELECT pai.id, ap.name, pai.role, ap.definition_id as definitionId, pai.runtime_mode as runtimeMode
+           FROM project_agent_instances pai
+           JOIN agent_profiles ap ON ap.id = pai.agent_profile_id
+           WHERE pai.project_id = ? AND ap.enabled = 1
+           ORDER BY pai.ordinal`,
+        ).all(projectId) as Array<{ id: string; name: string; role: string; definitionId: string; runtimeMode: string }>;
+        return rows.map((r) => ({
+          id: r.id,
+          name: r.name,
+          role: r.role,
+          definitionId: r.definitionId,
+          runtimeMode: r.runtimeMode,
+        }));
+      },
+
       getMessageContent(messageId: string): string | null {
         const row = db.prepare(
           'SELECT content_json as contentJson FROM messages WHERE id = ?',

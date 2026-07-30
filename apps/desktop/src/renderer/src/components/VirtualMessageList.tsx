@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
-import { useVirtualizer } from '@tanstack/react-virtual';
+import { useCallback, useEffect, useRef } from 'react';
 import { Bot, FileText, Loader2, RefreshCw, Square } from 'lucide-react';
 import { MarkdownMessage } from './MarkdownMessage';
 
@@ -62,7 +61,7 @@ export function VirtualMessageList({
 }: VirtualMessageListProps): React.JSX.Element {
   const parentRef = useRef<HTMLDivElement>(null);
 
-  const allItems = useMemo<VirtualItem[]>(() => {
+  const allItems = useCallback((): VirtualItem[] => {
     if (loading) {
       return [{ kind: 'loading' }];
     }
@@ -87,54 +86,33 @@ export function VirtualMessageList({
     return items;
   }, [messages, streamMap, activeRuns, hasMore, loading]);
 
-  const estimateSize = useCallback((index: number): number => {
-    const item = allItems[index];
-    if (!item) return 200;
-    switch (item.kind) {
-      case 'load-more': return 48;
-      case 'loading': return 120;
-      case 'empty': return 200;
-      case 'run': return 80;
-      case 'stream': {
-        // ~50 chars/line × 19px line-height + bubble padding(30) + sender(22) + margin(24)
-        const lines = Math.max(Math.ceil(item.content.length / 50), 1);
-        return 76 + lines * 19;
+  // Auto-scroll to bottom when new messages arrive
+  const prevItemCount = useRef(0);
+  useEffect(() => {
+    const items = allItems();
+    const count = items.length;
+    const parent = parentRef.current;
+    if (!parent) return;
+
+    if (count > prevItemCount.current) {
+      const threshold = 400;
+      const isNearBottom = parent.scrollHeight - parent.scrollTop - parent.clientHeight < threshold;
+      if (isNearBottom) {
+        requestAnimationFrame(() => {
+          parent.scrollTop = parent.scrollHeight;
+        });
       }
-      case 'message': {
-        const { text } = parseContent(item.msg.contentJson);
-        const lines = Math.max(Math.ceil(text.length / 50), 1);
-        return 76 + lines * 19;
-      }
-      default: return 160;
     }
+    prevItemCount.current = count;
   }, [allItems]);
 
-  const virtualizer = useVirtualizer({
-    count: allItems.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize,
-    overscan: 8,
-    ...(initialScrollOffset !== undefined ? { initialOffset: initialScrollOffset } : {}),
-  });
-
-  const prevCount = useRef(allItems.length);
+  // Restore scroll position on initial mount
   useEffect(() => {
-    const current = allItems.length;
-    if (current > prevCount.current) {
-      const parent = parentRef.current;
-      if (parent) {
-        const threshold = 400;
-        const isNearBottom = parent.scrollHeight - parent.scrollTop - parent.clientHeight < threshold;
-        if (isNearBottom) {
-          virtualizer.scrollToIndex(current - 1, { align: 'end' });
-        }
-      }
+    if (initialScrollOffset !== undefined && parentRef.current) {
+      parentRef.current.scrollTop = initialScrollOffset;
     }
-    prevCount.current = current;
-  }, [allItems.length, virtualizer]);
+  }, []);
 
-  const prevScrollHeight = useRef(0);
-  const prevScrollTop = useRef(0);
   const handleScroll = useCallback(() => {
     const parent = parentRef.current;
     if (!parent) return;
@@ -143,16 +121,8 @@ export function VirtualMessageList({
       onLoadMore();
     }
 
-    if (allItems.length > prevCount.current) {
-      const heightDiff = parent.scrollHeight - prevScrollHeight.current;
-      if (heightDiff > 0) {
-        parent.scrollTop = prevScrollTop.current + heightDiff;
-      }
-    }
-    prevScrollHeight.current = parent.scrollHeight;
-    prevScrollTop.current = parent.scrollTop;
     onScrollOffsetChange?.(parent.scrollTop);
-  }, [hasMore, loading, onLoadMore, allItems.length, onScrollOffsetChange]);
+  }, [hasMore, loading, onLoadMore, onScrollOffsetChange]);
 
   const formatTime = (iso: string): string => {
     const date = new Date(iso);
@@ -173,8 +143,10 @@ export function VirtualMessageList({
     return 'financial';
   };
 
+  const items = allItems();
+
   return (
-    <div ref={parentRef} className="message-stream" onScroll={handleScroll} style={{ overflow: 'auto' }}>
+    <div ref={parentRef} className="message-stream" onScroll={handleScroll}>
       {hasMore && (
         <div style={{ textAlign: 'center', padding: '12px 0' }}>
           <button type="button" className="load-more" onClick={onLoadMore}>
@@ -182,92 +154,85 @@ export function VirtualMessageList({
           </button>
         </div>
       )}
-      <div
-        style={{
-          height: `${virtualizer.getTotalSize()}px`,
-          width: '100%',
-          position: 'relative',
-        }}
-      >
-        {virtualizer.getVirtualItems().map((virtualItem) => {
-          const item = allItems[virtualItem.index];
-          if (!item) return null;
 
+      {items.map((item, index) => {
+        if (item.kind === 'loading') {
           return (
-            <div
-              key={virtualItem.key}
-              style={{
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                width: '100%',
-                transform: `translateY(${virtualItem.start}px)`,
-              }}
-            >
-              {item.kind === 'loading' && (
-                <div className="file-empty" style={{ padding: '40px' }}>加载中...</div>
-              )}
-              {item.kind === 'empty' && (
-                <div className="file-empty" style={{ padding: '40px' }}>
-                  <strong>开始对话</strong>
-                  <span>发送一条消息开始与智能体协作文档</span>
-                </div>
-              )}
-              {item.kind === 'stream' && (
-                <article className="message-row message-row--financial">
-                  <div className="message-agent-icon message-agent-icon--financial"><Bot size={18} /></div>
-                  <div className="message-body">
-                    <div className="message-sender"><strong>智能体</strong><time>流式输出中...</time></div>
-                    <div className="message-bubble"><MarkdownMessage content={item.content} /><span className="stream-cursor">|</span></div>
-                  </div>
-                </article>
-              )}
-              {item.kind === 'run' && (
-                <article className="message-row message-row--system">
-                  <div className="message-agent-icon message-agent-icon--system"><Loader2 size={16} className="spin" /></div>
-                  <div className="message-body">
-                    <div className="message-sender"><strong>{item.agentName || '智能体'}</strong></div>
-                    <div className="message-bubble message-bubble--status">
-                      <span>{item.status === 'queued' ? '排队中...' : item.status === 'starting' ? '启动中...' : '运行中...'}</span>
-                      <button type="button" className="composer-tool" aria-label="取消运行" onClick={() => onCancelRun(item.runId)}><Square size={14} /></button>
-                    </div>
-                  </div>
-                </article>
-              )}
-              {item.kind === 'message' && (() => {
-                const { text } = parseContent(item.msg.contentJson);
-                const role = roleClass(item.msg);
-                return (
-                  <article className={`message-row message-row--${role}`}>
-                    {item.msg.senderType !== 'user' && (
-                      <div className={`message-agent-icon message-agent-icon--${role}`}>
-                        {item.msg.kind === 'run-status' ? <Loader2 size={18} className="spin" /> : item.msg.kind === 'artifact' ? <FileText size={18} /> : <Bot size={18} />}
-                      </div>
-                    )}
-                    <div className="message-body">
-                      <div className="message-sender">
-                        <strong>{senderDisplay(item.msg)}</strong>
-                        <time>{formatTime(item.msg.createdAt)}</time>
-                        {item.msg.status === 'failed' && (
-                          <button type="button" className="icon-button" aria-label="重试" onClick={() => onRetryRun(item.msg.id)}><RefreshCw size={13} /></button>
-                        )}
-                      </div>
-                      <div className={`message-bubble${item.msg.kind === 'warning' ? ' message-bubble--warning' : ''}`}>
-                        {item.msg.kind === 'artifact' ? (
-                          <button type="button" className="artifact-inline" onClick={() => onPreviewFile?.(text)} title="预览成果文件"><FileText size={16} /><span>{text}</span></button>
-                        ) : (
-                          <MarkdownMessage content={text} />
-                        )}
-                        {item.msg.status === 'failed' && <span className="error-tag">发送失败</span>}
-                      </div>
-                    </div>
-                  </article>
-                );
-              })()}
+            <div key="loading" className="file-empty" style={{ padding: '40px' }}>
+              加载中...
             </div>
           );
-        })}
-      </div>
+        }
+
+        if (item.kind === 'empty') {
+          return (
+            <div key="empty" className="file-empty" style={{ padding: '40px' }}>
+              <strong>开始对话</strong>
+              <span>发送一条消息开始与智能体协作文档</span>
+            </div>
+          );
+        }
+
+        if (item.kind === 'stream') {
+          return (
+            <article key={`stream-${item.id}`} className="message-row message-row--financial">
+              <div className="message-agent-icon message-agent-icon--financial"><Bot size={18} /></div>
+              <div className="message-body">
+                <div className="message-sender"><strong>智能体</strong><time>流式输出中...</time></div>
+                <div className="message-bubble"><MarkdownMessage content={item.content} /><span className="stream-cursor">|</span></div>
+              </div>
+            </article>
+          );
+        }
+
+        if (item.kind === 'run') {
+          return (
+            <article key={`run-${item.runId}`} className="message-row message-row--system">
+              <div className="message-agent-icon message-agent-icon--system"><Loader2 size={16} className="spin" /></div>
+              <div className="message-body">
+                <div className="message-sender"><strong>{item.agentName || '智能体'}</strong></div>
+                <div className="message-bubble message-bubble--status">
+                  <span>{item.status === 'queued' ? '排队中...' : item.status === 'starting' ? '启动中...' : '运行中...'}</span>
+                  <button type="button" className="composer-tool" aria-label="取消运行" onClick={() => onCancelRun(item.runId)}><Square size={14} /></button>
+                </div>
+              </div>
+            </article>
+          );
+        }
+
+        if (item.kind === 'message') {
+          const { text } = parseContent(item.msg.contentJson);
+          const role = roleClass(item.msg);
+          return (
+            <article key={item.msg.id} className={`message-row message-row--${role}`}>
+              {item.msg.senderType !== 'user' && (
+                <div className={`message-agent-icon message-agent-icon--${role}`}>
+                  {item.msg.kind === 'run-status' ? <Loader2 size={18} className="spin" /> : item.msg.kind === 'artifact' ? <FileText size={18} /> : <Bot size={18} />}
+                </div>
+              )}
+              <div className="message-body">
+                <div className="message-sender">
+                  <strong>{senderDisplay(item.msg)}</strong>
+                  <time>{formatTime(item.msg.createdAt)}</time>
+                  {item.msg.status === 'failed' && (
+                    <button type="button" className="icon-button" aria-label="重试" onClick={() => onRetryRun(item.msg.id)}><RefreshCw size={13} /></button>
+                  )}
+                </div>
+                <div className={`message-bubble${item.msg.kind === 'warning' ? ' message-bubble--warning' : ''}`}>
+                  {item.msg.kind === 'artifact' ? (
+                    <button type="button" className="artifact-inline" onClick={() => onPreviewFile?.(text)} title="预览成果文件"><FileText size={16} /><span>{text}</span></button>
+                  ) : (
+                    <MarkdownMessage content={text} />
+                  )}
+                  {item.msg.status === 'failed' && <span className="error-tag">发送失败</span>}
+                </div>
+              </div>
+            </article>
+          );
+        }
+
+        return null;
+      })}
     </div>
   );
 }

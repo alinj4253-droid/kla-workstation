@@ -210,7 +210,7 @@ async function discoverSource(state: KMState, config: any): Promise<Partial<KMSt
   };
 
   if (!sourceFileId) {
-    result.error = '未找到要处理的源文件。请在指令中指定文件 ID，或先上传文件。';
+    result.error = '未找到要处理的源文件。如需导入文档，请附加上传文件或提供文件 ID（格式: fileId: xxxx）。支持 PDF、DOCX、XLSX、TXT、MD、HTML 格式。如需查询知识库内容，请直接向群聊提问。';
   }
 
   return result;
@@ -718,9 +718,20 @@ async function buildVisualizationProjection(state: KMState, config: any): Promis
  */
 async function generateReport(state: KMState, _config: any): Promise<Partial<KMState>> {
   if (state.error && !state.pipelineCompleted) {
+    if (!state.sourceFileId) {
+      const reportText = `知识管理智能体负责文档入库和知识图谱构建。
+
+如需导入文档：
+- 上传文件后 @知识管理员 即可自动处理
+- 或提供文件 ID（格式: fileId: xxxx）
+- 支持格式: PDF、DOCX、XLSX、TXT、MD、HTML
+
+如需查询知识库内容，请直接向群聊提问，统筹智能体会为您搜索。`;
+      return { report: reportText };
+    }
     const reportText = state.error.includes('内容过短')
       ? `## 知识入库完成\n\n**文件**: ${basename(state.sourceFilePath || '')}\n\n文档内容过短，跳过知识提取。`
-      : `## 知识入库失败\n\n**错误**: ${state.error}\n\n请检查文件格式和路径后重试。`;
+      : `## 知识入库失败\n\n**错误**: ${state.error}`;
     return { report: reportText };
   }
 

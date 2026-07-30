@@ -22,13 +22,13 @@ describe('DB migration — clean install', () => {
     await rm(tmpDir, { recursive: true, force: true });
   });
 
-  it('runs all 8 migrations on empty database', () => {
+  it('runs all 13 migrations on empty database', () => {
     runMigrations(dbPath);
     const db = new Database(dbPath);
-    const rows = db.prepare('SELECT name FROM _migrations ORDER BY id').all() as Array<{ name: string }>;
-    expect(rows.length).toBe(10);
+    const rows = db.prepare('SELECT name FROM _migrations ORDER BY id').all() as Array<{ id: number; name: string }>;
+    expect(rows.length).toBe(13);
     expect(rows[0]!.name).toBe('001_initial');
-    expect(rows[9]!.name).toBe('012_fix_cli_connections_trust_tier_check');
+    expect(rows[12]!.name).toBe('015_add_cli_agents_to_existing_projects');
     db.close();
   });
 
@@ -54,7 +54,7 @@ describe('DB migration — clean install', () => {
     runMigrations(dbPath);
     const db = new Database(dbPath);
     const rows = db.prepare('SELECT name FROM _migrations ORDER BY id').all() as Array<{ name: string }>;
-    expect(rows.length).toBe(10);
+    expect(rows.length).toBe(13);
     db.close();
   });
 
@@ -101,7 +101,7 @@ describe('DB migration — schema upgrade', () => {
 
     const checkDb = new Database(dbPath);
     const rows = checkDb.prepare('SELECT name FROM _migrations ORDER BY id').all() as Array<{ name: string }>;
-    expect(rows.length).toBe(10);
+    expect(rows.length).toBe(13);
     const names = rows.map((r) => r.name);
     expect(names.filter((n) => n === '009_create_skills_tables').length).toBe(1);
     checkDb.close();

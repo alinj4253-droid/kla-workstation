@@ -54,6 +54,8 @@ export {
   MiniMaxAutoStrategy,
   MarsCodeCliAdapter,
   MarsCodeAutoStrategy,
+  CodeBuddyCliAdapter,
+  CodeBuddyAutoStrategy,
 } from './adapters/index.js';
 
 // 向后兼容别名（通过旧路径重导出）

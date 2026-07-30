@@ -1,7 +1,7 @@
 import { Annotation, END, StateGraph } from '@langchain/langgraph';
 import { ORCHESTRATOR_SYSTEM_PROMPT } from './prompts.js';
 import { extractToolCalls } from './tool-utils.js';
-import type { IGraphContext, OrchestratorGraphState, ExecContextSnapshot, AgentRole } from './types.js';
+import type { IGraphContext, OrchestratorGraphState, ExecContextSnapshot, AgentRole, CLIDelegation } from './types.js';
 import type { ModelMessage } from '@kunqing/model-core';
 
 const MAX_TOOL_RETRIES = 3;
@@ -27,6 +27,14 @@ const OrchestratorAnnotation = Annotation.Root({
   needsKnowledgeManager: Annotation<boolean>({
     value: (_a: boolean, b: boolean) => b,
     default: () => false,
+  }),
+  needsCLIDelegation: Annotation<boolean>({
+    value: (_a: boolean, b: boolean) => b,
+    default: () => false,
+  }),
+  cliDelegations: Annotation<CLIDelegation[]>({
+    value: (a: CLIDelegation[], b: CLIDelegation[]) => [...a, ...b],
+    default: () => [],
   }),
   artifacts: Annotation<Array<{ relativePath: string; content: string }>>({
     value: (a: Array<{ relativePath: string; content: string }>, b: Array<{ relativePath: string; content: string }>) => [...a, ...b],
@@ -157,6 +165,7 @@ async function analyzeIntent(state: GraphState, config: { configurable: { ctx: I
       return {
         messages: [{ role: 'system', content: `子智能体结果: ${subAgentText}` }],
         needsKnowledgeManager: false,
+        needsCLIDelegation: false,
         finalResponse: '',
         subAgentResult: subAgentText,
         artifacts: [],
@@ -180,17 +189,25 @@ async function analyzeIntent(state: GraphState, config: { configurable: { ctx: I
   }
 
   needsKM = rawText.trim().startsWith('NEED_KM');
-  const cleanText = needsKM ? rawText.replace(/^NEED_KM\s*\n?/, '').trim() : rawText;
+  const needsCLI = !needsKM && rawText.trim().startsWith('NEED_CLI');
+  const cleanText = needsKM
+    ? rawText.replace(/^NEED_KM\s*\n?/, '').trim()
+    : needsCLI
+      ? rawText.replace(/^NEED_CLI\s*\n?/, '').trim()
+      : rawText;
 
   const { processedText: finalText, artifacts: textArtifacts } = await processToolCalls(cleanText, ctx);
   artifacts = [...artifacts, ...textArtifacts];
 
-  sendProgress(ctx, needsKM ? '准备委派' : '生成回复', needsKM ? 30 : 50);
+  const stage = needsKM ? '准备委派' : needsCLI ? '准备 CLI 委派' : '生成回复';
+  const progress = needsKM ? 30 : needsCLI ? 30 : 50;
+  sendProgress(ctx, stage, progress);
 
   return {
     messages: [{ role: 'assistant', content: finalText }],
     needsKnowledgeManager: needsKM,
-    finalResponse: needsKM ? '' : finalText,
+    needsCLIDelegation: needsCLI,
+    finalResponse: needsKM || needsCLI ? '' : finalText,
     artifacts,
   };
 }
@@ -252,6 +269,173 @@ async function delegateToKM(state: GraphState, config: { configurable: { ctx: IG
   return {
     subAgentResult: '',
     messages: [{ role: 'system', content: `委派给知识管理员: ${ctx.instruction}` }],
+  };
+}
+
+async function delegateCLI(state: GraphState, config: { configurable: { ctx: IGraphContext } }): Promise<Partial<GraphState>> {
+  const ctx = config.configurable.ctx;
+  ctx.signal.throwIfAborted();
+
+  const logger = ctx.services.getLogger();
+
+  // 从 analyzeIntent 的 assistant 消息中解析 NEED_CLI 委派行
+  const assistantMsg = state.messages.find((m) => m.role === 'assistant');
+  if (!assistantMsg) {
+    logger.warn('delegateCLI: 未找到 assistant 消息');
+    return { subAgentResult: '' };
+  }
+
+  const lines = assistantMsg.content.split('\n').filter((l) => l.includes(':'));
+  const delegations: CLIDelegation[] = [];
+  const errors: string[] = [];
+
+  for (const line of lines) {
+    const colonIdx = line.indexOf(':');
+    if (colonIdx < 0) continue;
+    const agentInstanceId = line.slice(0, colonIdx).trim();
+    const instruction = line.slice(colonIdx + 1).trim();
+    if (!agentInstanceId || !instruction) continue;
+
+    try {
+      const toolResult = await ctx.services.executeTool('delegate_tasks', {
+        projectId: ctx.projectId,
+        agentInstanceId,
+        instruction,
+        parentRunId: ctx.runId,
+      }, 'orchestrator', { runId: ctx.runId, projectId: ctx.projectId });
+
+      // 从工具返回中提取子 Run ID: "任务已委派给智能体 xxx，子 Run ID: <id>（深度 1）"
+      const subRunMatch = toolResult.match(/子 Run ID: (\w+)/);
+      const subRunId = subRunMatch ? subRunMatch[1]! : '';
+
+      delegations.push({
+        agentInstanceId,
+        agentName: '',
+        subRunId,
+        instruction,
+        status: subRunId ? 'pending' : 'failed',
+        result: toolResult,
+      });
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      errors.push(`委派给 ${agentInstanceId} 失败: ${errMsg}`);
+      delegations.push({
+        agentInstanceId,
+        agentName: '',
+        subRunId: '',
+        instruction,
+        status: 'failed',
+        result: errMsg,
+      });
+    }
+  }
+
+  if (delegations.length === 0) {
+    logger.warn('delegateCLI: 未解析出有效的委派行');
+    return { subAgentResult: '', cliDelegations: [] };
+  }
+
+  logger.info(`delegateCLI: 已委派 ${delegations.length} 个子任务`);
+
+  return {
+    cliDelegations: delegations,
+    messages: [
+      ...state.messages,
+      { role: 'system', content: `CLI 委派完成: ${delegations.length} 个子任务已创建${errors.length ? '，错误: ' + errors.join('; ') : ''}` },
+    ],
+  };
+}
+
+const MAX_COLLECT_WAIT_MS = 60_000;
+const POLL_INTERVAL_MS = 500;
+
+async function collectCLIResults(state: GraphState, config: { configurable: { ctx: IGraphContext } }): Promise<Partial<GraphState>> {
+  const ctx = config.configurable.ctx;
+  ctx.signal.throwIfAborted();
+
+  sendProgress(ctx, '收集 CLI 子智能体结果', 50);
+
+  const logger = ctx.services.getLogger();
+  const delegations = [...state.cliDelegations];
+  const deadline = Date.now() + MAX_COLLECT_WAIT_MS;
+
+  logger.info(`collectCLIResults: 等待 ${delegations.length} 个子任务完成`);
+
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  // 轮询所有子 Run 直到完成或超时
+  let allDone = false;
+  while (!allDone && Date.now() < deadline) {
+    ctx.signal.throwIfAborted();
+    allDone = true;
+
+    for (let i = 0; i < delegations.length; i++) {
+      const d = delegations[i];
+      if (!d || d.status === 'completed' || d.status === 'failed') continue;
+
+      try {
+        const runStatus = ctx.services.getRunStatus(d.subRunId);
+        if (runStatus.status === 'completed') {
+          let result = '';
+          if (runStatus.resultMessageId) {
+            const msgContent = ctx.services.getMessageContent(runStatus.resultMessageId);
+            if (msgContent) {
+              result = msgContent;
+            }
+          }
+          delegations[i] = { agentInstanceId: d.agentInstanceId, agentName: d.agentName, subRunId: d.subRunId, instruction: d.instruction, status: 'completed', result };
+        } else if (['failed', 'cancelled', 'interrupted'].includes(runStatus.status)) {
+          const errMsg = runStatus.errorMessage ?? `子任务 ${d.subRunId} 状态: ${runStatus.status}`;
+          delegations[i] = { agentInstanceId: d.agentInstanceId, agentName: d.agentName, subRunId: d.subRunId, instruction: d.instruction, status: 'failed', result: errMsg };
+        } else {
+          allDone = false;
+        }
+      } catch {
+        allDone = false;
+      }
+    }
+
+    if (!allDone) {
+      await sleep(POLL_INTERVAL_MS);
+    }
+  }
+
+  // 超时未完成的标记为失败
+  for (let i = 0; i < delegations.length; i++) {
+    const d = delegations[i];
+    if (d && (d.status === 'pending' || d.status === 'running')) {
+      delegations[i] = { agentInstanceId: d.agentInstanceId, agentName: d.agentName, subRunId: d.subRunId, instruction: d.instruction, status: 'failed', result: '超时未完成' };
+    }
+  }
+
+  // 汇总结果
+  const parts: string[] = [];
+  let hasSuccess = false;
+  let hasFailure = false;
+  for (const d of delegations) {
+    if (!d) continue;
+    if (d.status === 'completed') {
+      hasSuccess = true;
+      parts.push(`--- ${d.agentName || d.agentInstanceId} 结果 ---\n${d.result || '(无输出)'}`);
+    } else {
+      hasFailure = true;
+      parts.push(`--- ${d.agentName || d.agentInstanceId} 失败 ---\n${d.result}`);
+    }
+  }
+
+  const summary = parts.join('\n\n');
+
+  const successCount = delegations.filter((d) => d && d.status === 'completed').length;
+  const failCount = delegations.filter((d) => d && d.status === 'failed').length;
+  logger.info(`collectCLIResults: ${successCount} 成功, ${failCount} 失败 (共 ${delegations.length} 个子任务)`);
+
+  return {
+    cliDelegations: delegations,
+    subAgentResult: summary || '(无子任务结果)',
+    messages: [
+      ...state.messages,
+      { role: 'system', content: `CLI 子任务汇总完成: ${successCount} 成功, ${failCount} 失败` },
+    ],
   };
 }
 
@@ -349,6 +533,7 @@ async function respond(state: GraphState, config: { configurable: { ctx: IGraphC
 
 function routeAfterAnalyze(state: GraphState): string {
   if (state.needsKnowledgeManager) return 'delegateToKM';
+  if (state.needsCLIDelegation) return 'delegateCLI';
   if (state.subAgentResult) return 'synthesize';
   return 'respond';
 }
@@ -357,15 +542,23 @@ function routeAfterDelegate(state: GraphState): string {
   return state.subAgentResult ? 'synthesize' : 'respond';
 }
 
+function routeAfterCollect(state: GraphState): string {
+  return state.subAgentResult ? 'synthesize' : 'respond';
+}
+
 function buildOrchestratorGraph() {
   const builder = new StateGraph(OrchestratorAnnotation)
     .addNode('analyzeIntent', analyzeIntent as any)
     .addNode('delegateToKM', delegateToKM as any)
+    .addNode('delegateCLI', delegateCLI as any)
+    .addNode('collectCLIResults', collectCLIResults as any)
     .addNode('synthesize', synthesize as any)
     .addNode('respond', respond as any)
     .addEdge('__start__', 'analyzeIntent')
-    .addConditionalEdges('analyzeIntent', routeAfterAnalyze, ['delegateToKM', 'respond'])
+    .addConditionalEdges('analyzeIntent', routeAfterAnalyze, ['delegateToKM', 'delegateCLI', 'respond'])
     .addConditionalEdges('delegateToKM', routeAfterDelegate, ['synthesize', 'respond'])
+    .addEdge('delegateCLI', 'collectCLIResults')
+    .addConditionalEdges('collectCLIResults', routeAfterCollect, ['synthesize', 'respond'])
     .addEdge('synthesize', 'respond')
     .addEdge('respond', END);
 
@@ -401,6 +594,8 @@ export async function runOrchestrator(ctx: IGraphContext): Promise<void> {
       subAgentResult: '',
       finalResponse: '',
       needsKnowledgeManager: false,
+      needsCLIDelegation: false,
+      cliDelegations: [],
       artifacts: [],
     };
 

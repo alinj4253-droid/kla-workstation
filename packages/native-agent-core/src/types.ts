@@ -2,6 +2,23 @@ import type { ModelSlot, ModelMessage, GenerateOptions, GenerateResult } from '@
 
 export type AgentRole = 'orchestrator' | 'knowledge-manager' | 'external-cli';
 
+export interface DelegatableAgentInfo {
+  id: string;
+  name: string;
+  role: string;
+  definitionId: string;
+  runtimeMode: string;
+}
+
+export interface CLIDelegation {
+  agentInstanceId: string;
+  agentName: string;
+  subRunId: string;
+  instruction: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  result: string;
+}
+
 export interface ToolDefinition {
   name: string;
   description: string;
@@ -99,6 +116,8 @@ export interface IGraphContext {
 
     getKmInstance(projectId: string): KmInstanceInfo | undefined;
 
+    getProjectDelegatableAgents(projectId: string): DelegatableAgentInfo[];
+
     getMessageContent(messageId: string): string | null;
 
     getLogger(): { info: (msg: string, ...args: unknown[]) => void; warn: (msg: string, ...args: unknown[]) => void; error: (msg: string, ...args: unknown[]) => void };
@@ -120,6 +139,8 @@ export interface OrchestratorGraphState {
   subAgentResult: string;
   finalResponse: string;
   needsKnowledgeManager: boolean;
+  needsCLIDelegation: boolean;
+  cliDelegations: CLIDelegation[];
   artifacts: Array<{ relativePath: string; content: string }>;
 }
 

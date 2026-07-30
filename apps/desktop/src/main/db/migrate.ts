@@ -663,10 +663,40 @@ const migrations: Array<{ name: string; sql: string }> = [
     name: '013_create_profiles_for_existing_cli',
     sql: `
       INSERT INTO agent_profiles (id, name, definition_id, definition_version, runtime_mode, cli_connection_id, enabled, delegatable, is_system_default, created_at, updated_at)
-      SELECT cc.id || '-profile', cc.name, 'custom.' || cc.adapter_type, '1.0.0', 'external-cli', cc.id, 1, 0, 0, COALESCE(cc.created_at, datetime('now')), COALESCE(cc.updated_at, datetime('now'))
+      SELECT cc.id || '-profile', cc.name, 'custom.' || cc.adapter_type, '1.0.0', 'external-cli', cc.id, 1, 1, 0, COALESCE(cc.created_at, datetime('now')), COALESCE(cc.updated_at, datetime('now'))
       FROM cli_connections cc
       LEFT JOIN agent_profiles ap ON ap.cli_connection_id = cc.id
       WHERE ap.id IS NULL;
+    `,
+  },
+  {
+    name: '014_fix_cli_agent_delegatable',
+    sql: `
+      UPDATE agent_profiles SET delegatable = 1 WHERE runtime_mode = 'external-cli' AND delegatable = 0;
+    `,
+  },
+  {
+    name: '015_add_cli_agents_to_existing_projects',
+    sql: `
+      INSERT INTO project_agent_instances (id, project_id, agent_profile_id, definition_id, definition_version, role, runtime_mode, cli_connection_id, ordinal, created_at)
+      SELECT
+        p.id || '-cli-' || substr(ap.id, 1, 8),
+        p.id,
+        ap.id,
+        ap.definition_id,
+        ap.definition_version,
+        'teammate',
+        'external-cli',
+        ap.cli_connection_id,
+        (SELECT COALESCE(MAX(ordinal), 0) + 1 FROM project_agent_instances WHERE project_id = p.id),
+        datetime('now')
+      FROM projects p
+      CROSS JOIN agent_profiles ap
+      WHERE ap.runtime_mode = 'external-cli' AND ap.enabled = 1
+      AND NOT EXISTS (
+        SELECT 1 FROM project_agent_instances pai
+        WHERE pai.project_id = p.id AND pai.agent_profile_id = ap.id
+      );
     `,
   },
 ];

@@ -181,9 +181,9 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
 
       runRepo.addEvent(run.runId, 'agent.completed', { definitionId: 'builtin.knowledge-manager', reportLength: report.length });
 
-      // 知识入库失败时不 @mention 编排器，避免死循环
-      const isErrorReport = report.startsWith('## 知识入库失败');
-      const mentions = isErrorReport ? [] : buildParentMention(db, runRepo, run.runId);
+      // 只有成功完成入库才 @mention 编排器汇总结果；提示/失败类消息直接展示给用户
+      const isCompletedIngestion = report.startsWith('## 知识入库完成');
+      const mentions = isCompletedIngestion ? buildParentMention(db, runRepo, run.runId) : [];
 
       // 保存知识管理报告消息
       const agentMsgId = randomUUID().toLowerCase().replace(/-/g, '').slice(0, 24);

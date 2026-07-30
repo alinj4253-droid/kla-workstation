@@ -1082,7 +1082,7 @@ const registerAgentIpc = (db: ReturnType<typeof getDatabase>): void => {
     db.prepare(`INSERT INTO cli_connections (id, name, adapter_type, executable_path, args_json, strategy_id, detected_version, status, trust_tier, created_at, updated_at) VALUES (?, ?, ?, ?, '[]', 'auto', ?, ?, 'trusted', ?, ?)`).run(id, input.name, input.adapterType, input.executablePath, input.detectedVersion ?? null, status, now, now);
     // 同时创建对应的 agent_profiles 记录，使 CLI 智能体出现在 @ 列表和创建群聊对话框中
     const profileId = randomUUID().toLowerCase().replace(/-/g, '').slice(0, 24);
-    db.prepare(`INSERT INTO agent_profiles (id, name, definition_id, definition_version, runtime_mode, cli_connection_id, enabled, delegatable, is_system_default, created_at, updated_at) VALUES (?, ?, ?, '1.0.0', 'external-cli', ?, 1, 0, 0, ?, ?)`)
+    db.prepare(`INSERT INTO agent_profiles (id, name, definition_id, definition_version, runtime_mode, cli_connection_id, enabled, delegatable, is_system_default, created_at, updated_at) VALUES (?, ?, ?, '1.0.0', 'external-cli', ?, 1, 1, 0, ?, ?)`)
       .run(profileId, input.name, `custom.${input.adapterType}`, id, now, now);
     return { ok: true, data: { id, name: input.name, adapterType: input.adapterType, executablePath: input.executablePath, status } };
   });

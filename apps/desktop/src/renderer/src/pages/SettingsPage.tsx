@@ -131,6 +131,7 @@ const MOCK_AGENT_CARDS: AgentCardData[] = [
   { id: 'kimi', name: 'Kimi', definitionVersion: '0.1.0', framework: 'external-cli', modelProfile: '-', skills: ['代码生成', '文件读写', '搜索', '推理'], permissions: ['read', 'write'], testStatus: 'untested', referencedChats: 0, isBuiltin: false, enabled: false, adapterType: 'kimi', executablePath: 'kimi', detectedVersion: '0.1.0' },
   { id: 'minimax', name: 'MiniMax', definitionVersion: '0.1.0', framework: 'external-cli', modelProfile: '-', skills: ['代码生成', '文件读写', '搜索'], permissions: ['read', 'write'], testStatus: 'untested', referencedChats: 0, isBuiltin: false, enabled: false, adapterType: 'minimax', executablePath: 'minimax', detectedVersion: '0.1.0' },
   { id: 'marcode', name: 'MarsCode', definitionVersion: '0.1.0', framework: 'external-cli', modelProfile: '-', skills: ['代码生成', '文件读写', '搜索'], permissions: ['read', 'write'], testStatus: 'untested', referencedChats: 0, isBuiltin: false, enabled: false, adapterType: 'marcode', executablePath: 'marcode', detectedVersion: '0.1.0' },
+  { id: 'codebuddy', name: 'CodeBuddy', definitionVersion: '0.1.0', framework: 'external-cli', modelProfile: '-', skills: ['代码生成', '文件读写', '搜索', '网络访问'], permissions: ['read', 'write'], testStatus: 'untested', referencedChats: 0, isBuiltin: false, enabled: false, adapterType: 'codebuddy', executablePath: 'codebuddy', detectedVersion: '0.1.0' },
 ];
 
 function AgentsSettings(): React.JSX.Element {
@@ -493,6 +494,7 @@ function ConnectionWizardDialog({ onClose, onAdded }: { onClose: () => void; onA
               <option value="kimi">Kimi</option>
               <option value="minimax">MiniMax</option>
               <option value="marcode">MarsCode</option>
+              <option value="codebuddy">CodeBuddy</option>
               <option value="custom">自定义</option>
             </select>
           </label>

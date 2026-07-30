@@ -260,7 +260,7 @@ export class AgentConnectionService {
           db.prepare('UPDATE agent_profiles SET name = ?, updated_at = ? WHERE id = ?').run(this.state.name, now, existingProfile.id);
         } else {
           const profileId = randomUUID().toLowerCase().replace(/-/g, '').slice(0, 24);
-          db.prepare(`INSERT INTO agent_profiles (id, name, definition_id, definition_version, runtime_mode, cli_connection_id, enabled, delegatable, is_system_default, created_at, updated_at) VALUES (?, ?, ?, '1.0.0', 'external-cli', ?, 1, 0, 0, ?, ?)`)
+          db.prepare(`INSERT INTO agent_profiles (id, name, definition_id, definition_version, runtime_mode, cli_connection_id, enabled, delegatable, is_system_default, created_at, updated_at) VALUES (?, ?, ?, '1.0.0', 'external-cli', ?, 1, 1, 0, ?, ?)`)
             .run(profileId, this.state.name, `custom.${this.state.adapterType}`, existing.id, now, now);
           this.logger.info({ profileId, connectionId: existing.id }, 'AgentConnectionService.save created profile for existing connection');
         }
@@ -273,7 +273,7 @@ export class AgentConnectionService {
         this.logger.info({ connectionId: id }, 'AgentConnectionService.save created new connection');
         // 同时创建对应的 agent_profiles 记录，使 CLI 智能体出现在 @ 列表和创建群聊对话框中
         const profileId = randomUUID().toLowerCase().replace(/-/g, '').slice(0, 24);
-        db.prepare(`INSERT INTO agent_profiles (id, name, definition_id, definition_version, runtime_mode, cli_connection_id, enabled, delegatable, is_system_default, created_at, updated_at) VALUES (?, ?, ?, '1.0.0', 'external-cli', ?, 1, 0, 0, ?, ?)`)
+        db.prepare(`INSERT INTO agent_profiles (id, name, definition_id, definition_version, runtime_mode, cli_connection_id, enabled, delegatable, is_system_default, created_at, updated_at) VALUES (?, ?, ?, '1.0.0', 'external-cli', ?, 1, 1, 0, ?, ?)`)
           .run(profileId, this.state.name, `custom.${this.state.adapterType}`, id, now, now);
         this.logger.info({ profileId, connectionId: id }, 'AgentConnectionService.save created profile for new connection');
       }
