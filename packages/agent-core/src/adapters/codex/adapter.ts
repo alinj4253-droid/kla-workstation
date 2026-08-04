@@ -81,7 +81,7 @@ export class CodexCliAdapter implements ExternalAgentAdapter {
     spec: { executable: string; args: string[]; cwd: string; env: Record<string, string>; shell: boolean; stdin?: Uint8Array },
     signal: AbortSignal,
     sink?: AgentEventSink,
-    timeoutMs = 15_000,
+    timeoutMs = 4 * 60 * 60 * 1_000,
   ): Promise<ExternalRunResult> {
     const start = Date.now();
     return new Promise((resolve) => {

@@ -10,6 +10,47 @@ export interface DelegatableAgentInfo {
   runtimeMode: string;
 }
 
+export type BusinessProcessActionType =
+  | 'research'
+  | 'acquire'
+  | 'calculate'
+  | 'analyze'
+  | 'synthesize'
+  | 'validate'
+  | 'deliver'
+  | 'other';
+
+export type BusinessProcessStep = {
+  id: string;
+  title: string;
+  actionType: BusinessProcessActionType;
+  description?: string;
+  inputs?: string[];
+  outputs?: string[];
+  owner?: string;
+};
+
+export type BusinessProcessStage = {
+  id: string;
+  title: string;
+  objective?: string;
+  owner?: string;
+  steps: BusinessProcessStep[];
+};
+
+export type BusinessProcess = {
+  schemaVersion: 1;
+  applicable: boolean;
+  reason?: string;
+  title: string;
+  summary?: string;
+  generatedByAgentId: string;
+  generatedByAgentName: string;
+  generatedAt: string;
+  knowledgeDocumentPath?: string;
+  stages: BusinessProcessStage[];
+};
+
 export interface CLIDelegation {
   agentInstanceId: string;
   agentName: string;
@@ -80,6 +121,17 @@ export interface IGraphContext {
 
     insertMessage(projectId: string, senderId: string, kind: string, contentJson: string): Promise<string>;
 
+    sendDelegationMessage(input: {
+      projectId: string;
+      senderId: string;
+      parentRunId: string;
+      rootTriggerMessageId: string;
+      targetAgentInstanceId: string;
+      targetAgentName: string;
+      instruction: string;
+      visibleInstruction?: string;
+    }): Promise<{ messageId: string; childRunIds: string[] }>;
+
     setRunStatus(runId: string, status: string, error?: { errorCode?: string; errorMessage?: string }): void;
 
     setResultMessage(runId: string, messageId: string): void;
@@ -91,6 +143,8 @@ export interface IGraphContext {
     getParentRunId(runId: string): string | null;
 
     getRunAgentInstanceId(runId: string): string | null;
+
+    getAgentDisplayName(agentInstanceId: string): string | null;
 
     createSubRun(input: CreateSubRunInput): string;
 
@@ -141,6 +195,7 @@ export interface OrchestratorGraphState {
   needsKnowledgeManager: boolean;
   needsCLIDelegation: boolean;
   cliDelegations: CLIDelegation[];
+  knowledgeCurated: boolean;
   artifacts: Array<{ relativePath: string; content: string }>;
 }
 

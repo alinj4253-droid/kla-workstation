@@ -2,7 +2,7 @@ import type { Database } from 'better-sqlite3';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
-import { streamText, generateText, generateObject, type LanguageModel } from 'ai';
+import { streamText, generateText, generateObject, jsonSchema, type LanguageModel } from 'ai';
 import { safeStorage } from 'electron';
 import { z } from 'zod';
 import type pino from 'pino';
@@ -14,6 +14,38 @@ export type { ModelSlot, ModelCapability, ModelMessage };
 export { BUILTIN_AGENT_REQUIREMENTS, validateModelForAgent, noModelError };
 
 type ProviderSettings = { providerType: string; baseUrl?: string; modelId: string; apiKey?: string };
+type GatewayToolDefinition = { description: string; parameters: Record<string, unknown> };
+
+export function normalizeModelTools(
+  definitions: Record<string, GatewayToolDefinition> | undefined,
+): {
+  tools: Record<string, { description: string; inputSchema: ReturnType<typeof jsonSchema> }> | undefined;
+  internalNameByProviderName: Map<string, string>;
+} {
+  if (!definitions || Object.keys(definitions).length === 0) {
+    return { tools: undefined, internalNameByProviderName: new Map() };
+  }
+
+  const tools: Record<string, { description: string; inputSchema: ReturnType<typeof jsonSchema> }> = {};
+  const internalNameByProviderName = new Map<string, string>();
+
+  for (const [internalName, definition] of Object.entries(definitions)) {
+    const normalizedBase = internalName.replace(/[^a-zA-Z0-9_-]/g, '_') || 'tool';
+    let providerName = normalizedBase.slice(0, 64);
+    let suffix = 2;
+    while (internalNameByProviderName.has(providerName)) {
+      const suffixText = `_${suffix++}`;
+      providerName = `${normalizedBase.slice(0, 64 - suffixText.length)}${suffixText}`;
+    }
+    internalNameByProviderName.set(providerName, internalName);
+    tools[providerName] = {
+      description: definition.description,
+      inputSchema: jsonSchema(definition.parameters),
+    };
+  }
+
+  return { tools, internalNameByProviderName };
+}
 
 function stripUndefined<T extends Record<string, unknown>>(obj: T): { [K in keyof T as T[K] extends undefined ? never : K]: T[K] } {
   const result = { ...obj } as Record<string, unknown>;
@@ -47,6 +79,32 @@ export class ModelGateway {
 
   constructor(protected db: Database) {
     this.logger = getLogger();
+  }
+
+  private recordTokenUsage(usage: unknown): void {
+    if (!usage || typeof usage !== 'object') return;
+    const row = usage as Record<string, unknown>;
+    const numeric = (value: unknown): number => typeof value === 'number' && Number.isFinite(value) ? value : 0;
+    const total = numeric(row.totalTokens)
+      || numeric(row.totalTokenCount)
+      || numeric(row.inputTokens) + numeric(row.outputTokens)
+      || numeric(row.promptTokens) + numeric(row.completionTokens);
+    if (total <= 0) return;
+    try {
+      const current = this.db.prepare('SELECT value_json as valueJson FROM settings WHERE key = ?').get('tokenUsageTotal') as { valueJson: string } | undefined;
+      let previous = 0;
+      try {
+        const parsed = JSON.parse(current?.valueJson ?? '{}') as { value?: unknown };
+        previous = numeric(parsed.value);
+      } catch { /* start from zero */ }
+      const now = new Date().toISOString();
+      this.db.prepare(
+        `INSERT INTO settings (key, value_json, updated_at) VALUES ('tokenUsageTotal', ?, ?)
+         ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`,
+      ).run(JSON.stringify({ value: previous + total }), now);
+    } catch {
+      // Lightweight test databases may not include the settings table.
+    }
   }
 
   private getSlotProfile(slot: ModelSlot): ProviderSettings | null {
@@ -102,15 +160,20 @@ export class ModelGateway {
     this.logger.info({ slot, modelId: profile.modelId, providerType: profile.providerType, msgCount: messages.length }, 'ModelGateway.generateText');
     const provider = this.buildProvider(profile);
     const { system: sys } = options ?? {};
+    const normalizedTools = normalizeModelTools(options?.tools);
     const result = await generateText({
       model: provider(profile.modelId),
       messages,
       ...(sys !== undefined ? { system: sys } : {}),
-      tools: options?.tools as any,
+      ...(normalizedTools.tools ? { tools: normalizedTools.tools } : {}),
     });
+    this.recordTokenUsage(result.usage);
     return {
       text: result.text,
-      toolCalls: result.toolCalls?.map((tc) => ({ name: tc.toolName, args: tc.input as Record<string, unknown> })),
+      toolCalls: result.toolCalls?.map((tc) => ({
+        name: normalizedTools.internalNameByProviderName.get(tc.toolName) ?? tc.toolName,
+        args: tc.input as Record<string, unknown>,
+      })),
     };
   }
 
@@ -126,6 +189,7 @@ export class ModelGateway {
       ...(system !== undefined ? { system } : {}),
       output: 'no-schema',
     } as never);
+    this.recordTokenUsage((result as { usage?: unknown }).usage);
     return result.object as T;
   }
 

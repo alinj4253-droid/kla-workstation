@@ -147,7 +147,7 @@ export function createProjectTools(db: Database.Database, scheduler?: Scheduler)
              WHERE pai.project_id = ? AND ap.enabled = 1 ORDER BY pai.ordinal`,
           ).all(projectId) as Array<{ id: string; name: string; role: string; definitionId: string }>;
           if (agents.length === 0) return '该项目无可用的智能体';
-          return agents.map((a) => `- ${a.name} (${a.role}, ${a.definitionId})`).join('\n');
+          return agents.map((a) => `- @${a.name}（instanceId: ${a.id}，${a.role}，${a.definitionId}）`).join('\n');
         } catch (err) {
           return `查询错误: ${err instanceof Error ? err.message : String(err)}`;
         }
@@ -219,9 +219,10 @@ export function createProjectTools(db: Database.Database, scheduler?: Scheduler)
             projectId,
             agentInstanceId,
             requestedByType: 'agent',
-            requestedById: parentRunId,
+            requestedById: ancestorChain[0]?.agentInstanceId ?? parentRunId,
             instruction,
             parentRunId,
+            ...(triggerMessageId ? { triggerMessageId } : {}),
             modelProfileSnapshotJson: buildModelProfileSnapshot(db, agentInstanceId),
           });
           runRepo.addEvent(parentRunId, 'delegate', {
@@ -420,7 +421,7 @@ export function registerProjectTools(registry: ToolRegistry, db: Database.Databa
              WHERE pai.project_id = ? AND ap.enabled = 1 ORDER BY pai.ordinal`,
           ).all(projectId) as Array<{ id: string; name: string; role: string; definitionId: string }>;
           if (agents.length === 0) return '该项目无可用的智能体';
-          return agents.map((a) => `- ${a.name} (${a.role}, ${a.definitionId})`).join('\n');
+          return agents.map((a) => `- @${a.name}（instanceId: ${a.id}，${a.role}，${a.definitionId}）`).join('\n');
         } catch (err) {
           return `查询错误: ${err instanceof Error ? err.message : String(err)}`;
         }
@@ -493,9 +494,10 @@ export function registerProjectTools(registry: ToolRegistry, db: Database.Databa
             projectId,
             agentInstanceId,
             requestedByType: 'agent',
-            requestedById: parentRunId,
+            requestedById: ancestorChain[0]?.agentInstanceId ?? parentRunId,
             instruction,
             parentRunId,
+            ...(triggerMessageId ? { triggerMessageId } : {}),
             modelProfileSnapshotJson: buildModelProfileSnapshot(db, agentInstanceId),
           });
           runRepo.addEvent(parentRunId, 'delegate', {
@@ -534,7 +536,7 @@ export function registerProjectTools(registry: ToolRegistry, db: Database.Databa
         required: ['projectId', 'relativePath', 'content'],
       },
       requiredCapabilities: ['write:output'],
-      allowedPathPrefixes: ['outputs/', 'docs/', 'reports/', 'plans/', 'notes/'],
+      allowedPathPrefixes: ['outputs/'],
       maxContentLength: 50000,
       async execute(args) {
         const { projectId, relativePath, content, note } = args as {

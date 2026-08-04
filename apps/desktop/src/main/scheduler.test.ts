@@ -192,7 +192,7 @@ describe('Scheduler', () => {
     }
 
     await new Promise((r) => setTimeout(r, 50));
-    expect(peak).toBeLessThanOrEqual(4);
+    expect(peak).toBeLessThanOrEqual(12);
   });
 
   it('handles executor errors gracefully', async () => {
@@ -204,5 +204,27 @@ describe('Scheduler', () => {
     const row = db.prepare('SELECT status, error_code, error_message FROM agent_runs WHERE id = ?').get('run-1') as { status: string; error_code: string | null; error_message: string | null };
     expect(row.error_code).toBe('RUNTIME_ERROR');
     expect(row.error_message).toContain('executor failed');
+  });
+
+  it('allows a task to run for four hours before timing it out', async () => {
+    vi.useFakeTimers();
+    try {
+      executor.mockImplementation((_run: unknown, signal: AbortSignal) => new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      }));
+      createRunInDb(db, { id: 'run-timeout', projectId: 'proj-1', agentInstanceId: 'agent-timeout' });
+      scheduler.enqueue(makeRun({ runId: 'run-timeout', agentInstanceId: 'agent-timeout' }));
+
+      await vi.advanceTimersByTimeAsync((4 * 60 * 60 * 1_000) - 1);
+      expect((db.prepare('SELECT status FROM agent_runs WHERE id = ?').get('run-timeout') as { status: string }).status).toBe('running');
+
+      await vi.advanceTimersByTimeAsync(1);
+      await vi.runAllTicks();
+      const row = db.prepare('SELECT status, error_code FROM agent_runs WHERE id = ?').get('run-timeout') as { status: string; error_code: string | null };
+      expect(row.status).toBe('failed');
+      expect(row.error_code).toBe('RUN_TIMEOUT');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

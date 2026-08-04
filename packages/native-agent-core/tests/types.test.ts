@@ -27,6 +27,7 @@ describe('IGraphContext interface', () => {
         insertMessage(_projectId, _senderId, _kind, _contentJson) {
           return Promise.resolve('msg-id');
         },
+        sendDelegationMessage() { return Promise.resolve({ messageId: 'delegation-msg', childRunIds: ['sub-run-id'] }); },
         setRunStatus(_runId, _status, _error?) {},
         setResultMessage(_runId, _messageId) {},
         addRunEvent(_runId, _type, _payload) {},
@@ -39,6 +40,7 @@ describe('IGraphContext interface', () => {
         getRunAgentInstanceId(_runId) {
           return null;
         },
+        getAgentDisplayName() { return null; },
         createSubRun(_input) {
           return 'sub-run-id';
         },
@@ -99,12 +101,14 @@ describe('IGraphContext interface', () => {
         executeTool() { return Promise.resolve('ok'); },
         createFileRecord() { return Promise.resolve(); },
         insertMessage() { return Promise.resolve('msg-id'); },
+        sendDelegationMessage() { return Promise.resolve({ messageId: 'delegation-msg', childRunIds: ['sub-id'] }); },
         setRunStatus() {},
         setResultMessage() {},
         addRunEvent() {},
         getRunStatus() { return { status: 'completed' }; },
         getParentRunId() { return null; },
         getRunAgentInstanceId() { return null; },
+        getAgentDisplayName() { return null; },
         createSubRun() { return 'sub-id'; },
         enqueueRun() {},
         emitEvent() {},

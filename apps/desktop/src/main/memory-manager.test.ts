@@ -1,132 +1,92 @@
-// @vitest-environment node
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { MemoryManager } from './memory-manager';
+import { setStudioRoot } from './paths';
 
-function createDb(): Database.Database {
-  const db = new Database(':memory:');
-  db.exec(`
-    CREATE TABLE memory_records (
-      id TEXT PRIMARY KEY,
-      project_id TEXT NOT NULL,
-      agent_instance_id TEXT NOT NULL,
-      scope TEXT NOT NULL DEFAULT 'short-term',
-      type TEXT NOT NULL DEFAULT 'interaction',
-      content TEXT NOT NULL,
-      confidence REAL NOT NULL DEFAULT 1.0,
-      source_refs_json TEXT,
-      status TEXT NOT NULL DEFAULT 'active',
-      expires_at TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-    CREATE INDEX idx_memory_lookup ON memory_records(project_id, agent_instance_id);
-  `);
-  return db;
-}
-
-function insertRecord(
-  db: Database.Database,
-  overrides: { projectId: string; agentInstanceId: string; scope?: string; type?: string; content: string; confidence?: number; status?: string; sourceRefsJson?: string | null },
-) {
-  const id = `mem-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-  const now = new Date().toISOString();
-  db.prepare(
-    `INSERT INTO memory_records (id, project_id, agent_instance_id, scope, type, content, confidence, source_refs_json, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
-  ).run(
-    id, overrides.projectId, overrides.agentInstanceId,
-    overrides.scope ?? 'short-term', overrides.type ?? 'fact',
-    overrides.content, overrides.confidence ?? 1.0,
-    overrides.sourceRefsJson ?? null, now, now,
-  );
-}
-
-describe('MemoryManager', () => {
+describe('conversation memory manager', () => {
   let db: Database.Database;
-  let manager: MemoryManager;
+  let studioRoot: string;
+  let memory: MemoryManager;
 
-  beforeEach(() => {
-    db = createDb();
-    manager = new MemoryManager(db);
+  beforeEach(async () => {
+    studioRoot = await mkdtemp(join(tmpdir(), 'kunqing-memory-'));
+    setStudioRoot(studioRoot);
+    db = new Database(':memory:');
+    db.exec(`
+      CREATE TABLE memory_records (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        agent_instance_id TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        type TEXT NOT NULL,
+        content TEXT NOT NULL,
+        confidence REAL NOT NULL,
+        source_refs_json TEXT,
+        status TEXT NOT NULL,
+        expires_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE project_agent_instances (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        ordinal INTEGER NOT NULL
+      );
+      INSERT INTO project_agent_instances (id, project_id, role, ordinal)
+      VALUES ('leader-1', 'project-1', 'leader', 0), ('worker-1', 'project-1', 'member', 1);
+    `);
+    memory = new MemoryManager(db);
   });
 
-  it('stores and retrieves short-term memories', () => {
-    manager.storeShortTerm('proj-1', 'agent-1', 'interaction', '用户询问了项目进度');
-    const ctx = manager.buildMemoryContext('proj-1', 'agent-1');
-    expect(ctx).toContain('用户询问了项目进度');
+  afterEach(async () => {
+    db.close();
+    setStudioRoot('');
+    await rm(studioRoot, { recursive: true, force: true });
   });
 
-  it('returns empty context when no memories', () => {
-    const ctx = manager.buildMemoryContext('proj-1', 'agent-1');
-    expect(ctx).toBe('');
+  it('captures a task closure and mirrors it into the agent memory folder', async () => {
+    await memory.captureTurn({
+      projectId: 'project-1',
+      agentInstanceId: 'worker-1',
+      triggerMessageId: 'message-1',
+      runId: 'run-1',
+      request: JSON.stringify({ text: '制作项目首页' }),
+      result: '首页已完成并通过验收。',
+      artifacts: ['outputs/home.html'],
+    });
+
+    const record = db.prepare(`SELECT scope, type, content FROM memory_records WHERE agent_instance_id = 'worker-1'`).get() as { scope: string; type: string; content: string };
+    expect(record.scope).toBe('short-term');
+    expect(record.type).toBe('task-summary');
+    expect(record.content).toContain('用户目标：制作项目首页');
+    expect(record.content).toContain('成果文件：outputs/home.html');
+
+    const current = await readFile(join(studioRoot, 'group-chats', 'project-1-workspace', 'agent-memories', 'worker-1', 'short-term', 'current.md'), 'utf8');
+    const session = await readFile(join(studioRoot, 'group-chats', 'project-1-workspace', 'agent-memories', 'worker-1', 'sessions', 'message-1-run-1.md'), 'utf8');
+    expect(current).toContain('首页已完成并通过验收');
+    expect(session).toContain('triggerMessageId: message-1');
   });
 
-  it('includes both short-term and long-term in context', () => {
-    insertRecord(db, { projectId: 'proj-1', agentInstanceId: 'agent-1', scope: 'long-term', type: 'fact', content: '项目截止日期是下周五' });
-    insertRecord(db, { projectId: 'proj-1', agentInstanceId: 'agent-1', scope: 'short-term', type: 'interaction', content: '用户同意方案A' });
+  it('stores explicit remember instructions as private copies for every agent and can forget all copies', async () => {
+    await memory.applyUserDirective('project-1', '请记住：所有数据只能保存在本地 K_Studio。', 'message-2');
 
-    const ctx = manager.buildMemoryContext('proj-1', 'agent-1');
-    expect(ctx).toContain('项目截止日期是下周五');
-    expect(ctx).toContain('用户同意方案A');
-  });
+    const remembered = db.prepare(`SELECT agent_instance_id as agentId, scope, type, content, source_refs_json as refs FROM memory_records WHERE status = 'active' ORDER BY agent_instance_id`).all() as Array<{ agentId: string; scope: string; type: string; content: string; refs: string }>;
+    expect(remembered).toHaveLength(2);
+    expect(remembered.map((item) => item.agentId)).toEqual(['leader-1', 'worker-1']);
+    expect(remembered.every((item) => item.scope === 'long-term' && item.type === 'project-constraint')).toBe(true);
+    expect(remembered.every((item) => item.refs.includes('"visibility":"agent"'))).toBe(true);
 
-  it('consolidates short-term memories when threshold exceeded', () => {
-    for (let i = 0; i < 12; i++) {
-      manager.storeShortTerm('proj-1', 'agent-1', 'progress', `进度更新 ${i}: 完成了任务${i}`);
-    }
-    const consolidated = manager.consolidateShortTerm('proj-1', 'agent-1');
-    expect(consolidated).toBeGreaterThanOrEqual(1);
+    const leaderSummary = await readFile(join(studioRoot, 'group-chats', 'project-1-workspace', 'agent-memories', 'leader-1', 'long-term', 'summary.md'), 'utf8');
+    const workerSummary = await readFile(join(studioRoot, 'group-chats', 'project-1-workspace', 'agent-memories', 'worker-1', 'long-term', 'summary.md'), 'utf8');
+    expect(leaderSummary).toContain('所有数据只能保存在本地 K_Studio');
+    expect(workerSummary).toContain('所有数据只能保存在本地 K_Studio');
 
-    const active = db.prepare(
-      "SELECT * FROM memory_records WHERE project_id = 'proj-1' AND agent_instance_id = 'agent-1' AND status = 'active'",
-    ).all() as Array<{ type: string; content: string }>;
-    const mergedRecords = active.filter((r) => r.type.startsWith('merged:'));
-    expect(mergedRecords.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it('extracts high-confidence short-term to long-term', () => {
-    insertRecord(db, { projectId: 'proj-1', agentInstanceId: 'agent-1', type: 'fact', content: '重要知识：系统使用Node.js开发', confidence: 0.85 });
-    insertRecord(db, { projectId: 'proj-1', agentInstanceId: 'agent-1', type: 'fact', content: '不重要知识：今天天气不错', confidence: 0.3 });
-
-    const extracted = manager.extractLongTerm('proj-1', 'agent-1');
-    expect(extracted).toBe(1);
-
-    const longTerm = db.prepare(
-      "SELECT * FROM memory_records WHERE project_id = 'proj-1' AND agent_instance_id = 'agent-1' AND scope = 'long-term'",
-    ).all();
-    expect(longTerm).toHaveLength(1);
-    expect((longTerm[0] as { content: string }).content).toContain('Node.js');
-  });
-
-  it('recalls relevant memories by keyword matching', () => {
-    insertRecord(db, { projectId: 'proj-1', agentInstanceId: 'agent-1', scope: 'long-term', type: 'fact', content: '数据库使用 SQLite' });
-    insertRecord(db, { projectId: 'proj-1', agentInstanceId: 'agent-1', scope: 'short-term', type: 'interaction', content: '前端框架使用 React' });
-
-    const results = manager.recallRelevant('数据库', 'proj-1', 'agent-1');
-    expect(results).toHaveLength(1);
-    expect(results[0]).toContain('SQLite');
-  });
-
-  it('returns empty array when no keywords match', () => {
-    manager.storeShortTerm('proj-1', 'agent-1', 'test', 'something unrelated');
-    const results = manager.recallRelevant('nonexistent', 'proj-1', 'agent-1');
-    expect(results).toHaveLength(0);
-  });
-
-  it('prevents duplicate long-term extraction', () => {
-    insertRecord(db, { projectId: 'proj-1', agentInstanceId: 'agent-1', type: 'fact', content: '重要知识：使用TypeScript', confidence: 0.9 });
-
-    manager.extractLongTerm('proj-1', 'agent-1');
-    const first = manager.extractLongTerm('proj-1', 'agent-1');
-    expect(first).toBe(0);
-  });
-
-  it('does not consolidate when below threshold', () => {
-    for (let i = 0; i < 5; i++) {
-      manager.storeShortTerm('proj-1', 'agent-1', 'test', `memory ${i}`);
-    }
-    const result = manager.consolidateShortTerm('proj-1', 'agent-1');
-    expect(result).toBe(0);
+    await memory.applyUserDirective('project-1', '忘记：所有数据只能保存在本地 K_Studio。', 'message-3');
+    const forgotten = db.prepare(`SELECT status FROM memory_records ORDER BY agent_instance_id`).all() as Array<{ status: string }>;
+    expect(forgotten.every((item) => item.status === 'deleted')).toBe(true);
   });
 });

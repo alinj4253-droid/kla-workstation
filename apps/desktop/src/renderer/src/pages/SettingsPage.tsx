@@ -44,12 +44,41 @@ import {
   Zap,
 } from 'lucide-react';
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
-import { NavLink, Navigate, Route, Routes } from 'react-router-dom';
+import { NavLink, Navigate, Route, Routes, useNavigate } from 'react-router-dom';
 
 const secondaryNavClass = ({ isActive }: { isActive: boolean }): string => `settings-nav-link${isActive ? ' settings-nav-link--active' : ''}`;
+const OPERATIONS_SESSION_KEY = 'kunqing.operationsAccess';
+const OPERATIONS_ACCESS_KEY = '123456';
 
 export function SettingsPage(): React.JSX.Element {
+  const navigate = useNavigate();
+  const [operationsLoginOpen, setOperationsLoginOpen] = useState(false);
+  const [operationsKey, setOperationsKey] = useState('');
+  const [operationsLoginError, setOperationsLoginError] = useState('');
+
+  const openOperations = (): void => {
+    if (window.sessionStorage.getItem(OPERATIONS_SESSION_KEY) === 'granted') {
+      navigate('/settings/operations');
+      return;
+    }
+    setOperationsKey('');
+    setOperationsLoginError('');
+    setOperationsLoginOpen(true);
+  };
+
+  const verifyOperationsAccess = (event: FormEvent): void => {
+    event.preventDefault();
+    if (operationsKey !== OPERATIONS_ACCESS_KEY) {
+      setOperationsLoginError('运维权限密钥错误');
+      return;
+    }
+    window.sessionStorage.setItem(OPERATIONS_SESSION_KEY, 'granted');
+    setOperationsLoginOpen(false);
+    navigate('/settings/operations');
+  };
+
   return (
+    <>
     <div className="settings-layout">
       <aside className="settings-sidebar">
         <p>AI 核心</p>
@@ -60,8 +89,15 @@ export function SettingsPage(): React.JSX.Element {
           <button className="settings-nav-link settings-nav-link--disabled" type="button" disabled title="即将上线"><Cpu size={17} /><span>算力</span><em>即将上线</em></button>
         </nav>
         <hr className="settings-sidebar-divider" />
+        <p>AI 生产力</p>
+        <nav aria-label="AI 生产力设置">
+          <NavLink to="/settings/skills" className={secondaryNavClass}><Puzzle size={17} /><span>技能</span></NavLink>
+          <NavLink to="/settings/tools" className={secondaryNavClass}><Wrench size={17} /><span>工具</span></NavLink>
+        </nav>
+        <hr className="settings-sidebar-divider" />
         <p>扩展设置</p>
         <nav aria-label="扩展设置">
+          <NavLink to="/settings/operations" className={secondaryNavClass} onClick={(event) => { event.preventDefault(); openOperations(); }}><ShieldCheck size={17} /><span>运维管理</span></NavLink>
           <button className="settings-nav-link settings-nav-link--disabled" type="button" disabled title="延后"><Settings2 size={17} /><span>K_Studio</span><em>延后</em></button>
           <button className="settings-nav-link settings-nav-link--disabled" type="button" disabled title="延后"><Sun size={17} /><span>外观</span><em>延后</em></button>
           <button className="settings-nav-link settings-nav-link--disabled" type="button" disabled title="延后"><Server size={17} /><span>系统</span><em>延后</em></button>
@@ -74,6 +110,9 @@ export function SettingsPage(): React.JSX.Element {
           <Route path="agents" element={<AgentsSettings />} />
           <Route path="models" element={<ModelsSettings />} />
           <Route path="channels" element={<ChannelsSettings />} />
+          <Route path="skills" element={<EmptySettingsPage label="技能设置页面" />} />
+          <Route path="tools" element={<EmptySettingsPage label="工具设置页面" />} />
+          <Route path="operations" element={<OperationsProtectedRoute />} />
           <Route path="kstudio" element={<KStudioSettings />} />
           <Route path="appearance" element={<AppearanceSettings />} />
           <Route path="system" element={<SystemSettings />} />
@@ -82,11 +121,135 @@ export function SettingsPage(): React.JSX.Element {
         </Routes>
       </section>
     </div>
+    {operationsLoginOpen && (
+      <div className="modal-backdrop modal-backdrop--nested" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setOperationsLoginOpen(false)}>
+        <form className="operations-login-dialog" role="dialog" aria-modal="true" aria-labelledby="operations-login-title" onSubmit={verifyOperationsAccess}>
+          <button type="button" className="icon-button operations-login-dialog__close" aria-label="关闭" onClick={() => setOperationsLoginOpen(false)}><X size={18} /></button>
+          <span className="operations-login-dialog__icon"><Key size={22} /></span>
+          <h2 id="operations-login-title">运维权限验证</h2>
+          <p>请输入运维权限密钥后进入部署与授权配置。</p>
+          <label>
+            <span>运维权限密钥</span>
+            <input autoFocus type="password" value={operationsKey} onChange={(event) => { setOperationsKey(event.target.value); setOperationsLoginError(''); }} placeholder="请输入密钥" />
+            {operationsLoginError && <small>{operationsLoginError}</small>}
+          </label>
+          <button type="submit" className="primary-button">验证并进入</button>
+        </form>
+      </div>
+    )}
+    </>
   );
 }
 
 function SettingsHeading({ title, description, action }: { title: string; description: string; action?: React.ReactNode }): React.JSX.Element {
   return <header className="settings-heading"><div><h2>{title}</h2><p>{description}</p></div>{action}</header>;
+}
+
+function EmptySettingsPage({ label }: { label: string }): React.JSX.Element {
+  return <div className="settings-empty-page" aria-label={label} />;
+}
+
+function OperationsProtectedRoute(): React.JSX.Element {
+  return window.sessionStorage.getItem(OPERATIONS_SESSION_KEY) === 'granted'
+    ? <OperationsSettings />
+    : <Navigate to="/settings/agents" replace />;
+}
+
+type DeploymentMode = 'saas' | 'private';
+
+function defaultActivationDate(): string {
+  const date = new Date();
+  date.setFullYear(date.getFullYear() + 1);
+  return date.toISOString().slice(0, 10);
+}
+
+function OperationsSettings(): React.JSX.Element {
+  const [mode, setMode] = useState<DeploymentMode>('saas');
+  const [availableTokens, setAvailableTokens] = useState('1000000');
+  const [activationExpiresAt, setActivationExpiresAt] = useState(defaultActivationDate);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState('');
+
+  useEffect(() => {
+    (async (): Promise<void> => {
+      try {
+        const result = await window.kunqing?.settings.getAll() as { ok: boolean; data?: Record<string, unknown> } | undefined;
+        const data = result?.data ?? {};
+        if (data.deploymentMode === 'saas' || data.deploymentMode === 'private') setMode(data.deploymentMode);
+        const tokenValue = Number(data.operationsAvailableTokens);
+        if (Number.isFinite(tokenValue) && tokenValue >= 0) setAvailableTokens(String(Math.floor(tokenValue)));
+        if (typeof data.operationsActivationExpiresAt === 'string' && data.operationsActivationExpiresAt) setActivationExpiresAt(data.operationsActivationExpiresAt);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  const saveOperationsSettings = async (): Promise<void> => {
+    const tokenValue = Math.max(0, Math.floor(Number(availableTokens) || 0));
+    if (mode === 'private' && !activationExpiresAt) {
+      setNotice('请选择产品激活有效期');
+      return;
+    }
+    setSaving(true);
+    setNotice('');
+    const result = await window.kunqing?.settings.update({
+      deploymentMode: mode,
+      operationsAvailableTokens: tokenValue,
+      operationsActivationExpiresAt: activationExpiresAt,
+    }) as { ok: boolean } | undefined;
+    setSaving(false);
+    setNotice(result?.ok ? '运维配置已保存到当前 K_Studio' : '保存失败，请稍后重试');
+  };
+
+  return (
+    <div className="settings-page operations-settings-page">
+      <div className="operations-brand">
+        <span><ShieldCheck size={28} /></span>
+        <h2>运维管理</h2>
+        <p>选择产品交付方式并维护本地授权参数</p>
+      </div>
+
+      {loading ? <div className="settings-loading"><Loader2 size={20} className="spin" /> 加载运维配置...</div> : (
+        <>
+          <div className="operations-deployment-cards" role="radiogroup" aria-label="部署版本">
+            <button type="button" role="radio" aria-checked={mode === 'saas'} className={`operations-deployment-card${mode === 'saas' ? ' operations-deployment-card--selected' : ''}`} onClick={() => { setMode('saas'); setNotice(''); }}>
+              <span><Globe size={23} /></span>
+              <strong>SaaS 版本</strong>
+              <p>由平台提供模型额度，运维人员可以调整当前工作站的可用 Token。</p>
+              {mode === 'saas' && <CheckCircle2 size={18} className="operations-deployment-card__check" />}
+            </button>
+            <button type="button" role="radio" aria-checked={mode === 'private'} className={`operations-deployment-card${mode === 'private' ? ' operations-deployment-card--selected' : ''}`} onClick={() => { setMode('private'); setNotice(''); }}>
+              <span><Server size={23} /></span>
+              <strong>私有化部署版本</strong>
+              <p>模型和数据均在私有环境运行，运维人员可以维护产品激活有效期。</p>
+              {mode === 'private' && <CheckCircle2 size={18} className="operations-deployment-card__check" />}
+            </button>
+          </div>
+
+          <section className="operations-config-panel">
+            <header><div><strong>{mode === 'saas' ? 'SaaS 额度配置' : '私有化授权配置'}</strong><span>{mode === 'saas' ? '调整后将作为当前工作站的 Token 可用额度。' : '当前仅保存有效期，激活校验机制将在后续版本接入。'}</span></div>{mode === 'saas' ? <Gauge size={19} /> : <Key size={19} />}</header>
+            {mode === 'saas' ? (
+              <label className="operations-field">
+                <span>Token 总量</span>
+                <div><input type="number" min="0" step="1000" value={availableTokens} onChange={(event) => { setAvailableTokens(event.target.value); setNotice(''); }} /><small>Token</small></div>
+              </label>
+            ) : (
+              <label className="operations-field">
+                <span>产品激活有效期</span>
+                <div><input type="date" value={activationExpiresAt} onChange={(event) => { setActivationExpiresAt(event.target.value); setNotice(''); }} /></div>
+              </label>
+            )}
+            <footer>
+              {notice && <span className={notice.includes('失败') || notice.includes('请选择') ? 'operations-notice operations-notice--error' : 'operations-notice'}>{notice}</span>}
+              <button type="button" className="primary-button" disabled={saving} onClick={() => void saveOperationsSettings()}>{saving ? '保存中...' : '保存运维配置'}</button>
+            </footer>
+          </section>
+        </>
+      )}
+    </div>
+  );
 }
 
 interface AgentCardData {

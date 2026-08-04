@@ -1,9 +1,10 @@
 import { writeFile, mkdir } from 'node:fs/promises';
-import { join, dirname } from 'node:path';
+import { isAbsolute, join, dirname } from 'node:path';
 import type Database from 'better-sqlite3';
-import { ProjectRepository, SearchRepository, AgentRunRepository, FileRepository, MemoryRepository } from '@kunqing/database';
+import { ProjectRepository, SearchRepository, AgentRunRepository, FileRepository } from '@kunqing/database';
 import type { ProjectRow } from '@kunqing/database';
 import { getLogger } from './logger';
+import { getProjectRoot } from './paths';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -116,7 +117,6 @@ export class ContextBuilder {
   private searchRepo: SearchRepository;
   private runRepo: AgentRunRepository;
   private fileRepo: FileRepository;
-  private memoryRepo: MemoryRepository;
   private options: Required<ContextBuilderOptions>;
 
   constructor(db: Database.Database, options?: ContextBuilderOptions) {
@@ -125,7 +125,6 @@ export class ContextBuilder {
     this.searchRepo = new SearchRepository(db);
     this.runRepo = new AgentRunRepository(db);
     this.fileRepo = new FileRepository(db);
-    this.memoryRepo = new MemoryRepository(db);
     this.options = {
       recentMessageLimit: options?.recentMessageLimit ?? 30,
       knowledgeChunkLimit: options?.knowledgeChunkLimit ?? 10,
@@ -152,7 +151,7 @@ export class ContextBuilder {
       id: project.id,
       name: project.name,
       summary: project.summary ?? '',
-      sharedKnowledgeEnabled: project.sharedKnowledgeEnabled,
+      sharedKnowledgeEnabled: true,
     };
 
     // ── 当前智能体信息 ───────────────────────────────────────────────────
@@ -165,7 +164,10 @@ export class ContextBuilder {
     const { messages, rollingSummary } = this.buildMessages(projectId, triggerMessageId);
 
     // ── 记忆 ─────────────────────────────────────────────────────────────
-    const memory = this.buildMemory(projectId, agentInstanceId);
+    const recallQuery = messages.find((message) => message.id === triggerMessageId)?.content
+      ?? [...messages].reverse().find((message) => message.senderType === 'user')?.content
+      ?? '';
+    const memory = this.buildMemory(projectId, agentInstanceId, agent.role, recallQuery);
 
     // ── 引用文件 ─────────────────────────────────────────────────────────
     const referencedFiles = this.buildReferencedFiles(projectId, messages);
@@ -174,7 +176,7 @@ export class ContextBuilder {
     const parentRunResult = parentRunId ? this.buildParentRunResult(parentRunId) : null;
 
     // ── 知识片段 ─────────────────────────────────────────────────────────
-    const knowledgeChunks = this.buildKnowledgeChunks(projectId, project.sharedKnowledgeEnabled);
+    const knowledgeChunks = this.buildKnowledgeChunks(projectId, true);
 
     // ── 工作区规则 ───────────────────────────────────────────────────────
     const workspace = this.buildWorkspaceInfo(projectId);
@@ -260,13 +262,13 @@ export class ContextBuilder {
 
   private buildAgentInfo(agentInstanceId: string): ContextSnapshot['agent'] {
     const row = this.db.prepare(`
-      SELECT pai.id as instanceId, ap.name as profileName, pai.role, pai.definition_id as definitionId,
+      SELECT pai.id as instanceId, pai.project_id as projectId, ap.name as profileName, pai.role, pai.definition_id as definitionId,
              pai.identity_rel_path as identityRelPath, pai.effective_permissions_json as permissionsJson
       FROM project_agent_instances pai
       JOIN agent_profiles ap ON ap.id = pai.agent_profile_id
       WHERE pai.id = ?
     `).get(agentInstanceId) as {
-      instanceId: string; profileName: string; role: string;
+      instanceId: string; projectId: string; profileName: string; role: string;
       definitionId: string | null; identityRelPath: string | null; permissionsJson: string | null;
     } | undefined;
 
@@ -278,7 +280,14 @@ export class ContextBuilder {
     if (row.identityRelPath) {
       try {
         const fs = require('node:fs');
-        identity = fs.readFileSync(row.identityRelPath, 'utf-8').slice(0, 2000);
+        const identityPath = isAbsolute(row.identityRelPath)
+          ? row.identityRelPath
+          : join(getProjectRoot(row.projectId), row.identityRelPath);
+        const rolePath = join(dirname(identityPath), 'ROLE.md');
+        const identityText = fs.readFileSync(identityPath, 'utf-8');
+        let roleText = '';
+        try { roleText = fs.readFileSync(rolePath, 'utf-8'); } catch { /* legacy project without role card */ }
+        identity = `${identityText}\n\n${roleText}`.slice(0, 5_000);
       } catch {
         identity = null;
       }
@@ -371,18 +380,57 @@ export class ContextBuilder {
     return { messages, rollingSummary };
   }
 
-  private buildMemory(projectId: string, agentInstanceId: string): ContextSnapshot['memory'] {
-    const shortTerm = this.memoryRepo.list(projectId, agentInstanceId, 'short-term', 'active');
-    const longTerm = this.memoryRepo.list(projectId, agentInstanceId, 'long-term', 'active');
-
-    // 过滤过期短期记忆
-    const now = new Date().toISOString();
-    const validShort = shortTerm.filter((m) => !m.expiresAt || m.expiresAt > now);
-
-    return {
-      shortTerm: validShort.slice(0, 5).map((m) => `[${m.type}] ${m.content.slice(0, 300)}`),
-      longTerm: longTerm.slice(0, 3).map((m) => `[${m.type}] ${m.content.slice(0, 500)}`),
+  private buildMemory(projectId: string, agentInstanceId: string, role: string, query: string): ContextSnapshot['memory'] {
+    type RecallRow = {
+      id: string; agentInstanceId: string; agentName: string; scope: 'short-term' | 'long-term';
+      type: string; content: string; confidence: number; sourceRefsJson: string | null;
+      expiresAt: string | null; createdAt: string;
     };
+    const rows = this.db.prepare(`
+      SELECT mr.id, mr.agent_instance_id as agentInstanceId, ap.name as agentName, mr.scope, mr.type,
+             mr.content, mr.confidence, mr.source_refs_json as sourceRefsJson,
+             mr.expires_at as expiresAt, mr.created_at as createdAt
+      FROM memory_records mr
+      JOIN project_agent_instances pai ON pai.id = mr.agent_instance_id
+      JOIN agent_profiles ap ON ap.id = pai.agent_profile_id
+      WHERE mr.project_id = ? AND mr.status = 'active'
+        AND mr.agent_instance_id = ?
+      ORDER BY mr.created_at DESC
+      LIMIT 100
+    `).all(projectId, agentInstanceId) as RecallRow[];
+
+    const now = new Date().toISOString();
+    const valid = rows.filter((item) => item.scope === 'long-term' || !item.expiresAt || item.expiresAt > now);
+    const queryTokens = this.memoryQueryTokens(query);
+    const ranked = valid
+      .map((item, index) => {
+        const haystack = item.content.toLocaleLowerCase('zh-CN');
+        const keywordScore = queryTokens.reduce((score, token) => score + (haystack.includes(token) ? 1 : 0), 0);
+        const recencyScore = Math.max(0, 1 - index / Math.max(valid.length, 1));
+        const priority = item.type === 'project-constraint' ? 4 : item.scope === 'long-term' ? 2 : 0;
+        return { item, score: priority + keywordScore * 2 + recencyScore + item.confidence };
+      })
+      .sort((a, b) => b.score - a.score);
+
+    const shortTerm = ranked.filter(({ item }) => item.scope === 'short-term').slice(0, role === 'leader' ? 8 : 5);
+    const longTerm = ranked.filter(({ item }) => item.scope === 'long-term').slice(0, 8);
+    return {
+      shortTerm: shortTerm.map(({ item }) => `[${item.agentName} · ${item.type}] ${item.content.slice(0, 500)}`),
+      longTerm: longTerm.map(({ item }) => `[${item.type}] ${item.content.slice(0, 700)}`),
+    };
+  }
+
+  private memoryQueryTokens(query: string): string[] {
+    const normalizedQuery = query.toLocaleLowerCase('zh-CN').replace(/[\s，。！？、：；,.!?:;"'“”‘’（）()【】\[\]]+/g, '');
+    if (!normalizedQuery) return [];
+    const tokens = new Set<string>();
+    for (const part of query.toLocaleLowerCase('zh-CN').split(/[\s，。！？、：；,.!?:;"'“”‘’（）()【】\[\]]+/)) {
+      if (part.length >= 2) tokens.add(part.slice(0, 24));
+    }
+    for (let index = 0; index < normalizedQuery.length - 1 && tokens.size < 24; index += 2) {
+      tokens.add(normalizedQuery.slice(index, index + 2));
+    }
+    return [...tokens];
   }
 
   private buildReferencedFiles(projectId: string, messages: ContextSnapshot['messages']): ContextSnapshot['referencedFiles'] {

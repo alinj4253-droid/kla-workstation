@@ -14,12 +14,14 @@ import { checkVersionCompatibility } from './version-compatibility';
 import { getDatabase, runMigrations, backupDatabase, restoreDatabase, listBackups, deleteBackup } from './db';
 import { getLogger } from './logger';
 import { getProjectRoot, getStudioRoot, setStudioRoot } from './paths';
-import { createProject, safeFileName, seedDefaultProfiles, buildModelProfileSnapshot } from './project-creator';
+import { addProjectAgents, createProject, safeFileName, seedDefaultProfiles, buildModelProfileSnapshot, ensureProjectAgentFiles } from './project-creator';
 import { processMessageMentions } from './message-router';
+import { normalizeAgentMessageContent, sanitizeAgentDisplayText } from './agent-collaboration';
 import { ContextBuilder } from './context-builder';
 import { SkillRegistry } from './skill-registry';
 import { FileWatcher } from './file-watcher';
 import { startMemoryCleanup } from './memory-cleanup';
+import { MemoryManager as ConversationMemoryManager } from './memory-manager';
 import { ModelGateway } from './model-gateway';
 import { Scheduler } from './scheduler';
 import { createAgentExecutor } from './agent-executor';
@@ -762,13 +764,17 @@ const registerFileIpc = (db: ReturnType<typeof getDatabase>): void => {
   registerIpc('workspace:getPreview', async (_event, input: WorkspaceRequest) => {
     const st = input.scopeType ?? 'project';
     const sid = st === 'shared' ? 'shared-knowledge' : input.projectId;
-    const root = await getScopeRoot(input);
-    const target = resolveInside(root, input.relativePath);
+    const normalizedInputPath = normalizeRelativePath(input.relativePath).replaceAll('\\', '/');
+    const systemDirectories = ['agent-identities', 'agent-memories', 'knowledge', 'graph-visualization', 'outputs'];
+    const isProjectSystemFile = st === 'project'
+      && systemDirectories.some((directory) => normalizedInputPath === directory || normalizedInputPath.startsWith(`${directory}/`));
+    const root = isProjectSystemFile ? getProjectRoot(input.projectId) : await getScopeRoot(input);
+    const target = resolveInside(root, normalizedInputPath);
     await assertNoSymlink(target);
     const info = await lstat(target);
     if (!info.isFile()) return { ok: true, data: null };
     if (info.size > MAX_FILE_BYTES) return { ok: true, data: { error: '文件超出预览大小限制' } };
-    const dbRow = fileRepo.getByPath(st, sid, normalizeRelativePath(input.relativePath).replaceAll('\\', '/'));
+    const dbRow = fileRepo.getByPath(st, sid, normalizedInputPath);
     const fileId = dbRow?.id;
     const versionId = dbRow?.currentVersionId;
     const ext = basename(target).toLowerCase().split('.').pop() ?? '';
@@ -778,7 +784,10 @@ const registerFileIpc = (db: ReturnType<typeof getDatabase>): void => {
       const MAX_TEXT_BYTES = 10 * 1024 * 1024;
       let content = await readFile(target, { encoding: 'utf8', flag: 'r' });
       if (Buffer.byteLength(content, 'utf8') > MAX_TEXT_BYTES) return { ok: true, data: { error: '文本文件超出预览大小限制' } };
-      if (ext === 'html' || ext === 'htm') return { ok: true, data: { kind: 'html' as const, content, fileName: basename(target), size: info.size, fileId, versionId } };
+      if (ext === 'html' || ext === 'htm') {
+        const appFileUrl = fileId ? `app-file://preview/${fileId}/${encodeURIComponent(basename(target))}` : undefined;
+        return { ok: true, data: { kind: 'html' as const, content, appFileUrl, fileName: basename(target), size: info.size, fileId, versionId } };
+      }
       return { ok: true, data: { kind: 'text' as const, content, mimeType: ext === 'md' ? 'text/markdown' : 'text/plain', fileName: basename(target), size: info.size, fileId, versionId } };
     }
     if (imageExts.includes(ext)) {
@@ -933,22 +942,101 @@ const registerProjectIpc = (db: ReturnType<typeof getDatabase>): void => {
 const registerMessageIpc = (db: ReturnType<typeof getDatabase>): void => {
   const messageRepo = new MessageRepository(db);
   const runRepo = new AgentRunRepository(db);
+  const conversationMemory = new ConversationMemoryManager(db);
   registerIpc('messages:list', async (_event, input: { projectId: string; before?: string; limit?: number }) => {
     const data = messageRepo.listByProject(input.projectId, input.before, input.limit ?? 50);
     return { ok: true, data };
   });
+  registerIpc('messages:listRunActivity', async (_event, input: { projectId: string; limit?: number }) => {
+    const runs = runRepo.listByProject(input.projectId, Math.min(input.limit ?? 12, 30));
+    const data = runs.map((run) => {
+      const agent = db.prepare(
+        `SELECT ap.name FROM project_agent_instances pai JOIN agent_profiles ap ON ap.id = pai.agent_profile_id WHERE pai.id = ?`,
+      ).get(run.agentInstanceId) as { name: string } | undefined;
+      const runEvents = runRepo.listEvents(run.id);
+      const traces = runEvents
+        .filter((event) => event.type === 'run.trace' && event.payloadJson)
+        .map((event) => {
+          try { return JSON.parse(event.payloadJson!) as Record<string, unknown>; } catch { return null; }
+        })
+        .filter((event): event is Record<string, unknown> => event !== null)
+        .map((event) => ({
+          ...event,
+          ...(typeof event.title === 'string' ? { title: sanitizeAgentDisplayText(db, input.projectId, event.title) } : {}),
+          ...(typeof event.detail === 'string' ? { detail: sanitizeAgentDisplayText(db, input.projectId, event.detail) } : {}),
+        }));
+      const checklistEvent = [...runEvents].reverse().find((event) => event.type === 'run.checklist' && event.payloadJson);
+      const businessProcessEvent = [...runEvents].reverse().find((event) => event.type === 'run.business-process' && event.payloadJson);
+      const anchorEvent = [...runEvents].reverse().find((event) => event.type === 'run.anchor' && event.payloadJson);
+      let anchorMessageId = run.triggerMessageId;
+      if (anchorEvent?.payloadJson) {
+        try {
+          const anchor = JSON.parse(anchorEvent.payloadJson) as { messageId?: unknown };
+          if (typeof anchor.messageId === 'string' && anchor.messageId) anchorMessageId = anchor.messageId;
+        } catch { /* use trigger message fallback */ }
+      }
+      let checklist: Record<string, unknown> | null = null;
+      if (checklistEvent?.payloadJson) { try { checklist = JSON.parse(checklistEvent.payloadJson) as Record<string, unknown>; } catch { checklist = null; } }
+      if (checklist && Array.isArray(checklist.items)) {
+        checklist = {
+          ...checklist,
+          items: checklist.items.map((item) => {
+            if (!item || typeof item !== 'object') return item;
+            const row = item as Record<string, unknown>;
+            return {
+              ...row,
+              ...(typeof row.title === 'string' ? { title: sanitizeAgentDisplayText(db, input.projectId, row.title) } : {}),
+              ...(typeof row.detail === 'string' ? { detail: sanitizeAgentDisplayText(db, input.projectId, row.detail) } : {}),
+            };
+          }),
+        };
+      }
+      let businessProcess: Record<string, unknown> | null = null;
+      if (businessProcessEvent?.payloadJson) {
+        try { businessProcess = JSON.parse(businessProcessEvent.payloadJson) as Record<string, unknown>; } catch { businessProcess = null; }
+      }
+      return {
+        runId: run.id,
+        agentId: run.agentInstanceId,
+        agentName: agent?.name ?? '智能体',
+        anchorMessageId,
+        triggerMessageId: run.triggerMessageId ?? undefined,
+        parentRunId: run.parentRunId ?? undefined,
+        requestedByType: run.requestedByType,
+        requestedById: run.requestedById,
+        createdAt: run.createdAt,
+        status: run.status,
+        traces,
+        checklist,
+        businessProcess,
+        updatedAt: run.finishedAt ?? run.startedAt ?? run.createdAt,
+      };
+    });
+    return { ok: true, data };
+  });
   registerIpc('messages:send', async (_event, input: { idempotencyKey: string; projectId: string; content: { text?: string; mentions?: Array<{ target: { scope: string; id: string } }> } }) => {
-    const data = messageRepo.createUserMessage(input.projectId, JSON.stringify(input.content));
+    const confirmedContentJson = normalizeAgentMessageContent(
+      db,
+      input.projectId,
+      JSON.stringify(input.content),
+      [],
+      'local-user',
+    );
+    const confirmedContent = JSON.parse(confirmedContentJson) as typeof input.content;
+    const data = messageRepo.createUserMessage(input.projectId, confirmedContentJson);
+    if (input.content.text) {
+      await conversationMemory.applyUserDirective(input.projectId, input.content.text, data.id);
+    }
     if (_scheduler) {
-      const mentions = input.content?.mentions ?? [];
+      const mentions = confirmedContent.mentions ?? [];
       const instanceMentions = mentions.filter((m) => m.target.scope === 'instance');
 
       // 有 @mention 时路由到对应智能体
       if (instanceMentions.length > 0) {
         processMessageMentions(
           db, runRepo, _scheduler, input.projectId,
-          JSON.stringify(input.content), data.id,
-          'local-user', undefined, 'user',
+          confirmedContentJson, data.id,
+          'local-user', undefined, 'user', data.id,
         );
       } else {
         // 无 @mention 时自动触发统筹智能体处理（保持原有行为）
@@ -961,15 +1049,16 @@ const registerMessageIpc = (db: ReturnType<typeof getDatabase>): void => {
             agentInstanceId: leaderInstance.id,
             requestedByType: 'user',
             requestedById: 'local-user',
-            instruction: JSON.stringify(input.content),
+            instruction: confirmedContentJson,
             triggerMessageId: data.id,
             modelProfileSnapshotJson: buildModelProfileSnapshot(db, leaderInstance.id),
           });
+          runRepo.addEvent(run.id, 'run.anchor', { messageId: data.id });
           _scheduler.enqueue({
             runId: run.id,
             projectId: input.projectId,
             agentInstanceId: leaderInstance.id,
-            instruction: JSON.stringify(input.content),
+            instruction: confirmedContentJson,
             triggerMessageId: data.id,
           });
         }
@@ -979,6 +1068,11 @@ const registerMessageIpc = (db: ReturnType<typeof getDatabase>): void => {
   });
   registerIpc('messages:cancelRun', async (_event, input: { runId?: string; projectId?: string }) => {
     if (_scheduler && input.projectId) _scheduler.cancelProject(input.projectId);
+    else if (_scheduler && input.runId) _scheduler.cancelRun(input.runId);
+    return { ok: true, data: null };
+  });
+  registerIpc('messages:cancelProjectRuns', async (_event, input: { projectId: string }) => {
+    if (_scheduler) _scheduler.cancelProject(input.projectId);
     return { ok: true, data: null };
   });
   registerIpc('messages:retryRun', async (_event, input: { runId: string }) => {
@@ -1034,6 +1128,7 @@ const registerAgentIpc = (db: ReturnType<typeof getDatabase>): void => {
     return { ok: true, data: data.map((r: any) => ({ ...r, enabled: !!r.enabled, delegatable: !!r.delegatable })) };
   });
   registerIpc('agents:getProjectInstances', async (_event, input: { projectId: string }) => {
+    await ensureProjectAgentFiles(db, input.projectId);
     const data = db.prepare(
       `SELECT pai.id, pai.project_id as projectId, ap.name as agentName, pai.role, pai.runtime_mode as runtimeMode
        FROM project_agent_instances pai
@@ -1041,6 +1136,14 @@ const registerAgentIpc = (db: ReturnType<typeof getDatabase>): void => {
        WHERE pai.project_id = ? ORDER BY pai.ordinal`,
     ).all(input.projectId);
     return { ok: true, data };
+  });
+  registerIpc('agents:addProjectInstances', async (_event, input: { projectId: string; profileIds: string[] }) => {
+    try {
+      const data = await addProjectAgents(db, input.projectId, input.profileIds ?? []);
+      return { ok: true, data };
+    } catch (error) {
+      return { ok: false, error: { code: 'ADD_AGENT_FAILED', message: error instanceof Error ? error.message : String(error), retryable: false } };
+    }
   });
   registerIpc('agents:detectCli', async () => {
     const results = await cliAgentRegistry.detectAll();
@@ -1436,6 +1539,7 @@ const registerModelIpc = (db: ReturnType<typeof getDatabase>): void => {
 
 const registerMemoryIpc = (db: ReturnType<typeof getDatabase>): void => {
   const repo = new MemoryRepository(db);
+  const memory = new ConversationMemoryManager(db);
   registerIpc('memory:list', async (_event, input: { projectId: string; agentInstanceId: string; scope?: string; status?: string }) => {
     const data = repo.list(input.projectId, input.agentInstanceId, input.scope, input.status);
     return { ok: true, data };
@@ -1445,10 +1549,28 @@ const registerMemoryIpc = (db: ReturnType<typeof getDatabase>): void => {
     if (input.content !== undefined) changes.content = input.content;
     if (input.confidence !== undefined) changes.confidence = input.confidence;
     repo.update(input.recordId, changes);
-    return { ok: true, data: repo.get(input.recordId) };
+    const updated = repo.get(input.recordId);
+    if (updated) await memory.syncAgentMemory(updated.projectId, updated.agentInstanceId);
+    return { ok: true, data: updated };
+  });
+  registerIpc('memory:create', async (_event, input: { projectId: string; agentInstanceId: string; scope: 'short-term' | 'long-term'; type?: string; content: string; confidence?: number }) => {
+    const data = repo.create({
+      projectId: input.projectId,
+      agentInstanceId: input.agentInstanceId,
+      scope: input.scope,
+      type: input.type?.trim() || 'manual',
+      content: input.content.trim(),
+      confidence: input.confidence ?? (input.scope === 'long-term' ? 1 : 0.8),
+      ...(input.scope === 'short-term' ? { expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1_000).toISOString() } : {}),
+      sourceRefsJson: JSON.stringify({ source: 'manual-editor', visibility: 'agent' }),
+    });
+    await memory.syncAgentMemory(input.projectId, input.agentInstanceId);
+    return { ok: true, data };
   });
   registerIpc('memory:remove', async (_event, input: { recordId: string }) => {
+    const record = repo.get(input.recordId);
     repo.remove(input.recordId);
+    if (record) await memory.syncAgentMemory(record.projectId, record.agentInstanceId);
     return { ok: true };
   });
 };
@@ -1456,7 +1578,7 @@ const registerMemoryIpc = (db: ReturnType<typeof getDatabase>): void => {
 const registerKnowledgeIpc = (db: ReturnType<typeof getDatabase>): void => {
   const repo = new KnowledgeRepository(db);
   const sharedEnabled = (projectId: string): boolean => {
-    try { return !!new ProjectRepository(db).getById(projectId).sharedKnowledgeEnabled; } catch { return false; }
+    return Boolean(projectId);
   };
   registerIpc('knowledge:listJobs', async (_event, input: { scopeType?: string; scopeId?: string; status?: string; projectId?: string }) => {
     if (input.scopeType === 'shared' && input.projectId && !sharedEnabled(input.projectId)) return { ok: true, data: [] };
@@ -1475,14 +1597,6 @@ const registerKnowledgeIpc = (db: ReturnType<typeof getDatabase>): void => {
     return { ok: true, data: repo.getJob(job.id) };
   });
   registerIpc('knowledge:search', async (_event, input: { query: string; projectId?: string; scopeType?: string; scopeId?: string; limit?: number }) => {
-    if (input.projectId) {
-      const shared = new ProjectRepository(db).getById(input.projectId).sharedKnowledgeEnabled;
-      if (!shared) {
-        const st = input.scopeType ?? '';
-        if (st === 'shared') return { ok: true, data: { nodes: [], chunks: [] } };
-        if (!st) { input.scopeType = 'project'; input.scopeId = input.projectId; }
-      }
-    }
     const data = repo.search(input.query, input.scopeType, input.scopeId, input.limit ?? 50);
     return { ok: true, data };
   });

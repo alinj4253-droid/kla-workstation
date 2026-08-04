@@ -1,6 +1,7 @@
 import { spawn, execSync, type ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { getLogger } from './logger';
+import { AGENT_TASK_TIMEOUT_MS } from './agent-runtime-limits';
 
 export type SpawnSpec = {
   executable: string;
@@ -12,7 +13,7 @@ export type SpawnSpec = {
 };
 
 export type SpawnOptions = {
-  /** 进程超时（毫秒），默认 30 分钟 */
+  /** 进程超时（毫秒），默认 4 小时 */
   timeoutMs?: number;
   /** 进程退出后等待文件稳定窗口（毫秒），默认 500ms */
   stabilityWindowMs?: number;
@@ -57,7 +58,7 @@ export class ProcessSupervisor {
 
   spawn(runId: string, spec: SpawnSpec, options?: SpawnOptions): void {
     const logger = getLogger();
-    const timeoutMs = options?.timeoutMs ?? 1800_000;
+    const timeoutMs = options?.timeoutMs ?? AGENT_TASK_TIMEOUT_MS;
     const stabilityWindowMs = options?.stabilityWindowMs ?? 500;
     const maxStdoutBytes = options?.maxStdoutBytes ?? 10 * 1024 * 1024;
     const maxStderrBytes = options?.maxStderrBytes ?? 1 * 1024 * 1024;
@@ -171,8 +172,6 @@ export class ProcessSupervisor {
       clearTimeout(timer);
       this.timeoutTimers.delete(runId);
     }
-
-    this.unsubscribeAll(runId);
 
     try {
       try { proc.kill(); } catch { /* 进程可能已结束 */ }

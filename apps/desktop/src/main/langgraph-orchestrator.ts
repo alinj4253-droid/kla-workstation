@@ -8,12 +8,15 @@ import { MemoryManager } from './memory-manager';
 import { ContextBuilder, type ContextSnapshot } from './context-builder';
 import { ToolRegistry } from './tool-registry';
 import type { AgentRole as LocalAgentRole } from './tool-registry';
-import { AgentRunRepository, FileRepository } from '@kunqing/database';
+import { AgentRunRepository } from '@kunqing/database';
 import { getLogger } from './logger';
 import { getProjectRoot } from './paths';
 import { Scheduler } from './scheduler';
 import { processMessageMentions } from './message-router';
 import { randomUUID } from 'node:crypto';
+import { normalizeAgentMessageContent } from './agent-collaboration';
+import { AgentArtifactPublisher } from './agent-artifact-publisher';
+import { getSkillDisplayName } from './skill-display';
 
 export type ExecContext = IGraphContext;
 
@@ -33,8 +36,10 @@ export async function runOrchestrator(
   scheduler: Scheduler | undefined,
 ): Promise<void> {
   const runRepo = new AgentRunRepository(db);
-  const fileRepo = new FileRepository(db);
   const logger = getLogger();
+  const artifactPublisher = new AgentArtifactPublisher(db, (event) => {
+    if (!window.isDestroyed()) window.webContents.send('event:dispatch', event);
+  });
   const fullSnapshot = contextBuilder.build(projectId, agentInstanceId, triggerMessageId);
 
   const ctx: IGraphContext = {
@@ -60,57 +65,101 @@ export async function runOrchestrator(
       },
 
       async executeTool(name: string, args: Record<string, unknown>, role: AgentRole, context: { runId?: string; projectId?: string }) {
-        return toolRegistry.execute(name, args, { role: role as LocalAgentRole, ...context });
+        const traceId = randomUUID().toLowerCase().replace(/-/g, '').slice(0, 16);
+        const skillName = getSkillDisplayName(name);
+        const started = { id: traceId, kind: name === 'delegate_tasks' ? 'handoff' : 'tool', title: name === 'delegate_tasks' ? '正在调用智能体任务委派技能创建子任务' : `正在调用${skillName}技能`, status: 'running', detail: `技能标识：${name}\n${JSON.stringify(args).slice(0, 420)}`, at: new Date().toISOString() };
+        runRepo.addEvent(runId, 'run.trace', started);
+        if (!window.isDestroyed()) window.webContents.send('event:dispatch', { type: 'run.trace', projectId, runId, agentId: agentInstanceId, trace: started });
+        try {
+          const result = await toolRegistry.execute(name, args, { role: role as LocalAgentRole, ...context });
+          const completed = { ...started, status: 'completed', detail: result.slice(0, 500), at: new Date().toISOString() };
+          runRepo.addEvent(runId, 'run.trace', completed);
+          if (!window.isDestroyed()) window.webContents.send('event:dispatch', { type: 'run.trace', projectId, runId, agentId: agentInstanceId, trace: completed });
+          return result;
+        } catch (error) {
+          const failed = { ...started, status: 'failed', detail: error instanceof Error ? error.message : String(error), at: new Date().toISOString() };
+          runRepo.addEvent(runId, 'run.trace', failed);
+          if (!window.isDestroyed()) window.webContents.send('event:dispatch', { type: 'run.trace', projectId, runId, agentId: agentInstanceId, trace: failed });
+          throw error;
+        }
       },
 
       async createFileRecord(projectId: string, relativePath: string, content: string, agentInstanceId: string, runId: string, note?: string) {
-        const { join } = await import('node:path');
-        const { readFile } = await import('node:fs/promises');
-        const { hashContent } = await import('@kunqing/knowledge-core');
-
-        const filePath = join(getProjectRoot(projectId), relativePath);
-        const fileBuffer = await readFile(filePath);
-        const sha256 = hashContent(fileBuffer.toString('utf8'));
-        const size = fileBuffer.length;
-
-        let file = fileRepo.getByPath('project', projectId, relativePath);
-        if (!file) {
-          file = fileRepo.create({
-            scopeType: 'project',
-            scopeId: projectId,
-            type: 'file',
-            name: relativePath.split('/').pop() ?? relativePath,
-            normalizedPath: relativePath,
-            origin: 'artifact',
-          });
-        }
-
-        fileRepo.createVersion({
-          fileId: file.id,
-          storageRelPath: relativePath,
-          size,
-          sha256,
-          createdByType: 'agent',
-          createdById: agentInstanceId,
+        await artifactPublisher.publishExisting({
+          projectId,
+          agentInstanceId,
           runId,
-          changeNote: note ?? 'agent 发布成果',
+          triggerMessageId,
+          relativePath,
+          ...(note ? { note } : {}),
         });
       },
 
       async insertMessage(projectId: string, senderId: string, kind: string, contentJson: string): Promise<string> {
         const id = randomUUID().toLowerCase().replace(/-/g, '').slice(0, 24);
         const now = new Date().toISOString();
+        const normalizedContent = kind === 'text'
+          ? normalizeAgentMessageContent(db, projectId, contentJson, [], senderId)
+          : contentJson;
         db.prepare(
           'INSERT INTO messages (id, project_id, sender_type, sender_id, kind, content_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        ).run(id, projectId, 'agent', senderId, kind, contentJson, 'sent', now, now);
+        ).run(id, projectId, 'agent', senderId, kind, normalizedContent, 'sent', now, now);
+        runRepo.addEvent(runId, 'run.anchor', { messageId: id });
 
-        // 以本条消息的 ID 作为 triggerMessageId 传递给 processMessageMentions，
-        // 这样被 @mention 触发的子智能体 Run 的 triggerMessageId 会指向本条消息
+        // 整条智能体协作链沿用最初的 triggerMessageId。
+        // 这样每条用户消息最多 20 个 Run 的限制不会因智能体回复产生新消息而被重置。
         if (scheduler) {
-          processMessageMentions(db, runRepo, scheduler, projectId, contentJson, id, senderId, runId, 'agent');
+          processMessageMentions(db, runRepo, scheduler, projectId, normalizedContent, triggerMessageId, senderId, runId, 'agent', id);
+        }
+        if (!window.isDestroyed()) {
+          window.webContents.send('event:dispatch', {
+            type: 'message.committed', projectId, messageId: id, senderId, content: normalizedContent,
+          });
         }
 
         return id;
+      },
+
+      async sendDelegationMessage(input) {
+        const text = `@${input.targetAgentName} ${input.visibleInstruction?.trim() || input.instruction}`;
+        const requestedMention = {
+          target: { scope: 'instance' as const, id: input.targetAgentInstanceId },
+          label: input.targetAgentName,
+          start: 0,
+          end: input.targetAgentName.length + 1,
+        };
+        const contentJson = normalizeAgentMessageContent(db, input.projectId, JSON.stringify({
+          schemaVersion: 1,
+          text,
+          mentions: [requestedMention],
+          stagedUploadIds: [],
+          messageType: 'delegation',
+        }), [requestedMention], input.senderId);
+        const messageId = randomUUID().toLowerCase().replace(/-/g, '').slice(0, 24);
+        const now = new Date().toISOString();
+        db.prepare(
+          'INSERT INTO messages (id, project_id, sender_type, sender_id, kind, content_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        ).run(messageId, input.projectId, 'agent', input.senderId, 'text', contentJson, 'sent', now, now);
+        const routingText = `@${input.targetAgentName} ${input.instruction}`;
+        const routingContentJson = normalizeAgentMessageContent(db, input.projectId, JSON.stringify({
+          schemaVersion: 1,
+          text: routingText,
+          mentions: [requestedMention],
+          stagedUploadIds: [],
+          messageType: 'delegation',
+        }), [requestedMention], input.senderId);
+        const childRunIds = scheduler
+          ? processMessageMentions(
+            db, runRepo, scheduler, input.projectId, routingContentJson, input.rootTriggerMessageId,
+            input.senderId, input.parentRunId, 'agent', messageId,
+          )
+          : [];
+        if (!window.isDestroyed()) {
+          window.webContents.send('event:dispatch', {
+            type: 'message.committed', projectId: input.projectId, messageId, senderId: input.senderId, content: contentJson,
+          });
+        }
+        return { messageId, childRunIds };
       },
 
       setRunStatus(runId: string, status: string, error?: { errorCode?: string; errorMessage?: string }) {
@@ -155,6 +204,15 @@ export async function runOrchestrator(
         }
       },
 
+      getAgentDisplayName(targetAgentInstanceId: string): string | null {
+        const row = db.prepare(
+          `SELECT ap.name FROM project_agent_instances pai
+           JOIN agent_profiles ap ON ap.id = pai.agent_profile_id
+           WHERE pai.id = ?`,
+        ).get(targetAgentInstanceId) as { name: string } | undefined;
+        return row?.name ?? null;
+      },
+
       createSubRun(input: CreateSubRunInput): string {
         const opts: Record<string, unknown> = {
           projectId: input.projectId,
@@ -183,7 +241,30 @@ export async function runOrchestrator(
 
       emitEvent(event: Record<string, unknown>) {
         if (!window.isDestroyed()) {
-          window.webContents.send('event:dispatch', event);
+          const eventRun = event.run && typeof event.run === 'object' ? event.run as Record<string, unknown> : null;
+          const eventRunId = typeof event.runId === 'string' ? event.runId : typeof eventRun?.id === 'string' ? eventRun.id : runId;
+          let chainMetadata: Record<string, unknown> = {};
+          try {
+            const persisted = runRepo.getById(eventRunId);
+            chainMetadata = {
+              ...(persisted.triggerMessageId ? { triggerMessageId: persisted.triggerMessageId } : {}),
+              ...(persisted.parentRunId ? { parentRunId: persisted.parentRunId } : {}),
+              requestedByType: persisted.requestedByType,
+              requestedById: persisted.requestedById,
+              createdAt: persisted.createdAt,
+            };
+          } catch { /* omit metadata for an event without a persisted Run */ }
+          const anchorEvent = [...runRepo.listEvents(eventRunId)].reverse().find((item) => item.type === 'run.anchor' && item.payloadJson);
+          let anchorMessageId: string | null = null;
+          if (anchorEvent?.payloadJson) {
+            try {
+              const parsed = JSON.parse(anchorEvent.payloadJson) as { messageId?: unknown };
+              if (typeof parsed.messageId === 'string') anchorMessageId = parsed.messageId;
+            } catch { /* omit invalid anchor */ }
+          }
+          window.webContents.send('event:dispatch', eventRun
+            ? { ...event, ...chainMetadata, run: { ...eventRun, ...chainMetadata, ...(anchorMessageId ? { anchorMessageId } : {}) } }
+            : { ...event, ...chainMetadata, ...(anchorMessageId ? { anchorMessageId } : {}) });
         }
       },
 

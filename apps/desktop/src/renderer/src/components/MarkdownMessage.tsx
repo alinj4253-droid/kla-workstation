@@ -2,23 +2,50 @@ import ReactMarkdown from 'react-markdown';
 import rehypeRaw from 'rehype-raw';
 import remarkGfm from 'remark-gfm';
 
-const MENTION_RE = /@([\u4e00-\u9fff\w]+)/g;
+export type ConfirmedMention = {
+  target: { scope: string; id: string };
+  label: string;
+  start: number;
+  end: number;
+};
 
 interface MarkdownMessageProps {
   content: string;
+  mentions?: ConfirmedMention[];
 }
 
-function preprocessMentions(text: string): string {
-  return text.replace(MENTION_RE, '<span class="chat-mention">@$1</span>');
+function preprocessMentions(text: string, mentions: ConfirmedMention[]): string {
+  const confirmed = mentions
+    .filter((mention) => (
+      Number.isInteger(mention.start)
+      && Number.isInteger(mention.end)
+      && mention.start >= 0
+      && mention.end <= text.length
+      && mention.start < mention.end
+      && text.slice(mention.start, mention.end) === `@${mention.label}`
+    ))
+    .sort((left, right) => right.start - left.start);
+  let result = text;
+  for (const mention of confirmed) {
+    result = `${result.slice(0, mention.start)}<span class="chat-mention">${result.slice(mention.start, mention.end)}</span>${result.slice(mention.end)}`;
+  }
+  return result;
 }
 
-export function MarkdownMessage({ content }: MarkdownMessageProps): React.JSX.Element {
+function normalizeHtmlOutput(text: string): string {
+  if (/```(?:html)?[\s\S]*```/i.test(text)) return text;
+  if (!/(?:<!doctype\s+html|<html\b)/i.test(text)) return text;
+  return `\`\`\`html\n${text.trim()}\n\`\`\``;
+}
+
+export function MarkdownMessage({ content, mentions = [] }: MarkdownMessageProps): React.JSX.Element {
+  const normalized = normalizeHtmlOutput(content);
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
       rehypePlugins={[rehypeRaw]}
     >
-      {preprocessMentions(content)}
+      {preprocessMentions(normalized, normalized === content ? mentions : [])}
     </ReactMarkdown>
   );
 }

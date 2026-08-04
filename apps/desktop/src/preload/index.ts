@@ -44,8 +44,10 @@ const api = {
   },
   messages: {
     list: (input: { projectId: string; before?: string; limit?: number }): Promise<unknown> => rpc('messages:list', input),
+    listRunActivity: (input: { projectId: string; limit?: number }): Promise<unknown> => rpc('messages:listRunActivity', input),
     send: (input: { idempotencyKey: string; projectId: string; content: unknown }): Promise<unknown> => rpc('messages:send', input),
     cancelRun: (input: { runId: string }): Promise<unknown> => rpc('messages:cancelRun', input),
+    cancelProjectRuns: (input: { projectId: string }): Promise<unknown> => rpc('messages:cancelProjectRuns', input),
     retryRun: (input: { runId: string; idempotencyKey: string }): Promise<unknown> => rpc('messages:retryRun', input),
   },
   workspace: {
@@ -68,6 +70,7 @@ const api = {
     listDefinitions: (): Promise<unknown> => rpc('agents:listDefinitions'),
     listProfiles: (): Promise<unknown> => rpc('agents:listProfiles'),
     getProjectInstances: (input: { projectId: string }): Promise<unknown> => rpc('agents:getProjectInstances', input),
+    addProjectInstances: (input: { projectId: string; profileIds: string[] }): Promise<unknown> => rpc('agents:addProjectInstances', input),
     detectCli: (): Promise<unknown> => rpc('agents:detectCli'),
     listCliConnections: (): Promise<unknown> => rpc('agents:listCliConnections'),
     saveCliConnection: (input: { name: string; adapterType: string; executablePath: string }): Promise<unknown> => rpc('agents:saveCliConnection', input),
@@ -110,6 +113,7 @@ const api = {
   },
   memory: {
     list: (input: { projectId: string; agentInstanceId: string; scope?: string; status?: string }): Promise<unknown> => rpc('memory:list', input),
+    create: (input: { projectId: string; agentInstanceId: string; scope: 'short-term' | 'long-term'; type?: string; content: string; confidence?: number }): Promise<unknown> => rpc('memory:create', input),
     update: (input: { recordId: string; content: string; confidence?: number }): Promise<unknown> => rpc('memory:update', input),
     remove: (input: { recordId: string }): Promise<unknown> => rpc('memory:remove', input),
   },

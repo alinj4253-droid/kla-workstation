@@ -1,8 +1,13 @@
 // @vitest-environment node
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+
+vi.mock('electron', () => ({
+  app: { getPath: vi.fn(() => tmpdir()) },
+}));
 
 // ---------------------------------------------------------------------------
 // AC-EXT-01: PATH 检测、手选路径和版本不兼容分别得到稳定状态
@@ -33,20 +38,55 @@ describe('AC-EXT-01', () => {
     expect(source).not.toContain('readdirSync');
     expect(source).not.toContain('walk');
   });
+
+  it('CodeBuddy detection includes user package bins and official aliases', async () => {
+    const { buildCodeBuddySearchPaths, CODEBUDDY_BINARY_NAMES } = await import('@kunqing/agent-core');
+    const appData = resolve('C:/Users/test/AppData/Roaming');
+    const localAppData = resolve('C:/Users/test/AppData/Local');
+    const paths = buildCodeBuddySearchPaths(
+      { searchPaths: ['C:/custom/bin'] },
+      { APPDATA: appData, LOCALAPPDATA: localAppData, PATH: '' },
+    );
+
+    if (process.platform === 'win32') {
+      expect(paths).toContain(resolve(appData, 'npm'));
+      expect(paths).toContain(resolve(localAppData, 'pnpm'));
+    }
+    expect(CODEBUDDY_BINARY_NAMES).toEqual(['codebuddy', 'codebuddy-code', 'cbc']);
+  });
+
+  it('CodeBuddy uses non-interactive print mode without project-local setting injection', async () => {
+    const { CodeBuddyAutoStrategy } = await import('@kunqing/agent-core');
+    const strategy = new CodeBuddyAutoStrategy();
+    const instruction = '完成当前任务\n保留括号（GEO）与引号“完整内容”，不要被 & 符号截断';
+    const spec = strategy.buildRun({
+      executablePath: 'codebuddy', instruction, args: [], env: {}, workspaceRoot: 'C:/temp/agent', capabilities: strategy.capabilities,
+    });
+    expect(spec.args).toContain('--print');
+    expect(spec.args).toContain('--no-session-persistence');
+    expect(spec.args).not.toContain('--system-prompt');
+    expect(spec.args).not.toContain(instruction);
+    expect(new TextDecoder().decode(spec.stdin)).toBe(instruction);
+    expect(spec.args).not.toContain('--continue');
+  });
 });
 
 // ---------------------------------------------------------------------------
 // AC-EXT-02: 特殊字符不会造成额外命令执行
 // ---------------------------------------------------------------------------
 describe('AC-EXT-02', () => {
-  it('CodexCliAdapter uses shell: process.platform check', async () => {
-    const source = readFileSync(resolve(import.meta.dirname, '../../../../packages/agent-core/src/adapters/codex/adapter.ts'), 'utf-8');
-    expect(source).toContain('shell: process.platform');
+  it('Codex strategy uses the platform shell policy', async () => {
+    const { CodexAutoStrategy } = await import('@kunqing/agent-core');
+    const strategy = new CodexAutoStrategy();
+    const spec = strategy.buildRun({ executablePath: 'codex', instruction: 'test', args: [], env: {}, workspaceRoot: tmpdir(), capabilities: strategy.capabilities });
+    expect(spec.shell).toBe(process.platform === 'win32');
   });
 
-  it('ClaudeCodeCliAdapter uses shell: process.platform check', async () => {
-    const source = readFileSync(resolve(import.meta.dirname, '../../../../packages/agent-core/src/adapters/claude-code/adapter.ts'), 'utf-8');
-    expect(source).toContain('shell: process.platform');
+  it('Claude Code strategy uses the platform shell policy', async () => {
+    const { ClaudeCodeAutoStrategy } = await import('@kunqing/agent-core');
+    const strategy = new ClaudeCodeAutoStrategy();
+    const spec = strategy.buildRun({ executablePath: 'claude', instruction: 'test', args: [], env: {}, workspaceRoot: tmpdir(), capabilities: strategy.capabilities });
+    expect(spec.shell).toBe(process.platform === 'win32');
   });
 
   it('cli-executor source uses spawn not exec', () => {

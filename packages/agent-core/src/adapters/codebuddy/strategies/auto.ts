@@ -28,9 +28,18 @@ export class CodeBuddyAutoStrategy implements VersionStrategy {
   buildRun(input: PreparedExternalRun): SpawnSpec {
     return {
       executable: input.executablePath,
-      args: [input.instruction, ...input.args],
+      args: [
+        '--print',
+        '--output-format', 'text',
+        '--permission-mode', 'acceptEdits',
+        '--no-session-persistence',
+        '--setting-sources', 'user',
+        '--max-turns', '24',
+        ...input.args,
+      ],
       cwd: input.workspaceRoot,
       env: input.env,
+      stdin: new TextEncoder().encode(input.instruction),
       shell: process.platform === 'win32',
     };
   }

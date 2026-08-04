@@ -1,10 +1,11 @@
 import { spawn } from 'node:child_process';
+import * as path from 'node:path';
 import type {
   ExternalAgentAdapter, VersionStrategy, DetectInput, DetectedExecutable,
   ExecutableRef, VersionEvidence, CliConnectionSnapshot, AuthProbeResult,
   ExternalRunRequest, AgentEventSink, ExternalRunResult, AdapterCapability,
 } from '../../external-agent-adapter';
-import { CodeBuddyDetector } from './detect.js';
+import { buildCodeBuddySearchPaths, CodeBuddyDetector } from './detect.js';
 import { CodeBuddyAutoStrategy } from './strategies/auto.js';
 
 export { CodeBuddyAutoStrategy } from './strategies/auto.js';
@@ -113,7 +114,15 @@ export class CodeBuddyCliAdapter implements ExternalAgentAdapter {
     const start = Date.now();
     return new Promise((resolve) => {
       const child = spawn(spec.executable, spec.args, {
-        cwd: spec.cwd, env: { ...process.env, ...spec.env }, shell: spec.shell, stdio: ['pipe', 'pipe', 'pipe'], signal,
+        cwd: spec.cwd,
+        env: {
+          ...process.env,
+          ...spec.env,
+          PATH: buildCodeBuddySearchPaths({}).join(path.delimiter),
+        },
+        shell: spec.shell,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        signal,
       });
       let stdout = ''; let stderr = ''; let exitCode: number | null = null;
       if (spec.stdin) { child.stdin?.write(spec.stdin); child.stdin?.end(); }

@@ -1,6 +1,16 @@
+export const AGENT_TONES = ['indigo', 'cyan', 'green', 'violet', 'orange', 'rose', 'teal', 'amber', 'blue'] as const;
+export type AgentTone = typeof AGENT_TONES[number];
+
+export function getAgentTone(agentId: string, orderedAgentIds: string[]): AgentTone {
+  const ordinal = orderedAgentIds.indexOf(agentId);
+  if (ordinal >= 0) return AGENT_TONES[ordinal % AGENT_TONES.length]!;
+  const hash = [...agentId].reduce((total, char) => ((total * 31) + char.charCodeAt(0)) >>> 0, 0);
+  return AGENT_TONES[hash % AGENT_TONES.length]!;
+}
+
 type AgentAvatarProps = {
   label: string;
-  tone: 'indigo' | 'cyan' | 'green' | 'violet' | 'orange';
+  tone: AgentTone;
   size?: 'sm' | 'md' | 'lg';
   overlap?: boolean;
 };

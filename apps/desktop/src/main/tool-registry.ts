@@ -5,7 +5,7 @@ import { ManagedCopyService } from './managed-copy';
 import { resolve as resolvePath } from 'node:path';
 
 // ─── Agent Roles ─────────────────────────────────────────────────────────────
-export type AgentRole = 'orchestrator' | 'knowledge-manager' | 'external-cli';
+export type AgentRole = 'orchestrator' | 'knowledge-manager' | 'researcher' | 'external-cli';
 
 // ─── Capabilities ────────────────────────────────────────────────────────────
 export type ToolCapability =
@@ -43,6 +43,17 @@ const PERMISSION_MATRIX: Record<AgentRole, Record<ToolCapability, PermissionLeve
     'write:memory': 'allow',
     'write:knowledge': 'allow',
     'write:output': 'report-only',
+    'delete:file': 'deny',
+    'shell:execute': 'deny',
+  },
+  researcher: {
+    'read:message': 'task-only',
+    'read:file': 'allow',
+    'read:knowledge': 'allow',
+    'read:shared-knowledge': 'task-only',
+    'write:memory': 'allow',
+    'write:knowledge': 'deny',
+    'write:output': 'allow',
     'delete:file': 'deny',
     'shell:execute': 'deny',
   },
@@ -192,6 +203,19 @@ export class ToolRegistry {
     if (tool.allowedPathPrefixes) {
       const pathArg = args['relativePath'] as string | undefined;
       if (pathArg) {
+        const normalizedPath = pathArg.replaceAll('\\', '/').replace(/^\.\//, '');
+        if (normalizedPath.startsWith('agent-memories/') || normalizedPath.startsWith('agent-identities/')) {
+          const owner = context.runId
+            ? this.db.prepare('SELECT agent_instance_id as agentInstanceId FROM agent_runs WHERE id = ?').get(context.runId) as { agentInstanceId: string } | undefined
+            : undefined;
+          const ownMemoryPrefix = owner ? `agent-memories/${owner.agentInstanceId}/` : '';
+          const ownIdentityPrefix = owner ? `agent-identities/${owner.agentInstanceId}/` : '';
+          if (!owner || (!normalizedPath.startsWith(ownMemoryPrefix) && !normalizedPath.startsWith(ownIdentityPrefix))) {
+            const msg = '身份与记忆文件仅允许所属智能体自己读取';
+            this.audit(context.runId, name, args, msg, true);
+            return msg;
+          }
+        }
         const allowed = tool.allowedPathPrefixes.some((prefix) => pathArg.startsWith(prefix));
         if (!allowed) {
           const msg = `路径权限不足: ${pathArg} 不在允许路径白名单中`;
@@ -320,12 +344,7 @@ export class ToolRegistry {
   }
 
   private checkSharedKnowledgeEnabled(projectId: string): boolean {
-    try {
-      const row = this.db.prepare('SELECT shared_knowledge_enabled as enabled FROM projects WHERE id = ?').get(projectId) as { enabled: number } | undefined;
-      return row ? row.enabled === 1 : false;
-    } catch {
-      return false;
-    }
+    return Boolean(projectId);
   }
 
   private audit(runId: string | undefined, tool: string, args: Record<string, unknown>, result: string, isError = false): void {

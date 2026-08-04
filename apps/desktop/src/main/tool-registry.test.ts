@@ -1,6 +1,10 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { ToolRegistry, type AgentRole, type ToolCapability } from './tool-registry';
+
+vi.mock('electron', () => ({
+  app: { getPath: vi.fn(() => '/mock/app/path') },
+}));
 
 function createDb(): Database.Database {
   const db = new Database(':memory:');

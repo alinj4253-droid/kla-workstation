@@ -15,6 +15,10 @@ export type CliRunOptions = {
   signal: AbortSignal | undefined;
   /** 适配器策略生成的参数，用于替代默认的 [instruction] */
   args?: string[];
+  /** 映射到群聊中的真实 Agent Run，供 UI 展示执行轨迹 */
+  activityRunId?: string;
+  /** 外部智能体按 Run 隔离的私有执行目录；未提供时仅用于设置页的独立测试。 */
+  workspaceRoot?: string;
 };
 
 export type CliRunResult = {
@@ -33,7 +37,7 @@ export class CliExecutor {
     const runId = `cli-${randomUUID().slice(0, 8)}`;
     const start = Date.now();
 
-    const projectRoot = getProjectRoot(projectId);
+    const projectRoot = options.workspaceRoot ?? getProjectRoot(projectId);
     const spec: SpawnSpec = {
       executable: connection.executablePath,
       args: options.args ?? [instruction],
@@ -59,13 +63,13 @@ export class CliExecutor {
         for (const event of normalized) {
           dispatch({
             type: 'cli.event',
-            runId,
+            runId: options.activityRunId ?? runId,
             projectId,
             event,
           });
           // 结构化事件（非降级文本）也单独按类型分发
           if (isStructuredEvent(event)) {
-            dispatch({ type: `cli.event.${event.type.replace('.', '_')}`, runId, projectId, event });
+            dispatch({ type: `cli.event.${event.type.replace('.', '_')}`, runId: options.activityRunId ?? runId, projectId, event });
           }
         }
       });
@@ -76,7 +80,7 @@ export class CliExecutor {
         for (const event of normalized) {
           dispatch({
             type: 'cli.event',
-            runId,
+            runId: options.activityRunId ?? runId,
             projectId,
             event: { ...event, protocol_degraded: true, _source: 'stderr' },
           });

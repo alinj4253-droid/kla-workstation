@@ -21,7 +21,7 @@ export class ProjectRepository extends BaseRepository {
   list(status?: string, limit = 50, offset = 0): ProjectRow[] {
     const sql = `SELECT id, name, status, summary, last_active_at as lastActiveAt, created_at as createdAt, shared_knowledge_enabled as sharedKnowledgeEnabled
                  FROM projects
-                 ${status ? 'WHERE status = ?' : ''}
+                 ${status ? 'WHERE status = ?' : "WHERE status != 'archived'"}
                  ORDER BY last_active_at DESC
                  LIMIT ? OFFSET ?`;
     const params: unknown[] = [];
@@ -78,8 +78,8 @@ export class ProjectRepository extends BaseRepository {
       .run(this.now(), id);
   }
 
-  setSharedKnowledgeEnabled(id: string, enabled: boolean): void {
+  setSharedKnowledgeEnabled(id: string, _enabled: boolean): void {
     this.db.prepare('UPDATE projects SET shared_knowledge_enabled = ?, updated_at = ? WHERE id = ?')
-      .run(enabled ? 1 : 0, this.now(), id);
+      .run(1, this.now(), id);
   }
 }

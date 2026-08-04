@@ -56,6 +56,9 @@ export {
   MarsCodeAutoStrategy,
   CodeBuddyCliAdapter,
   CodeBuddyAutoStrategy,
+  CodeBuddyDetector,
+  buildCodeBuddySearchPaths,
+  CODEBUDDY_BINARY_NAMES,
 } from './adapters/index.js';
 
 // 向后兼容别名（通过旧路径重导出）

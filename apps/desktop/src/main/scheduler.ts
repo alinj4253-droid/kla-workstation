@@ -1,8 +1,10 @@
 import type Database from 'better-sqlite3';
 import { AgentRunRepository } from '@kunqing/database';
 import { getLogger } from './logger';
+import { AGENT_TASK_TIMEOUT_MS } from './agent-runtime-limits';
 
-const MAX_CONCURRENT = 4;
+// 允许 leader + 最多 9 个群聊成员及少量链式协作同时运行，避免父任务等待子任务时占满执行槽。
+const MAX_CONCURRENT = 12;
 const NON_TERMINAL_STATUSES = ['queued', 'starting', 'running'] as const;
 
 export type QueuedRun = {
@@ -20,6 +22,7 @@ export class Scheduler {
   private activeCount = 0;
   private onRun: (run: QueuedRun, signal: AbortSignal) => Promise<void>;
   private controllers = new Map<string, AbortController>();
+  private timedOutRuns = new Set<string>();
 
   constructor(
     private db: Database.Database,
@@ -64,6 +67,24 @@ export class Scheduler {
     q.push(run);
     this.perInstanceQueue.set(run.agentInstanceId, q);
     this.tick();
+  }
+
+  cancelRun(runId: string): boolean {
+    for (const [instanceId, queue] of this.perInstanceQueue) {
+      const queuedRun = queue.find((run) => run.runId === runId);
+      if (!queuedRun) continue;
+      this.perInstanceQueue.set(instanceId, queue.filter((run) => run.runId !== runId));
+      this.runRepo.setStatus(runId, 'cancelled');
+      this.runRepo.addEvent(runId, 'run.cancelled', { reason: '用户取消' });
+      return true;
+    }
+
+    const controller = this.controllers.get(runId);
+    if (!controller || controller.signal.aborted) return false;
+    controller.abort();
+    this.runRepo.setStatus(runId, 'cancelled');
+    this.runRepo.addEvent(runId, 'run.cancelled', { reason: '用户取消（运行中）' });
+    return true;
   }
 
   cancelProject(projectId: string): void {
@@ -116,24 +137,40 @@ export class Scheduler {
       this.controllers.set(next.runId, controller);
 
       const runId = next.runId;
+      const timeout = setTimeout(() => {
+        this.timedOutRuns.add(runId);
+        controller.abort(new Error('智能体任务已达到 4 小时执行上限'));
+      }, AGENT_TASK_TIMEOUT_MS);
+      timeout.unref();
       this.onRun(next, controller.signal)
         .then(() => {
+          const current = this.runRepo.getById(runId);
+          if (!['failed', 'cancelled', 'interrupted'].includes(current.status)) {
+            this.runRepo.setStatus(runId, 'completed');
+          }
           this.runRepo.addEvent(runId, 'run.completed', {});
         })
         .catch((err: unknown) => {
+          if (this.timedOutRuns.has(runId)) {
+            this.runRepo.setStatus(runId, 'failed', { errorCode: 'RUN_TIMEOUT', errorMessage: '智能体任务在 4 小时内未完成' });
+            this.runRepo.addEvent(runId, 'run.failed', { errorCode: 'RUN_TIMEOUT', errorMessage: '智能体任务在 4 小时内未完成' });
+            return;
+          }
           if (err instanceof DOMException && err.name === 'AbortError') {
             this.runRepo.setStatus(runId, 'cancelled');
             this.runRepo.addEvent(runId, 'run.cancelled', { reason: '用户取消或项目取消' });
             return;
           }
-          getLogger()?.warn({ err, runId }, 'Scheduler: agent run failed');
           this.runRepo.setStatus(runId, 'failed', { errorCode: 'RUNTIME_ERROR', errorMessage: err instanceof Error ? err.message : String(err) });
           this.runRepo.addEvent(runId, 'run.failed', {
             errorCode: 'RUNTIME_ERROR',
             errorMessage: err instanceof Error ? err.message : String(err),
           });
+          try { getLogger()?.warn({ err, runId }, 'Scheduler: agent run failed'); } catch { /* logger may be unavailable in tests */ }
         })
         .finally(() => {
+          clearTimeout(timeout);
+          this.timedOutRuns.delete(runId);
           this.activeCount--;
           this.running.delete(runId);
           this.controllers.delete(runId);

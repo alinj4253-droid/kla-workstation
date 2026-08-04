@@ -1,6 +1,5 @@
 import {
   ArrowLeft,
-  ChevronLeft,
   ChevronRight,
   ExternalLink,
   FileArchive,
@@ -13,16 +12,16 @@ import {
   Pencil,
   Plus,
   RefreshCw,
-  SlidersHorizontal,
+  PanelLeftClose,
+  PanelLeftOpen,
   Trash2,
   Upload,
   X,
   Book,
 } from 'lucide-react';
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
-import DOMPurify from 'dompurify';
 import { GraphViewer } from '../components/GraphViewer';
 import { KnowledgeJobDialog } from '../components/KnowledgeJobDialog';
 import { WikiViewer } from '../components/WikiViewer';
@@ -100,16 +99,10 @@ export function WorkspacePage(): React.JSX.Element {
   const [renameValue, setRenameValue] = useState('');
   const [renameError, setRenameError] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<FileEntry | null>(null);
-  const [previewData, setPreviewData] = useState<{ kind: 'text' | 'image' | 'html' | 'pdf'; content: string; fileName: string; mimeType: string } | null>(null);
-  const htmlIframeRef = useRef<HTMLIFrameElement>(null);
+  const [previewData, setPreviewData] = useState<{ kind: 'text' | 'image' | 'html' | 'pdf'; content: string; appFileUrl?: string; fileName: string; mimeType: string; relativePath: string } | null>(null);
   const [graphViewerOpen, setGraphViewerOpen] = useState(false);
   const [projectPanelOpen, setProjectPanelOpen] = useState(true);
   const [wikiViewerOpen, setWikiViewerOpen] = useState(false);
-  useEffect(() => {
-    if (previewData?.kind === 'html' && htmlIframeRef.current) {
-      htmlIframeRef.current.srcdoc = previewData.content;
-    }
-  }, [previewData]);
   const [knowledgeDetail, setKnowledgeDetail] = useState<{ fileId: string; fileName: string } | null>(null);
 
   const activeProject = useMemo(() => projects.find((p) => p.id === projectId), [projectId, projects]);
@@ -154,16 +147,7 @@ export function WorkspacePage(): React.JSX.Element {
 
   const enterDirectory = (entry: FileEntry): void => {
     if (entry.kind !== 'directory') {
-      if (systemDir) {
-        if (/\.md$/i.test(entry.name) && relativePath.includes('wiki')) {
-          void handlePreview(entry);
-          return;
-        }
-        // Non-original-files system dirs are read-only for now
-        void window.kunqing?.workspace.openWithSystem({ projectId, relativePath: entry.relativePath, scopeType });
-        return;
-      }
-      void window.kunqing?.workspace.openItem({ projectId, relativePath: entry.relativePath });
+      void handlePreview(entry);
       return;
     }
     if (entry.system && entry.physicalName) {
@@ -241,20 +225,19 @@ export function WorkspacePage(): React.JSX.Element {
       if (!result?.ok || !result.data) { setNotice('无法预览此文件'); return; }
       if ('error' in result.data) { setNotice(result.data.error ?? '预览出错'); return; }
       if (result.data.kind === 'image') {
-        setPreviewData({ kind: 'image', content: result.data.dataUri ?? '', fileName: entry.name, mimeType: result.data.mimeType ?? '' });
+        setPreviewData({ kind: 'image', content: result.data.dataUri ?? '', fileName: entry.name, mimeType: result.data.mimeType ?? '', relativePath: entry.relativePath });
         return;
       }
       if (result.data.kind === 'pdf') {
-        setPreviewData({ kind: 'pdf', content: result.data.appFileUrl ?? '', fileName: entry.name, mimeType: 'application/pdf' });
+        setPreviewData({ kind: 'pdf', content: result.data.appFileUrl ?? '', ...(result.data.appFileUrl ? { appFileUrl: result.data.appFileUrl } : {}), fileName: entry.name, mimeType: 'application/pdf', relativePath: entry.relativePath });
         return;
       }
       if (result.data.kind === 'html') {
-        const clean = DOMPurify.sanitize(result.data.content ?? '');
-        setPreviewData({ kind: 'html', content: clean, fileName: entry.name, mimeType: 'text/html' });
+        setPreviewData({ kind: 'html', content: result.data.content ?? '', ...(result.data.appFileUrl ? { appFileUrl: result.data.appFileUrl } : {}), fileName: entry.name, mimeType: 'text/html', relativePath: entry.relativePath });
         return;
       }
       if (result.data.kind !== 'text') { setNotice('仅支持文本文件预览'); return; }
-      setPreviewData({ kind: 'text', content: result.data.content ?? '', fileName: entry.name, mimeType: result.data.mimeType ?? '' });
+      setPreviewData({ kind: 'text', content: result.data.content ?? '', fileName: entry.name, mimeType: result.data.mimeType ?? '', relativePath: entry.relativePath });
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '预览失败');
     }
@@ -262,34 +245,33 @@ export function WorkspacePage(): React.JSX.Element {
 
   const handleOpenWithSystem = async (entry: FileEntry): Promise<void> => {
     try {
-      await window.kunqing?.workspace.openWithSystem({ projectId, relativePath: entry.relativePath });
+      await window.kunqing?.workspace.openWithSystem({ projectId, relativePath: entry.relativePath, ...(scopeType === 'shared' ? { scopeType: 'shared' as const } : {}) });
     } catch { setNotice('无法使用系统应用打开'); }
   };
 
   return (
-    <div className={`workspace-layout${projectPanelOpen ? '' : ' workspace-layout--panel-closed'}`}>
-      <aside className={`project-panel${projectPanelOpen ? ' project-panel--open' : ''}`} aria-label="协作项目">
-        <div className="project-panel__header"><h2>协作项目</h2><div className="project-panel__header-actions"><button type="button" className="icon-button" aria-label="筛选项目"><SlidersHorizontal size={17} /></button><button type="button" className="icon-button" aria-label="收起项目面板" onClick={() => setProjectPanelOpen(false)}><ChevronLeft size={17} /></button></div></div>
+    <div className={`workspace-layout${projectPanelOpen ? '' : ' workspace-layout--panel-closed'}${previewData ? ' workspace-layout--preview-open' : ''}`}>
+      {projectPanelOpen && <aside className="project-panel project-panel--open" aria-label="项目协作群组">
+        <div className="project-panel__header">
+          <button type="button" className="icon-button project-panel-toggle" aria-label="收起项目栏" title="收起项目栏" onClick={() => setProjectPanelOpen(false)}><PanelLeftClose size={18} /></button>
+          <h2>项目协作群组</h2>
+        </div>
         <div className="project-list">
           {projects.length === 0 ? (
             <div className="file-empty" style={{ padding: '16px', fontSize: '13px' }}>暂无项目</div>
           ) : projects.map((project) => (
             <button type="button" key={project.id} className={`project-list-item${project.id === projectId ? ' project-list-item--active' : ''}`} onClick={() => navigate(`/projects/${project.id}/workspace`)}>
-              <div className="project-list-item__meta"><span className={`status-pill status-pill--${project.status.toLowerCase()}`}>{project.status}</span></div>
               <strong>{project.name}</strong>
+              <span className="project-list-item__status"><i className={`project-status-dot project-status-dot--${project.status.toLowerCase()}`} />{project.status === 'active' ? '进行中' : project.status}</span>
             </button>
           ))}
         </div>
-      </aside>
+      </aside>}
 
       <section className="workspace-files">
-        {!projectPanelOpen && (
-          <button type="button" className="workspace-panel-reopen" aria-label="展开项目面板" onClick={() => setProjectPanelOpen(true)}>
-            <ChevronRight size={16} />
-          </button>
-        )}
         <header className="workspace-toolbar">
           <div className="workspace-title">
+            {!projectPanelOpen && <button type="button" className="icon-button project-panel-toggle" aria-label="展开项目栏" title="展开项目栏" onClick={() => setProjectPanelOpen(true)}><PanelLeftOpen size={18} /></button>}
             <button type="button" className="icon-button" aria-label="返回群聊" onClick={() => navigate(`/projects/${projectId}/chat`)}><ArrowLeft size={18} /></button>
             <span className="workspace-title-icon"><FolderOpen size={18} /></span>
             <div><h2>{activeProject?.name ?? '工作区'} · 工作区</h2>
@@ -353,7 +335,7 @@ export function WorkspacePage(): React.JSX.Element {
           ) : files.length === 0 ? (
             <div className="file-empty"><FolderOpen size={34} /><strong>这个文件夹还是空的</strong><span>{scopeType === 'project' && !systemDir ? '系统目录将在此列出' : '上传文件或新建文件夹，内容将只保存在本机 K_Studio 中。'}</span>{!systemDir && scopeType === 'shared' ? <button className="primary-button" type="button" onClick={() => void uploadFiles()}><Upload size={15} /> 上传第一个文件</button> : null}</div>
           ) : files.map((entry) => (
-            <div className="file-table-row" role="row" key={entry.relativePath} onDoubleClick={() => enterDirectory(entry)}>
+            <div className="file-table-row" role="row" key={entry.relativePath}>
               <button className={`file-name file-name--${entry.kind}`} type="button" onClick={() => enterDirectory(entry)}>
                 {fileIcon(entry)}<span>{entry.name}</span>
               </button>
@@ -384,6 +366,28 @@ export function WorkspacePage(): React.JSX.Element {
         </div>
       </section>
 
+      {previewData && (
+        <aside className="workspace-preview" aria-label={`预览 ${previewData.fileName}`}>
+          <header>
+            <div><FileText size={18} /><span><strong>{previewData.fileName}</strong><small>{previewData.mimeType}</small></span></div>
+            <div><button type="button" className="icon-button" aria-label="使用系统应用打开" title="系统打开" onClick={() => void handleOpenWithSystem({ name: previewData.fileName, relativePath: previewData.relativePath, kind: 'file', size: 0, modifiedAt: '' })}><ExternalLink size={17} /></button><button type="button" className="icon-button" aria-label="关闭预览" onClick={() => setPreviewData(null)}><X size={18} /></button></div>
+          </header>
+          <div className={`workspace-preview__body${previewData.kind === 'html' || previewData.kind === 'pdf' ? ' workspace-preview__body--document' : ''}`}>
+            {previewData.kind === 'image' ? (
+              <div className="preview-image-wrapper"><img src={previewData.content} alt={previewData.fileName} className="preview-image" /></div>
+            ) : previewData.kind === 'pdf' ? (
+              <iframe src={previewData.appFileUrl ?? previewData.content} className="preview-iframe" title="PDF 预览" />
+            ) : previewData.kind === 'html' ? (
+              <iframe src={previewData.appFileUrl} srcDoc={previewData.appFileUrl ? undefined : previewData.content} className="preview-iframe" sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups" referrerPolicy="no-referrer" title="HTML 预览" />
+            ) : previewData.fileName.endsWith('.md') ? (
+              <div className="wiki-markdown wiki-markdown--preview"><ReactMarkdown>{previewData.content}</ReactMarkdown></div>
+            ) : (
+              <pre className="preview-content">{previewData.content}</pre>
+            )}
+          </div>
+        </aside>
+      )}
+
       {folderDialogOpen && (
         <div className="modal-backdrop modal-backdrop--nested" role="presentation" onClick={() => setFolderDialogOpen(false)}>
           <form className="folder-dialog" onClick={(e) => e.stopPropagation()} onSubmit={(event) => void createFolder(event)}>
@@ -409,29 +413,6 @@ export function WorkspacePage(): React.JSX.Element {
           <div className="folder-dialog" onClick={(e) => e.stopPropagation()}>
             <header><div><h3>确认删除</h3><p>将“{deleteTarget.name}”移入回收站？{deleteTarget.kind === 'directory' ? '目录内所有文件将一并删除。' : ''}</p></div><button type="button" className="icon-button" aria-label="关闭" onClick={() => setDeleteTarget(null)}><X size={18} /></button></header>
             <footer><button type="button" className="secondary-button" onClick={() => setDeleteTarget(null)}>取消</button><button type="button" className="primary-button danger" onClick={() => void handleDelete()}>删除</button></footer>
-          </div>
-        </div>
-      )}
-
-      {previewData && (
-        <div className="modal-backdrop modal-backdrop--nested" role="presentation" onClick={() => setPreviewData(null)}>
-          <div className="preview-dialog" onClick={(e) => e.stopPropagation()}>
-            <header><div><h3>预览: {previewData.fileName}</h3><p>{previewData.mimeType}</p></div><button type="button" className="icon-button" aria-label="关闭" onClick={() => setPreviewData(null)}><X size={18} /></button></header>
-            {previewData.kind === 'image' ? (
-              <div className="preview-image-wrapper">
-                <img src={previewData.content} alt={previewData.fileName} className="preview-image" />
-              </div>
-            ) : previewData.kind === 'pdf' ? (
-              <iframe src={previewData.content} className="preview-iframe" title="PDF 预览" />
-            ) : previewData.kind === 'html' ? (
-              <iframe ref={htmlIframeRef} className="preview-iframe" sandbox="allow-same-origin" title="HTML 预览" />
-            ) : previewData.fileName.endsWith('.md') ? (
-              <div className="wiki-markdown wiki-markdown--preview">
-                <ReactMarkdown>{previewData.content}</ReactMarkdown>
-              </div>
-            ) : (
-              <pre className="preview-content">{previewData.content}</pre>
-            )}
           </div>
         </div>
       )}

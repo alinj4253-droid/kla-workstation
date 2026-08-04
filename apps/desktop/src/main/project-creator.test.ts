@@ -13,7 +13,7 @@ vi.mock('electron', () => ({
 }));
 
 import { setStudioRoot, getProjectRoot } from './paths';
-import { createProject, seedDefaultProfiles } from './project-creator';
+import { addProjectAgents, createProject, seedDefaultProfiles } from './project-creator';
 import {
   ProjectRepository,
   AgentInstanceRepository,
@@ -166,6 +166,8 @@ describe('createProject', () => {
     // Agent instances queryable
     const instances = instanceRepo.listByProject(projectId);
     expect(instances.length).toBe(3);
+    expect(new Set(instances.map((instance) => instance.id)).size).toBe(instances.length);
+    expect(instances.every((instance) => instance.id.startsWith(`${projectId}-`))).toBe(true);
 
     const leader = instances.find((i) => i.role === 'leader');
     expect(leader).toBeDefined();
@@ -239,12 +241,15 @@ describe('createProject', () => {
         expect(existsSync(identityPath)).toBe(true);
         const content = readFileSync(identityPath, 'utf8');
         expect(content).toContain('schemaVersion: 1');
+        expect(existsSync(join(identityPath, '..', 'ROLE.md'))).toBe(true);
       }
 
       // Memory directories exist
       if (inst.memoryRelPath) {
         expect(existsSync(join(projectRoot, inst.memoryRelPath, 'short-term'))).toBe(true);
         expect(existsSync(join(projectRoot, inst.memoryRelPath, 'long-term'))).toBe(true);
+        expect(existsSync(join(projectRoot, inst.memoryRelPath, 'short-term', 'current.md'))).toBe(true);
+        expect(existsSync(join(projectRoot, inst.memoryRelPath, 'long-term', 'summary.md'))).toBe(true);
       }
     }
 
@@ -303,5 +308,45 @@ describe('createProject', () => {
     const project = projectRepo.getById(result.data.id);
     // Uses auto-generated name for empty text
     expect(project.name).toMatch(/^新对话 - /);
+  });
+
+  it('adds an agent to an existing group and initializes private local files', async () => {
+    const now = new Date().toISOString();
+    const profileId = `external-profile-${Date.now()}`;
+    db.prepare(
+      `INSERT INTO agent_profiles
+       (id, name, definition_id, definition_version, runtime_mode, cli_connection_id, enabled, delegatable, is_system_default, created_at, updated_at)
+       VALUES (?, '测试 CLI 智能体', 'external.codebuddy', '1.0.0', 'external-cli', 'cli-test', 1, 1, 0, ?, ?)`,
+    ).run(profileId, now, now);
+    const created = await createProject(db, { content: { text: '添加成员测试' } });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const agents = await addProjectAgents(db, created.data.id, [profileId]);
+    expect(agents).toHaveLength(4);
+    const added = agents.find((agent) => agent.agentName === '测试 CLI 智能体');
+    expect(added?.role).toBe('teammate');
+    expect(added?.runtimeMode).toBe('external-cli');
+    expect(existsSync(join(getProjectRoot(created.data.id), 'agent-identities', added!.id, 'IDENTITY.md'))).toBe(true);
+    expect(existsSync(join(getProjectRoot(created.data.id), 'agent-identities', added!.id, 'ROLE.md'))).toBe(true);
+    expect(existsSync(join(getProjectRoot(created.data.id), 'agent-memories', added!.id, 'short-term', 'current.md'))).toBe(true);
+
+    const duplicate = await addProjectAgents(db, created.data.id, [profileId]);
+    expect(duplicate).toHaveLength(4);
+  });
+
+  it('archives a dissolved group without deleting its workspace', async () => {
+    const created = await createProject(db, { content: { text: '待解散群聊' } });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const projectRoot = getProjectRoot(created.data.id);
+    const repo = new ProjectRepository(db);
+
+    repo.archive(created.data.id);
+
+    expect(repo.list().some((project) => project.id === created.data.id)).toBe(false);
+    expect(repo.getById(created.data.id).status).toBe('archived');
+    expect(existsSync(projectRoot)).toBe(true);
+    expect(existsSync(join(projectRoot, 'original-files'))).toBe(true);
   });
 });

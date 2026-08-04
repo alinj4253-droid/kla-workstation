@@ -63,6 +63,29 @@ const newCode = `        await fs.rm(dir, { recursive: true, force: true });
 
 let patched = content;
 
+const retryRenamePatch = [
+  '        await fs.rm(dir, { recursive: true, force: true });',
+  '        await release();',
+  '        // Patch: retry rename with backoff for Windows/Defender handle latency; fallback to cmd move',
+  '        for (let attempt = 0; ; attempt++) {',
+  '            try {',
+  '                await fs.rename(tmpDir, dir);',
+  '                break;',
+  '            } catch (e) {',
+  '                if (attempt >= 5) {',
+  '                    const { execSync } = require(\'child_process\');',
+  '                    execSync(`move /Y "${tmpDir}" "${dir}"`, { shell: \'cmd.exe\', timeout: 30000 });',
+  '                    break;',
+  '                }',
+  '                await new Promise(r => setTimeout(r, 500 * (attempt + 1)));',
+  '            }',
+  '        }',
+  '    }',
+  '    finally {',
+  '        // Lock already released in try block; finalizer is only for error path.',
+  '    }',
+].join("\n");
+
 // Fix 1: extractArchive - retry rename on Windows
 if (patched.includes('// Patch: retry rename with backoff for Windows/Defender handle latency; fallback to cmd move')) {
   console.log('extractArchive: already patched (latest)');
@@ -77,29 +100,7 @@ if (patched.includes('// Patch: retry rename with backoff for Windows/Defender h
     '        // Lock already released in try block; finalizer is only for error path.',
     '    }',
   ].join("\n");
-  const nb = [
-    '        await fs.rm(dir, { recursive: true, force: true });',
-    '        await release();',
-    '        // Patch: retry rename with backoff for Windows/Defender handle latency; fallback to cmd move',
-    '        for (let attempt = 0; ; attempt++) {',
-    '            try {',
-    '                await fs.rename(tmpDir, dir);',
-    '                break;',
-    '            } catch (e) {',
-    '                if (attempt >= 5) {',
-    '                    const { execSync } = require(\'child_process\');',
-    '                    execSync(`move /Y "${tmpDir}" "${dir}"`, { shell: \'cmd.exe\', timeout: 30000 });',
-    '                    break;',
-    '                }',
-    '                await new Promise(r => setTimeout(r, 500 * (attempt + 1)));',
-    '            }',
-    '        }',
-    '    }',
-    '    finally {',
-    '        // Lock already released in try block; finalizer is only for error path.',
-    '    }',
-  ].join("\n");
-  patched = patched.replace(ob, nb);
+  patched = patched.replace(ob, retryRenamePatch);
   console.log('extractArchive: upgraded to retry-based patch');
 } else {
   const origB = [
@@ -111,7 +112,7 @@ if (patched.includes('// Patch: retry rename with backoff for Windows/Defender h
     '    }',
   ].join("\n");
   if (patched.includes(origB)) {
-    patched = patched.replace(origB, nb);
+    patched = patched.replace(origB, retryRenamePatch);
     console.log('extractArchive: patched (original -> latest)');
   } else {
     console.error('extractArchive: patch target not found, may have changed');

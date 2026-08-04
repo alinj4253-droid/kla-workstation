@@ -2,8 +2,9 @@
  * app-file:// 只读协议
  *
  * URL format:
- *   app-file://file/<fileId>       — 按 file ID 获取当前版本
- *   app-file://version/<versionId> — 按 version ID 获取特定版本
+ *   app-file://file/<fileId>                    — 按 file ID 获取当前版本
+ *   app-file://version/<versionId>              — 按 version ID 获取特定版本
+ *   app-file://preview/<fileId>/<relativeAsset> — 加载 HTML 及同目录资源
  *
  * 安全约束：
  *   1. 只读；只允许 GET
@@ -15,7 +16,7 @@
 
 import { protocol } from 'electron';
 import { lstat, readFile } from 'node:fs/promises';
-import { extname, join, resolve, sep } from 'node:path';
+import { basename, extname, join, posix, resolve, sep } from 'node:path';
 import { FileRepository } from '@kunqing/database';
 import { getStudioRoot, getProjectRoot } from './paths';
 import { getLogger } from './logger';
@@ -51,6 +52,16 @@ const MIME_TYPES: Record<string, string> = {
   '.css': 'text/css',
   '.scss': 'text/scss',
   '.less': 'text/less',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf',
+  '.otf': 'font/otf',
+  '.eot': 'application/vnd.ms-fontobject',
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
+  '.ogg': 'audio/ogg',
+  '.mp4': 'video/mp4',
+  '.webm': 'video/webm',
   '.py': 'text/x-python',
   '.sh': 'text/x-shellscript',
   '.bat': 'text/x-bat',
@@ -115,16 +126,9 @@ export function registerAppFileProtocol(getDb: () => Database.Database | null): 
         return new Response('Method not allowed', { status: 405 });
       }
 
-      const url = new URL(request.url);
-      const pathParts = url.pathname.replace(/^\/+/, '').split('/');
-
-      // URL 格式： file/<fileId> 或 version/<versionId>
-      if (pathParts.length < 2 || !pathParts[0] || !pathParts[1]) {
-        return new Response('Invalid URL: 格式应为 app-file://file/<id> 或 app-file://version/<id>', { status: 400 });
-      }
-
-      const resourceType = pathParts[0];
-      const resourceId = pathParts[1];
+      const parsedRequest = parseAppFileRequest(request.url);
+      if (!parsedRequest) return new Response('Invalid app-file URL', { status: 400 });
+      const { resourceType, resourceId, assetPath } = parsedRequest;
 
       // ID 格式校验：24 位十六进制
       if (!/^[a-f0-9]{24}$/i.test(resourceId)) {
@@ -143,7 +147,7 @@ export function registerAppFileProtocol(getDb: () => Database.Database | null): 
       let filePath = '';
       let fileName = '';
 
-      if (resourceType === 'file') {
+      if (resourceType === 'file' || resourceType === 'preview') {
         // 按 file ID 获取当前版本
         const file = fileRepo.getById(resourceId);
         if (!file || file.status === 'deleted') {
@@ -160,9 +164,15 @@ export function registerAppFileProtocol(getDb: () => Database.Database | null): 
           return new Response('File version not found', { status: 404 });
         }
 
-        fileName = file.name;
-        const scopeRoot = resolveFileScopeRoot(file.scopeType, file.scopeId);
-        filePath = resolveInside(scopeRoot, file.normalizedPath);
+        const scopeRoot = resolveStoredFileRoot(file.scopeType, file.scopeId, file.normalizedPath);
+        if (resourceType === 'preview' && assetPath && assetPath !== file.name && assetPath !== basename(file.normalizedPath)) {
+          const normalizedAsset = normalizeRelativePath(assetPath).replaceAll('\\', '/');
+          fileName = basename(normalizedAsset);
+          filePath = resolveInside(scopeRoot, posix.join(posix.dirname(file.normalizedPath), normalizedAsset));
+        } else {
+          fileName = file.name;
+          filePath = resolveInside(scopeRoot, file.normalizedPath);
+        }
       } else if (resourceType === 'version') {
         // 按 version ID 获取特定版本
         const version = fileRepo.getVersion(resourceId);
@@ -176,10 +186,10 @@ export function registerAppFileProtocol(getDb: () => Database.Database | null): 
         }
 
         fileName = file.name;
-        const scopeRoot = resolveFileScopeRoot(file.scopeType, file.scopeId);
+        const scopeRoot = resolveStoredFileRoot(file.scopeType, file.scopeId, file.normalizedPath);
         filePath = resolveInside(scopeRoot, file.normalizedPath);
       } else {
-        return new Response('Unknown resource type: 仅支持 file 和 version', { status: 400 });
+        return new Response('Unknown resource type', { status: 400 });
       }
 
       // ── 安全校验 ──
@@ -189,16 +199,32 @@ export function registerAppFileProtocol(getDb: () => Database.Database | null): 
       const data = await readFile(filePath);
       const mimeType = getMimeType(filePath);
 
-      // ── 返回响应 ──
-      return new Response(data, {
-        status: 200,
-        headers: {
-          'Content-Type': mimeType,
-          'Content-Disposition': `inline; filename="${encodeURIComponent(fileName)}"`,
-          'Cache-Control': 'private, max-age=3600',
-          'X-Content-Type-Options': 'nosniff',
-        },
-      });
+      // HTML 作为完整文档加载。iframe sandbox 隔离 Electron/Node 权限；
+      // HTTP(S) 静态资源按普通浏览器行为加载，保证 CDN 样式、字体和脚本的预览一致性。
+      const headers: Record<string, string> = {
+        'Content-Type': mimeType,
+        'Content-Disposition': `inline; filename="${encodeURIComponent(fileName)}"`,
+        'Cache-Control': resourceType === 'preview' ? 'no-store' : 'private, max-age=3600',
+        'X-Content-Type-Options': 'nosniff',
+      };
+      if (mimeType === 'text/html') {
+        headers['Content-Security-Policy'] = [
+          "default-src app-file: data: blob: https: http:",
+          "img-src app-file: data: blob: https: http:",
+          "style-src app-file: https: http: 'unsafe-inline'",
+          "font-src app-file: data: https: http:",
+          "script-src app-file: https: http: 'unsafe-inline' 'unsafe-eval' blob:",
+          "connect-src https: http: wss: ws:",
+          "media-src app-file: data: blob: https: http:",
+          "frame-src app-file: https: http:",
+          "worker-src blob:",
+          "object-src 'none'",
+          "base-uri 'none'",
+          "form-action 'none'",
+        ].join('; ');
+      }
+
+      return new Response(data, { status: 200, headers });
     } catch (error) {
       const logger = getLogger();
       logger?.error({ err: error, url: request.url }, 'app-file 协议处理错误');
@@ -216,4 +242,39 @@ export function registerAppFileProtocol(getDb: () => Database.Database | null): 
       return new Response('Internal server error', { status: 500 });
     }
   });
+}
+
+function resolveStoredFileRoot(scopeType: 'project' | 'shared', scopeId: string, normalizedPath: string): string {
+  if (scopeType === 'project' && (normalizedPath === 'outputs' || normalizedPath.startsWith('outputs/'))) {
+    return getProjectRoot(scopeId);
+  }
+  return resolveFileScopeRoot(scopeType, scopeId);
+}
+
+export type AppFileRequest = {
+  resourceType: 'file' | 'version' | 'preview';
+  resourceId: string;
+  assetPath: string;
+};
+
+export function parseAppFileRequest(rawUrl: string): AppFileRequest | null {
+  const url = new URL(rawUrl);
+  const hostname = url.hostname.toLowerCase();
+  const parts = url.pathname.replace(/^\/+/, '').split('/').filter(Boolean).map(decodeURIComponent);
+
+  if (hostname === 'file' || hostname === 'version') {
+    const resourceId = parts[0];
+    return resourceId ? { resourceType: hostname, resourceId, assetPath: '' } : null;
+  }
+  if (hostname === 'preview') {
+    const resourceId = parts[0];
+    return resourceId ? { resourceType: 'preview', resourceId, assetPath: parts.slice(1).join('/') } : null;
+  }
+
+  const resourceType = parts.shift();
+  const resourceId = parts.shift();
+  if ((resourceType === 'file' || resourceType === 'version' || resourceType === 'preview') && resourceId) {
+    return { resourceType, resourceId, assetPath: parts.join('/') };
+  }
+  return null;
 }

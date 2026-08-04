@@ -24,7 +24,7 @@ export class SearchRepository extends BaseRepository {
       `SELECT p.id, p.name, p.summary, rank
        FROM project_fts
        JOIN projects p ON p.id = project_fts.id
-       WHERE project_fts MATCH ?
+       WHERE project_fts MATCH ? AND p.status != 'archived'
        ORDER BY rank
        LIMIT ?`,
     ).all(ftsQuery, limit) as Array<{ id: string; name: string; summary: string | null; rank: number }>;
@@ -43,7 +43,8 @@ export class SearchRepository extends BaseRepository {
       `SELECT m.id, m.project_id, snippet(message_fts, 1, '<b>', '</b>', '…', 30) as snippet, rank
        FROM message_fts
        JOIN messages m ON m.id = message_fts.id
-       WHERE message_fts MATCH ?
+       JOIN projects p ON p.id = m.project_id
+       WHERE message_fts MATCH ? AND p.status != 'archived'
        ORDER BY rank
        LIMIT ?`,
     ).all(ftsQuery, limit) as Array<{ id: string; project_id: string; snippet: string; rank: number }>;
