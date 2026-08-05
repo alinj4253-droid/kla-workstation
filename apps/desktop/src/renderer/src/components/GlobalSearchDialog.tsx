@@ -7,6 +7,9 @@ interface SearchHit {
   title: string;
   snippet: string;
   score: number;
+  projectId?: string;
+  scopeType?: 'project' | 'shared';
+  scopeId?: string;
 }
 
 export function GlobalSearchDialog({ onClose }: { onClose: () => void }): React.JSX.Element {
@@ -48,8 +51,10 @@ export function GlobalSearchDialog({ onClose }: { onClose: () => void }): React.
   const handleSelect = (hit: SearchHit): void => {
     if (hit.kind === 'project') {
       window.location.hash = `/projects/${hit.id}/chat`;
-    } else if (hit.kind === 'message') {
-      window.location.hash = `/projects/${hit.id.split('_')[0] ?? ''}/chat`;
+    } else if (hit.kind === 'message' && hit.projectId) {
+      window.location.hash = `/projects/${hit.projectId}/chat`;
+    } else if (hit.kind === 'knowledge' && hit.scopeType === 'project' && hit.scopeId) {
+      window.location.hash = `/projects/${hit.scopeId}/workspace`;
     }
     onClose();
   };

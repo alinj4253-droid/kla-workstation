@@ -7,6 +7,9 @@ export interface SearchHit {
   title: string;
   snippet: string;
   score: number;
+  projectId?: string;
+  scopeType?: 'project' | 'shared';
+  scopeId?: string;
 }
 
 export class SearchRepository extends BaseRepository {
@@ -17,7 +20,7 @@ export class SearchRepository extends BaseRepository {
   search(query: string, limit = 20): SearchHit[] {
     const sanitized = query.replace(/['"]/g, '').trim();
     if (!sanitized) return [];
-    const ftsQuery = sanitized.split(/\s+/).map((w) => `"${w}"`).join(' OR ');
+    const ftsQuery = sanitized.split(/\s+/).map((w) => `"${w}"*`).join(' OR ');
     const results: SearchHit[] = [];
 
     const projects = this.db.prepare(
@@ -40,7 +43,7 @@ export class SearchRepository extends BaseRepository {
     }
 
     const messages = this.db.prepare(
-      `SELECT m.id, m.project_id, snippet(message_fts, 1, '<b>', '</b>', '…', 30) as snippet, rank
+      `SELECT m.id, m.project_id, snippet(message_fts, 2, '<b>', '</b>', '…', 30) as snippet, rank
        FROM message_fts
        JOIN messages m ON m.id = message_fts.id
        JOIN projects p ON p.id = m.project_id
@@ -56,17 +59,20 @@ export class SearchRepository extends BaseRepository {
         title: `消息 (${m.project_id.slice(0, 8)}…)`,
         snippet: m.snippet.replace(/<[^>]+>/g, ''),
         score: m.rank,
+        projectId: m.project_id,
       });
     }
 
     const chunks = this.db.prepare(
-      `SELECT c.id, snippet(knowledge_chunk_fts, 3, '<b>', '</b>', '…', 30) as snippet, rank
+      `SELECT c.id, s.scope_type as scope_type, s.scope_id as scope_id,
+              snippet(knowledge_chunk_fts, 1, '<b>', '</b>', '…', 30) as snippet, rank
        FROM knowledge_chunk_fts
        JOIN knowledge_chunks c ON c.id = knowledge_chunk_fts.id
+       LEFT JOIN knowledge_sources s ON s.id = c.source_id
        WHERE knowledge_chunk_fts MATCH ?
        ORDER BY rank
        LIMIT ?`,
-    ).all(ftsQuery, limit) as Array<{ id: string; snippet: string; rank: number }>;
+    ).all(ftsQuery, limit) as Array<{ id: string; scope_type: 'project' | 'shared' | null; scope_id: string | null; snippet: string; rank: number }>;
 
     for (const c of chunks) {
       results.push({
@@ -75,6 +81,8 @@ export class SearchRepository extends BaseRepository {
         title: '知识片段',
         snippet: c.snippet.replace(/<[^>]+>/g, ''),
         score: c.rank,
+        ...(c.scope_type ? { scopeType: c.scope_type } : {}),
+        ...(c.scope_id ? { scopeId: c.scope_id } : {}),
       });
     }
 
