@@ -587,7 +587,14 @@ BrowserWindow 必须设置：
 | `model_slot_bindings` | `slot,model_profile_id,updated_at` | `reasoning/fast/embedding` 各至多一个有效绑定 |
 | `files` | `id,scope_type,scope_id,parent_id,type,name,normalized_path,mime_type,current_version_id,origin,status,created_at,updated_at,deleted_at` | `(scope_type,scope_id,normalized_path)` 条件唯一 |
 | `file_versions` | `id,file_id,version_no,storage_rel_path,size,sha256,created_by_type,created_by_id,run_id,change_note,created_at` | `(file_id,version_no)` 唯一；SHA 索引 |
-| `memory_records` | `id,project_id,agent_instance_id,scope,type,content,confidence,source_refs_json,status,expires_at,created_at,updated_at` | instance/scope/status 索引；与 Markdown 投影同步 |
+| `memory_records` | `id,project_id,agent_instance_id,scope,type,content,confidence,importance,pinned,topic_key,source_refs_json,metadata_json,status,expires_at,last_reinforced_at,last_accessed_at,access_count,consolidated_into_id,supersedes_id,created_at,updated_at` | instance/scope/status 与 topic 索引；支持衰减、压缩和版本替代 |
+| `memory_tombstones` | `id,project_id,agent_instance_id,normalized_key,source_message_id,reason,created_at` | 用户“忘记”后的防复活标记；严格按群聊智能体实例隔离 |
+| `skill_packages` | `id,version,name,description,package_rel_path,entry_rel_path,manifest_json,checksum,source,enabled,installed_at,updated_at` | `(id,version)` 主键；Codex-compatible 技能包 |
+| `agent_definition_skills` | `agent_definition_id,agent_definition_version,skill_id,skill_version,ordinal,config_json` | 技能只绑定 Agent Definition/version，不绑定群聊 |
+| `agent_run_skills` | `run_id,skill_id,skill_version,checksum,package_rel_path,snapshot_json,created_at` | 每个 Run 冻结技能版本和校验和 |
+| `workflow_packages` | `id,version,name,description,spec_md,manifest_json,checksum,enabled,created_at,updated_at` | 业务级协同工作流独立注册表 |
+| `agent_definition_workflows` | `agent_definition_id,agent_definition_version,workflow_id,workflow_version,ordinal` | 主要绑定统筹智能体定义 |
+| `agent_run_workflows` | `run_id,workflow_id,workflow_version,checksum,snapshot_json,created_at` | 每个 Run 冻结工作流目录 |
 | `knowledge_sources` | `id,scope_type,scope_id,file_id,version_id,sha256,status,ingested_at` | 同版本幂等唯一 |
 | `knowledge_ingestion_jobs` | `id,scope_type,scope_id,source_id,status,stage,progress,error_code,created_at,updated_at` | scope/status 索引 |
 | `knowledge_chunks` | `id,source_id,ordinal,text,location_json,content_hash,created_at` | source/ordinal 唯一；FTS5 索引 |
@@ -1122,7 +1129,7 @@ loadContext
 
 Definition ID：`builtin.knowledge-manager`；默认角色：Teammate/Event Worker。
 
-默认模型槽位为 `reasoning`，要求 `structuredOutput`；如果用户选择的快速模型也通过相同 schema eval，可在 Profile 中改绑 `fast`。内置 Skills：`document-ingestion`、`entity-relation-extraction`、`provenance-validation`、`wiki-materialization`、`graph-projection`。
+默认模型槽位为 `reasoning`，要求 `structuredOutput`；如果用户选择的快速模型也通过相同 schema eval，可在 Profile 中改绑 `fast`。官方聚合 Skills 为 `process-knowledge-files` 和 `retrieve-knowledge`；前者编排文档解析、实体关系、溯源、Wiki 与图谱投影，后者编排全文、向量、图谱与 Wiki 检索。历史原子 Skill 继续作为内部能力说明保留。
 
 触发方式：用户明确 `@`、Leader 委派、群聊 `original-files` 新文件事件、共享知识入库命令。相同 `fileVersionId + pipelineVersion` 幂等，只允许一个活动入库 Job。
 
@@ -1150,9 +1157,79 @@ discoverSource
 - 图谱和 Wiki 写入临时目录，全部阶段成功后原子替换 `current` 投影；失败保留上一成功版本。
 - 群聊知识与共享知识使用相同 schema、不同 scope，查询结果必须保留 scope 标签。
 
-### 10.9 Skill、Tool 与权限执行
+#### 10.8.1 官方技能一：知识文件处理
 
-Skill 是版本化 Markdown 指令，不能执行代码；Tool 是在 `ToolRegistry` 注册的 TypeScript 函数。每次 Tool 调用必须经过：
+Skill ID：`process-knowledge-files`；执行模式：`hybrid`。`SKILL.md` 负责触发语义、决策约束和用户侧汇报原则，确定性代码负责文件扫描、解析、切片、哈希、索引写入、删除回收和资产物化。
+
+处理链路：
+
+```text
+扫描 original-files
+  -> 对比文件版本、SHA-256 与内容 MD5
+  -> 按类型解析（TXT/MD/JSON/CSV/HTML/PDF/DOCX/XLSX）
+  -> 图片或扫描件按需路由本地 OCR
+  -> 语义切片与位置引用
+  -> 摘要、关键词、标签和语言识别
+  -> 本地向量化
+  -> 实体、关系、属性与溯源提取
+  -> Wiki 与图谱写入 SQLite
+  -> 物化本地 JSON/Markdown/HTML 资产
+```
+
+增量与删除规则：
+
+- MD5 是“内容是否已处理”的快速标记，SHA-256 与 `fileVersionId` 是版本一致性校验；已就绪且内容未变的来源直接跳过。
+- 新版本完成后回收旧版本的切片、向量、溯源和只由旧来源支持的知识；源文件删除后执行相同回收，并重新生成 Wiki/图谱投影。
+- SQLite 是切片、向量、图谱、Wiki 和处理状态的权威数据；工作区文件是可浏览、可预览、可重建的本地投影。
+- 物化输出为 `knowledge/knowledge-index.json`、`knowledge/wiki/index.html`、`graph-visualization/knowledge-graph.json` 和 `graph-visualization/knowledge-graph.html`，HTML 不依赖外部 CDN。
+
+#### 10.8.2 官方技能二：混合知识检索
+
+Skill ID：`retrieve-knowledge`；执行模式：`hybrid`。检索范围固定为当前群聊知识和共享知识，不允许读取其他群聊的私有知识。
+
+检索器根据问题动态调整四路权重：原文、编号、条款和代码提高 FTS5 权重；原因、方案、相似问题和总结提高向量/Wiki 权重；人物、组织、依赖和上下游提高图谱权重。各通道结果使用加权 RRF 融合、按知识对象去重，并返回来源文件、位置、命中通道和归一化相关度。FTS5 在旧工作区或不支持的 SQLite 环境中降级为带 scope 过滤的字面匹配。
+
+当前 384 维向量引擎是完全离线的多语言特征哈希基线，可在无模型包时直接运行；接口和模型元数据已预留给 `BGE-small-zh-v1.5 ONNX` 本地模型包。替换后不得改变上层 Skill、SQLite 作用域和证据返回契约，模型版本变化必须触发向量重建。
+
+#### 10.8.3 官方内置工具与设置页
+
+设置 > AI 生产力 > 技能展示两个聚合 Skill 及其知识管理智能体绑定；设置 > AI 生产力 > 工具展示并持久化以下本地工具开关：
+
+| 工具 | MVP 状态 | 说明 |
+|---|---|---|
+| 本地文档解析器 | 可直接使用 | PDF、DOCX、XLSX、HTML 与文本类文件均在本机解析 |
+| PaddleOCR 本地模型包 | 适配器已内置，模型包可选安装 | 仅在普通解析无正文时调用；未安装时显示明确状态，不上传文件 |
+| 本地向量化引擎 | 可直接使用 | 当前为 384 维离线基线，可替换 BGE ONNX |
+| SQLite 本地向量索引 | 可直接使用 | 向量和模型版本保存在 K_Studio 数据库 |
+| FTS5 全文检索 | 可直接使用 | 精确词语与原文检索，失败时有本地降级路径 |
+| 混合检索与融合排序 | 可直接使用 | 融合全文、向量、图谱和 Wiki |
+| 图谱与 Wiki 生成器 | 可直接使用 | 生成 JSON、Markdown 和离线 HTML |
+
+工具开关不仅控制 UI；解析、OCR、向量写入、向量/全文检索和资产物化入口均读取本地 `settings`。所有原始文件、索引、模型缓存、处理状态和生成资产必须保存在 K_Studio，不引入云端依赖。MinerU 可在后续作为复杂 PDF 版面解析工具包接入，MVP 不把它声明为已安装能力。
+
+### 10.9 Skill、Tool、协同工作流与权限执行
+
+三类能力必须分开注册和授权：
+
+- **Tool**：外部 API、MCP、文件系统等可直接执行的能力，由 `ToolRegistry` 管理；凭据只能属于 Tool/Provider，不能写入 Skill。
+- **Skill**：单个 Agent Definition 独有的版本化方法说明和可选脚本/参考资料，由 `SkillRegistry` 管理；不绑定群聊。Run 只常驻名称与描述，需要时调用 `skill:load` 读取完整正文。
+- **Collaborative Workflow**：统筹智能体从业务视角选择的角色/DAG/验收门禁，由 `WorkflowRegistry` 管理；不能伪装成普通 Skill，也不能写死某次群聊的成员分配。
+
+技能包目录契约：
+
+```text
+<skill-id>/
+├─ SKILL.md              # 必需；Codex-compatible YAML name/description + Markdown 正文
+├─ kunqing.json          # 鲲擎扩展：版本、入口、所需工具、权限、I/O schema、兼容性、校验和来源
+├─ scripts/              # 可选；确定性脚本
+├─ references/           # 可选；按需读取的详细资料
+├─ assets/               # 可选；生成成果时使用的资源
+└─ tests/                # 可选；技能自测
+```
+
+`SKILL.md` frontmatter 只要求 `name` 和 `description`，以兼容 Codex；鲲擎专有字段统一放在 `kunqing.json`。旧版无 frontmatter 的内置 Skill 可读，但新建/升级包必须使用上述格式。
+
+每次 Tool 调用必须经过：
 
 ```text
 schema validation
@@ -1170,7 +1247,7 @@ schema validation
 | 读本群聊消息 | 允许 | 仅任务引用 | 由上下文注入 |
 | 读本群聊原始文件 | 允许 | 允许 | 默认仅显式附件/托管副本 |
 | 读本群聊知识 | 允许 | 允许 | 通过 MCP Tool |
-| 读共享知识 | 群聊开关开启时允许 | 入库/查询时允许 | 通过 MCP Tool |
+| 读共享知识 | 默认允许 | 入库/查询时允许 | 通过只读 MCP Tool |
 | 写自身记忆 | 允许 | 允许 | 仅通过 MCP Tool |
 | 写群聊知识/图谱 | 禁止 | 允许 | 默认禁止 |
 | 写 outputs | 允许 | 仅报告/导出 | 托管输出目录 |
@@ -1395,7 +1472,12 @@ K_Studio/
 │  └─ <projectId>-<slug>/
 │     ├─ group.yaml
 │     ├─ agent-identities/
-│     │  └─ <agentInstanceId>/IDENTITY.md
+│     │  └─ <agentInstanceId>/
+│     │     ├─ IDENTITY.md
+│     │     ├─ ROLE.md
+│     │     ├─ ADAPTATION.md
+│     │     ├─ IDENTITY.snapshot.json
+│     │     └─ adaptation-history/
 │     ├─ agent-memories/
 │     │  └─ <agentInstanceId>/
 │     │     ├─ short-term/
@@ -1482,50 +1564,53 @@ K_Studio/
 
 ### 11.3 身份文件
 
-加入群聊时从 Agent Definition 的 `IDENTITY.template.md` 生成实例专属 `IDENTITY.md`：
+加入群聊时必须从 Agent Definition 的 `IDENTITY.template.md` 复制实例专属核心身份快照。外部 CLI Definition 尚不存在时，先在 `agent-definitions/custom/<definitionId>/<version>/` 生成可人工编辑的最小 Definition，再创建群聊实例。
 
-```md
----
-schemaVersion: 1
-agentInstanceId: 01...
-agentProfileId: 01...
-definitionId: builtin.orchestrator
-definitionVersion: 1.0.0
-role: leader
-createdAt: 2026-07-18T00:00:00.000Z
-effectivePermissionsHash: sha256:...
----
+实例身份目录包含：
 
-# 身份
-
-你是当前群聊的统筹管理智能体……
+```text
+agent-identities/<agentInstanceId>/
+├─ IDENTITY.md              # 创建群聊时形成的 Definition 身份快照
+├─ ROLE.md                  # 系统生成的实例 ID、群聊角色、运行方式与安全约束
+├─ ADAPTATION.md            # 当前群聊内可演化的稳定适应项和人工补充
+├─ IDENTITY.snapshot.json   # Definition 来源、版本和复制时 checksum
+├─ .adaptation-state.json   # 系统归纳状态，不直接提供给普通用户编辑
+└─ adaptation-history/      # 每次自动调整前的 Markdown 版本
 ```
 
-- Identity 只对当前群聊实例生效，不写回全局 Definition/Profile。
+- `IDENTITY.md` 只对当前群聊实例生效，不写回全局 Definition/Profile；文件已经存在时初始化检查不得覆盖人工修改。
+- `ROLE.md` 由系统依据数据库中的实例元数据重新生成，不允许作为人工编辑入口。
+- `ADAPTATION.md` 只允许补充沟通偏好、协作习惯、领域侧重点和交付偏好；自动归纳项必须有至少两次独立证据且置信度不低于 `0.8`。
+- 适应项不得扩大权限、替换核心职责、改变 leader/teammate 身份、绕过平台规则或读取其他智能体的身份和记忆。
+- 自动归纳只替换 `KUNQING:MANAGED` 区域，始终保留 `KUNQING:MANUAL` 人工补充区域；每次更新前写入 `adaptation-history/`。
 - 文件不得包含 API Key、CLI token、完整绝对路径或用户隐私数据。
-- 用户通过设置页编辑“身份补充”时，由 Main 校验 frontmatter 后原子写入；直接外部修改由 watcher 检测并建立 identity revision。
-- frontmatter 的 ID、定义版本和权限哈希不可由用户正文编辑；非法修改隔离到 `.runtime/quarantine` 并恢复上一合法版本。
+- 用户要调整所有以后创建的实例时，编辑 `K_Studio/agent-definitions/<kind>/<definitionId>/<version>/IDENTITY.template.md` 和 `prompts/system.md`。
+- 用户只调整某个现有群聊时，编辑该实例的 `IDENTITY.md` 或 `ADAPTATION.md` 人工区域；现有实例不会因全局模板修改而静默变化。
+
+运行时提示词按以下优先级装配：平台安全与 Harness 规则 > Definition `prompts/system.md` > 实例 `IDENTITY.md + ROLE.md + ADAPTATION.md` > 技能/工作流 > 私有记忆与当前上下文 > 当前任务。原生模型、LangGraph 与外部 CLI 使用同一个角色指令构建结果；CodeBuddy 等精简注入适配器也必须内联角色摘要，不能只依赖 CLI 自行发现文件。
 
 ### 11.4 智能体记忆
 
 记忆分为：
 
-- **短期记忆**：当前会话摘要、进行中上下文和最近决策；默认 TTL 72 小时，群聊可配置 1–168 小时。
-- **长期记忆**：稳定事实、用户偏好、已确认决策和可复用结论；无默认 TTL，用户可查看、编辑和删除。
+- **短期记忆**：本智能体的任务片段、进行中上下文和最近决策；MVP 半衰期为 72 小时，片段过期后不召回。
+- **长期记忆**：本智能体语义总结后的稳定偏好、约束、决策和可复用经验；半衰期为 30 天，不以永久固定优先级压过近期任务。
+- **明确记忆**：用户使用“记住”写入的规则，`confidence=1`、`importance=1`、`pinned=true`，不随时间衰减，直到用户明确“忘记”。
 
 每个记忆文件使用 YAML frontmatter：`memoryId/type/scope/confidence/sourceMessageIds/createdAt/updatedAt/expiresAt`。不保存隐藏推理链、模型原始思维过程或密钥。
 
 合法 Markdown 文件是可移植记忆正文，`memory_records` 是查询索引与状态镜像。应用写入采用临时文件 + 原子 rename，再更新数据库；外部编辑经 schema 与 hash 校验后生成 revision 并重建索引。无法判定的新旧冲突进入 `.runtime/quarantine`，不静默覆盖任一版本。
 
-写入流程：
+写入与召回流程：
 
-1. 智能体调用 `memory.propose` 提交候选。
-2. MemoryService 做敏感信息过滤、相似去重、来源校验和权限检查。
-3. 短期内容写 session Markdown 并重建 `current.md`；长期内容写独立 `<memoryId>.md`。
-4. 同一事务意图更新 `memory_records` 索引和 `index.jsonl`，失败走 staging 补偿。
-5. 用户手动修改合法 Markdown 后重新索引；非法 frontmatter 不进入上下文。
+1. 每个 Agent Run 完成后，由该智能体自己的模型/CLI 运行时输出结构化回顾：主题、任务摘要、决定、经验、偏好、约束、待续项、置信度、重要性和长期价值判断；自身运行时失败时才使用平台模型，二者都失败时只保存低置信度短期兜底。
+2. 置信度由模型按事实可靠性输出，禁止固定 `0.68` 等常量。只有 `confidence > 0.6` 且 `longTermWorth=true` 才进入长期语义归纳。
+3. 同主题短期任务片段达到 5 条或字符预算后，使用该智能体的语义摘要压缩为 `topic-summary`，旧片段标为 `consolidated`；不把原始对话无限堆入上下文。
+4. 长期同主题摘要采用新版本替代旧版本，旧记录标为 `superseded` 并保留来源链；召回按语义/关键词、时间衰减、置信度、重要性、任务连续性和使用度联合排序。
+5. 用户“忘记”会删除当前智能体实例范围内匹配的显式及派生记忆，并写入 `memory_tombstones`，防止后续模型总结将内容复活；再次明确“记住”同一内容时清除对应 tombstone。
+6. SQLite 是查询与生命周期主数据，`agent-memories/<agentInstanceId>/short-term|long-term/topics/`、`sessions/` 和 `index.jsonl` 是该实例自己的本地文件镜像。
 
-群聊间记忆严格隔离。共享信息必须由用户或知识管理智能体显式发布到 `shared-knowledge`，不能把某个群聊的 Agent 长期记忆自动升级为全局记忆。
+群聊间、同一群聊的不同智能体之间，身份和记忆都严格隔离。共享信息必须由用户或知识管理智能体显式发布到 `shared-knowledge`，不能把任何 Agent 长期记忆自动升级为全局记忆。
 
 ### 11.5 文本抽取与知识入库
 
@@ -1581,7 +1666,7 @@ type GraphProjection = {
 ### 11.8 共享知识访问
 
 - `shared-knowledge` 是独立 scope，不属于任何项目；只有用户和知识管理智能体的 shared ingestion job 可以写入。
-- 新群聊默认 `shared_knowledge_enabled=true`；用户可在群聊设置关闭。
+- MVP 中所有群聊默认可读共享知识，不提供群聊级关闭开关；写入仍只允许用户和知识管理智能体的 shared ingestion job。
 - 检索返回必须标记 `group` 或 `shared`，同名实体不自动合并；知识管理任务可生成带来源的跨 scope 对齐建议。
 - 内置 Agent 通过 KnowledgeService 访问；外部 CLI 通过只读 MCP Tool 获取命中片段，不直接得到共享知识根目录路径。
 - 删除共享源文件前展示受影响的群聊引用数量；删除后相关知识先标记 stale，再异步重算。

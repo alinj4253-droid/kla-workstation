@@ -1,11 +1,14 @@
 import type Database from 'better-sqlite3';
-import { KnowledgeRepository, SearchRepository, AgentRunRepository } from '@kunqing/database';
+import { SearchRepository, AgentRunRepository } from '@kunqing/database';
 import { getProjectRoot } from './paths';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import type { Scheduler } from './scheduler';
 import { ToolRegistry } from './tool-registry';
 import { buildModelProfileSnapshot } from './project-creator';
+import { SkillRegistry } from './skill-registry';
+import { WorkflowRegistry } from './workflow-registry';
+import { formatHybridKnowledgeResult, searchHybridKnowledge } from './hybrid-knowledge-search';
 
 export interface ToolDefinition {
   name: string;
@@ -15,7 +18,6 @@ export interface ToolDefinition {
 }
 
 export function createProjectTools(db: Database.Database, scheduler?: Scheduler): ToolDefinition[] {
-  const kRepo = new KnowledgeRepository(db);
   const sRepo = new SearchRepository(db);
   const runRepo = new AgentRunRepository(db);
 
@@ -35,16 +37,7 @@ export function createProjectTools(db: Database.Database, scheduler?: Scheduler)
       async execute(args) {
         const { query, projectId, limit } = args as { query: string; projectId: string; limit?: number };
         try {
-          const results = kRepo.search(query, 'project', projectId, limit ?? 5);
-          const parts: string[] = [];
-          for (const n of results.nodes) {
-            parts.push(`[节点] ${n.summary ?? n.canonicalName}`);
-          }
-          for (const c of results.chunks) {
-            parts.push(`[片段] ${c.text.slice(0, 500)}`);
-          }
-          if (parts.length === 0) return '未找到相关知识';
-          return parts.join('\n\n');
+          return formatHybridKnowledgeResult(searchHybridKnowledge(db, query, projectId, limit ?? 5));
         } catch (err) {
           return `搜索错误: ${err instanceof Error ? err.message : String(err)}`;
         }
@@ -281,11 +274,62 @@ export function createProjectTools(db: Database.Database, scheduler?: Scheduler)
 
 /** 将项目工具注册到 ToolRegistry，附加权限元数据 */
 export function registerProjectTools(registry: ToolRegistry, db: Database.Database, scheduler?: Scheduler): void {
-  const kRepo = new KnowledgeRepository(db);
   const sRepo = new SearchRepository(db);
   const runRepo = new AgentRunRepository(db);
 
   registry.registerAll([
+    {
+      name: 'skill:load',
+      description: '按需读取当前智能体定义已绑定的技能说明。只能读取自己的技能池。',
+      parameters: {
+        type: 'object',
+        properties: {
+          runId: { type: 'string', description: '当前 Run ID，由系统自动补充' },
+          skillId: { type: 'string', description: '技能 ID' },
+          version: { type: 'string', description: '技能版本，可选' },
+        },
+        required: ['runId', 'skillId'],
+      },
+      requiredCapabilities: ['read:skill'],
+      maxContentLength: 20_000,
+      async execute(args) {
+        const { runId, skillId, version } = args as { runId: string; skillId: string; version?: string };
+        const owner = db.prepare(
+          `SELECT pai.definition_id as definitionId, pai.definition_version as definitionVersion
+           FROM agent_runs ar JOIN project_agent_instances pai ON pai.id = ar.agent_instance_id
+           WHERE ar.id = ?`,
+        ).get(runId) as { definitionId: string | null; definitionVersion: string | null } | undefined;
+        if (!owner?.definitionId) return '无法确认当前智能体定义，技能读取被拒绝';
+        const content = await new SkillRegistry(db).loadForDefinition(owner.definitionId, owner.definitionVersion ?? '1.0.0', skillId, version);
+        return content ?? `技能 ${skillId}${version ? `@${version}` : ''} 未绑定到当前智能体`;
+      },
+    },
+    {
+      name: 'workflow:load',
+      description: '按需读取当前统筹智能体定义已绑定的业务协同工作流。',
+      parameters: {
+        type: 'object',
+        properties: {
+          runId: { type: 'string', description: '当前 Run ID，由系统自动补充' },
+          workflowId: { type: 'string', description: '工作流 ID' },
+          version: { type: 'string', description: '工作流版本，可选' },
+        },
+        required: ['runId', 'workflowId'],
+      },
+      requiredCapabilities: ['read:workflow'],
+      maxContentLength: 30_000,
+      async execute(args) {
+        const { runId, workflowId, version } = args as { runId: string; workflowId: string; version?: string };
+        const owner = db.prepare(
+          `SELECT pai.definition_id as definitionId, pai.definition_version as definitionVersion
+           FROM agent_runs ar JOIN project_agent_instances pai ON pai.id = ar.agent_instance_id
+           WHERE ar.id = ?`,
+        ).get(runId) as { definitionId: string | null; definitionVersion: string | null } | undefined;
+        if (!owner?.definitionId) return '无法确认当前智能体定义，工作流读取被拒绝';
+        return new WorkflowRegistry(db).loadForDefinition(owner.definitionId, owner.definitionVersion ?? '1.0.0', workflowId, version)
+          ?? `工作流 ${workflowId}${version ? `@${version}` : ''} 未绑定到当前智能体`;
+      },
+    },
     {
       name: 'knowledge:search',
       description: '搜索项目知识库中的文档内容，返回匹配的片段',
@@ -303,16 +347,7 @@ export function registerProjectTools(registry: ToolRegistry, db: Database.Databa
       async execute(args) {
         const { query, projectId, limit } = args as { query: string; projectId: string; limit?: number };
         try {
-          const results = kRepo.search(query, 'project', projectId, limit ?? 5);
-          const parts: string[] = [];
-          for (const n of results.nodes) {
-            parts.push(`[节点] ${n.summary ?? n.canonicalName}`);
-          }
-          for (const c of results.chunks) {
-            parts.push(`[片段] ${c.text.slice(0, 500)}`);
-          }
-          if (parts.length === 0) return '未找到相关知识';
-          return parts.join('\n\n');
+          return formatHybridKnowledgeResult(searchHybridKnowledge(db, query, projectId, limit ?? 5));
         } catch (err) {
           return `搜索错误: ${err instanceof Error ? err.message : String(err)}`;
         }

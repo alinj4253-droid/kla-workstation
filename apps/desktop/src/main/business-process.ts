@@ -165,9 +165,10 @@ export async function runPostTaskKnowledgeCapture(input: {
   runId: string;
   agentInstanceId: string;
   agentName: string;
+  roleDirective?: string;
 }): Promise<{ businessProcess: BusinessProcess; knowledgeDocumentPath: string; responseText: string }> {
   const prompt = `原始任务：\n${input.payload.originalTask.slice(0, 8_000)}\n\n团队已完成的结果：\n${input.payload.teamResults.slice(0, 24_000)}\n\n交付物：\n${input.payload.deliverables.join('\n') || '无明确文件交付物'}\n\n请完成知识与经验归集，并判断是否存在值得复用的业务流程。只输出 JSON。`;
-  const system = `你是群聊中的知识管理智能体，正在任务完成后进行本地知识沉淀。
+  const system = `${input.roleDirective ? `${input.roleDirective}\n\n` : ''}你正在任务完成后进行本地知识沉淀。
 
 请返回严格 JSON，结构如下：
 {

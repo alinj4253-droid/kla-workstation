@@ -10,13 +10,24 @@ export interface ParsedDocument {
     pageCount?: number;
     title?: string;
     author?: string;
+    parserId?: string;
+    requiresOcr?: boolean;
     [key: string]: unknown;
   };
+}
+
+export interface KnowledgeDocumentProfile {
+  summary: string;
+  keywords: string[];
+  tags: string[];
+  language: 'zh' | 'en' | 'mixed' | 'unknown';
 }
 
 // ── Chunker types ──
 
 export interface Chunk {
+  /** Database ID after persistence. */
+  id?: string;
   /** Ordinal index within the source */
   ordinal: number;
   /** Chunk text content */
@@ -73,6 +84,15 @@ export interface PipelineContext {
   /** Read the file content as a Uint8Array */
   readFile(): Promise<Uint8Array>;
 
+  /** Run an installed local OCR model pack for image/scanned content. */
+  ocrExtract?(filePath: string): Promise<string>;
+
+  /** Persist file-level summary, keywords and tags. */
+  saveDocumentProfile?(profile: KnowledgeDocumentProfile, metadata: ParsedDocument['metadata']): Promise<void>;
+
+  /** Allow the configured model to refine the local document profile. */
+  analyzeDocument?(text: string, fallback: KnowledgeDocumentProfile): Promise<KnowledgeDocumentProfile>;
+
   /** Emit a chunk to the database */
   saveChunk(chunk: Chunk): Promise<void>;
 
@@ -83,7 +103,7 @@ export interface PipelineContext {
   upsertNode(entity: ExtractedEntity): Promise<string>;
 
   /** Upsert a knowledge edge */
-  upsertEdge(rel: ExtractedRelationship, sourceNodeId: string, targetNodeId: string): Promise<void>;
+  upsertEdge(rel: ExtractedRelationship, sourceNodeId: string, targetNodeId: string): Promise<string>;
 
   /** Create provenance record */
   createProvenance(targetType: string, targetId: string, sourceId: string, chunkId: string, locationJson?: string, quoteHash?: string): Promise<void>;

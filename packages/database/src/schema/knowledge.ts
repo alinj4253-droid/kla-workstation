@@ -7,6 +7,9 @@ export const knowledgeSources = sqliteTable('knowledge_sources', {
   fileId: text('file_id').notNull(),
   versionId: text('version_id'),
   sha256: text('sha256'),
+  contentMd5: text('content_md5'),
+  parserId: text('parser_id'),
+  metadataJson: text('metadata_json'),
   status: text('status', { enum: ['pending', 'ingesting', 'ready', 'error'] }).notNull().default('pending'),
   ingestedAt: text('ingested_at'),
 });
@@ -37,6 +40,27 @@ export const knowledgeChunks = sqliteTable('knowledge_chunks', {
 }, (table) => ({
   unq: uniqueIndex('unq_knowledge_chunks_source_ordinal').on(table.sourceId, table.ordinal),
 }));
+
+export const knowledgeDocumentProfiles = sqliteTable('knowledge_document_profiles', {
+  sourceId: text('source_id').primaryKey(),
+  summary: text('summary').notNull(),
+  keywordsJson: text('keywords_json').notNull(),
+  tagsJson: text('tags_json').notNull(),
+  language: text('language').notNull(),
+  metadataJson: text('metadata_json'),
+  updatedAt: text('updated_at').notNull(),
+});
+
+export const knowledgeChunkEmbeddings = sqliteTable('knowledge_chunk_embeddings', {
+  chunkId: text('chunk_id').primaryKey(),
+  sourceId: text('source_id').notNull(),
+  modelId: text('model_id').notNull(),
+  dimensions: integer('dimensions').notNull(),
+  vectorJson: text('vector_json').notNull(),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  index('idx_knowledge_embeddings_source').on(table.sourceId),
+]);
 
 export const knowledgeNodes = sqliteTable('knowledge_nodes', {
   id: text('id').primaryKey(),

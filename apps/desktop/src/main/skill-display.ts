@@ -6,6 +6,11 @@ const SKILL_LABELS: Record<string, string> = {
   list_project_agents: '群聊成员查询',
   delegate_tasks: '智能体任务委派',
   publish_artifact: '成果文件发布',
+  'skill:load': '技能说明读取',
+  'workflow:load': '协同工作流读取',
+  'knowledge:ingest': '知识文件处理',
+  'local:ocr': 'PaddleOCR 本地识别',
+  'local:embed': '本地知识向量化',
 };
 
 export function getSkillDisplayName(name: string): string {

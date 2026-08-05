@@ -110,8 +110,8 @@ export function SettingsPage(): React.JSX.Element {
           <Route path="agents" element={<AgentsSettings />} />
           <Route path="models" element={<ModelsSettings />} />
           <Route path="channels" element={<ChannelsSettings />} />
-          <Route path="skills" element={<EmptySettingsPage label="技能设置页面" />} />
-          <Route path="tools" element={<EmptySettingsPage label="工具设置页面" />} />
+          <Route path="skills" element={<CapabilitiesSettings view="skills" />} />
+          <Route path="tools" element={<CapabilitiesSettings view="tools" />} />
           <Route path="operations" element={<OperationsProtectedRoute />} />
           <Route path="kstudio" element={<KStudioSettings />} />
           <Route path="appearance" element={<AppearanceSettings />} />
@@ -1539,7 +1539,8 @@ const AGENT_REQUIREMENTS: Array<{ id: string; name: string; capabilities: string
 
 interface ToolConfig {
   id: string; name: string; description: string; enabled: boolean;
-  config: Record<string, string>;
+  category: string; status: 'ready' | 'optional' | 'disabled'; statusText: string;
+  isBuiltin: boolean; config: Record<string, string>;
 }
 
 interface McpServerConfig {
@@ -1547,23 +1548,12 @@ interface McpServerConfig {
   enabled: boolean; status: 'connected' | 'disconnected' | 'error';
 }
 
-const MOCK_TOOLS: ToolConfig[] = [
-  { id: 'tool.file-reader', name: '文件读取器', description: '读取工作区文件内容', enabled: true, config: { maxSize: '1MB' } },
-  { id: 'tool.web-search', name: '网络搜索', description: '通过搜索引擎获取实时信息', enabled: true, config: { engine: 'bing', maxResults: '5' } },
-  { id: 'tool.db-query', name: '数据库查询', description: '对本地 SQLite 执行只读查询', enabled: false, config: { timeout: '10s' } },
-];
-
-const MOCK_MCP_SERVERS: McpServerConfig[] = [
-  { id: 'mcp.filesystem', name: 'Filesystem', transport: 'stdio', command: 'npx', enabled: true, status: 'connected' },
-  { id: 'mcp.github', name: 'GitHub', transport: 'sse', url: 'https://api.github.com/mcp', enabled: false, status: 'disconnected' },
-  { id: 'mcp.notion', name: 'Notion', transport: 'sse', url: 'https://www.notion.com/api/mcp', enabled: true, status: 'error' },
-];
-
-function CapabilitiesSettings(): React.JSX.Element {
+function CapabilitiesSettings({ view }: { view: 'skills' | 'tools' }): React.JSX.Element {
   const [skills, setSkills] = useState<SkillRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [toolLoading, setToolLoading] = useState(true);
   const [mcpLoading, setMcpLoading] = useState(true);
-  const [tools, setTools] = useState<ToolConfig[]>(MOCK_TOOLS);
+  const [tools, setTools] = useState<ToolConfig[]>([]);
   const [mcpServers, setMcpServers] = useState<McpServerConfig[]>([]);
   const [mcpAddOpen, setMcpAddOpen] = useState(false);
   const [editingTool, setEditingTool] = useState<string | null>(null);
@@ -1573,6 +1563,13 @@ function CapabilitiesSettings(): React.JSX.Element {
       ?.then((res) => { if (res?.data) setSkills(res.data); })
       .catch(() => {})
       .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    (window.kunqing?.settings.listTools() as Promise<{ ok: boolean; data: ToolConfig[] }> | undefined)
+      ?.then((res) => { if (res?.data) setTools(res.data); })
+      .catch(() => {})
+      .finally(() => setToolLoading(false));
   }, []);
 
   useEffect(() => {
@@ -1589,8 +1586,13 @@ function CapabilitiesSettings(): React.JSX.Element {
     } catch { /* ignore */ }
   };
 
-  const toggleTool = (toolId: string): void => {
-    setTools((prev) => prev.map((t) => t.id === toolId ? { ...t, enabled: !t.enabled } : t));
+  const toggleTool = async (toolId: string): Promise<void> => {
+    const current = tools.find((tool) => tool.id === toolId);
+    if (!current) return;
+    try {
+      await window.kunqing?.settings.setToolEnabled({ toolId, enabled: !current.enabled });
+      setTools((prev) => prev.map((tool) => tool.id === toolId ? { ...tool, enabled: !tool.enabled } : tool));
+    } catch { /* ignore */ }
   };
 
   const toggleMcpServer = async (serverId: string): Promise<void> => {
@@ -1611,8 +1613,12 @@ function CapabilitiesSettings(): React.JSX.Element {
   };
 
   return (
-    <div className="settings-page">
-      <SettingsHeading title="能力扩展" description="管理内置 Skill、Tool 和 MCP Server 配置，控制智能体可用的扩展能力。" />
+    <div className="settings-page" aria-label={view === 'skills' ? '技能设置页面' : '工具设置页面'}>
+      <SettingsHeading
+        title={view === 'skills' ? '技能' : '工具'}
+        description={view === 'skills' ? '管理各智能体独有的内置技能包及其运行权限。' : '管理本地内置工具、模型包和外部 MCP 工具。'}
+      />
+      {view === 'skills' ? <>
       {/* 模型能力要求 */}
       <div className="system-info-card">
         <h4><BrainCircuit size={16} /> 智能体模型能力要求</h4>
@@ -1637,11 +1643,11 @@ function CapabilitiesSettings(): React.JSX.Element {
         <h4><Puzzle size={16} /> 内置技能 {!loading && <span className="capability-count">{skills.filter((s) => s.isBuiltin).length}</span>}</h4>
         {loading ? <p>加载中...</p> : (
           <table className="scan-findings-table">
-            <thead><tr><th>技能 ID</th><th>绑定智能体</th><th>所需权限</th><th>开关</th></tr></thead>
+            <thead><tr><th>技能</th><th>绑定智能体</th><th>所需工具</th><th>开关</th></tr></thead>
             <tbody>
               {skills.filter((s) => s.isBuiltin).map((s) => (
                 <tr key={s.id}>
-                  <td><code>{s.id}</code></td>
+                  <td><strong>{s.name}</strong><br /><code>{s.id}</code><br /><span className="settings-table-description">{s.description}</span></td>
                   <td>{s.agentDefinitionId ? <code>{s.agentDefinitionId}</code> : '-'}</td>
                   <td>{s.requiredCapabilities.map((c) => <code key={c} style={{ marginRight: 4 }}>{c}</code>)}</td>
                   <td>
@@ -1660,21 +1666,25 @@ function CapabilitiesSettings(): React.JSX.Element {
         )}
       </div>
 
+      </> : <>
+
       {/* Tool 配置 */}
       <div className="system-info-card">
-        <h4><Wrench size={16} /> Tool 工具配置 <span className="capability-count">{tools.length}</span></h4>
+        <h4><Wrench size={16} /> 官方内置工具 {!toolLoading && <span className="capability-count">{tools.length}</span>}</h4>
+        {toolLoading ? <p>加载中...</p> : (
         <div className="capability-tool-list">
           {tools.map((t) => (
             <div key={t.id} className={`capability-tool-row${t.enabled ? '' : ' capability-tool-row--disabled'}`}>
               <div className="capability-tool-row__info">
-                <strong>{t.name}</strong>
+                <strong>{t.name} <code>{t.category}</code></strong>
                 <span>{t.description}</span>
+                <span>{t.statusText}</span>
                 {editingTool === t.id && (
                   <div className="capability-tool-row__config">
                     {Object.entries(t.config).map(([key, value]) => (
                       <label key={key}>
                         <span>{key}</span>
-                        <input defaultValue={value} placeholder={key} />
+                        <input value={value} readOnly aria-label={`${t.name} ${key}`} />
                       </label>
                     ))}
                   </div>
@@ -1693,12 +1703,13 @@ function CapabilitiesSettings(): React.JSX.Element {
                   role="switch"
                   aria-checked={t.enabled}
                   className={`toggle-switch${t.enabled ? ' toggle-switch--on' : ''}`}
-                  onClick={() => toggleTool(t.id)}
+                  onClick={() => void toggleTool(t.id)}
                 ><span /></button>
               </div>
             </div>
           ))}
         </div>
+        )}
       </div>
 
       {/* MCP Server 配置 */}
@@ -1729,6 +1740,7 @@ function CapabilitiesSettings(): React.JSX.Element {
         <button type="button" className="add-agent-button" onClick={() => setMcpAddOpen(true)} style={{ marginTop: 12 }}><Plus size={15} /> 添加 MCP Server</button>
         {mcpAddOpen && <McpServerAddDialog onClose={() => setMcpAddOpen(false)} onAdded={() => setMcpAddOpen(false)} />}
       </div>
+      </>}
     </div>
   );
 }

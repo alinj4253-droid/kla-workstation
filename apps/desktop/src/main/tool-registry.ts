@@ -13,6 +13,8 @@ export type ToolCapability =
   | 'read:file'          // 读本群聊原始文件
   | 'read:knowledge'     // 读本群聊知识
   | 'read:shared-knowledge' // 读共享知识
+  | 'read:skill'         // 读当前 Agent Definition 绑定的技能
+  | 'read:workflow'      // 读当前 Agent Definition 绑定的协同工作流
   | 'write:memory'       // 写自身记忆
   | 'write:knowledge'    // 写群聊知识/图谱
   | 'write:output'       // 写 outputs
@@ -29,6 +31,8 @@ const PERMISSION_MATRIX: Record<AgentRole, Record<ToolCapability, PermissionLeve
     'read:file': 'allow',
     'read:knowledge': 'allow',
     'read:shared-knowledge': 'task-only',
+    'read:skill': 'allow',
+    'read:workflow': 'allow',
     'write:memory': 'allow',
     'write:knowledge': 'deny',
     'write:output': 'allow',
@@ -40,6 +44,8 @@ const PERMISSION_MATRIX: Record<AgentRole, Record<ToolCapability, PermissionLeve
     'read:file': 'allow',
     'read:knowledge': 'allow',
     'read:shared-knowledge': 'allow',
+    'read:skill': 'allow',
+    'read:workflow': 'deny',
     'write:memory': 'allow',
     'write:knowledge': 'allow',
     'write:output': 'report-only',
@@ -51,6 +57,8 @@ const PERMISSION_MATRIX: Record<AgentRole, Record<ToolCapability, PermissionLeve
     'read:file': 'allow',
     'read:knowledge': 'allow',
     'read:shared-knowledge': 'task-only',
+    'read:skill': 'allow',
+    'read:workflow': 'deny',
     'write:memory': 'allow',
     'write:knowledge': 'deny',
     'write:output': 'allow',
@@ -62,6 +70,8 @@ const PERMISSION_MATRIX: Record<AgentRole, Record<ToolCapability, PermissionLeve
     'read:file': 'managed-copy',
     'read:knowledge': 'mcp-only',
     'read:shared-knowledge': 'mcp-only',
+    'read:skill': 'mcp-only',
+    'read:workflow': 'mcp-only',
     'write:memory': 'mcp-only',
     'write:knowledge': 'deny',
     'write:output': 'managed-copy',
@@ -161,6 +171,10 @@ export class ToolRegistry {
       if (required?.includes('projectId')) {
         args.projectId = context.projectId;
       }
+    }
+    if (context.runId && (args.runId === undefined || args.runId === null)) {
+      const schema = tool.parameters as { required?: string[] };
+      if (schema.required?.includes('runId')) args.runId = context.runId;
     }
 
     // 1. Schema validation（基础参数校验）

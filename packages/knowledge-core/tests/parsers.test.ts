@@ -60,26 +60,19 @@ describe('parseDocument', () => {
     });
   });
 
-  describe('stub parsers', () => {
-    it('returns a stub message for PDF', async () => {
-      const buf = new Uint8Array(0);
-      const result = await parseDocument(buf, 'pdf', 'doc.pdf');
-      expect(result.text).toContain('PDF');
-      expect(result.mimeType).toBe('application/pdf');
+  describe('binary parsers', () => {
+    it('routes images to local OCR', async () => {
+      const result = await parseDocument(new Uint8Array([1, 2, 3]), 'png', 'scan.png');
+      expect(result.text).toBe('');
+      expect(result.metadata.requiresOcr).toBe(true);
+      expect(result.metadata.parserId).toBe('local-ocr');
     });
 
-    it('returns a stub message for DOCX', async () => {
-      const buf = new Uint8Array(0);
-      const result = await parseDocument(buf, 'docx', 'doc.docx');
-      expect(result.text).toContain('DOCX');
-      expect(result.mimeType).toContain('wordprocessing');
-    });
-
-    it('returns a stub message for XLSX', async () => {
-      const buf = new Uint8Array(0);
-      const result = await parseDocument(buf, 'xlsx', 'data.xlsx');
-      expect(result.text).toContain('XLSX');
-      expect(result.mimeType).toContain('spreadsheet');
+    it('rejects malformed Office and PDF buffers instead of returning placeholders', async () => {
+      const malformed = new Uint8Array([1, 2, 3]);
+      await expect(parseDocument(malformed, 'pdf', 'doc.pdf')).rejects.toThrow();
+      await expect(parseDocument(malformed, 'docx', 'doc.docx')).rejects.toThrow();
+      await expect(parseDocument(malformed, 'xlsx', 'data.xlsx')).rejects.toThrow();
     });
   });
 

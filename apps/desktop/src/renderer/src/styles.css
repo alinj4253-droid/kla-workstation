@@ -3361,6 +3361,7 @@ button {
 .capability-tool-row__info { display: flex; flex: 1; flex-direction: column; gap: 3px; min-width: 0; }
 .capability-tool-row__info strong { font-size: 10px; }
 .capability-tool-row__info > span { font-size: 8px; color: var(--kq-text-tertiary); }
+.settings-table-description { display: inline-block; max-width: 420px; margin-top: 3px; color: var(--kq-text-tertiary); font-size: 9px; line-height: 1.45; }
 .capability-tool-row__config { display: flex; flex-direction: column; margin-top: 8px; gap: 6px; padding-top: 8px; border-top: 1px solid #f0f0f4; }
 .capability-tool-row__config label { display: flex; align-items: center; gap: 6px; }
 .capability-tool-row__config span { font-size: 8px; color: var(--kq-text-secondary); min-width: 60px; }

@@ -19,6 +19,8 @@ import { processMessageMentions } from './message-router';
 import { normalizeAgentMessageContent, sanitizeAgentDisplayText } from './agent-collaboration';
 import { ContextBuilder } from './context-builder';
 import { SkillRegistry } from './skill-registry';
+import { WorkflowRegistry } from './workflow-registry';
+import { ensureProfileAgentDefinitions } from './agent-identity';
 import { FileWatcher } from './file-watcher';
 import { startMemoryCleanup } from './memory-cleanup';
 import { MemoryManager as ConversationMemoryManager } from './memory-manager';
@@ -31,6 +33,8 @@ import { registerAppFileProtocol } from './app-file-protocol';
 import { TeamMcpServer } from './team-mcp-server';
 import { ToolRegistry } from './tool-registry';
 import { registerProjectTools } from './agent-tools';
+import { searchHybridKnowledge } from './hybrid-knowledge-search';
+import { listBuiltinTools, setBuiltinToolEnabled } from './builtin-tool-catalog';
 import {
   DraftRepository,
   FileRepository,
@@ -128,6 +132,10 @@ function registerIpc(channel: string, handler: (event: Electron.IpcMainInvokeEve
 }
 
 const writeIfMissing = async (path: string, content: string): Promise<void> => {
+  if (path.endsWith(`${sep}SKILL.md`)) {
+    await writeBuiltinSkill(path, content);
+    return;
+  }
   try {
     await writeFile(path, content, { encoding: 'utf8', flag: 'wx' });
   } catch (error) {
@@ -164,6 +172,21 @@ memoryPolicy:
 `;
 
 const ORCHESTRATOR_IDENTITY = `---
+schemaVersion: 2
+scope: definition
+definitionId: builtin.orchestrator
+definitionVersion: 1.0.0
+---
+
+# 身份
+
+你是统筹管理智能体。你只负责理解目标、拆解任务、安排成员、跟踪依赖、验收结果和汇总交付。
+除简单问候、澄清问题和最终汇总外，不得亲自完成编码、写作、检索、制图或文件生产任务。
+根据任务目标、成员能力与实际依赖动态安排协作，不得按角色名称或关键词套用固定分工。主体工作完成后，判断是否需要安排知识管理智能体归集可复用知识和经验。
+需要用户决策或补充信息时使用 @用户；禁止发送无实际动作的确认消息，禁止让智能体互相 @ 形成循环。
+`;
+
+const LEGACY_ORCHESTRATOR_IDENTITY = `---
 schemaVersion: 1
 definitionId: builtin.orchestrator
 definitionVersion: 1.0.0
@@ -186,6 +209,8 @@ defaultModelSlot: reasoning
 modelRequirements:
   - structuredOutput
 skills:
+  - process-knowledge-files
+  - retrieve-knowledge
   - document-ingestion
   - entity-relation-extraction
   - provenance-validation
@@ -201,6 +226,19 @@ memoryPolicy:
 `;
 
 const KNOWLEDGE_IDENTITY = `---
+schemaVersion: 2
+scope: definition
+definitionId: builtin.knowledge-manager
+definitionVersion: 1.0.0
+---
+
+# 身份
+
+你是知识管理智能体，负责文档入库、实体关系提取、图谱构建、Wiki 生成，以及任务完成后的知识与经验归集。
+归集时应形成可溯源知识文档，并判断是否存在值得复用的业务流程。适用时从业务目标出发动态梳理阶段、步骤、输入、输出、责任对象与校验逻辑；不适用时无需强行生成流程。
+`;
+
+const LEGACY_KNOWLEDGE_IDENTITY = `---
 schemaVersion: 1
 definitionId: builtin.knowledge-manager
 definitionVersion: 1.0.0
@@ -235,6 +273,18 @@ memoryPolicy:
 `;
 
 const RESEARCHER_IDENTITY = `---
+schemaVersion: 2
+scope: definition
+definitionId: builtin.researcher
+definitionVersion: 1.0.0
+---
+
+# 身份
+
+你是资料调研智能体，负责信息检索、资料分析、来源评估和事实核查。明确区分事实、推断与未知信息，保留可核验来源，不得用猜测填补资料缺口。
+`;
+
+const LEGACY_RESEARCHER_IDENTITY = `---
 schemaVersion: 1
 definitionId: builtin.researcher
 definitionVersion: 1.0.0
@@ -246,6 +296,24 @@ role: teammate
 你是当前群聊的资料调研智能体，负责信息检索、资料分析和事实核查。
 `;
 
+const ORCHESTRATOR_DEFINITION_PROMPT = `你是统筹管理智能体。核心职责是把用户目标转化为可验收的工作包，根据群聊成员的真实能力和依赖关系完成委派、等待、验收与汇总。
+
+你不得把用户原始需求不加拆解地转发给成员，也不得虚构未发生的委派、进度或成员结果。正式群聊消息应使用自然的同事口吻，只在需要协作、关键节点、用户决策或最终交付时发送。`;
+
+const LEGACY_ORCHESTRATOR_DEFINITION_PROMPT = '你是统筹智能体 (Orchestrator)，一个多智能体系统的协调者。\n\n## 职责\n- 分析用户指令，判断是否需要动用子智能体（如知识管理员）\n- 如果用户询问项目知识、文档内容、搜索信息，回复 "NEED_KM" 作为第一行\n- 如果用户询问日常对话、代码编写、一般问题，直接回复\n- 收集子智能体的结果并进行汇总\n\n## 回复格式\n使用 Markdown 格式输出。';
+
+const KNOWLEDGE_DEFINITION_PROMPT = `你是知识管理智能体。你只处理当前群聊允许访问的资料、成果与知识库内容，输出必须保留来源和可验证关系。
+
+原始文件新增、变化、删除或需要重新入库时使用 process-knowledge-files；基于知识库回答、核验或查找证据时使用 retrieve-knowledge。检索必须优先使用本地证据，不得把模型常识伪装成知识库内容。
+
+任务完成后的知识归集应区分可复用知识、一次性任务记录和业务流程。只有确实存在可复用业务步骤时才输出业务流程，不得把智能体思考或运行轨迹当作业务流程。`;
+
+const LEGACY_KNOWLEDGE_DEFINITION_PROMPT = '你是知识管理员 (Knowledge Manager)。你负责管理项目知识库。\n\n## 可用工具\n- knowledge:search - 搜索知识库文档\n- workspace:readFile - 读取工作区文件\n- project:search - 跨项目搜索\n- knowledge:listGraph - 列出知识图谱\n- list_project_agents - 列出项目智能体\n- publish_artifact - 发布成果文件\n\n## 输出\n基于获取的信息，给出准确的回答。如果信息不足，明确告知用户。';
+
+const RESEARCHER_DEFINITION_PROMPT = `你是资料调研智能体。围绕负责人交给你的具体问题检索与分析资料，区分事实、推断和未知信息，并为重要结论提供可核验来源。资料不足时明确说明缺口，不得编造引用。`;
+
+const LEGACY_RESEARCHER_DEFINITION_PROMPT = '你是资料调研智能体，负责根据指令搜索知识库、分析信息并输出结构化调研报告。\n\n## 输出格式\n1. **调研摘要** — 关键发现概述\n2. **信息来源** — 引用来源 ID 和内容摘要\n3. **详细分析** — 按主题组织的信息\n4. **置信度评估** — 每个结论的可靠性标注\n\n## 限制\n- 不确定时明确告知而不是猜测';
+
 const installAgentDefinitions = async (root: string): Promise<void> => {
   const orchestratorDir = join(root, 'agent-definitions', 'built-in', 'builtin.orchestrator', '1.0.0');
   const knowledgeDir = join(root, 'agent-definitions', 'built-in', 'builtin.knowledge-manager', '1.0.0');
@@ -256,19 +324,22 @@ const installAgentDefinitions = async (root: string): Promise<void> => {
 
   // agent.yaml + IDENTITY
   await writeIfMissing(join(orchestratorDir, 'agent.yaml'), ORCHESTRATOR_DEF);
-  await writeIfMissing(join(orchestratorDir, 'IDENTITY.template.md'), ORCHESTRATOR_IDENTITY);
+  await writeManagedDefinitionFile(join(orchestratorDir, 'IDENTITY.template.md'), ORCHESTRATOR_IDENTITY, LEGACY_ORCHESTRATOR_IDENTITY);
   await writeIfMissing(join(knowledgeDir, 'agent.yaml'), KNOWLEDGE_DEF);
-  await writeIfMissing(join(knowledgeDir, 'IDENTITY.template.md'), KNOWLEDGE_IDENTITY);
+  await writeManagedDefinitionFile(join(knowledgeDir, 'IDENTITY.template.md'), KNOWLEDGE_IDENTITY, LEGACY_KNOWLEDGE_IDENTITY);
   await writeIfMissing(join(researcherDir, 'agent.yaml'), RESEARCHER_DEF);
-  await writeIfMissing(join(researcherDir, 'IDENTITY.template.md'), RESEARCHER_IDENTITY);
+  await writeManagedDefinitionFile(join(researcherDir, 'IDENTITY.template.md'), RESEARCHER_IDENTITY, LEGACY_RESEARCHER_IDENTITY);
 
   // prompts/system.md
   const orchPromptDir = join(orchestratorDir, 'prompts');
   const kmPromptDir = join(knowledgeDir, 'prompts');
+  const resPromptDir = join(researcherDir, 'prompts');
   await mkdir(orchPromptDir, { recursive: true });
   await mkdir(kmPromptDir, { recursive: true });
-  await writeIfMissing(join(orchPromptDir, 'system.md'), '你是统筹智能体 (Orchestrator)，一个多智能体系统的协调者。\n\n## 职责\n- 分析用户指令，判断是否需要动用子智能体（如知识管理员）\n- 如果用户询问项目知识、文档内容、搜索信息，回复 "NEED_KM" 作为第一行\n- 如果用户询问日常对话、代码编写、一般问题，直接回复\n- 收集子智能体的结果并进行汇总\n\n## 回复格式\n使用 Markdown 格式输出。');
-  await writeIfMissing(join(kmPromptDir, 'system.md'), '你是知识管理员 (Knowledge Manager)。你负责管理项目知识库。\n\n## 可用工具\n- knowledge:search - 搜索知识库文档\n- workspace:readFile - 读取工作区文件\n- project:search - 跨项目搜索\n- knowledge:listGraph - 列出知识图谱\n- list_project_agents - 列出项目智能体\n- publish_artifact - 发布成果文件\n\n## 输出\n基于获取的信息，给出准确的回答。如果信息不足，明确告知用户。');
+  await mkdir(resPromptDir, { recursive: true });
+  await writeManagedDefinitionFile(join(orchPromptDir, 'system.md'), ORCHESTRATOR_DEFINITION_PROMPT, LEGACY_ORCHESTRATOR_DEFINITION_PROMPT);
+  await writeManagedDefinitionFile(join(kmPromptDir, 'system.md'), KNOWLEDGE_DEFINITION_PROMPT, LEGACY_KNOWLEDGE_DEFINITION_PROMPT);
+  await writeManagedDefinitionFile(join(resPromptDir, 'system.md'), RESEARCHER_DEFINITION_PROMPT, LEGACY_RESEARCHER_DEFINITION_PROMPT);
 
   // orchestrator skills
   const orchSkillsDir = join(orchestratorDir, 'skills');
@@ -276,30 +347,94 @@ const installAgentDefinitions = async (root: string): Promise<void> => {
   const resultSkillDir = join(orchSkillsDir, 'result-synthesis');
   await mkdir(teamSkillDir, { recursive: true });
   await mkdir(resultSkillDir, { recursive: true });
-  await writeIfMissing(join(teamSkillDir, 'SKILL.md'), '## 团队规划 (Team Planning)\n\n作为统筹智能体，你的核心职责是：\n1. 分析用户输入，判断是否需要动用子智能体\n2. 如果需要知识管理相关能力，明确回复 "NEED_KM" 作为首行\n3. 对于不需要子智能体的任务，直接规划回答策略\n4. 对复杂任务进行步骤拆解');
-  await writeIfMissing(join(resultSkillDir, 'SKILL.md'), '## 结果汇总 (Result Synthesis)\n\n当收到子智能体的返回结果后：\n1. 仔细阅读子智能体的输出内容\n2. 提取关键信息，进行归纳总结\n3. 用清晰的结构化 Markdown 呈现最终回答\n4. 注明信息来源（如来自知识库查询）');
+  await writeIfMissing(join(teamSkillDir, 'SKILL.md'), '---\nname: team-planning\ndescription: 从业务目标拆出可验收工作包并选择合适成员；用于统筹智能体规划复杂协作任务。\n---\n\n# 团队规划\n\n1. 澄清目标、交付物和验收标准。\n2. 按能力拆分工作包，不要原样转发用户需求。\n3. 选择合适成员并通过正式群聊消息委派。\n4. 等待结果、检查缺口并继续调度。');
+  await writeIfMissing(join(resultSkillDir, 'SKILL.md'), '---\nname: result-synthesis\ndescription: 核对并汇总多个成员的结果形成统一交付；用于统筹智能体收口复杂任务。\n---\n\n# 结果汇总\n\n1. 核对各工作包的验收条件。\n2. 消除冲突和重复，明确剩余风险。\n3. 优先直接发送成果文件，再给出简洁结论。');
 
   // knowledge-manager skills
   const kmSkillsDir = join(knowledgeDir, 'skills');
-  for (const skillId of ['document-ingestion', 'entity-relation-extraction', 'provenance-validation', 'wiki-materialization', 'graph-projection']) {
+  for (const skillId of ['process-knowledge-files', 'retrieve-knowledge', 'document-ingestion', 'entity-relation-extraction', 'provenance-validation', 'wiki-materialization', 'graph-projection']) {
     const d = join(kmSkillsDir, skillId);
     await mkdir(d, { recursive: true });
   }
-  await writeIfMissing(join(kmSkillsDir, 'document-ingestion', 'SKILL.md'), '## 文档导入 (Document Ingestion)\n\n负责将上传的文件解析为可处理的文本：\n1. 检查文件格式和大小\n2. 调用解析器提取文本内容\n3. 对过长文档进行分块处理\n4. 保存原始文件引用');
-  await writeIfMissing(join(kmSkillsDir, 'entity-relation-extraction', 'SKILL.md'), '## 实体关系抽取 (Entity & Relation Extraction)\n\n从文档内容中提取结构化知识：\n1. 识别关键实体（人物、组织、概念、术语等）\n2. 抽取实体之间的关系\n3. 为每个实体和关系标注置信度\n4. 低置信度候选手动复核');
-  await writeIfMissing(join(kmSkillsDir, 'provenance-validation', 'SKILL.md'), '## 来源溯源 (Provenance Validation)\n\n确保每个知识片段都有清晰来源：\n1. 记录每个实体/关系对应的原始文档位置\n2. 过滤低置信度（<0.65）的候选\n3. 将待复核候选写入 review 目录\n4. 支持来源回溯查询');
-  await writeIfMissing(join(kmSkillsDir, 'wiki-materialization', 'SKILL.md'), '## Wiki 页面生成 (Wiki Materialization)\n\n基于知识图谱生成人类可读的 Wiki 页面：\n1. 为每个重要实体生成 Wiki 条目\n2. 包含实体摘要、关联关系和相关来源\n3. 使用 Markdown 格式输出\n4. 保存到工作区的 wiki 目录');
-  await writeIfMissing(join(kmSkillsDir, 'graph-projection', 'SKILL.md'), '## 图谱可视化 (Graph Projection)\n\n生成适合前端渲染的图谱投影数据：\n1. 导出所有节点和边\n2. 为每个节点添加 label 和分组信息\n3. 生成 force-graph 格式的 JSON\n4. 保存到 knowledge/projection 目录');
+  await writeIfMissing(join(kmSkillsDir, 'document-ingestion', 'SKILL.md'), '---\nname: document-ingestion\ndescription: 解析群聊文件、按语义切片并保留来源位置；用于文档进入知识库时。\n---\n\n# 文档导入\n\n检查文件后提取正文，按语义边界切片、去重，并保存原始文件与位置引用。');
+  await writeIfMissing(join(kmSkillsDir, 'entity-relation-extraction', 'SKILL.md'), '---\nname: entity-relation-extraction\ndescription: 从资料中抽取带置信度和来源的实体关系；用于构建或更新知识图谱。\n---\n\n# 实体关系抽取\n\n识别实体和关系，附带置信度、来源片段和待复核标记。');
+  await writeIfMissing(join(kmSkillsDir, 'provenance-validation', 'SKILL.md'), '---\nname: provenance-validation\ndescription: 核验知识结论与原始资料的一致性并保留溯源；用于知识入库和交付校验。\n---\n\n# 来源溯源\n\n逐项核验结论、原始文档和位置引用；低置信度内容进入复核区。');
+  await writeIfMissing(join(kmSkillsDir, 'wiki-materialization', 'SKILL.md'), '---\nname: wiki-materialization\ndescription: 把知识图谱整理为可读且可溯源的 Wiki 文档；用于知识沉淀和经验归集。\n---\n\n# Wiki 生成\n\n生成包含摘要、关系和来源的 Markdown 页面，并保存到知识工作区。');
+  await writeIfMissing(join(kmSkillsDir, 'graph-projection', 'SKILL.md'), '---\nname: graph-projection\ndescription: 将知识图谱投影为前端可视化数据；用于图谱预览或导出。\n---\n\n# 图谱投影\n\n导出节点、边、标签和分组，生成前端可消费的 JSON。');
+  const processKnowledgeSkillDir = join(kmSkillsDir, 'process-knowledge-files');
+  const retrieveKnowledgeSkillDir = join(kmSkillsDir, 'retrieve-knowledge');
+  await writeIfMissing(join(processKnowledgeSkillDir, 'SKILL.md'), `---
+name: process-knowledge-files
+description: Incrementally process new, changed, or deleted files in a group chat into local chunks, summaries, keywords, tags, embeddings, graph entities, Wiki pages, and visualizations. Use when the knowledge manager needs to ingest or reconcile group files.
+---
+
+# Process knowledge files
+
+1. Scan only the current group original-files directory and compare each file with the stored MD5 fingerprint.
+2. Skip unchanged ready sources. Reprocess new or changed sources according to file type; use local OCR only when extracted text is absent or clearly insufficient.
+3. Produce semantic chunks with source locations, a document summary, keywords, tags, local embeddings, entities, relationships, provenance, and Wiki pages.
+4. Persist all records locally. Materialize knowledge/knowledge-index.json, knowledge/wiki/index.html, graph-visualization/knowledge-graph.json, and graph-visualization/knowledge-graph.html.
+5. When a source is deleted or superseded, remove its chunks, vectors, provenance, source-only Wiki pages, and orphan graph data.
+6. Report only meaningful completion statistics, failures, or items requiring review. Do not expose internal pipeline terminology to the user.
+
+Read references/storage-schema.md when checking paths, lifecycle, or output contracts.`);
+  await writeIfMissing(join(retrieveKnowledgeSkillDir, 'SKILL.md'), `---
+name: retrieve-knowledge
+description: Retrieve cited evidence from local group and shared knowledge using adaptive full-text, vector, knowledge-graph, and Wiki search. Use when the knowledge manager needs to answer a question from processed files or verify a claim against local knowledge.
+---
+
+# Retrieve knowledge
+
+1. Identify whether the question needs exact text, semantic similarity, entity relationships, Wiki synthesis, or a mixture.
+2. Search the current group knowledge plus shared knowledge. Never read another group's private knowledge.
+3. Fuse channel rankings, remove duplicate evidence, and prefer evidence with clear provenance.
+4. Return the smallest sufficient evidence set with source file and location. Separate supported facts from inference and explicitly state gaps.
+5. Do not modify the knowledge base during retrieval.
+
+Read references/retrieval-policy.md when tuning channel choice or interpreting scores.`);
+  await mkdir(join(processKnowledgeSkillDir, 'agents'), { recursive: true });
+  await mkdir(join(processKnowledgeSkillDir, 'references'), { recursive: true });
+  await mkdir(join(retrieveKnowledgeSkillDir, 'agents'), { recursive: true });
+  await mkdir(join(retrieveKnowledgeSkillDir, 'references'), { recursive: true });
+  await writeIfMissing(join(processKnowledgeSkillDir, 'agents', 'openai.yaml'), 'interface:\n  display_name: "知识文件处理"\n  short_description: "读取群聊原始文件，增量生成可追溯并可混合检索的本地知识资产"\n  default_prompt: "Use $process-knowledge-files to process new or changed group files into local knowledge."\npolicy:\n  allow_implicit_invocation: true\n');
+  await writeIfMissing(join(retrieveKnowledgeSkillDir, 'agents', 'openai.yaml'), 'interface:\n  display_name: "混合知识检索"\n  short_description: "融合全文、向量、图谱和 Wiki，返回带来源的本地知识证据"\n  default_prompt: "Use $retrieve-knowledge to find cited evidence in the local group knowledge base."\npolicy:\n  allow_implicit_invocation: true\n');
+  await writeIfMissing(join(processKnowledgeSkillDir, 'references', 'storage-schema.md'), '# 本地存储契约\n\n- `original-files/`: 只读原始输入。\n- `knowledge/knowledge-index.json`: 文档摘要、关键词和标签索引。\n- `knowledge/wiki/`: Wiki 页面及 `index.html`。\n- `graph-visualization/knowledge-graph.json`: 图谱投影。\n- `graph-visualization/knowledge-graph.html`: 离线可视化。\n- SQLite: 切片、向量、图谱、溯源和处理状态的权威数据。\n\n文件身份使用 MD5 做处理标记，同时保留 SHA-256 版本校验。源文件删除或新版本入库后必须回收旧来源数据。\n');
+  await writeIfMissing(join(retrieveKnowledgeSkillDir, 'references', 'retrieval-policy.md'), '# 检索策略\n\n- 原文、编号、条款、代码：提高全文检索权重。\n- 原因、方案、相似问题、概括：提高向量和 Wiki 权重。\n- 人物、组织、依赖、影响、上下游：提高图谱权重。\n- 默认使用四路 RRF 融合；结果必须带来源，不以无来源模型常识冒充知识库结论。\n');
 
   // researcher resources
-  const resPromptDir = join(researcherDir, 'prompts');
-  await mkdir(resPromptDir, { recursive: true });
-  await writeIfMissing(join(resPromptDir, 'system.md'), '你是资料调研智能体，负责根据指令搜索知识库、分析信息并输出结构化调研报告。\n\n## 输出格式\n1. **调研摘要** — 关键发现概述\n2. **信息来源** — 引用来源 ID 和内容摘要\n3. **详细分析** — 按主题组织的信息\n4. **置信度评估** — 每个结论的可靠性标注\n\n## 限制\n- 不确定时明确告知而不是猜测');
   const resSkillsDir = join(researcherDir, 'skills');
   await mkdir(join(resSkillsDir, 'information-retrieval'), { recursive: true });
   await mkdir(join(resSkillsDir, 'source-analysis'), { recursive: true });
-  await writeIfMissing(join(resSkillsDir, 'information-retrieval', 'SKILL.md'), '## 信息检索\n\n根据查询从知识库检索相关信息，对结果进行过滤和排序。');
-  await writeIfMissing(join(resSkillsDir, 'source-analysis', 'SKILL.md'), '## 来源分析\n\n评估知识条目的可靠性和相关性，交叉验证多个来源的一致性。');
+  await writeIfMissing(join(resSkillsDir, 'information-retrieval', 'SKILL.md'), '---\nname: information-retrieval\ndescription: 检索、筛选和排序与任务相关的资料；用于资料调研和事实查找。\n---\n\n# 信息检索\n\n根据问题检索资料，保留出处并按相关性和可靠性排序。');
+  await writeIfMissing(join(resSkillsDir, 'source-analysis', 'SKILL.md'), '---\nname: source-analysis\ndescription: 评估资料来源可靠性并进行交叉验证；用于事实核查和研究结论校验。\n---\n\n# 来源分析\n\n比较多个来源的一致性、时效性和利益关系，明确结论置信度。');
+
+  const packageMetadata = [
+    [teamSkillDir, 'team-planning', ['list_project_agents', 'delegate_tasks']],
+    [resultSkillDir, 'result-synthesis', []],
+    [join(kmSkillsDir, 'document-ingestion'), 'document-ingestion', ['workspace:readFile']],
+    [join(kmSkillsDir, 'entity-relation-extraction'), 'entity-relation-extraction', ['knowledge:search']],
+    [join(kmSkillsDir, 'provenance-validation'), 'provenance-validation', ['workspace:readFile', 'knowledge:search']],
+    [join(kmSkillsDir, 'wiki-materialization'), 'wiki-materialization', ['publish_artifact']],
+    [join(kmSkillsDir, 'graph-projection'), 'graph-projection', ['knowledge:listGraph', 'publish_artifact']],
+    [processKnowledgeSkillDir, 'process-knowledge-files', ['workspace:readFile', 'knowledge:ingest', 'local:ocr', 'local:embed']],
+    [retrieveKnowledgeSkillDir, 'retrieve-knowledge', ['knowledge:search', 'knowledge:listGraph']],
+    [join(resSkillsDir, 'information-retrieval'), 'information-retrieval', ['knowledge:search']],
+    [join(resSkillsDir, 'source-analysis'), 'source-analysis', ['knowledge:search']],
+  ] as const;
+  for (const [directory, id, requiredTools] of packageMetadata) {
+    const executionMode = id === 'process-knowledge-files' || id === 'retrieve-knowledge'
+      ? 'hybrid'
+      : 'instructions';
+    await writeIfMissing(join(directory, 'kunqing.json'), JSON.stringify({
+      schemaVersion: 1,
+      id,
+      version: '1.0.0',
+      entry: 'SKILL.md',
+      executionMode,
+      requiredTools,
+      compatibility: { codexSkill: true, kunqing: '>=0.1.0' },
+    }, null, 2));
+  }
   await mkdir(join(researcherDir, 'evals'), { recursive: true });
   await writeIfMissing(join(researcherDir, 'evals', 'cases.yaml'), 'cases:\n  - id: research-basic-query\n    instruction: "搜索关于财务报销流程的信息"');
 
@@ -353,6 +488,8 @@ const ensureStudioWorkspace = async (): Promise<{ workspaceId: string; isNew: bo
     mkdir(join(root, '.kstudio', 'temp', 'staged-uploads'), { recursive: true }),
     mkdir(join(root, 'agent-definitions', 'built-in'), { recursive: true }),
     mkdir(join(root, 'agent-definitions', 'custom'), { recursive: true }),
+    mkdir(join(root, 'workflows', 'built-in'), { recursive: true }),
+    mkdir(join(root, 'workflows', 'custom'), { recursive: true }),
     mkdir(join(root, 'group-chats'), { recursive: true }),
     mkdir(join(root, 'shared-knowledge', 'original-files'), { recursive: true }),
     mkdir(join(root, 'shared-knowledge', 'knowledge', 'graph'), { recursive: true }),
@@ -365,11 +502,11 @@ const ensureStudioWorkspace = async (): Promise<{ workspaceId: string; isNew: bo
   if (isNew) {
     workspaceId = randomUUID();
     await writeFile(markerPath, JSON.stringify({ schemaVersion: 1, workspaceId, product: 'K_Studio', createdAt: new Date().toISOString() }, null, 2));
-    await installAgentDefinitions(root);
   } else {
     const marker = JSON.parse(await readFile(markerPath, 'utf8')) as { workspaceId: string };
     workspaceId = marker.workspaceId;
   }
+  await installAgentDefinitions(root);
   return { workspaceId, isNew };
 };
 
@@ -480,12 +617,14 @@ const knowledgeIngestForFile = (db: ReturnType<typeof getDatabase>, fileId: stri
     if (oldJob) repo.setJobStatus(oldJob.id, 'queued');
     return existing;
   }
-  const sourceInput: { scopeType: string; scopeId: string; fileId: string; versionId?: string } = {
+  const currentVersion = file.currentVersionId ? fileRepo.getCurrentVersion(file.id) : null;
+  const sourceInput: { scopeType: string; scopeId: string; fileId: string; versionId?: string; sha256?: string } = {
     scopeType: file.scopeType,
     scopeId: file.scopeId,
     fileId: file.id,
   };
   if (file.currentVersionId) sourceInput.versionId = file.currentVersionId;
+  if (currentVersion?.sha256) sourceInput.sha256 = currentVersion.sha256;
   const source = repo.createSource(sourceInput);
   const job = repo.createJob({ scopeType: file.scopeType, scopeId: file.scopeId, sourceId: source.id });
   repo.setSourceStatus(source.id, 'ingesting');
@@ -495,7 +634,7 @@ const knowledgeIngestForFile = (db: ReturnType<typeof getDatabase>, fileId: stri
   if (_gateway) {
     const root = file.scopeType === 'shared'
       ? join(getStudioRoot(), 'shared-knowledge', 'original-files')
-      : getProjectRoot(file.scopeId);
+      : join(getProjectRoot(file.scopeId), 'original-files');
     const fileNode = fileRepo.getById(fileId);
     if (fileNode) {
       const filePath = resolveInside(root, fileNode.normalizedPath);
@@ -740,9 +879,13 @@ const registerFileIpc = (db: ReturnType<typeof getDatabase>): void => {
           const children = db.prepare(
             "SELECT id FROM files WHERE scope_type = ? AND scope_id = ? AND normalized_path LIKE ?",
           ).all(st, sid, `${norm}/%`) as { id: string }[];
-          for (const child of children) fileRepo.softDelete(child.id);
+          for (const child of children) {
+            fileRepo.softDelete(child.id);
+            new KnowledgeRepository(db).removeKnowledgeForFile(child.id);
+          }
         }
         fileRepo.softDelete(file.id);
+        new KnowledgeRepository(db).removeKnowledgeForFile(file.id);
       }
     }
     return { ok: true };
@@ -1575,6 +1718,32 @@ const registerMemoryIpc = (db: ReturnType<typeof getDatabase>): void => {
   });
 };
 
+/** 为旧版内置 SKILL.md 补齐 Codex frontmatter，同时保留既有正文。 */
+const writeBuiltinSkill = async (path: string, content: string): Promise<void> => {
+  try {
+    const current = await readFile(path, 'utf8');
+    if (/^---\r?\n[\s\S]*?^name:\s*.+$[\s\S]*?^description:\s*.+$[\s\S]*?^---\s*$/m.test(current)) return;
+    const header = content.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/)?.[0];
+    await writeFile(path, `${header ?? ''}\n${current.trim()}\n`, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    await writeFile(path, content, 'utf8');
+  }
+};
+
+const writeManagedDefinitionFile = async (path: string, content: string, legacyContent: string): Promise<void> => {
+  try {
+    const current = await readFile(path, 'utf8');
+    const normalized = (value: string): string => value.replace(/\r\n/g, '\n').trim();
+    if (normalized(current) === normalized(content)) return;
+    // 只迁移应用曾经安装的原始版本；用户一旦修改过就保留人工版本。
+    if (normalized(current) === normalized(legacyContent)) await writeFile(path, content, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    await writeFile(path, content, 'utf8');
+  }
+};
+
 const registerKnowledgeIpc = (db: ReturnType<typeof getDatabase>): void => {
   const repo = new KnowledgeRepository(db);
   const sharedEnabled = (projectId: string): boolean => {
@@ -1597,7 +1766,9 @@ const registerKnowledgeIpc = (db: ReturnType<typeof getDatabase>): void => {
     return { ok: true, data: repo.getJob(job.id) };
   });
   registerIpc('knowledge:search', async (_event, input: { query: string; projectId?: string; scopeType?: string; scopeId?: string; limit?: number }) => {
-    const data = repo.search(input.query, input.scopeType, input.scopeId, input.limit ?? 50);
+    const data = input.projectId
+      ? searchHybridKnowledge(db, input.query, input.projectId, input.limit ?? 20)
+      : repo.search(input.query, input.scopeType, input.scopeId, input.limit ?? 50);
     return { ok: true, data };
   });
   registerIpc('knowledge:getGraph', async (_event, input: { scopeType: string; scopeId: string; projectId?: string }) => {
@@ -1728,26 +1899,38 @@ const registerSettingsIpc = (db: ReturnType<typeof getDatabase>): void => {
   registerIpc('settings:listSkills', async () => {
     try {
       const skills = db.prepare(
-        `SELECT s.id, s.name, s.description, s.prompt_md as promptMd,
-                s.required_capabilities_json as requiredCapabilitiesJson,
-                s.enabled, s.is_builtin as isBuiltin,
-                a.agent_definition_id as agentDefinitionId
-         FROM skills s
-         LEFT JOIN agent_skills a ON a.skill_id = s.id
-         ORDER BY a.ordinal`,
-      ).all() as Array<{ id: string; name: string; description: string; promptMd: string | null; requiredCapabilitiesJson: string; enabled: boolean; isBuiltin: boolean; agentDefinitionId: string | null }>;
+        `SELECT p.id, p.name, p.description, NULL as promptMd, p.manifest_json as manifestJson,
+                p.enabled, CASE WHEN p.source = 'built-in' THEN 1 ELSE 0 END as isBuiltin,
+                b.agent_definition_id as agentDefinitionId
+         FROM skill_packages p
+         LEFT JOIN agent_definition_skills b ON b.skill_id = p.id AND b.skill_version = p.version
+         ORDER BY p.source = 'built-in' DESC, b.agent_definition_id, b.ordinal, p.name`,
+      ).all() as Array<{ id: string; name: string; description: string; promptMd: string | null; manifestJson: string; enabled: boolean; isBuiltin: boolean; agentDefinitionId: string | null }>;
       const data = skills.map((s) => ({
         ...s,
-        requiredCapabilities: JSON.parse(s.requiredCapabilitiesJson || '[]'),
+        requiredCapabilities: (() => {
+          try { return (JSON.parse(s.manifestJson || '{}') as { requiredTools?: string[] }).requiredTools ?? []; } catch { return []; }
+        })(),
       }));
       return { ok: true, data };
     } catch (err) { return { ok: false, requestId: '-', error: { code: 'SKILLS_ERROR', message: String(err), retryable: false } }; }
   });
   registerIpc('settings:setSkillEnabled', async (_event, input: { skillId: string; enabled: boolean }) => {
     try {
-      db.prepare('UPDATE skills SET enabled = ? WHERE id = ?').run(input.enabled ? 1 : 0, input.skillId);
+      db.transaction(() => {
+        const enabled = input.enabled ? 1 : 0;
+        const legacy = db.prepare('SELECT name FROM skills WHERE id = ? OR name = ?').get(input.skillId, input.skillId) as { name: string } | undefined;
+        db.prepare('UPDATE skills SET enabled = ? WHERE id = ?').run(enabled, input.skillId);
+        db.prepare('UPDATE skill_packages SET enabled = ?, updated_at = ? WHERE id = ?').run(enabled, new Date().toISOString(), input.skillId);
+        if (legacy) db.prepare('UPDATE skill_packages SET enabled = ?, updated_at = ? WHERE id = ?').run(enabled, new Date().toISOString(), legacy.name);
+      })();
       return { ok: true };
     } catch (err) { return { ok: false, requestId: '-', error: { code: 'DB_ERROR', message: String(err), retryable: true } }; }
+  });
+  registerIpc('settings:listTools', async () => ({ ok: true, data: await listBuiltinTools(db) }));
+  registerIpc('settings:setToolEnabled', async (_event, input: { toolId: string; enabled: boolean }) => {
+    setBuiltinToolEnabled(db, input.toolId, input.enabled);
+    return { ok: true };
   });
   registerIpc('settings:listMcpServers', async () => {
     try {
@@ -2105,8 +2288,15 @@ app.whenReady().then(async () => {
   const delayedRegisters = (): void => {
     const db = ensureDb();
     seedDefaultProfiles(db);
+    void ensureProfileAgentDefinitions(db).then(
+      (count) => getLogger().info({ count }, 'AgentIdentity: Profile Definition 已同步'),
+      (err) => getLogger().warn({ err }, 'AgentIdentity: Profile Definition 同步失败'),
+    );
     const skillRegistry = new SkillRegistry(db);
     skillRegistry.seedBuiltinSkills();
+    void skillRegistry.syncFromWorkspace().then((count) => getLogger().info({ count }, 'SkillRegistry: 工作区技能同步完成'));
+    const workflowRegistry = new WorkflowRegistry(db);
+    workflowRegistry.seedBuiltinWorkflows();
     registerDraftIpc(db);
     registerProjectIpc(db);
     registerMessageIpc(db);

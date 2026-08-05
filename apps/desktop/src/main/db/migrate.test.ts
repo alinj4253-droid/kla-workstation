@@ -22,13 +22,13 @@ describe('DB migration — clean install', () => {
     await rm(tmpDir, { recursive: true, force: true });
   });
 
-  it('runs all 13 migrations on empty database', () => {
+  it('runs all 16 migrations on empty database', () => {
     runMigrations(dbPath);
     const db = new Database(dbPath);
     const rows = db.prepare('SELECT name FROM _migrations ORDER BY id').all() as Array<{ id: number; name: string }>;
-    expect(rows.length).toBe(13);
+    expect(rows.length).toBe(16);
     expect(rows[0]!.name).toBe('001_initial');
-    expect(rows[12]!.name).toBe('015_add_cli_agents_to_existing_projects');
+    expect(rows[15]!.name).toBe('018_local_knowledge_index');
     db.close();
   });
 
@@ -43,7 +43,14 @@ describe('DB migration — clean install', () => {
     expect(tableNames).toContain('model_providers');
     expect(tableNames).toContain('files');
     expect(tableNames).toContain('memory_records');
+    expect(tableNames).toContain('memory_tombstones');
+    expect(tableNames).toContain('skill_packages');
+    expect(tableNames).toContain('agent_definition_skills');
+    expect(tableNames).toContain('agent_run_skills');
+    expect(tableNames).toContain('workflow_packages');
     expect(tableNames).toContain('knowledge_nodes');
+    expect(tableNames).toContain('knowledge_document_profiles');
+    expect(tableNames).toContain('knowledge_chunk_embeddings');
     expect(tableNames).toContain('channels');
     expect(tableNames).toContain('wiki_pages');
     db.close();
@@ -54,7 +61,7 @@ describe('DB migration — clean install', () => {
     runMigrations(dbPath);
     const db = new Database(dbPath);
     const rows = db.prepare('SELECT name FROM _migrations ORDER BY id').all() as Array<{ name: string }>;
-    expect(rows.length).toBe(13);
+    expect(rows.length).toBe(16);
     db.close();
   });
 
@@ -101,7 +108,7 @@ describe('DB migration — schema upgrade', () => {
 
     const checkDb = new Database(dbPath);
     const rows = checkDb.prepare('SELECT name FROM _migrations ORDER BY id').all() as Array<{ name: string }>;
-    expect(rows.length).toBe(13);
+    expect(rows.length).toBe(16);
     const names = rows.map((r) => r.name);
     expect(names.filter((n) => n === '009_create_skills_tables').length).toBe(1);
     checkDb.close();

@@ -14,6 +14,8 @@ export interface IMemoryRepository {
 
   update(id: string, changes: UpdateMemoryInput): void;
 
+  markAccessed(ids: string[], at: string): void;
+
   remove(id: string): void;
 
   expireAll(agentInstanceId: string): void;

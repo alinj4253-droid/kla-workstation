@@ -20,7 +20,7 @@ function makeContext(overrides: Partial<PipelineContext> = {}): PipelineContext 
     saveChunk: vi.fn().mockResolvedValue(undefined),
     chunkExistsByHash: vi.fn().mockResolvedValue(false),
     upsertNode: vi.fn().mockImplementation(async (entity: ExtractedEntity) => `node-${entity.name}`),
-    upsertEdge: vi.fn().mockResolvedValue(undefined),
+    upsertEdge: vi.fn().mockResolvedValue('edge-1'),
     createProvenance: vi.fn().mockResolvedValue(undefined),
     upsertWikiPage: vi.fn().mockResolvedValue(undefined),
     llmExtract: vi.fn().mockResolvedValue({
@@ -113,10 +113,8 @@ describe('runIngestionPipeline', () => {
     await runIngestionPipeline(ctx);
 
     expect(ctx.createProvenance).toHaveBeenCalled();
-    const calls = ctx.createProvenance.mock.calls;
-    // Each call should have targetType 'node' and a node ID
+    const calls = ctx.createProvenance.mock.calls.filter((call: unknown[]) => call[0] === 'node');
     calls.forEach((call: unknown[]) => {
-      expect(call[0]).toBe('node');
       expect(call[1]).toMatch(/^node-/);
     });
   });

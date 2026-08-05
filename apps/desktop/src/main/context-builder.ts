@@ -3,8 +3,12 @@ import { isAbsolute, join, dirname } from 'node:path';
 import type Database from 'better-sqlite3';
 import { ProjectRepository, SearchRepository, AgentRunRepository, FileRepository } from '@kunqing/database';
 import type { ProjectRow } from '@kunqing/database';
+import { rankMemories, type MemoryRecord } from '@kunqing/memory-core';
 import { getLogger } from './logger';
 import { getProjectRoot } from './paths';
+import { SkillRegistry } from './skill-registry';
+import { WorkflowRegistry } from './workflow-registry';
+import { loadAgentDefinitionText } from './agent-identity';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -28,9 +32,28 @@ export type ContextSnapshot = {
     profileName: string;
     role: string;
     definitionId: string;
+    definitionVersion: string;
+    definitionSystemPrompt: string | null;
     identity: string | null;
     permissions: string[];
   };
+
+  /** 当前 Agent Definition 可用的技能目录；正文通过 skill:load 按需加载。 */
+  skills: Array<{
+    id: string;
+    version: string;
+    name: string;
+    description: string;
+    requiredTools: string[];
+  }>;
+
+  /** 业务级协同工作流目录，仅绑定到相应 Agent Definition。 */
+  workflows: Array<{
+    id: string;
+    version: string;
+    name: string;
+    description: string;
+  }>;
 
   // ── 群聊成员 ──────────────────────────────────────────────────────────────
   members: Array<{
@@ -157,6 +180,11 @@ export class ContextBuilder {
     // ── 当前智能体信息 ───────────────────────────────────────────────────
     const agent = this.buildAgentInfo(agentInstanceId);
 
+    const skills = new SkillRegistry(this.db).resolveForDefinition(agent.definitionId, agent.definitionVersion)
+      .map(({ id, version, name, description, requiredTools }) => ({ id, version, name, description, requiredTools }));
+    const workflows = new WorkflowRegistry(this.db).listForDefinition(agent.definitionId, agent.definitionVersion)
+      .map(({ id, version, name, description }) => ({ id, version, name, description }));
+
     // ── 群聊成员 ─────────────────────────────────────────────────────────
     const members = this.buildMembers(projectId);
 
@@ -185,6 +213,8 @@ export class ContextBuilder {
       builtAt: new Date().toISOString(),
       project: projectInfo,
       agent,
+      skills,
+      workflows,
       members,
       messages,
       rollingSummary,
@@ -209,11 +239,18 @@ export class ContextBuilder {
   renderToText(snapshot: ContextSnapshot): string {
     const parts: string[] = [];
 
+    // Definition 系统规则与群聊实例身份必须先于普通上下文出现。
+    parts.push(this.renderAgentDirective(snapshot));
+
     // 项目信息
     parts.push(`## 项目信息\n- 项目名称: ${snapshot.project.name}\n- 项目摘要: ${snapshot.project.summary || '(无)'}\n- 共享知识: ${snapshot.project.sharedKnowledgeEnabled ? '已开启' : '已关闭'}`);
 
-    // 智能体信息
-    parts.push(`## 当前智能体\n- 名称: ${snapshot.agent.profileName}\n- 角色: ${snapshot.agent.role}\n- 身份: ${snapshot.agent.identity || '(无)'}\n- 权限: ${snapshot.agent.permissions.join(', ') || '无'}`);
+    if (snapshot.skills.length > 0) {
+      parts.push(`## 可用技能（需要时调用 skill:load 读取正文）\n${snapshot.skills.map((skill) => `- ${skill.id}@${skill.version}：${skill.description}`).join('\n')}`);
+    }
+    if (snapshot.workflows.length > 0) {
+      parts.push(`## 可用协同工作流（需要时调用 workflow:load 读取正文）\n${snapshot.workflows.map((workflow) => `- ${workflow.id}@${workflow.version}：${workflow.description}`).join('\n')}`);
+    }
 
     // 群聊成员
     if (snapshot.members.length > 0) {
@@ -258,22 +295,37 @@ export class ContextBuilder {
     return parts.join('\n\n---\n\n');
   }
 
+  /** 统一提供给原生模型、LangGraph 与外部 CLI 的角色指令层。 */
+  renderAgentDirective(snapshot: ContextSnapshot): string {
+    const parts = [
+      snapshot.agent.definitionSystemPrompt
+        ? `## Agent Definition 系统规则\n${snapshot.agent.definitionSystemPrompt}`
+        : '',
+      `## 当前群聊智能体\n- 名称: ${snapshot.agent.profileName}\n- 群聊角色: ${snapshot.agent.role}\n- 权限: ${snapshot.agent.permissions.join(', ') || '无'}`,
+      snapshot.agent.identity
+        ? `## 本群聊身份配置\n${snapshot.agent.identity}`
+        : '## 本群聊身份配置\n请按照当前智能体名称、Definition 与群聊分工执行任务。',
+    ];
+    return parts.filter(Boolean).join('\n\n');
+  }
+
   // ── 私有方法 ─────────────────────────────────────────────────────────────
 
   private buildAgentInfo(agentInstanceId: string): ContextSnapshot['agent'] {
     const row = this.db.prepare(`
-      SELECT pai.id as instanceId, pai.project_id as projectId, ap.name as profileName, pai.role, pai.definition_id as definitionId,
+      SELECT pai.id as instanceId, pai.project_id as projectId, ap.name as profileName, pai.role,
+             pai.definition_id as definitionId, pai.definition_version as definitionVersion,
              pai.identity_rel_path as identityRelPath, pai.effective_permissions_json as permissionsJson
       FROM project_agent_instances pai
       JOIN agent_profiles ap ON ap.id = pai.agent_profile_id
       WHERE pai.id = ?
     `).get(agentInstanceId) as {
       instanceId: string; projectId: string; profileName: string; role: string;
-      definitionId: string | null; identityRelPath: string | null; permissionsJson: string | null;
+      definitionId: string | null; definitionVersion: string | null; identityRelPath: string | null; permissionsJson: string | null;
     } | undefined;
 
     if (!row) {
-      return { instanceId: agentInstanceId, profileName: agentInstanceId, role: 'unknown', definitionId: '', identity: null, permissions: [] };
+      return { instanceId: agentInstanceId, profileName: agentInstanceId, role: 'unknown', definitionId: '', definitionVersion: '', definitionSystemPrompt: null, identity: null, permissions: [] };
     }
 
     let identity: string | null = null;
@@ -284,14 +336,26 @@ export class ContextBuilder {
           ? row.identityRelPath
           : join(getProjectRoot(row.projectId), row.identityRelPath);
         const rolePath = join(dirname(identityPath), 'ROLE.md');
+        const adaptationPath = join(dirname(identityPath), 'ADAPTATION.md');
         const identityText = fs.readFileSync(identityPath, 'utf-8');
         let roleText = '';
+        let adaptationText = '';
         try { roleText = fs.readFileSync(rolePath, 'utf-8'); } catch { /* legacy project without role card */ }
-        identity = `${identityText}\n\n${roleText}`.slice(0, 5_000);
+        try { adaptationText = fs.readFileSync(adaptationPath, 'utf-8'); } catch { /* legacy project without adaptation layer */ }
+        identity = [
+          `### 核心身份快照\n${identityText}`,
+          roleText ? `### 群聊实例约束\n${roleText}` : '',
+          adaptationText ? `### 群聊适应性补充\n${adaptationText}` : '',
+        ].filter(Boolean).join('\n\n').slice(0, 15_000);
       } catch {
         identity = null;
       }
     }
+
+    const definitionSystemPrompt = loadAgentDefinitionText(
+      row.definitionId ?? '',
+      row.definitionVersion ?? '1.0.0',
+    ).systemPrompt?.slice(0, 12_000) ?? null;
 
     const permissions: string[] = [];
     if (row.permissionsJson) {
@@ -307,6 +371,8 @@ export class ContextBuilder {
       profileName: row.profileName,
       role: row.role,
       definitionId: row.definitionId ?? '',
+      definitionVersion: row.definitionVersion ?? '1.0.0',
+      definitionSystemPrompt,
       identity,
       permissions,
     };
@@ -380,57 +446,42 @@ export class ContextBuilder {
     return { messages, rollingSummary };
   }
 
-  private buildMemory(projectId: string, agentInstanceId: string, role: string, query: string): ContextSnapshot['memory'] {
-    type RecallRow = {
-      id: string; agentInstanceId: string; agentName: string; scope: 'short-term' | 'long-term';
-      type: string; content: string; confidence: number; sourceRefsJson: string | null;
-      expiresAt: string | null; createdAt: string;
-    };
+  private buildMemory(projectId: string, agentInstanceId: string, _role: string, query: string): ContextSnapshot['memory'] {
     const rows = this.db.prepare(`
-      SELECT mr.id, mr.agent_instance_id as agentInstanceId, ap.name as agentName, mr.scope, mr.type,
-             mr.content, mr.confidence, mr.source_refs_json as sourceRefsJson,
-             mr.expires_at as expiresAt, mr.created_at as createdAt
+      SELECT mr.id, mr.project_id as projectId, mr.agent_instance_id as agentInstanceId,
+             mr.scope, mr.type, mr.content, mr.confidence, mr.importance, mr.pinned,
+             mr.topic_key as topicKey, mr.source_refs_json as sourceRefsJson,
+             mr.metadata_json as metadataJson, mr.status, mr.expires_at as expiresAt,
+             mr.last_reinforced_at as lastReinforcedAt, mr.last_accessed_at as lastAccessedAt,
+             mr.access_count as accessCount, mr.consolidated_into_id as consolidatedIntoId,
+             mr.supersedes_id as supersedesId, mr.created_at as createdAt, mr.updated_at as updatedAt
       FROM memory_records mr
-      JOIN project_agent_instances pai ON pai.id = mr.agent_instance_id
-      JOIN agent_profiles ap ON ap.id = pai.agent_profile_id
       WHERE mr.project_id = ? AND mr.status = 'active'
         AND mr.agent_instance_id = ?
-      ORDER BY mr.created_at DESC
-      LIMIT 100
-    `).all(projectId, agentInstanceId) as RecallRow[];
+      ORDER BY mr.last_reinforced_at DESC
+      LIMIT 120
+    `).all(projectId, agentInstanceId) as MemoryRecord[];
 
-    const now = new Date().toISOString();
-    const valid = rows.filter((item) => item.scope === 'long-term' || !item.expiresAt || item.expiresAt > now);
-    const queryTokens = this.memoryQueryTokens(query);
-    const ranked = valid
-      .map((item, index) => {
-        const haystack = item.content.toLocaleLowerCase('zh-CN');
-        const keywordScore = queryTokens.reduce((score, token) => score + (haystack.includes(token) ? 1 : 0), 0);
-        const recencyScore = Math.max(0, 1 - index / Math.max(valid.length, 1));
-        const priority = item.type === 'project-constraint' ? 4 : item.scope === 'long-term' ? 2 : 0;
-        return { item, score: priority + keywordScore * 2 + recencyScore + item.confidence };
-      })
-      .sort((a, b) => b.score - a.score);
+    const ranked = rankMemories(query, rows, {
+      limit: 16,
+      minimumScore: query.trim() ? 0.42 : 0.52,
+      shortTermHalfLifeHours: 72,
+      longTermHalfLifeHours: 30 * 24,
+    });
+    const selectedIds = ranked.map(({ record }) => record.id);
+    if (selectedIds.length > 0) {
+      const placeholders = selectedIds.map(() => '?').join(',');
+      this.db.prepare(
+        `UPDATE memory_records SET last_accessed_at = ?, access_count = access_count + 1 WHERE id IN (${placeholders})`,
+      ).run(new Date().toISOString(), ...selectedIds);
+    }
 
-    const shortTerm = ranked.filter(({ item }) => item.scope === 'short-term').slice(0, role === 'leader' ? 8 : 5);
-    const longTerm = ranked.filter(({ item }) => item.scope === 'long-term').slice(0, 8);
+    const shortTerm = ranked.filter(({ record }) => record.scope === 'short-term').slice(0, 6);
+    const longTerm = ranked.filter(({ record }) => record.scope === 'long-term').slice(0, 8);
     return {
-      shortTerm: shortTerm.map(({ item }) => `[${item.agentName} · ${item.type}] ${item.content.slice(0, 500)}`),
-      longTerm: longTerm.map(({ item }) => `[${item.type}] ${item.content.slice(0, 700)}`),
+      shortTerm: shortTerm.map(({ record }) => `[${record.topicKey ?? record.type}] ${record.content.slice(0, 700)}`),
+      longTerm: longTerm.map(({ record }) => `[${record.pinned ? '固定规则' : record.topicKey ?? record.type}] ${record.content.slice(0, 900)}`),
     };
-  }
-
-  private memoryQueryTokens(query: string): string[] {
-    const normalizedQuery = query.toLocaleLowerCase('zh-CN').replace(/[\s，。！？、：；,.!?:;"'“”‘’（）()【】\[\]]+/g, '');
-    if (!normalizedQuery) return [];
-    const tokens = new Set<string>();
-    for (const part of query.toLocaleLowerCase('zh-CN').split(/[\s，。！？、：；,.!?:;"'“”‘’（）()【】\[\]]+/)) {
-      if (part.length >= 2) tokens.add(part.slice(0, 24));
-    }
-    for (let index = 0; index < normalizedQuery.length - 1 && tokens.size < 24; index += 2) {
-      tokens.add(normalizedQuery.slice(index, index + 2));
-    }
-    return [...tokens];
   }
 
   private buildReferencedFiles(projectId: string, messages: ContextSnapshot['messages']): ContextSnapshot['referencedFiles'] {

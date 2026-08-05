@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MemoryManager } from '../src/manager';
+import { MemoryManager, memoryTimeScore, rankMemories } from '../src/manager';
 import type { IMemoryRepository } from '../src/repository';
 import type { MemoryRecord, CreateMemoryInput } from '../src/types';
 
@@ -24,9 +24,18 @@ function createMockRepo(): IMemoryRepository {
         type: input.type,
         content: input.content,
         confidence: input.confidence ?? 0.5,
+        importance: input.importance ?? 0.5,
+        pinned: input.pinned ?? false,
+        topicKey: input.topicKey ?? null,
         sourceRefsJson: input.sourceRefsJson ?? null,
+        metadataJson: input.metadataJson ?? null,
         status: 'active',
         expiresAt: input.expiresAt ?? null,
+        lastReinforcedAt: input.lastReinforcedAt ?? now,
+        lastAccessedAt: null,
+        accessCount: 0,
+        consolidatedIntoId: input.consolidatedIntoId ?? null,
+        supersedesId: input.supersedesId ?? null,
         createdAt: now,
         updatedAt: now,
       };
@@ -36,6 +45,12 @@ function createMockRepo(): IMemoryRepository {
     update(id, changes) {
       const r = records.find((r) => r.id === id);
       if (r) Object.assign(r, changes, { updatedAt: new Date().toISOString() });
+    },
+    markAccessed(ids, at) {
+      for (const record of records.filter((item) => ids.includes(item.id))) {
+        record.lastAccessedAt = at;
+        record.accessCount += 1;
+      }
     },
     remove(id) {
       const idx = records.findIndex((r) => r.id === id);
@@ -113,6 +128,13 @@ describe('MemoryManager', () => {
     expect(count).toBe(1);
   });
 
+  it('requires confidence to be strictly greater than 0.6 for long-term extraction', () => {
+    const repo = createMockRepo();
+    const manager = new MemoryManager(repo);
+    manager.storeShortTerm('proj-1', 'agent-1', 'interaction', 'Boundary', 0.6);
+    expect(manager.extractLongTerm('proj-1', 'agent-1')).toBe(0);
+  });
+
   it('extractLongTerm skips duplicates', () => {
     const repo = createMockRepo();
     const manager = new MemoryManager(repo);
@@ -174,4 +196,30 @@ describe('MemoryManager', () => {
 
     expect(repo.list('proj-1', 'agent-1', 'short-term', 'active')).toHaveLength(0);
   });
+
+  it('applies 72-hour and 30-day half-lives while pinned memories do not decay', () => {
+    const base = repoRecord({ lastReinforcedAt: '2026-01-01T00:00:00Z' });
+    expect(memoryTimeScore(base, new Date('2026-01-04T00:00:00Z'))).toBeCloseTo(0.5, 5);
+    expect(memoryTimeScore({ ...base, scope: 'long-term' }, new Date('2026-01-31T00:00:00Z'))).toBeCloseTo(0.5, 5);
+    expect(memoryTimeScore({ ...base, pinned: true }, new Date('2036-01-01T00:00:00Z'))).toBe(1);
+  });
+
+  it('filters stale irrelevant memories but keeps pinned explicit rules', () => {
+    const now = new Date('2026-08-04T00:00:00Z');
+    const stale = repoRecord({ id: 'stale', content: 'unrelated old task', lastReinforcedAt: '2025-01-01T00:00:00Z' });
+    const pinned = repoRecord({ id: 'pinned', scope: 'long-term', type: 'project-constraint', content: 'always local', pinned: true, lastReinforcedAt: '2025-01-01T00:00:00Z' });
+    const ranked = rankMemories('new topic', [stale, pinned], { now });
+    expect(ranked.map((item) => item.record.id)).toEqual(['pinned']);
+  });
 });
+
+function repoRecord(overrides: Partial<MemoryRecord> = {}): MemoryRecord {
+  return {
+    id: 'memory', projectId: 'proj-1', agentInstanceId: 'agent-1', scope: 'short-term', type: 'task-episode',
+    content: 'memory', confidence: 0.8, importance: 0.8, pinned: false, topicKey: null,
+    sourceRefsJson: null, metadataJson: null, status: 'active', expiresAt: null,
+    lastReinforcedAt: '2026-01-01T00:00:00Z', lastAccessedAt: null, accessCount: 0,
+    consolidatedIntoId: null, supersedesId: null, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z',
+    ...overrides,
+  };
+}

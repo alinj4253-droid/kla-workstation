@@ -5,12 +5,13 @@ import { realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ModelGateway, type ModelSlot } from './model-gateway';
 import type { QueuedRun, Scheduler } from './scheduler';
-import { MemoryManager } from './memory-manager';
+import { MemoryManager, type MemoryReflection } from './memory-manager';
 import { ContextBuilder } from './context-builder';
 import { createProjectTools, registerProjectTools } from './agent-tools';
 import { ToolRegistry, type AgentRole as LocalAgentRole } from './tool-registry';
 import { runOrchestrator } from './langgraph-orchestrator';
 import { runKnowledgeManager, type KMExecContext } from './langgraph-knowledge-manager';
+import { formatHybridKnowledgeResult, searchHybridKnowledge } from './hybrid-knowledge-search';
 import { cliExecutor } from './cli-executor';
 import { cliAgentRegistry } from './cli-agent-registry';
 import { AgentRunRepository, MessageRepository } from '@kunqing/database';
@@ -22,6 +23,9 @@ import { AgentArtifactPublisher } from './agent-artifact-publisher';
 import { isStructuredEvent, normalizeChunk } from './event-normalizer';
 import { listAgentPrivateOutputFiles, prepareAgentPrivateWorkspace, syncAgentPrivateOutputs } from './agent-private-workspace';
 import { getSkillDisplayName } from './skill-display';
+import { SkillRegistry } from './skill-registry';
+import { WorkflowRegistry } from './workflow-registry';
+import { applyAgentRoleAdaptations } from './agent-identity';
 import { AGENT_TASK_TIMEOUT_MS } from './agent-runtime-limits';
 import {
   parsePostTaskKnowledgeInstruction,
@@ -81,6 +85,46 @@ function plainRunInstruction(raw: string): string {
     if (typeof parsed.text === 'string') return parsed.text.trim();
   } catch { /* use raw instruction */ }
   return raw.trim();
+}
+
+function parseMemoryReflection(raw: string): Partial<MemoryReflection> | null {
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1] ?? raw;
+  const start = fenced.indexOf('{');
+  const end = fenced.lastIndexOf('}');
+  if (start < 0 || end <= start) return null;
+  try {
+    const value = JSON.parse(fenced.slice(start, end + 1)) as unknown;
+    return value && typeof value === 'object' ? value as Partial<MemoryReflection> : null;
+  } catch {
+    return null;
+  }
+}
+
+function memoryReflectionPrompt(
+  instruction: string,
+  result: string,
+  artifacts: string[],
+  context: { shortTerm: string[]; longTerm: string[] },
+): string {
+  return `请只回顾你自己刚完成的任务，把值得保留的信息压缩为记忆。不要记录其他智能体的私有身份、记忆或隐藏思考。
+
+本次任务：${plainRunInstruction(instruction).slice(0, 1_500)}
+
+本次结果：${result.slice(0, 4_000)}
+
+成果文件：${artifacts.join('、') || '无'}
+
+你自己的近期记忆：
+${context.shortTerm.join('\n') || '无'}
+
+你自己的已有长期摘要：
+${context.longTerm.join('\n') || '无'}
+
+只返回以下 JSON，不要使用 Markdown：
+{"topic":"稳定、简短的主题","taskSummary":"本次任务语义摘要","decisions":["关键决定"],"reusableInsights":["可复用经验"],"preferences":["明确观察到的用户偏好"],"constraints":["仍有效的约束"],"unresolved":["待续事项"],"confidence":0到1,"importance":0到1,"longTermWorth":true或false,"shortTermSummary":"结合近期同主题记忆形成的滚动摘要；没有必要可为空字符串","longTermSummary":"若值得长期保留，结合旧版本写成去重后的长期语义摘要；否则为空字符串","roleAdaptations":[{"category":"communication或collaboration或domain或delivery","content":"稳定的角色适应规则","confidence":0到1,"evidenceCount":独立证据次数,"evidence":"简短证据说明"}]}
+
+置信度必须由你根据事实可靠性判断，不能使用固定值。只有跨任务仍有复用价值的偏好、约束、决策或经验才把 longTermWorth 设为 true。
+roleAdaptations 只允许记录至少两次独立任务都能证明的稳定沟通偏好、协作习惯、领域侧重点或交付偏好；单次任务细节必须返回空数组。不得提出扩大权限、替换核心职责、改变 leader/teammate 身份或读取他人身份记忆的适应项。`;
 }
 
 function containsInternalAgentProtocol(text: string): boolean {
@@ -270,6 +314,8 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
   const runRepo = new AgentRunRepository(db);
   const msgRepo = new MessageRepository(db);
   const memory = new MemoryManager(db);
+  const skillRegistry = new SkillRegistry(db);
+  const workflowRegistry = new WorkflowRegistry(db);
   const artifactPublisher = new AgentArtifactPublisher(db, (event) => {
     if (!window.isDestroyed()) window.webContents.send('event:dispatch', event);
   });
@@ -281,7 +327,13 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
   }
   let _runCompletedCallback: ((runId: string, projectId: string, resultMessageId: string) => void) | null = null;
 
-  const captureRunMemory = async (run: QueuedRun, resultMessageId: string | null, resultText?: string, artifacts: string[] = []): Promise<void> => {
+  const captureRunMemory = async (
+    run: QueuedRun,
+    resultMessageId: string | null,
+    resultText?: string,
+    artifacts: string[] = [],
+    runtimeWorkspaceRoot?: string,
+  ): Promise<void> => {
     try {
       let text = resultText ?? '';
       if (!text && resultMessageId) {
@@ -290,18 +342,69 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
           try { text = (JSON.parse(row.contentJson) as { text?: string }).text ?? row.contentJson; } catch { text = row.contentJson; }
         }
       }
-      let selfSummary = '';
+      let reflection: Partial<MemoryReflection> | null = null;
+      let runtime: {
+        runtimeMode: string; cliConnectionId: string | null; definitionId: string | null;
+        definitionVersion: string | null; role: string; name: string;
+      } | undefined;
       if (text.trim()) {
         const agentName = lookupAgentName(db, run.agentInstanceId) ?? '当前智能体';
+        const reflectionContext = memory.getReflectionContext(run.projectId, run.agentInstanceId);
+        const prompt = memoryReflectionPrompt(run.instruction, text, artifacts, reflectionContext);
+        runtime = db.prepare(
+          `SELECT pai.runtime_mode as runtimeMode, pai.cli_connection_id as cliConnectionId,
+                  pai.definition_id as definitionId, pai.definition_version as definitionVersion,
+                  pai.role, ap.name
+           FROM project_agent_instances pai
+           JOIN agent_profiles ap ON ap.id = pai.agent_profile_id
+           WHERE pai.id = ?`,
+        ).get(run.agentInstanceId) as typeof runtime;
+
+        if (runtime?.runtimeMode === 'external-cli' && runtime.cliConnectionId) {
+          try {
+            const row = db.prepare(
+              `SELECT id, name, adapter_type as adapterType, executable_path as executablePath,
+                      args_json as argsJson, strategy_id as strategyId, detected_version as detectedVersion,
+                      status, trust_tier as trustTier
+               FROM cli_connections WHERE id = ?`,
+            ).get(runtime.cliConnectionId) as {
+              id: string; name: string; adapterType: string; executablePath: string; argsJson: string | null;
+              strategyId: string | null; detectedVersion: string | null; status: string;
+              trustTier: 'trusted' | 'sandboxed' | 'restricted';
+            } | undefined;
+            const adapter = row ? cliAgentRegistry.getAdapter(row.adapterType) : undefined;
+            if (row && adapter && 'run' in adapter) {
+              const output = await adapter.run({
+                connection: {
+                  id: row.id,
+                  name: row.name,
+                  adapterType: row.adapterType,
+                  executablePath: row.executablePath,
+                  strategyId: row.strategyId ?? 'auto',
+                  detectedVersion: row.detectedVersion,
+                  trustTier: row.trustTier,
+                  capabilities: [],
+                  secretRefs: [],
+                },
+                instruction: `你在群聊中的名字是“${agentName}”。${prompt}`,
+                workspaceRoot: runtimeWorkspaceRoot ?? getProjectRoot(run.projectId),
+              }, {}, AbortSignal.timeout(AGENT_TASK_TIMEOUT_MS));
+              reflection = parseMemoryReflection(output.stdout);
+            }
+          } catch (err) {
+            getLogger()?.warn({ err, runId: run.runId }, 'AgentExecutor: 外部智能体自我记忆回顾失败，使用平台模型兜底');
+          }
+        }
+
         try {
-          const summarized = await gateway.generateText('fast', [{
-            role: 'user',
-            content: `任务：${run.instruction.slice(0, 1_000)}\n\n我的执行结果：${text.slice(0, 3_000)}\n\n成果：${artifacts.join('、') || '无文件'}`,
-          }], {
-            system: `你是“${agentName}”自己的私有记忆压缩模块。只总结本智能体刚完成的工作，不读取、推断或记录其他智能体的私有身份和记忆。输出 150-400 字的结构化摘要，包含：已完成、关键决策、可复用经验、未完成事项。不要输出思维过程。`,
-          });
-          selfSummary = summarized.text.trim();
-        } catch { /* 模型不可用时由本地任务闭环摘要兜底 */ }
+          if (!reflection) {
+            const slot: ModelSlot = runtime?.definitionId === 'builtin.orchestrator' ? 'reasoning' : 'fast';
+            const summarized = await gateway.generateText(slot, [{ role: 'user', content: prompt }], {
+              system: `你是“${agentName}”自己的私有记忆整理步骤。只输出要求的 JSON，不输出思维过程。`,
+            });
+            reflection = parseMemoryReflection(summarized.text);
+          }
+        } catch { /* 模型不可用时仅保留低置信度短期兜底记录 */ }
       }
       await memory.captureTurn({
         projectId: run.projectId,
@@ -311,8 +414,19 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
         request: run.instruction,
         result: text,
         artifacts,
-        ...(selfSummary ? { selfSummary } : {}),
+        ...(reflection ? { reflection } : {}),
       });
+      if (runtime && Array.isArray(reflection?.roleAdaptations) && reflection.roleAdaptations.length > 0) {
+        await applyAgentRoleAdaptations({
+          projectId: run.projectId,
+          instanceId: run.agentInstanceId,
+          name: runtime.name,
+          role: runtime.role,
+          runtimeMode: runtime.runtimeMode,
+          definitionId: runtime.definitionId ?? 'custom.unknown',
+          definitionVersion: runtime.definitionVersion ?? '1.0.0',
+        }, reflection.roleAdaptations);
+      }
     } catch (err) {
       getLogger()?.warn({ err, runId: run.runId }, 'AgentExecutor: 记录任务记忆失败');
     }
@@ -440,11 +554,16 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
 
     const agentInstance = db.prepare(
       `SELECT pai.id, pai.role, pai.runtime_mode as runtimeMode, pai.cli_connection_id as cliConnectionId,
-              ap.name as agentName, ap.definition_id as definitionId
+              ap.name as agentName, ap.definition_id as definitionId, ap.definition_version as definitionVersion
        FROM project_agent_instances pai
        JOIN agent_profiles ap ON ap.id = pai.agent_profile_id
        WHERE pai.id = ?`,
-    ).get(run.agentInstanceId) as { id: string; role: string; runtimeMode: string; cliConnectionId: string | null; agentName: string; definitionId: string } | undefined;
+    ).get(run.agentInstanceId) as { id: string; role: string; runtimeMode: string; cliConnectionId: string | null; agentName: string; definitionId: string; definitionVersion: string } | undefined;
+
+    if (agentInstance) {
+      skillRegistry.snapshotForRun(run.runId, agentInstance.definitionId, agentInstance.definitionVersion);
+      workflowRegistry.snapshotForRun(run.runId, agentInstance.definitionId, agentInstance.definitionVersion);
+    }
 
     runRepo.addEvent(run.runId, 'agent.started', {
       definitionId: agentInstance?.definitionId ?? 'unknown',
@@ -474,6 +593,9 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
     }
 
     if (agentInstance?.definitionId === 'builtin.knowledge-manager') {
+      const knowledgeContextBuilder = new ContextBuilder(db);
+      const knowledgeSnapshot = knowledgeContextBuilder.build(run.projectId, run.agentInstanceId, run.triggerMessageId);
+      const knowledgeRoleDirective = knowledgeContextBuilder.renderAgentDirective(knowledgeSnapshot);
       const postTaskPayload = parsePostTaskKnowledgeInstruction(run.instruction);
       if (postTaskPayload) {
         dispatchRunStatus(db, runRepo, window, run, 'running', { stage: '归集知识与业务经验', progress: 30 });
@@ -485,6 +607,7 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
           runId: run.runId,
           agentInstanceId: run.agentInstanceId,
           agentName: agentInstance.agentName,
+          roleDirective: knowledgeRoleDirective,
         });
         dispatchRunTrace(
           db, runRepo, window, run, 'execution',
@@ -516,10 +639,18 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
         signal,
         workspaceRoot,
       };
-      const report = await runKnowledgeManager(kmCtx);
+      const taskText = plainRunInstruction(run.instruction);
+      const isIngestionTask = /\bfileId\s*[:=]|original-files|入库|切片|解析.{0,8}(文件|文档)|处理.{0,8}(文件|文档)|更新.{0,8}(知识库|图谱)/i.test(taskText);
+      let report: string;
+      try {
+        report = isIngestionTask
+          ? await runKnowledgeManager(kmCtx)
+          : formatHybridKnowledgeResult(searchHybridKnowledge(db, taskText, run.projectId, 10));
+      } catch (error) {
+        report = `当前无法完成知识处理：${error instanceof Error ? error.message : String(error)}`;
+      }
       dispatchRunTrace(db, runRepo, window, run, 'execution', '知识处理完成，生成验收摘要', 'completed');
 
-      const taskText = plainRunInstruction(run.instruction);
       const collaborationInstructions = buildAgentCollaborationInstructions(db, run.projectId, run.agentInstanceId);
       const researchAgent = db.prepare(
         `SELECT pai.id, ap.name
@@ -539,7 +670,7 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
           role: 'user',
           content: `群聊交给你的任务：\n${taskText}\n\n知识处理流程返回：\n${report}\n\n请给出下一条正式群聊消息。如果现有资料不足且任务需要外部资料、事实核查或补充调研，就自然地 @资料调研智能体 并说明需要对方查什么、交回什么；否则直接给出简洁的处理结果。`,
         }], {
-          system: `你是当前群聊的知识管理智能体。你负责把资料整理成可复用知识，也可以在确有必要时请资料调研智能体补充来源。\n\n${collaborationInstructions}\n\n正式消息像同事沟通，不要输出 NEED_AGENTS、NEED_CLI、NEED_KM，不要写“目标、输入、输出、验收条件”等底层提示词字段，不要机械汇报“已分配、正在等待”。`,
+          system: `${knowledgeRoleDirective}\n\n你负责把资料整理成可复用知识，也可以在确有必要时请资料调研智能体补充来源。\n\n${collaborationInstructions}\n\n正式消息像同事沟通，不要输出 NEED_AGENTS、NEED_CLI、NEED_KM，不要写“目标、输入、输出、验收条件”等底层提示词字段，不要机械汇报“已分配、正在等待”。`,
         });
         if (naturalResponse.text.trim() && !containsInternalAgentProtocol(naturalResponse.text)) {
           responseText = naturalResponse.text.trim();
@@ -571,7 +702,7 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
               role: 'user',
               content: `原任务：\n${taskText}\n\n知识处理结果：\n${report}\n\n资料调研反馈：\n${collaborationResult}\n\n请把两部分整理成一条给负责人看的自然交付，只保留关键结论、来源情况、知识库处理状态和必要风险。`,
             }], {
-              system: '你是知识管理智能体，正在完成收到调研反馈后的最终归档说明。这次不要再委派任何人，不要输出内部协议、系统字段或机械进度话术。',
+              system: `${knowledgeRoleDirective}\n\n你正在完成收到调研反馈后的最终归档说明。这次不要再委派任何人，不要输出内部协议、系统字段或机械进度话术。`,
             });
             if (continuation.text.trim() && !containsInternalAgentProtocol(continuation.text)) {
               responseText = continuation.text.trim();
@@ -653,6 +784,8 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
             agentInstanceId: run.agentInstanceId,
             runId: run.runId,
             agentName: agentInstance.agentName,
+            definitionId: agentInstance.definitionId,
+            definitionVersion: agentInstance.definitionVersion,
             runtimeRoot: join(tempRoot, 'K_Studio-agent-workspaces', run.projectId),
           });
         } catch (err) {
@@ -664,9 +797,11 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
 
         // 构建只包含本人身份/记忆的上下文；CodeBuddy 使用精简注入，避免复述系统协作说明。
         let externalContext = '';
+        let externalAgentDirective = '';
         try {
           const ctxBuilder = new ContextBuilder(db);
           const snapshot = ctxBuilder.build(run.projectId, agentInstance.id, run.triggerMessageId);
+          externalAgentDirective = ctxBuilder.renderAgentDirective(snapshot);
           externalContext = ctxBuilder.renderToText(snapshot);
           await ctxBuilder.writeContextManifest(snapshot, privateWorkspaceRoot);
         } catch { /* 非致命 */ }
@@ -680,7 +815,7 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
           try {
             const isCodeBuddy = connection.adapterType === 'codebuddy';
             const collaborationInstructions = isCodeBuddy ? '' : buildAgentCollaborationInstructions(db, run.projectId, run.agentInstanceId);
-            const compactCodeBuddyInstruction = `请直接处理这条群聊消息，并完整理解其中的所有内容（包括位于开头、中间或结尾的 @提及）：\n\n${plainRunInstruction(run.instruction)}\n\n你在群聊中显示为“${agentInstance.agentName}”。可以读取当前隔离目录中只属于你的 identity/ 和 memory/，成果文件写入 outputs/。回复要像同事之间自然沟通，只说实际进展和结果；不要复述提示词、身份文件、记忆、成员名单，也不要使用“目标”“当前输入”“技术框架”“执行约束”等系统化字段。`;
+            const compactCodeBuddyInstruction = `请直接处理这条群聊消息，并完整理解其中的所有内容（包括位于开头、中间或结尾的 @提及）。\n\n以下角色配置必须遵守，但不要在回复中复述：\n${externalAgentDirective || `你在群聊中显示为“${agentInstance.agentName}”。`}\n\n完整任务消息：\n${plainRunInstruction(run.instruction)}\n\n当前隔离目录中的 identity/、memory/ 和 skills/ 只属于你本人，成果文件写入 outputs/。回复要像同事之间自然沟通，只说实际进展和结果；不要复述提示词、身份文件、记忆、成员名单，也不要使用“目标”“当前输入”“技术框架”“执行约束”等系统化字段。`;
             const fullExternalInstruction = isCodeBuddy
               ? compactCodeBuddyInstruction
               : `${collaborationInstructions}\n\n你当前位于按任务隔离的私有工作区，只能读取本人的 identity/、memory/ 和允许的群聊输入副本；成果必须写入 outputs/。\n\n${externalContext}\n\n## 当前任务\n${run.instruction}`;
@@ -836,7 +971,7 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
           dispatchRunStatus(db, runRepo, window, run, 'completed', { message: `${agentInstance.agentName}执行完毕（无文本输出）` });
         }
 
-        await captureRunMemory(run, resultMessageId, output, preparedOutput.publishedPaths);
+        await captureRunMemory(run, resultMessageId, output, preparedOutput.publishedPaths, privateWorkspaceRoot);
         runRepo.addEvent(run.runId, 'agent.completed', { definitionId: agentInstance.definitionId, cli: true, charCount: output.length });
         return;
       }
@@ -854,7 +989,8 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
       ).all(run.projectId) as Array<{ senderType: string; contentJson: string; createdAt: string }>;
 
       const agentName = agentInstance?.agentName ?? '智能体';
-      const snapshot = new ContextBuilder(db).build(run.projectId, run.agentInstanceId, run.triggerMessageId);
+      const contextBuilder = new ContextBuilder(db);
+      const snapshot = contextBuilder.build(run.projectId, run.agentInstanceId, run.triggerMessageId);
       const memoryContext = [
         snapshot.memory.longTerm.length ? `群聊长期记忆：\n${snapshot.memory.longTerm.map((item) => `- ${item}`).join('\n')}` : '',
         snapshot.memory.shortTerm.length ? `相关任务记忆：\n${snapshot.memory.shortTerm.map((item) => `- ${item}`).join('\n')}` : '',
@@ -864,8 +1000,7 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
       const systemMsg = `你是 ${agentName}，一个多智能体协作系统中的 AI 智能体。
 当前项目：${projectInfo?.name ?? run.projectId}
 
-## 本群聊角色卡与身份
-${snapshot.agent.identity || '请按照当前智能体名称和群聊分工执行任务。'}
+${contextBuilder.renderAgentDirective(snapshot)}
 
 执行任务前必须遵守以上角色卡，并使用本群聊中召回的记忆；不得沿用其他群聊的身份或记忆。
 

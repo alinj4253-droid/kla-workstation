@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
-import { rm } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -14,6 +14,7 @@ vi.mock('electron', () => ({
 
 import { setStudioRoot, getProjectRoot } from './paths';
 import { addProjectAgents, createProject, seedDefaultProfiles } from './project-creator';
+import { ContextBuilder, type ContextSnapshot } from './context-builder';
 import {
   ProjectRepository,
   AgentInstanceRepository,
@@ -240,8 +241,10 @@ describe('createProject', () => {
         const identityPath = join(projectRoot, inst.identityRelPath);
         expect(existsSync(identityPath)).toBe(true);
         const content = readFileSync(identityPath, 'utf8');
-        expect(content).toContain('schemaVersion: 1');
+        expect(content).toContain('schemaVersion: 2');
         expect(existsSync(join(identityPath, '..', 'ROLE.md'))).toBe(true);
+        expect(existsSync(join(identityPath, '..', 'ADAPTATION.md'))).toBe(true);
+        expect(existsSync(join(identityPath, '..', 'IDENTITY.snapshot.json'))).toBe(true);
       }
 
       // Memory directories exist
@@ -318,6 +321,10 @@ describe('createProject', () => {
        (id, name, definition_id, definition_version, runtime_mode, cli_connection_id, enabled, delegatable, is_system_default, created_at, updated_at)
        VALUES (?, '测试 CLI 智能体', 'external.codebuddy', '1.0.0', 'external-cli', 'cli-test', 1, 1, 0, ?, ?)`,
     ).run(profileId, now, now);
+    const definitionRoot = join(studioRoot, 'agent-definitions', 'custom', 'external.codebuddy', '1.0.0');
+    await mkdir(join(definitionRoot, 'prompts'), { recursive: true });
+    await writeFile(join(definitionRoot, 'IDENTITY.template.md'), '---\nschemaVersion: 2\ndefinitionId: external.codebuddy\n---\n\n# 身份\n\n这是人工维护的 CodeBuddy 全局身份模板。\n', 'utf8');
+    await writeFile(join(definitionRoot, 'prompts', 'system.md'), '这是人工维护的 CodeBuddy 系统规则。', 'utf8');
     const created = await createProject(db, { content: { text: '添加成员测试' } });
     expect(created.ok).toBe(true);
     if (!created.ok) return;
@@ -327,9 +334,19 @@ describe('createProject', () => {
     const added = agents.find((agent) => agent.agentName === '测试 CLI 智能体');
     expect(added?.role).toBe('teammate');
     expect(added?.runtimeMode).toBe('external-cli');
-    expect(existsSync(join(getProjectRoot(created.data.id), 'agent-identities', added!.id, 'IDENTITY.md'))).toBe(true);
+    const addedIdentityPath = join(getProjectRoot(created.data.id), 'agent-identities', added!.id, 'IDENTITY.md');
+    expect(existsSync(addedIdentityPath)).toBe(true);
+    expect(readFileSync(addedIdentityPath, 'utf8')).toContain('人工维护的 CodeBuddy 全局身份模板');
     expect(existsSync(join(getProjectRoot(created.data.id), 'agent-identities', added!.id, 'ROLE.md'))).toBe(true);
+    expect(existsSync(join(getProjectRoot(created.data.id), 'agent-identities', added!.id, 'ADAPTATION.md'))).toBe(true);
     expect(existsSync(join(getProjectRoot(created.data.id), 'agent-memories', added!.id, 'short-term', 'current.md'))).toBe(true);
+
+    const runtimeIdentity = (new ContextBuilder(db) as unknown as {
+      buildAgentInfo(instanceId: string): ContextSnapshot['agent'];
+    }).buildAgentInfo(added!.id);
+    expect(runtimeIdentity.definitionSystemPrompt).toContain('人工维护的 CodeBuddy 系统规则');
+    expect(runtimeIdentity.identity).toContain('人工维护的 CodeBuddy 全局身份模板');
+    expect(runtimeIdentity.identity).toContain('群聊适应性补充');
 
     const duplicate = await addProjectAgents(db, created.data.id, [profileId]);
     expect(duplicate).toHaveLength(4);

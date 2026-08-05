@@ -4,7 +4,12 @@ import { BaseRepository } from './base.js';
 
 export interface KnowledgeSourceRow {
   id: string; scopeType: string; scopeId: string; fileId: string; versionId: string | null;
-  sha256: string | null; status: string; ingestedAt: string | null;
+  sha256: string | null; contentMd5: string | null; parserId: string | null; metadataJson: string | null;
+  status: string; ingestedAt: string | null;
+}
+
+export interface KnowledgeEmbeddingRow {
+  chunkId: string; sourceId: string; modelId: string; dimensions: number; vectorJson: string; createdAt: string;
 }
 
 export interface KnowledgeJobRow {
@@ -35,7 +40,7 @@ export interface KnowledgeProvenanceRow {
   chunkId: string | null; locationJson: string | null; quoteHash: string | null; createdAt: string;
 }
 
-const S_COLS = 'id, scope_type as scopeType, scope_id as scopeId, file_id as fileId, version_id as versionId, sha256, status, ingested_at as ingestedAt';
+const S_COLS = 'id, scope_type as scopeType, scope_id as scopeId, file_id as fileId, version_id as versionId, sha256, content_md5 as contentMd5, parser_id as parserId, metadata_json as metadataJson, status, ingested_at as ingestedAt';
 const J_COLS = 'id, scope_type as scopeType, scope_id as scopeId, source_id as sourceId, status, stage, progress, error_code as errorCode, created_at as createdAt, updated_at as updatedAt';
 const C_COLS = 'id, source_id as sourceId, ordinal, text, location_json as locationJson, content_hash as contentHash, created_at as createdAt';
 const N_COLS = 'id, scope_type as scopeType, scope_id as scopeId, node_type as nodeType, canonical_name as canonicalName, summary, properties_json as propertiesJson, confidence, created_at as createdAt, updated_at as updatedAt';
@@ -79,17 +84,24 @@ export class KnowledgeRepository extends BaseRepository {
     return { source, job, chunkCount: chunkRow.c, nodeCount: nodeRow.c };
   }
 
-  createSource(input: { scopeType: string; scopeId: string; fileId: string; versionId?: string; sha256?: string }): KnowledgeSourceRow {
+  createSource(input: { scopeType: string; scopeId: string; fileId: string; versionId?: string; sha256?: string; contentMd5?: string }): KnowledgeSourceRow {
     const id = randomUUID().toLowerCase().replace(/-/g, '').slice(0, 24);
     this.db.prepare(
-      `INSERT INTO knowledge_sources (id, scope_type, scope_id, file_id, version_id, sha256, status) VALUES (?, ?, ?, ?, ?, ?, 'pending')`,
-    ).run(id, input.scopeType, input.scopeId, input.fileId, input.versionId ?? null, input.sha256 ?? null);
+      `INSERT INTO knowledge_sources (id, scope_type, scope_id, file_id, version_id, sha256, content_md5, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')`,
+    ).run(id, input.scopeType, input.scopeId, input.fileId, input.versionId ?? null, input.sha256 ?? null, input.contentMd5 ?? null);
     return this.getSource(id)!;
   }
 
   setSourceStatus(id: string, status: 'pending' | 'ingesting' | 'ready' | 'error'): void {
     const ingested = status === 'ready' ? this.now() : null;
     this.db.prepare('UPDATE knowledge_sources SET status = ?, ingested_at = ? WHERE id = ?').run(status, ingested, id);
+  }
+
+  updateSourceMetadata(id: string, input: { contentMd5?: string; parserId?: string; metadataJson?: string }): void {
+    this.db.prepare(
+      `UPDATE knowledge_sources SET content_md5 = COALESCE(?, content_md5), parser_id = COALESCE(?, parser_id),
+       metadata_json = COALESCE(?, metadata_json) WHERE id = ?`,
+    ).run(input.contentMd5 ?? null, input.parserId ?? null, input.metadataJson ?? null, id);
   }
 
   // Jobs
@@ -145,6 +157,70 @@ export class KnowledgeRepository extends BaseRepository {
   getChunk(id: string): KnowledgeChunkRow | null {
     const row = this.db.prepare(`SELECT ${C_COLS} FROM knowledge_chunks WHERE id = ?`).get(id) as KnowledgeChunkRow | undefined;
     return row ?? null;
+  }
+
+  upsertDocumentProfile(input: {
+    sourceId: string; summary: string; keywords: string[]; tags: string[]; language: string; metadataJson?: string;
+  }): void {
+    this.db.prepare(
+      `INSERT INTO knowledge_document_profiles (source_id, summary, keywords_json, tags_json, language, metadata_json, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(source_id) DO UPDATE SET summary = excluded.summary, keywords_json = excluded.keywords_json,
+         tags_json = excluded.tags_json, language = excluded.language, metadata_json = excluded.metadata_json,
+         updated_at = excluded.updated_at`,
+    ).run(input.sourceId, input.summary, JSON.stringify(input.keywords), JSON.stringify(input.tags), input.language, input.metadataJson ?? null, this.now());
+  }
+
+  upsertEmbedding(input: { chunkId: string; sourceId: string; modelId: string; vector: number[] }): void {
+    this.db.prepare(
+      `INSERT INTO knowledge_chunk_embeddings (chunk_id, source_id, model_id, dimensions, vector_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(chunk_id) DO UPDATE SET source_id = excluded.source_id, model_id = excluded.model_id,
+         dimensions = excluded.dimensions, vector_json = excluded.vector_json, created_at = excluded.created_at`,
+    ).run(input.chunkId, input.sourceId, input.modelId, input.vector.length, JSON.stringify(input.vector), this.now());
+  }
+
+  listEmbeddings(scopes: Array<{ scopeType: string; scopeId: string }>): Array<KnowledgeEmbeddingRow & { text: string; fileName: string | null; locationJson: string | null }> {
+    if (scopes.length === 0) return [];
+    const where = scopes.map(() => '(s.scope_type = ? AND s.scope_id = ?)').join(' OR ');
+    const params = scopes.flatMap((scope) => [scope.scopeType, scope.scopeId]);
+    return this.db.prepare(
+      `SELECT e.chunk_id as chunkId, e.source_id as sourceId, e.model_id as modelId, e.dimensions,
+              e.vector_json as vectorJson, e.created_at as createdAt, c.text, c.location_json as locationJson, f.name as fileName
+       FROM knowledge_chunk_embeddings e
+       JOIN knowledge_chunks c ON c.id = e.chunk_id
+       JOIN knowledge_sources s ON s.id = e.source_id
+       LEFT JOIN files f ON f.id = s.file_id
+       WHERE s.status = 'ready' AND (${where})`,
+    ).all(...params) as Array<KnowledgeEmbeddingRow & { text: string; fileName: string | null; locationJson: string | null }>;
+  }
+
+  removeKnowledgeForFile(fileId: string): number {
+    const sources = this.db.prepare('SELECT id FROM knowledge_sources WHERE file_id = ?').all(fileId) as Array<{ id: string }>;
+    this.removeSources(sources.map((source) => source.id));
+    return sources.length;
+  }
+
+  removeObsoleteSourcesForFile(fileId: string, keepSourceId: string): number {
+    const sources = this.db.prepare('SELECT id FROM knowledge_sources WHERE file_id = ? AND id != ?').all(fileId, keepSourceId) as Array<{ id: string }>;
+    this.removeSources(sources.map((source) => source.id));
+    return sources.length;
+  }
+
+  private removeSources(sourceIds: string[]): void {
+    if (sourceIds.length === 0) return;
+    const placeholders = sourceIds.map(() => '?').join(',');
+    this.db.transaction(() => {
+      this.db.prepare(`DELETE FROM wiki_pages WHERE ${sourceIds.map(() => "source_refs_json LIKE '%' || ? || '%'").join(' OR ')}`).run(...sourceIds);
+      this.db.prepare(`DELETE FROM knowledge_provenance WHERE source_id IN (${placeholders})`).run(...sourceIds);
+      this.db.prepare(`DELETE FROM knowledge_chunk_embeddings WHERE source_id IN (${placeholders})`).run(...sourceIds);
+      this.db.prepare(`DELETE FROM knowledge_document_profiles WHERE source_id IN (${placeholders})`).run(...sourceIds);
+      this.db.prepare(`DELETE FROM knowledge_chunks WHERE source_id IN (${placeholders})`).run(...sourceIds);
+      this.db.prepare(`DELETE FROM knowledge_ingestion_jobs WHERE source_id IN (${placeholders})`).run(...sourceIds);
+      this.db.prepare(`DELETE FROM knowledge_sources WHERE id IN (${placeholders})`).run(...sourceIds);
+      this.db.prepare('DELETE FROM knowledge_nodes WHERE id NOT IN (SELECT DISTINCT target_id FROM knowledge_provenance WHERE target_type = ?)').run('node');
+      this.db.prepare('DELETE FROM knowledge_edges WHERE source_node_id NOT IN (SELECT id FROM knowledge_nodes) OR target_node_id NOT IN (SELECT id FROM knowledge_nodes)').run();
+    })();
   }
 
   chunkExistsByHash(sourceId: string, contentHash: string): boolean {
@@ -321,9 +397,13 @@ export class KnowledgeRepository extends BaseRepository {
     const nodes = this.db.prepare(
       `SELECT ${N_COLS} FROM knowledge_nodes WHERE (canonical_name LIKE ? OR summary LIKE ?) ${scopeClause} LIMIT ?`,
     ).all(...params, like, limit) as KnowledgeNodeRow[];
-    const chunks = this.db.prepare(
-      `SELECT ${C_COLS} FROM knowledge_chunks WHERE text LIKE ? LIMIT ?`,
-    ).all(like, limit) as KnowledgeChunkRow[];
+    const chunks = scopeType && scopeId
+      ? this.db.prepare(
+        `SELECT ${C_COLS.replaceAll('source_id', 'c.source_id').replaceAll('id,', 'c.id,')} FROM knowledge_chunks c
+         JOIN knowledge_sources s ON s.id = c.source_id
+         WHERE c.text LIKE ? AND s.scope_type = ? AND s.scope_id = ? AND s.status = 'ready' LIMIT ?`,
+      ).all(like, scopeType, scopeId, limit) as KnowledgeChunkRow[]
+      : this.db.prepare(`SELECT ${C_COLS} FROM knowledge_chunks WHERE text LIKE ? LIMIT ?`).all(like, limit) as KnowledgeChunkRow[];
     return { nodes, chunks };
   }
 }

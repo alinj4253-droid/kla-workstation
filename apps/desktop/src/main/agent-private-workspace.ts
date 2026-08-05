@@ -1,5 +1,6 @@
 import { access, cp, lstat, mkdir, readdir, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
+import { getStudioRoot } from './paths';
 
 const safeSegment = (value: string): string => value.replace(/[^a-z0-9_-]/gi, '_').slice(0, 120) || 'agent';
 
@@ -22,6 +23,8 @@ export async function prepareAgentPrivateWorkspace(input: {
   agentInstanceId: string;
   runId: string;
   agentName: string;
+  definitionId?: string;
+  definitionVersion?: string;
   /** 建议传入项目目录之外的系统临时目录，避免 CLI 通过相对路径遍历群聊根目录。 */
   runtimeRoot?: string;
 }): Promise<string> {
@@ -38,6 +41,16 @@ export async function prepareAgentPrivateWorkspace(input: {
     copyDirectoryIfPresent(join(input.projectRoot, 'original-files'), join(workspaceRoot, 'original-files')),
     copyDirectoryIfPresent(join(input.projectRoot, 'knowledge'), join(workspaceRoot, 'knowledge')),
     copyDirectoryIfPresent(join(input.projectRoot, 'graph-visualization'), join(workspaceRoot, 'graph-visualization')),
+    ...(input.definitionId ? [
+      copyDirectoryIfPresent(
+        join(getStudioRoot(), 'agent-definitions', 'built-in', input.definitionId, input.definitionVersion ?? '1.0.0', 'skills'),
+        join(workspaceRoot, 'skills'),
+      ),
+      copyDirectoryIfPresent(
+        join(getStudioRoot(), 'agent-definitions', 'custom', input.definitionId, input.definitionVersion ?? '1.0.0', 'skills'),
+        join(workspaceRoot, 'skills'),
+      ),
+    ] : []),
     mkdir(join(workspaceRoot, 'outputs'), { recursive: true }),
   ]);
 
@@ -45,6 +58,7 @@ export async function prepareAgentPrivateWorkspace(input: {
 
 - \`identity/\`：仅包含当前智能体自己的身份与角色卡。
 - \`memory/\`：仅包含当前智能体自己的短期、长期和会话记忆。
+- \`skills/\`：仅包含当前智能体定义绑定的技能包，与群聊无关。
 - \`original-files/\`、\`knowledge/\`、\`graph-visualization/\`：本次任务允许读取的群聊输入副本。
 - \`outputs/\`：成果输出目录；需要交付的文件必须写入这里。
 

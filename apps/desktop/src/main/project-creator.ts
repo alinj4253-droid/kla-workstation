@@ -10,51 +10,12 @@ import {
   MessageRepository,
 } from '@kunqing/database';
 import { getProjectRoot, getStudioRoot } from './paths';
+import { ensureAgentIdentityFiles } from './agent-identity';
 export { validateEffectivePermissions, type PermissionDefinition } from './permission-validator';
 
 const ORCHESTRATOR_PROFILE_ID = 'builtin-orchestrator-profile';
 const KNOWLEDGE_PROFILE_ID = 'builtin-knowledge-profile';
 const RESEARCHER_PROFILE_ID = 'builtin-researcher-profile';
-
-const ORCHESTRATOR_IDENTITY_TPL = `---
-schemaVersion: 1
-definitionId: builtin.orchestrator
-definitionVersion: 1.0.0
-role: leader
----
-
-# 身份
-
-你是当前群聊的统筹管理智能体。你只负责理解目标、拆解任务、安排成员、跟踪进度、验收结果和汇总交付。
-除简单问候、澄清问题和最终汇总外，不得亲自完成编码、写作、检索、制图或文件生产任务。
-根据任务目标、成员能力与实际依赖动态安排协作，不得按角色名称或关键词套用固定分工。主体工作完成后，安排知识管理智能体归集可复用知识和经验。
-需要用户决策或补充信息时使用 @用户；禁止发送无实际动作的确认消息，禁止让智能体互相 @ 形成循环。
-`;
-
-const KNOWLEDGE_IDENTITY_TPL = `---
-schemaVersion: 1
-definitionId: builtin.knowledge-manager
-definitionVersion: 1.0.0
-role: teammate
----
-
-# 身份
-
-你是当前群聊的知识管理智能体，负责文档入库、实体关系提取、图谱构建、Wiki 生成，以及任务完成后的知识与经验归集。
-归集时应形成知识文档，并判断是否存在值得复用的业务流程。适用时从业务目标出发动态梳理阶段、步骤、输入、输出、责任对象与校验逻辑；不适用时说明原因，不得把智能体运行轨迹当作业务流程。
-`;
-
-const RESEARCHER_IDENTITY_TPL = `---
-schemaVersion: 1
-definitionId: builtin.researcher
-definitionVersion: 1.0.0
-role: teammate
----
-
-# 身份
-
-你是当前群聊的资料调研智能体，负责信息检索、资料分析和事实核查。
-`;
 
 function extractProjectName(text: string, templateId?: string): string {
   if (templateId) {
@@ -83,29 +44,6 @@ function generateInstanceId(projectId: string, suffix: string): string {
   return `${projectId}-${suffix}`;
 }
 
-function buildRoleCard(input: { instanceId: string; name: string; role: string; runtimeMode: string; definitionId: string }): string {
-  return `---
-schemaVersion: 1
-name: ${JSON.stringify(input.name)}
-role: ${input.role}
-runtimeMode: ${input.runtimeMode}
-definitionId: ${input.definitionId}
----
-
-# 群聊角色卡
-
-你在本群聊中的身份是“${input.name}”（${input.role}）。
-
-## 工作要求
-
-- 每次执行前必须读取并遵循本目录的 \`IDENTITY.md\`、本文件以及系统提供的本人私有记忆；不得读取或推断其他智能体的身份与记忆。
-- 只完成统筹智能体分配给你的任务，输出必须包含可验收结果、成果路径和剩余风险。
-- 可以在确需用户决定、授权或补充信息时使用 \`@用户\`。
-- 不得发送“收到、确认、谢谢、等待下一步”等无实际交付的消息，也不得把任务重新 @ 给已经参与过的智能体。
-- HTML 成果写入 \`outputs/\` 并在聊天正文中以 \`html\` 代码块展示源代码；实际页面通过成果文件在右侧预览。
-`;
-}
-
 export async function ensureProjectAgentFiles(db: Database.Database, projectId: string): Promise<void> {
   const now = new Date().toISOString();
   const projectRoot = getProjectRoot(projectId);
@@ -116,11 +54,12 @@ export async function ensureProjectAgentFiles(db: Database.Database, projectId: 
      WHERE project_id = ?`,
   ).run(projectId);
   const instances = db.prepare(
-    `SELECT pai.id, pai.role, pai.runtime_mode as runtimeMode, pai.definition_id as definitionId, ap.name
+    `SELECT pai.id, pai.role, pai.runtime_mode as runtimeMode, pai.definition_id as definitionId,
+            pai.definition_version as definitionVersion, ap.name
      FROM project_agent_instances pai
      JOIN agent_profiles ap ON ap.id = pai.agent_profile_id
      WHERE pai.project_id = ? ORDER BY pai.ordinal`,
-  ).all(projectId) as Array<{ id: string; role: string; runtimeMode: string; definitionId: string; name: string }>;
+  ).all(projectId) as Array<{ id: string; role: string; runtimeMode: string; definitionId: string; definitionVersion: string; name: string }>;
 
   for (const instance of instances) {
     const identityRoot = join(projectRoot, 'agent-identities', instance.id);
@@ -131,17 +70,15 @@ export async function ensureProjectAgentFiles(db: Database.Database, projectId: 
       mkdir(join(memoryRoot, 'sessions'), { recursive: true }),
       mkdir(join(memoryRoot, 'long-term'), { recursive: true }),
     ]);
-    const identityPath = join(identityRoot, 'IDENTITY.md');
-    try { await access(identityPath); } catch {
-      await writeFile(identityPath, `# 身份\n\n你是本群聊中的 ${instance.name}，必须依据 ROLE.md 和本地记忆执行任务。\n`, 'utf8');
-    }
-    await writeFile(join(identityRoot, 'ROLE.md'), buildRoleCard({
+    await ensureAgentIdentityFiles({
+      projectId,
       instanceId: instance.id,
       name: instance.name,
       role: instance.role,
       runtimeMode: instance.runtimeMode,
       definitionId: instance.definitionId,
-    }), 'utf8');
+      definitionVersion: instance.definitionVersion ?? '1.0.0',
+    });
     const currentPath = join(memoryRoot, 'short-term', 'current.md');
     try { await access(currentPath); } catch {
       await writeFile(currentPath, `---\nschemaVersion: 1\nscope: short-term\nupdatedAt: ${now}\n---\n\n# 当前任务记忆\n\n暂无活跃任务。\n`, 'utf8');
@@ -378,24 +315,13 @@ export async function createProject(
     }
 
     const allInstances = db.prepare(
-      `SELECT pai.id, pai.role, pai.runtime_mode as runtimeMode, pai.definition_id as definitionId, ap.name
+      `SELECT pai.id, pai.role, pai.runtime_mode as runtimeMode, pai.definition_id as definitionId,
+              pai.definition_version as definitionVersion, ap.name
        FROM project_agent_instances pai
        JOIN agent_profiles ap ON ap.id = pai.agent_profile_id
        WHERE pai.project_id = ? ORDER BY pai.ordinal`,
-    ).all(projectId) as Array<{ id: string; role: string; runtimeMode: string; definitionId: string; name: string }>;
+    ).all(projectId) as Array<{ id: string; role: string; runtimeMode: string; definitionId: string; definitionVersion: string; name: string }>;
 
-    await mkdir(join(projectRoot, 'agent-identities', orchInstanceId), { recursive: true });
-    await mkdir(join(projectRoot, 'agent-identities', knowInstanceId), { recursive: true });
-    await mkdir(join(projectRoot, 'agent-identities', resInstanceId), { recursive: true });
-    await mkdir(join(projectRoot, 'agent-memories', orchInstanceId, 'short-term'), { recursive: true });
-    await mkdir(join(projectRoot, 'agent-memories', orchInstanceId, 'sessions'), { recursive: true });
-    await mkdir(join(projectRoot, 'agent-memories', orchInstanceId, 'long-term'), { recursive: true });
-    await mkdir(join(projectRoot, 'agent-memories', knowInstanceId, 'short-term'), { recursive: true });
-    await mkdir(join(projectRoot, 'agent-memories', knowInstanceId, 'sessions'), { recursive: true });
-    await mkdir(join(projectRoot, 'agent-memories', knowInstanceId, 'long-term'), { recursive: true });
-    await mkdir(join(projectRoot, 'agent-memories', resInstanceId, 'short-term'), { recursive: true });
-    await mkdir(join(projectRoot, 'agent-memories', resInstanceId, 'sessions'), { recursive: true });
-    await mkdir(join(projectRoot, 'agent-memories', resInstanceId, 'long-term'), { recursive: true });
     await mkdir(join(projectRoot, 'original-files'), { recursive: true });
     await mkdir(join(projectRoot, 'knowledge', 'graph', 'schema'), { recursive: true });
     await mkdir(join(projectRoot, 'knowledge', 'wiki', 'entities'), { recursive: true });
@@ -408,32 +334,24 @@ export async function createProject(
     await mkdir(join(projectRoot, '.runtime', 'run-temp'), { recursive: true });
     await mkdir(join(projectRoot, '.runtime', 'sandboxes'), { recursive: true });
 
-    await writeFile(join(projectRoot, 'agent-identities', orchInstanceId, 'IDENTITY.md'), ORCHESTRATOR_IDENTITY_TPL, 'utf8');
-    await writeFile(join(projectRoot, 'agent-identities', knowInstanceId, 'IDENTITY.md'), KNOWLEDGE_IDENTITY_TPL, 'utf8');
-    await writeFile(join(projectRoot, 'agent-identities', resInstanceId, 'IDENTITY.md'), RESEARCHER_IDENTITY_TPL, 'utf8');
-
     for (const instance of allInstances) {
       const instId = instance.id;
-      const identityRoot = join(projectRoot, 'agent-identities', instId);
       const memRoot = join(projectRoot, 'agent-memories', instId);
       const curPath = join(memRoot, 'short-term', 'current.md');
       const longPath = join(memRoot, 'long-term', 'summary.md');
       const idxPath = join(memRoot, 'index.jsonl');
-      await mkdir(identityRoot, { recursive: true });
       await mkdir(join(memRoot, 'short-term'), { recursive: true });
       await mkdir(join(memRoot, 'sessions'), { recursive: true });
       await mkdir(join(memRoot, 'long-term'), { recursive: true });
-      const identityPath = join(identityRoot, 'IDENTITY.md');
-      try { await access(identityPath); } catch {
-        await writeFile(identityPath, `# 身份\n\n你是本群聊中的 ${instance.name}，必须依据 ROLE.md 和本地记忆执行任务。\n`, 'utf8');
-      }
-      await writeFile(join(identityRoot, 'ROLE.md'), buildRoleCard({
+      await ensureAgentIdentityFiles({
+        projectId,
         instanceId: instId,
         name: instance.name,
         role: instance.role,
         runtimeMode: instance.runtimeMode,
         definitionId: instance.definitionId,
-      }), 'utf8');
+        definitionVersion: instance.definitionVersion ?? '1.0.0',
+      });
       try { await access(curPath); } catch { await writeFile(curPath, `---\nschemaVersion: 1\nmemoryId: current\ntype: summary\nscope: short-term\nconfidence: 1\ncreatedAt: ${now}\nupdatedAt: ${now}\n---\n\n# 当前会话\n\n群聊已创建，等待首次对话。\n`, 'utf8'); }
       try { await access(longPath); } catch { await writeFile(longPath, `---\nschemaVersion: 1\nscope: long-term\nupdatedAt: ${now}\n---\n\n# 长期记忆摘要\n\n暂无长期记忆。\n`, 'utf8'); }
       try { await access(idxPath); } catch { await writeFile(idxPath, '', 'utf8'); }

@@ -3,6 +3,7 @@ import { hashContent, slugify } from './types.js';
 import { parseDocument } from './parsers/index.js';
 import { chunkDocument } from './chunker.js';
 import { buildGraphExtractionPrompt, buildWikiGenerationPrompt } from './prompts.js';
+import { analyzeDocumentLocally } from './analysis.js';
 
 /**
  * Execute the full knowledge ingestion pipeline for a single file.
@@ -22,6 +23,10 @@ export async function runIngestionPipeline(ctx: PipelineContext): Promise<void> 
 
     const buf = await ctx.readFile();
     const doc = await parseDocument(buf, ctx.fileExt, ctx.fileName);
+    if (doc.metadata.requiresOcr && ctx.ocrExtract) {
+      const ocrText = await ctx.ocrExtract(ctx.filePath);
+      if (ocrText.trim()) doc.text = ocrText.trim();
+    }
 
     ctx.log('文档解析完成', {
       fileName: ctx.fileName,
@@ -35,6 +40,12 @@ export async function runIngestionPipeline(ctx: PipelineContext): Promise<void> 
       ctx.log('文档内容过短，跳过知识提取');
       return;
     }
+
+    const localProfile = analyzeDocumentLocally(doc.text, ctx.fileName);
+    const profile = ctx.analyzeDocument
+      ? await ctx.analyzeDocument(doc.text, localProfile).catch(() => localProfile)
+      : localProfile;
+    await ctx.saveDocumentProfile?.(profile, doc.metadata);
 
     // ── Stage 2: Chunking ──
     await ctx.setJobStatus('running', 'chunking', 15);
@@ -96,7 +107,11 @@ export async function runIngestionPipeline(ctx: PipelineContext): Promise<void> 
         continue;
       }
       try {
-        await ctx.upsertEdge(rel, sourceId, targetId);
+        const edgeId = await ctx.upsertEdge(rel, sourceId, targetId);
+        const evidence = chunks.find((chunk) => chunk.text.includes(rel.source) && chunk.text.includes(rel.target));
+        if (evidence) {
+          await ctx.createProvenance('edge', edgeId, ctx.sourceId, evidence.id ?? evidence.ordinal.toString(), evidence.locationJson, hashContent(evidence.text));
+        }
       } catch (err) {
         ctx.log('关系保存失败', { source: rel.source, target: rel.target, error: String(err) });
       }
@@ -109,7 +124,7 @@ export async function runIngestionPipeline(ctx: PipelineContext): Promise<void> 
         if (chunk.text.includes(entityName)) {
           try {
             const quoteHash = hashContent(chunk.text);
-            await ctx.createProvenance('node', nodeId, ctx.sourceId, chunk.ordinal.toString(), chunk.locationJson, quoteHash);
+            await ctx.createProvenance('node', nodeId, ctx.sourceId, chunk.id ?? chunk.ordinal.toString(), chunk.locationJson, quoteHash);
             provenanceCount++;
           } catch (err) {
             ctx.log('provenance 写入失败', { nodeId, error: String(err) });
@@ -147,7 +162,7 @@ export async function runIngestionPipeline(ctx: PipelineContext): Promise<void> 
         .slice(0, 3)
         .map((c) => ({
           sourceId: ctx.sourceId,
-          chunkId: c.ordinal.toString(),
+          chunkId: c.id ?? c.ordinal.toString(),
           chunkText: c.text,
         }));
 

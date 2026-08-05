@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import type { MemoryScope, MemoryRecord, MemoryRecordInput } from '../src/types';
+import type { MemoryScope, MemoryRecord, CreateMemoryInput } from '../src/types';
 
 describe('MemoryScope type', () => {
   it('accepts valid scope values', () => {
-    const scopes: MemoryScope[] = ['short-term', 'long-term', 'session'];
-    expect(scopes).toHaveLength(3);
+    const scopes: MemoryScope[] = ['short-term', 'long-term'];
+    expect(scopes).toHaveLength(2);
   });
 });
 
@@ -18,7 +18,10 @@ describe('MemoryRecord type', () => {
       type: 'interaction',
       content: 'User asked about project status',
       confidence: 0.8,
+      importance: 0.8, pinned: false, topicKey: null, sourceRefsJson: null, metadataJson: null,
       status: 'active',
+      expiresAt: null, lastReinforcedAt: '2026-01-01T00:00:00Z', lastAccessedAt: null,
+      accessCount: 0, consolidatedIntoId: null, supersedesId: null,
       createdAt: '2026-01-01T00:00:00Z',
       updatedAt: '2026-01-01T00:00:00Z',
     };
@@ -35,7 +38,10 @@ describe('MemoryRecord type', () => {
       type: 'knowledge',
       content: 'Important fact',
       confidence: 0.9,
+      importance: 0.9, pinned: false, topicKey: null, sourceRefsJson: null, metadataJson: null,
       status: 'active',
+      expiresAt: null, lastReinforcedAt: '2026-01-01T00:00:00Z', lastAccessedAt: null,
+      accessCount: 0, consolidatedIntoId: null, supersedesId: null,
       createdAt: '2026-01-01T00:00:00Z',
       updatedAt: '2026-01-01T00:00:00Z',
     };
@@ -43,16 +49,15 @@ describe('MemoryRecord type', () => {
   });
 });
 
-describe('MemoryRecordInput type', () => {
+describe('CreateMemoryInput type', () => {
   it('accepts input for creating a memory record', () => {
-    const input: MemoryRecordInput = {
+    const input: CreateMemoryInput = {
       projectId: 'proj-1',
       agentInstanceId: 'agent-1',
       scope: 'short-term',
       type: 'interaction',
       content: 'New memory content',
       confidence: 0.5,
-      status: 'active',
       expiresAt: '2026-02-01T00:00:00Z',
     };
     expect(input.content).toBe('New memory content');
@@ -60,13 +65,12 @@ describe('MemoryRecordInput type', () => {
   });
 
   it('accepts input without optional fields', () => {
-    const input: MemoryRecordInput = {
+    const input: CreateMemoryInput = {
       projectId: 'proj-1',
       agentInstanceId: 'agent-1',
       scope: 'short-term',
       type: 'interaction',
       content: 'Simple memory',
-      confidence: undefined,
     };
     expect(input.content).toBe('Simple memory');
   });

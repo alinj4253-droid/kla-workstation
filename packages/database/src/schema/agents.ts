@@ -101,3 +101,80 @@ export const agentSkills = sqliteTable('agent_skills', {
 }, (table) => [
   uniqueIndex('idx_agent_skills').on(table.agentDefinitionId, table.agentDefinitionVersion, table.skillId),
 ]);
+
+/** 版本化技能包。旧 skills/agent_skills 保留为设置页兼容视图。 */
+export const skillPackages = sqliteTable('skill_packages', {
+  id: text('id').notNull(),
+  version: text('version').notNull(),
+  name: text('name').notNull(),
+  description: text('description').notNull(),
+  packageRelPath: text('package_rel_path').notNull(),
+  entryRelPath: text('entry_rel_path').notNull().default('SKILL.md'),
+  manifestJson: text('manifest_json').notNull(),
+  checksum: text('checksum').notNull(),
+  source: text('source', { enum: ['built-in', 'custom', 'legacy'] }).notNull(),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+  installedAt: text('installed_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  uniqueIndex('idx_skill_packages_identity').on(table.id, table.version),
+]);
+
+export const agentDefinitionSkills = sqliteTable('agent_definition_skills', {
+  agentDefinitionId: text('agent_definition_id').notNull(),
+  agentDefinitionVersion: text('agent_definition_version').notNull(),
+  skillId: text('skill_id').notNull(),
+  skillVersion: text('skill_version').notNull(),
+  ordinal: integer('ordinal').notNull(),
+  configJson: text('config_json'),
+}, (table) => [
+  uniqueIndex('idx_agent_definition_skills').on(table.agentDefinitionId, table.agentDefinitionVersion, table.skillId, table.skillVersion),
+]);
+
+export const agentRunSkills = sqliteTable('agent_run_skills', {
+  runId: text('run_id').notNull(),
+  skillId: text('skill_id').notNull(),
+  skillVersion: text('skill_version').notNull(),
+  checksum: text('checksum').notNull(),
+  packageRelPath: text('package_rel_path').notNull(),
+  snapshotJson: text('snapshot_json').notNull(),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  uniqueIndex('idx_agent_run_skills').on(table.runId, table.skillId, table.skillVersion),
+]);
+
+export const workflowPackages = sqliteTable('workflow_packages', {
+  id: text('id').notNull(),
+  version: text('version').notNull(),
+  name: text('name').notNull(),
+  description: text('description').notNull(),
+  specMd: text('spec_md').notNull(),
+  manifestJson: text('manifest_json').notNull(),
+  checksum: text('checksum').notNull(),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  uniqueIndex('idx_workflow_packages_identity').on(table.id, table.version),
+]);
+
+export const agentDefinitionWorkflows = sqliteTable('agent_definition_workflows', {
+  agentDefinitionId: text('agent_definition_id').notNull(),
+  agentDefinitionVersion: text('agent_definition_version').notNull(),
+  workflowId: text('workflow_id').notNull(),
+  workflowVersion: text('workflow_version').notNull(),
+  ordinal: integer('ordinal').notNull(),
+}, (table) => [
+  uniqueIndex('idx_agent_definition_workflows').on(table.agentDefinitionId, table.agentDefinitionVersion, table.workflowId, table.workflowVersion),
+]);
+
+export const agentRunWorkflows = sqliteTable('agent_run_workflows', {
+  runId: text('run_id').notNull(),
+  workflowId: text('workflow_id').notNull(),
+  workflowVersion: text('workflow_version').notNull(),
+  checksum: text('checksum').notNull(),
+  snapshotJson: text('snapshot_json').notNull(),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  uniqueIndex('idx_agent_run_workflows').on(table.runId, table.workflowId, table.workflowVersion),
+]);

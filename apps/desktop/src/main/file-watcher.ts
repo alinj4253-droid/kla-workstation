@@ -5,17 +5,20 @@ import { createHash } from 'node:crypto';
 import { FileRepository, KnowledgeRepository, MessageRepository } from '@kunqing/database';
 import type Database from 'better-sqlite3';
 import { getLogger } from './logger';
+import { materializeKnowledgeArtifacts } from './knowledge-artifacts';
 
 export class FileWatcher {
   private watcher: ReturnType<typeof chokidar.watch> | null = null;
   private fileRepo: FileRepository;
   private knowledgeRepo: KnowledgeRepository;
   private messageRepo: MessageRepository;
+  private db: Database.Database;
   private watchedDirs: Map<string, { scopeType: 'project' | 'shared'; scopeId: string }> = new Map();
   /** Callback invoked when a new file or version is detected, receives the file ID */
   onIngest: ((fileId: string) => void) | null = null;
 
   constructor(db: Database.Database) {
+    this.db = db;
     this.fileRepo = new FileRepository(db);
     this.knowledgeRepo = new KnowledgeRepository(db);
     this.messageRepo = new MessageRepository(db);
@@ -160,6 +163,8 @@ export class FileWatcher {
       const existing = this.fileRepo.getByPath(scope.scopeType, scope.scopeId, scope.relativePath);
       if (existing && existing.status !== 'deleted') {
         this.fileRepo.softDelete(existing.id);
+        this.knowledgeRepo.removeKnowledgeForFile(existing.id);
+        await materializeKnowledgeArtifacts(this.db, scope.scopeType, scope.scopeId);
         getLogger().info({ relativePath: scope.relativePath, fileId: existing.id }, 'FileWatcher: 文件已标记删除');
       }
     } catch (err) {

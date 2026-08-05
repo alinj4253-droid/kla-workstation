@@ -1,10 +1,10 @@
 import type { Database } from 'better-sqlite3';
 import { readFile } from 'node:fs/promises';
 import { basename, extname } from 'node:path';
+import { createHash } from 'node:crypto';
 import {
   KnowledgeRepository,
   WikiRepository,
-  FileRepository,
 } from '@kunqing/database';
 import type {
   PipelineContext,
@@ -13,12 +13,15 @@ import type {
   ExtractedRelationship,
   ExtractedGraph,
   GeneratedWikiPage,
+  KnowledgeDocumentProfile,
 } from '@kunqing/knowledge-core';
-import { hashContent, slugify } from '@kunqing/knowledge-core';
+import { embedTextLocally, LOCAL_EMBEDDING_MODEL, slugify } from '@kunqing/knowledge-core';
 import { buildGraphExtractionPrompt, buildWikiGenerationPrompt } from '@kunqing/knowledge-core';
 import { ModelGateway } from './model-gateway';
-import type { ModelSlot } from './model-gateway';
 import { getLogger } from './logger';
+import { LocalOcrService } from './local-ocr';
+import { materializeKnowledgeArtifacts } from './knowledge-artifacts';
+import { isBuiltinToolEnabled } from './builtin-tool-catalog';
 
 /**
  * 基础文本提取：不依赖 LLM，从文件名和文本块中提取实体和关系。
@@ -108,9 +111,9 @@ export function createPipelineContext(
 ): PipelineContext {
   const knowledgeRepo = new KnowledgeRepository(db);
   const wikiRepo = new WikiRepository(db);
-  const fileRepo = new FileRepository(db);
   const fileName = basename(filePath);
   const fileExt = extname(filePath).replace(/^\./, '');
+  const ocr = new LocalOcrService();
 
   const ctx: PipelineContext = {
     sourceId,
@@ -122,9 +125,20 @@ export function createPipelineContext(
     fileSize: 0,
 
     async readFile(): Promise<Buffer> {
+      if (!isBuiltinToolEnabled(db, 'tool.document-parser')) {
+        throw new Error('本地文档解析器已停用');
+      }
       const buf = await readFile(filePath);
       ctx.fileSize = buf.length;
+      knowledgeRepo.updateSourceMetadata(sourceId, { contentMd5: createHash('md5').update(buf).digest('hex') });
       return buf;
+    },
+
+    async ocrExtract(targetPath: string): Promise<string> {
+      if (!isBuiltinToolEnabled(db, 'tool.paddle-ocr', false)) {
+        throw new Error('PaddleOCR 本地模型包未启用或尚未安装');
+      }
+      return ocr.extract(targetPath);
     },
 
     async saveChunk(chunk: Chunk): Promise<void> {
@@ -135,7 +149,16 @@ export function createPipelineContext(
         contentHash: chunk.contentHash,
       };
       if (chunk.locationJson !== undefined) data.locationJson = chunk.locationJson;
-      knowledgeRepo.createChunk(data);
+      const saved = knowledgeRepo.createChunk(data);
+      chunk.id = saved.id;
+      if (isBuiltinToolEnabled(db, 'tool.local-embedding') && isBuiltinToolEnabled(db, 'tool.sqlite-vector-index')) {
+        knowledgeRepo.upsertEmbedding({
+          chunkId: saved.id,
+          sourceId,
+          modelId: LOCAL_EMBEDDING_MODEL.id,
+          vector: embedTextLocally(chunk.text),
+        });
+      }
     },
 
     async chunkExistsByHash(contentHash: string): Promise<boolean> {
@@ -155,8 +178,8 @@ export function createPipelineContext(
       return node.id;
     },
 
-    async upsertEdge(rel: ExtractedRelationship, sourceNodeId: string, targetNodeId: string): Promise<void> {
-      knowledgeRepo.upsertEdge({
+    async upsertEdge(rel: ExtractedRelationship, sourceNodeId: string, targetNodeId: string): Promise<string> {
+      return knowledgeRepo.upsertEdge({
         scopeType,
         scopeId,
         sourceNodeId,
@@ -164,7 +187,40 @@ export function createPipelineContext(
         edgeType: rel.type,
         propertiesJson: JSON.stringify(rel.properties),
         confidence: rel.confidence,
+      }).id;
+    },
+
+    async saveDocumentProfile(profile: KnowledgeDocumentProfile, metadata): Promise<void> {
+      knowledgeRepo.upsertDocumentProfile({
+        sourceId,
+        summary: profile.summary,
+        keywords: profile.keywords,
+        tags: profile.tags,
+        language: profile.language,
+        metadataJson: JSON.stringify(metadata),
       });
+      knowledgeRepo.updateSourceMetadata(sourceId, {
+        parserId: typeof metadata.parserId === 'string' ? metadata.parserId : 'unknown',
+        metadataJson: JSON.stringify(metadata),
+      });
+    },
+
+    async analyzeDocument(text: string, fallback: KnowledgeDocumentProfile): Promise<KnowledgeDocumentProfile> {
+      const prompt = `请把文档整理成知识入库元数据，只返回 JSON：\n{"summary":"语义摘要，最多400字","keywords":["关键词"],"tags":["标签"],"language":"zh|en|mixed|unknown"}\n\n文档：\n${text.slice(0, 30_000)}`;
+      try {
+        const response = await gateway.generateText('fast', [{ role: 'user', content: prompt }]);
+        const json = response.text.match(/\{[\s\S]*\}/)?.[0];
+        if (!json) return fallback;
+        const parsed = JSON.parse(json) as Partial<KnowledgeDocumentProfile>;
+        return {
+          summary: typeof parsed.summary === 'string' && parsed.summary.trim() ? parsed.summary.trim().slice(0, 800) : fallback.summary,
+          keywords: Array.isArray(parsed.keywords) ? parsed.keywords.filter((item): item is string => typeof item === 'string').slice(0, 24) : fallback.keywords,
+          tags: Array.isArray(parsed.tags) ? parsed.tags.filter((item): item is string => typeof item === 'string').slice(0, 16) : fallback.tags,
+          language: ['zh', 'en', 'mixed', 'unknown'].includes(parsed.language ?? '') ? parsed.language! : fallback.language,
+        };
+      } catch {
+        return fallback;
+      }
     },
 
     async createProvenance(
@@ -308,6 +364,13 @@ export function createPipelineContext(
 
     async setSourceStatus(status: 'ready' | 'error'): Promise<void> {
       knowledgeRepo.setSourceStatus(sourceId, status);
+      if (status === 'ready') {
+        const source = knowledgeRepo.getSource(sourceId);
+        if (source) knowledgeRepo.removeObsoleteSourcesForFile(source.fileId, sourceId);
+        if (isBuiltinToolEnabled(db, 'tool.knowledge-assets')) {
+          await materializeKnowledgeArtifacts(db, scopeType, scopeId);
+        }
+      }
     },
 
     log(message: string, data?: Record<string, unknown>): void {

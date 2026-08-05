@@ -699,4 +699,134 @@ const migrations: Array<{ name: string; sql: string }> = [
       );
     `,
   },
+  {
+    name: '016_memory_lifecycle_and_tombstones',
+    sql: `
+      CREATE TABLE memory_records_v2 (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        agent_instance_id TEXT NOT NULL,
+        scope TEXT NOT NULL CHECK(scope IN ('short-term','long-term')),
+        type TEXT NOT NULL,
+        content TEXT NOT NULL,
+        confidence REAL NOT NULL DEFAULT 0.5,
+        importance REAL NOT NULL DEFAULT 0.5,
+        pinned INTEGER NOT NULL DEFAULT 0,
+        topic_key TEXT,
+        source_refs_json TEXT,
+        metadata_json TEXT,
+        status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','expired','deleted','consolidated','superseded')),
+        expires_at TEXT,
+        last_reinforced_at TEXT NOT NULL,
+        last_accessed_at TEXT,
+        access_count INTEGER NOT NULL DEFAULT 0,
+        consolidated_into_id TEXT,
+        supersedes_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO memory_records_v2 (
+        id, project_id, agent_instance_id, scope, type, content, confidence, importance, pinned,
+        topic_key, source_refs_json, metadata_json, status, expires_at, last_reinforced_at,
+        last_accessed_at, access_count, consolidated_into_id, supersedes_id, created_at, updated_at
+      )
+      SELECT id, project_id, agent_instance_id, scope, type, content, confidence, 0.5,
+        CASE WHEN type = 'project-constraint' THEN 1 ELSE 0 END,
+        NULL, source_refs_json, NULL, status, expires_at, updated_at,
+        NULL, 0, NULL, NULL, created_at, updated_at
+      FROM memory_records;
+      DROP TABLE memory_records;
+      ALTER TABLE memory_records_v2 RENAME TO memory_records;
+      CREATE INDEX idx_memory_records_lookup ON memory_records(agent_instance_id, scope, status);
+      CREATE INDEX idx_memory_records_topic ON memory_records(project_id, agent_instance_id, topic_key, status);
+
+      CREATE TABLE memory_tombstones (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        agent_instance_id TEXT NOT NULL,
+        normalized_key TEXT NOT NULL,
+        source_message_id TEXT,
+        reason TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX idx_memory_tombstones_lookup ON memory_tombstones(project_id, agent_instance_id, normalized_key);
+    `,
+  },
+  {
+    name: '017_versioned_skills_and_workflows',
+    sql: `
+      CREATE TABLE skill_packages (
+        id TEXT NOT NULL, version TEXT NOT NULL, name TEXT NOT NULL, description TEXT NOT NULL,
+        package_rel_path TEXT NOT NULL, entry_rel_path TEXT NOT NULL DEFAULT 'SKILL.md',
+        manifest_json TEXT NOT NULL, checksum TEXT NOT NULL,
+        source TEXT NOT NULL CHECK(source IN ('built-in','custom','legacy')),
+        enabled INTEGER NOT NULL DEFAULT 1, installed_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        PRIMARY KEY (id, version)
+      );
+      CREATE INDEX idx_skill_packages_enabled ON skill_packages(enabled, name);
+
+      CREATE TABLE agent_definition_skills (
+        agent_definition_id TEXT NOT NULL, agent_definition_version TEXT NOT NULL,
+        skill_id TEXT NOT NULL, skill_version TEXT NOT NULL, ordinal INTEGER NOT NULL, config_json TEXT,
+        PRIMARY KEY (agent_definition_id, agent_definition_version, skill_id, skill_version),
+        FOREIGN KEY (skill_id, skill_version) REFERENCES skill_packages(id, version)
+      );
+      CREATE INDEX idx_agent_definition_skills_lookup ON agent_definition_skills(agent_definition_id, agent_definition_version, ordinal);
+
+      CREATE TABLE agent_run_skills (
+        run_id TEXT NOT NULL, skill_id TEXT NOT NULL, skill_version TEXT NOT NULL,
+        checksum TEXT NOT NULL, package_rel_path TEXT NOT NULL, snapshot_json TEXT NOT NULL, created_at TEXT NOT NULL,
+        PRIMARY KEY (run_id, skill_id, skill_version)
+      );
+
+      CREATE TABLE workflow_packages (
+        id TEXT NOT NULL, version TEXT NOT NULL, name TEXT NOT NULL, description TEXT NOT NULL,
+        spec_md TEXT NOT NULL, manifest_json TEXT NOT NULL, checksum TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        PRIMARY KEY (id, version)
+      );
+
+      CREATE TABLE agent_definition_workflows (
+        agent_definition_id TEXT NOT NULL, agent_definition_version TEXT NOT NULL,
+        workflow_id TEXT NOT NULL, workflow_version TEXT NOT NULL, ordinal INTEGER NOT NULL,
+        PRIMARY KEY (agent_definition_id, agent_definition_version, workflow_id, workflow_version),
+        FOREIGN KEY (workflow_id, workflow_version) REFERENCES workflow_packages(id, version)
+      );
+
+      CREATE TABLE agent_run_workflows (
+        run_id TEXT NOT NULL, workflow_id TEXT NOT NULL, workflow_version TEXT NOT NULL,
+        checksum TEXT NOT NULL, snapshot_json TEXT NOT NULL, created_at TEXT NOT NULL,
+        PRIMARY KEY (run_id, workflow_id, workflow_version)
+      );
+    `,
+  },
+  {
+    name: '018_local_knowledge_index',
+    sql: `
+      ALTER TABLE knowledge_sources ADD COLUMN content_md5 TEXT;
+      ALTER TABLE knowledge_sources ADD COLUMN parser_id TEXT;
+      ALTER TABLE knowledge_sources ADD COLUMN metadata_json TEXT;
+      CREATE INDEX idx_knowledge_sources_md5 ON knowledge_sources(scope_type, scope_id, content_md5);
+
+      CREATE TABLE knowledge_document_profiles (
+        source_id TEXT PRIMARY KEY,
+        summary TEXT NOT NULL,
+        keywords_json TEXT NOT NULL,
+        tags_json TEXT NOT NULL,
+        language TEXT NOT NULL,
+        metadata_json TEXT,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE knowledge_chunk_embeddings (
+        chunk_id TEXT PRIMARY KEY,
+        source_id TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        dimensions INTEGER NOT NULL,
+        vector_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX idx_knowledge_embeddings_source ON knowledge_chunk_embeddings(source_id);
+    `,
+  },
 ];

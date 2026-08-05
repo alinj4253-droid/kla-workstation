@@ -41,6 +41,9 @@ function createDb(): Database.Database {
       file_id TEXT,
       version_id TEXT,
       sha256 TEXT,
+      content_md5 TEXT,
+      parser_id TEXT,
+      metadata_json TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
       ingested_at TEXT
     );
@@ -62,6 +65,25 @@ function createDb(): Database.Database {
       location_json TEXT,
       quote_hash TEXT,
       created_at TEXT NOT NULL
+    );
+    CREATE TABLE knowledge_chunk_embeddings (
+      chunk_id TEXT PRIMARY KEY,
+      source_id TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      dimensions INTEGER NOT NULL,
+      vector_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE files (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL
+    );
+    CREATE TABLE wiki_pages (
+      id TEXT PRIMARY KEY,
+      scope_type TEXT NOT NULL,
+      scope_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      body_md TEXT
     );
     CREATE TABLE knowledge_edges (
       id TEXT PRIMARY KEY,

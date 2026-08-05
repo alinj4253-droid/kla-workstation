@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, join, resolve, sep } from 'node:path';
 import { StateGraph, END, Annotation } from '@langchain/langgraph';
 import { KnowledgeRepository, FileRepository } from '@kunqing/database';
 import {
@@ -20,6 +20,7 @@ import type {
 import { createPipelineContext } from './knowledge-pipeline-adapter';
 import { ModelGateway } from './model-gateway';
 import { getLogger } from './logger';
+import { getProjectRoot, getStudioRoot } from './paths';
 
 // ─── State ───────────────────────────────────────────────────────────────────
 
@@ -115,6 +116,18 @@ export type KMExecContext = {
 
 const LOW_CONFIDENCE_THRESHOLD = 0.65;
 
+function resolveSourceFilePath(scopeType: string, scopeId: string, normalizedPath: string): string {
+  const root = scopeType === 'shared'
+    ? join(getStudioRoot(), 'shared-knowledge', 'original-files')
+    : join(getProjectRoot(scopeId), 'original-files');
+  const resolvedRoot = resolve(root);
+  const target = resolve(resolvedRoot, normalizedPath);
+  if (target !== resolvedRoot && !target.startsWith(`${resolvedRoot}${sep}`)) {
+    throw new Error('源文件路径超出当前知识工作区');
+  }
+  return target;
+}
+
 function makePipelineCtx(ctx: KMExecContext, state: KMState) {
   return createPipelineContext(
     ctx.db,
@@ -139,6 +152,7 @@ async function discoverSource(state: KMState, config: any): Promise<Partial<KMSt
   let sourceFileId = '';
   let sourceFilePath = '';
   let sourceId = '';
+  let sourceVersionId: string | null = null;
   let scopeType = 'project';
   let scopeId = ctx.projectId;
 
@@ -150,7 +164,10 @@ async function discoverSource(state: KMState, config: any): Promise<Partial<KMSt
       const file = fileRepo.getById(fid);
       if (file && file.status === 'ready') {
         sourceFileId = file.id;
-        sourceFilePath = file.normalizedPath;
+        scopeType = file.scopeType;
+        scopeId = file.scopeId;
+        sourceVersionId = file.currentVersionId;
+        sourceFilePath = resolveSourceFilePath(scopeType, scopeId, file.normalizedPath);
         logger?.info({ sourceFileId, sourceFilePath }, 'KM: 通过 fileId 发现源文件');
       }
     } catch {
@@ -161,43 +178,53 @@ async function discoverSource(state: KMState, config: any): Promise<Partial<KMSt
   // 2. 检查最近 10 条消息中的附件
   if (!sourceFileId) {
     const recentAttachments = ctx.db.prepare(`
-      SELECT ma.file_id as fileId, f.normalized_path as filePath
+      SELECT ma.file_id as fileId, f.normalized_path as filePath,
+             f.scope_type as scopeType, f.scope_id as scopeId,
+             f.current_version_id as currentVersionId
       FROM message_attachments ma
       JOIN messages m ON m.id = ma.message_id
       JOIN files f ON f.id = ma.file_id
       WHERE m.project_id = ? AND f.status = 'ready'
       ORDER BY m.created_at DESC
       LIMIT 10
-    `).all(ctx.projectId) as Array<{ fileId: string; filePath: string }>;
+    `).all(ctx.projectId) as Array<{
+      fileId: string;
+      filePath: string;
+      scopeType: string;
+      scopeId: string;
+      currentVersionId: string | null;
+    }>;
 
     if (recentAttachments.length > 0) {
-      sourceFileId = recentAttachments[0]!.fileId;
-      sourceFilePath = recentAttachments[0]!.filePath;
+      const attachment = recentAttachments[0]!;
+      sourceFileId = attachment.fileId;
+      scopeType = attachment.scopeType;
+      scopeId = attachment.scopeId;
+      sourceVersionId = attachment.currentVersionId;
+      sourceFilePath = resolveSourceFilePath(scopeType, scopeId, attachment.filePath);
       logger?.info({ sourceFileId, sourceFilePath }, 'KM: 通过最近消息附件发现源文件');
     }
   }
 
-  // 3. 检查 scope
-  const sharedMatch = ctx.instruction.match(/shared|共享|全局/);
-  if (sharedMatch) {
-    scopeType = 'shared';
-    scopeId = 'shared';
-  }
-
-  // 4. 创建或查找 knowledge_source
+  // 3. 创建或查找 knowledge_source；作用域以文件的真实归属为准。
   if (sourceFileId) {
     const existingSources = ctx.db.prepare(
-      `SELECT id FROM knowledge_sources WHERE scope_type = ? AND scope_id = ? AND file_id = ?`,
-    ).all(scopeType, scopeId, sourceFileId) as Array<{ id: string }>;
+      `SELECT id FROM knowledge_sources
+       WHERE scope_type = ? AND scope_id = ? AND file_id = ?
+         AND ((? IS NULL AND version_id IS NULL) OR version_id = ?)
+       ORDER BY ingested_at DESC LIMIT 1`,
+    ).all(scopeType, scopeId, sourceFileId, sourceVersionId, sourceVersionId) as Array<{ id: string }>;
 
     if (existingSources.length > 0) {
       sourceId = existingSources[0]!.id;
     } else {
       sourceId = randomUUID().toLowerCase().replace(/-/g, '').slice(0, 24);
       const now = new Date().toISOString();
+      const currentVersion = sourceVersionId ? fileRepo.getCurrentVersion(sourceFileId) : null;
       ctx.db.prepare(
-        `INSERT INTO knowledge_sources (id, scope_type, scope_id, file_id, status, ingested_at) VALUES (?, ?, ?, ?, 'pending', ?)`,
-      ).run(sourceId, scopeType, scopeId, sourceFileId, now);
+        `INSERT INTO knowledge_sources (id, scope_type, scope_id, file_id, version_id, sha256, status, ingested_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`,
+      ).run(sourceId, scopeType, scopeId, sourceFileId, sourceVersionId, currentVersion?.sha256 ?? null, now);
     }
   }
 
@@ -235,6 +262,10 @@ async function extractText(state: KMState, config: any): Promise<Partial<KMState
   try {
     const buf = await pipelineCtx.readFile();
     const doc = await parseDocument(buf, pipelineCtx.fileExt, pipelineCtx.fileName);
+    if (doc.metadata.requiresOcr && pipelineCtx.ocrExtract) {
+      const ocrText = await pipelineCtx.ocrExtract(pipelineCtx.filePath);
+      if (ocrText.trim()) doc.text = ocrText.trim();
+    }
 
     logger?.info({ textLength: doc.text.length, mimeType: doc.mimeType }, 'KM: 文本抽取完成');
 
@@ -830,10 +861,12 @@ export async function runKnowledgeManager(ctx: KMExecContext): Promise<string> {
 
   // 标记完成状态
   const knowledgeRepo = new KnowledgeRepository(ctx.db);
-  if (result.error && !result.pipelineCompleted) {
-    knowledgeRepo.setSourceStatus(ctx.projectId, 'error');
-  } else {
-    knowledgeRepo.setSourceStatus(ctx.projectId, 'ready');
+  if (result.sourceId) {
+    if (result.error && !result.pipelineCompleted) {
+      knowledgeRepo.setSourceStatus(result.sourceId, 'error');
+    } else {
+      knowledgeRepo.setSourceStatus(result.sourceId, 'ready');
+    }
   }
 
   logger?.info({ runId: ctx.runId, report: result.report?.slice(0, 100) }, 'KM: 知识管理智能体工作流完成');

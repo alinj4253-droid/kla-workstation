@@ -24,11 +24,29 @@ describe('conversation memory manager', () => {
         type TEXT NOT NULL,
         content TEXT NOT NULL,
         confidence REAL NOT NULL,
+        importance REAL NOT NULL DEFAULT 0.5,
+        pinned INTEGER NOT NULL DEFAULT 0,
+        topic_key TEXT,
         source_refs_json TEXT,
+        metadata_json TEXT,
         status TEXT NOT NULL,
         expires_at TEXT,
+        last_reinforced_at TEXT NOT NULL,
+        last_accessed_at TEXT,
+        access_count INTEGER NOT NULL DEFAULT 0,
+        consolidated_into_id TEXT,
+        supersedes_id TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
+      );
+      CREATE TABLE memory_tombstones (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        agent_instance_id TEXT NOT NULL,
+        normalized_key TEXT NOT NULL,
+        source_message_id TEXT,
+        reason TEXT NOT NULL,
+        created_at TEXT NOT NULL
       );
       CREATE TABLE project_agent_instances (
         id TEXT PRIMARY KEY,
@@ -57,17 +75,32 @@ describe('conversation memory manager', () => {
       request: JSON.stringify({ text: '制作项目首页' }),
       result: '首页已完成并通过验收。',
       artifacts: ['outputs/home.html'],
+      reflection: {
+        topic: '项目首页',
+        taskSummary: '完成项目首页并通过验收。',
+        decisions: ['采用单页交付'],
+        reusableInsights: ['先校验页面再发布'],
+        confidence: 0.84,
+        importance: 0.7,
+        longTermWorth: true,
+        longTermSummary: '项目首页交付应先完成页面校验，再发布成果文件。',
+      },
     });
 
-    const record = db.prepare(`SELECT scope, type, content FROM memory_records WHERE agent_instance_id = 'worker-1'`).get() as { scope: string; type: string; content: string };
+    const record = db.prepare(`SELECT scope, type, content FROM memory_records WHERE agent_instance_id = 'worker-1' AND scope = 'short-term'`).get() as { scope: string; type: string; content: string };
     expect(record.scope).toBe('short-term');
-    expect(record.type).toBe('task-summary');
-    expect(record.content).toContain('用户目标：制作项目首页');
+    expect(record.type).toBe('task-episode');
+    expect(record.content).toContain('完成项目首页并通过验收');
     expect(record.content).toContain('成果文件：outputs/home.html');
+
+    const longTerm = db.prepare(`SELECT type, confidence, content FROM memory_records WHERE agent_instance_id = 'worker-1' AND scope = 'long-term'`).get() as { type: string; confidence: number; content: string };
+    expect(longTerm.type).toBe('semantic-summary');
+    expect(longTerm.confidence).toBe(0.84);
+    expect(longTerm.content).toContain('先完成页面校验');
 
     const current = await readFile(join(studioRoot, 'group-chats', 'project-1-workspace', 'agent-memories', 'worker-1', 'short-term', 'current.md'), 'utf8');
     const session = await readFile(join(studioRoot, 'group-chats', 'project-1-workspace', 'agent-memories', 'worker-1', 'sessions', 'message-1-run-1.md'), 'utf8');
-    expect(current).toContain('首页已完成并通过验收');
+    expect(current).toContain('完成项目首页并通过验收');
     expect(session).toContain('triggerMessageId: message-1');
   });
 
@@ -88,5 +121,22 @@ describe('conversation memory manager', () => {
     await memory.applyUserDirective('project-1', '忘记：所有数据只能保存在本地 K_Studio。', 'message-3');
     const forgotten = db.prepare(`SELECT status FROM memory_records ORDER BY agent_instance_id`).all() as Array<{ status: string }>;
     expect(forgotten.every((item) => item.status === 'deleted')).toBe(true);
+    expect((db.prepare('SELECT COUNT(*) as count FROM memory_tombstones').get() as { count: number }).count).toBe(2);
+  });
+
+  it('prevents forgotten semantic content from being resurrected and explicit remember clears the tombstone', async () => {
+    await memory.applyUserDirective('project-1', '忘记：旧版营销口径', 'message-forget');
+    const skipped = await memory.captureTurn({
+      projectId: 'project-1', agentInstanceId: 'worker-1', triggerMessageId: 'message-4', runId: 'run-4',
+      request: '继续旧版营销口径', result: '沿用旧版营销口径',
+      reflection: { topic: '旧版营销口径', taskSummary: '沿用旧版营销口径', confidence: 0.9, importance: 0.9, longTermWorth: true },
+    });
+    expect(skipped).toBeNull();
+
+    await memory.applyUserDirective('project-1', '记住：旧版营销口径', 'message-remember');
+    const workerTombstones = db.prepare("SELECT COUNT(*) as count FROM memory_tombstones WHERE agent_instance_id = 'worker-1'").get() as { count: number };
+    expect(workerTombstones.count).toBe(0);
+    const pinned = db.prepare("SELECT pinned, confidence FROM memory_records WHERE agent_instance_id = 'worker-1' AND type = 'project-constraint' AND status = 'active'").get() as { pinned: number; confidence: number };
+    expect(pinned).toEqual({ pinned: 1, confidence: 1 });
   });
 });

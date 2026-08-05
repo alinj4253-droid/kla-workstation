@@ -1,4 +1,8 @@
 import type { ParsedDocument } from '../types';
+import pdfParse from 'pdf-parse/lib/pdf-parse.js';
+import mammoth from 'mammoth';
+import ExcelJS from 'exceljs';
+import { load as loadHtml } from 'cheerio';
 
 export type { ParsedDocument } from '../types';
 
@@ -24,6 +28,10 @@ export async function parseDocument(buf: Uint8Array, ext: string, fileName: stri
     return parseXlsx(buf, fileName);
   }
 
+  if (['png', 'jpg', 'jpeg', 'webp', 'bmp', 'tif', 'tiff'].includes(e)) {
+    return { text: '', mimeType: `image/${e === 'jpg' ? 'jpeg' : e}`, metadata: { fileName, parserId: 'local-ocr', requiresOcr: true } };
+  }
+
   // Default: text-based parsing
   return parseText(buf, e, fileName);
 }
@@ -35,77 +43,60 @@ function parseText(buf: Uint8Array, _ext: string, fileName: string): ParsedDocum
   return {
     text,
     mimeType: 'text/plain',
-    metadata: { fileName },
+    metadata: { fileName, parserId: 'text-decoder' },
   };
 }
 
 // ── HTML parser ──
 
 function parseHtml(buf: Uint8Array, fileName: string): ParsedDocument {
-  let html = new TextDecoder().decode(buf);
-
-  // Extract title
-  const titleMatch = html.match(/<title[^>]*>([^<]*)<\/title>/i);
-  const title = titleMatch?.[1]?.trim();
-
-  // Remove script and style tags
-  html = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
-  html = html.replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '');
-
-  // Remove HTML tags and convert to plain text
-  let text = html
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n\n')
-    .replace(/<\/h[1-6]>/gi, '\n\n')
-    .replace(/<\/li>/gi, '\n')
-    .replace(/<\/tr>/gi, '\n')
-    .replace(/<[^>]*>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
-
-  // Collapse multiple newlines
-  text = text.replace(/\n{3,}/g, '\n\n').trim();
+  const $ = loadHtml(new TextDecoder().decode(buf));
+  const title = $('title').first().text().trim();
+  $('script,style,noscript,template').remove();
+  $('br').replaceWith('\n');
+  $('p,h1,h2,h3,h4,h5,h6,li,tr,section,article').each((_index, element) => { $(element).append('\n'); });
+  const text = $.root().text().replace(/[ \t]+/g, ' ').replace(/\n\s*\n\s*\n+/g, '\n\n').trim();
 
   return {
     text,
     mimeType: 'text/html',
-    metadata: { fileName, title: title ?? fileName },
+    metadata: { fileName, title: title || fileName, parserId: 'cheerio' },
   };
 }
 
-// ── PDF parser (stub - requires pdf-parse dependency) ──
-
-function parsePdf(_buf: Uint8Array, fileName: string): ParsedDocument {
-  // TODO: Add pdf-parse dependency and implement real PDF parsing
+async function parsePdf(buf: Uint8Array, fileName: string): Promise<ParsedDocument> {
+  const result = await pdfParse(Buffer.from(buf));
   return {
-    text: `[PDF 文件: ${fileName}。PDF 解析需要安装 pdf-parse 依赖。]`,
+    text: result.text.trim(),
     mimeType: 'application/pdf',
-    metadata: { fileName, parsingNote: 'pdf-parse not yet installed' },
+    metadata: { fileName, pageCount: result.numpages, parserId: 'pdf-parse', requiresOcr: result.text.trim().length < 20 },
   };
 }
 
-// ── DOCX parser (stub - requires mammoth dependency) ──
-
-function parseDocx(_buf: Uint8Array, fileName: string): ParsedDocument {
-  // TODO: Add mammoth dependency and implement real DOCX parsing
+async function parseDocx(buf: Uint8Array, fileName: string): Promise<ParsedDocument> {
+  const result = await mammoth.extractRawText({ buffer: Buffer.from(buf) });
   return {
-    text: `[DOCX 文件: ${fileName}。DOCX 解析需要安装 mammoth 依赖。]`,
+    text: result.value.trim(),
     mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    metadata: { fileName, parsingNote: 'mammoth not yet installed' },
+    metadata: { fileName, parserId: 'mammoth', warnings: result.messages.map((item) => item.message) },
   };
 }
 
-// ── XLSX parser (stub - requires xlsx dependency) ──
-
-function parseXlsx(_buf: Uint8Array, fileName: string): ParsedDocument {
-  // TODO: Add xlsx (SheetJS) dependency and implement real XLSX parsing
+async function parseXlsx(buf: Uint8Array, fileName: string): Promise<ParsedDocument> {
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(Buffer.from(buf) as unknown as ExcelJS.Buffer);
+  const sheets: string[] = [];
+  workbook.eachSheet((sheet) => {
+    const rows: string[] = [];
+    sheet.eachRow((row) => {
+      const values = Array.isArray(row.values) ? row.values.slice(1) : Object.values(row.values);
+      rows.push(values.map((value) => String(value ?? '')).join('\t'));
+    });
+    sheets.push(`# ${sheet.name}\n${rows.join('\n')}`);
+  });
   return {
-    text: `[XLSX 文件: ${fileName}。XLSX 解析需要安装 xlsx 依赖。]`,
+    text: sheets.join('\n\n').trim(),
     mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    metadata: { fileName, parsingNote: 'xlsx not yet installed' },
+    metadata: { fileName, parserId: 'exceljs', sheetCount: workbook.worksheets.length },
   };
 }

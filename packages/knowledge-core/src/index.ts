@@ -1,6 +1,7 @@
 // Types
 export type {
   ParsedDocument,
+  KnowledgeDocumentProfile,
   Chunk,
   ExtractedEntity,
   ExtractedRelationship,
@@ -13,6 +14,8 @@ export type {
 
 // Helpers
 export { hashContent, slugify, isTextFile } from './types.js';
+export { analyzeDocumentLocally } from './analysis.js';
+export { embedTextLocally, cosineSimilarity, LOCAL_EMBEDDING_MODEL } from './embedding.js';
 
 // Parsers
 export { parseDocument } from './parsers/index.js';
