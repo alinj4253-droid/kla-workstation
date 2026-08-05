@@ -21,6 +21,7 @@ import { TelegramAdapter, LarkAdapter, DingTalkAdapter, WeComWebhookAdapter } fr
 import { FileRepository, MessageRepository } from '@kunqing/database';
 import { getProjectRoot } from './paths';
 import { getLogger } from './logger';
+import { createProject } from './project-creator';
 
 const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024; // 100 MB
 
@@ -323,7 +324,7 @@ export class ChannelManager {
   }
 
   /** Find or create a project binding for an external conversation */
-  getOrCreateBinding(channelId: string, externalConversationId: string, externalUserId: string, text: string): { projectId: string | null; isNew: boolean } {
+  async getOrCreateBinding(channelId: string, externalConversationId: string, externalUserId: string, text: string): Promise<{ projectId: string | null; isNew: boolean }> {
     // Check existing binding
     const binding = this.db.prepare(
       'SELECT project_id FROM channel_bindings WHERE channel_id = ? AND external_conversation_id = ?',
@@ -333,9 +334,15 @@ export class ChannelManager {
     // Check for new project command
     const trimmed = text.trim();
     if (trimmed === '/new' || trimmed.startsWith('/new ')) {
-      // Create a new project
+      // Create a new project using the full project-creator flow
       const projectName = trimmed.replace('/new', '').trim() || `Chat-${externalConversationId}`;
-      const projectId = this._createProject(projectName, channelId, externalConversationId);
+      const result = await createProject(this.db, {
+        content: { schemaVersion: 1, text: projectName },
+      });
+      if (!result.ok) {
+        throw new Error(result.error.message);
+      }
+      const projectId = result.data.id;
       this._createBinding(channelId, externalConversationId, projectId);
       return { projectId, isNew: true };
     }
@@ -387,7 +394,7 @@ export class ChannelManager {
     return { response: '', action: 'none' };
   }
 
-  private _handleInbound(channelId: string, event: InboundChannelEvent): void {
+  private async _handleInbound(channelId: string, event: InboundChannelEvent): Promise<void> {
     // Dedup
     if (this.isDuplicate(channelId, event.externalEventId)) return;
     this.recordEvent(channelId, event.externalEventId, 'inbound', event);
@@ -397,7 +404,7 @@ export class ChannelManager {
     if (cmdResult.action !== 'none') {
       // Handle /stop: cancel only runs triggered by this user in the bound project
       if (cmdResult.action === 'stop') {
-        const binding = this.getOrCreateBinding(channelId, event.externalConversationId, event.externalUserId, event.text);
+        const binding = await this.getOrCreateBinding(channelId, event.externalConversationId, event.externalUserId, event.text);
         if (binding.projectId) {
           const activeRuns = this.db.prepare(
             "SELECT id FROM agent_runs WHERE project_id = ? AND status IN ('queued', 'starting', 'running') AND requested_by_id = ?",
@@ -409,15 +416,30 @@ export class ChannelManager {
           }
           this._emitEvent({ type: 'channel.stop', channelId, data: { projectId: binding.projectId, runIds: activeRuns.map((r) => r.id) } });
         }
+        this._sendReply(channelId, event.externalConversationId, cmdResult.response);
+        this.markProcessed(channelId, event.externalEventId);
+        return;
       }
 
-      this._sendReply(channelId, event.externalConversationId, cmdResult.response);
+      // For /new and /use, don't return early — let them fall through to getOrCreateBinding
+      if (cmdResult.action !== 'new' && cmdResult.action !== 'use') {
+        this._sendReply(channelId, event.externalConversationId, cmdResult.response);
+        this.markProcessed(channelId, event.externalEventId);
+        return;
+      }
+    }
+
+    // Check binding (creates project for /new, binds for /use)
+    let binding: { projectId: string | null; isNew: boolean };
+    try {
+      binding = await this.getOrCreateBinding(channelId, event.externalConversationId, event.externalUserId, event.text);
+    } catch (err) {
+      this.logger.error({ err, channelId }, 'ChannelManager: failed to create/find binding');
+      this._sendReply(channelId, event.externalConversationId, `操作失败: ${err instanceof Error ? err.message : String(err)}`);
       this.markProcessed(channelId, event.externalEventId);
       return;
     }
 
-    // Check binding
-    const binding = this.getOrCreateBinding(channelId, event.externalConversationId, event.externalUserId, event.text);
     if (!binding.projectId) {
       // No binding - show privacy prompt
       this._sendReply(channelId, event.externalConversationId,
@@ -427,6 +449,13 @@ export class ChannelManager {
         '  `/use <shortId>` — 绑定到已有项目\n' +
         '  `/help` — 查看所有命令\n\n' +
         '注意：您的消息将被发送到鲲擎智能体处理。');
+      this.markProcessed(channelId, event.externalEventId);
+      return;
+    }
+
+    // If this was a /new or /use command, send the response and stop
+    if (cmdResult.action === 'new' || cmdResult.action === 'use') {
+      this._sendReply(channelId, event.externalConversationId, cmdResult.response);
       this.markProcessed(channelId, event.externalEventId);
       return;
     }
@@ -695,15 +724,6 @@ export class ChannelManager {
       }
     }
     return { type: row.type as ChannelType, config, secrets };
-  }
-
-  private _createProject(name: string, channelId: string, externalConversationId: string): string {
-    const projectId = `ch-${channelId.slice(0, 8)}-${Date.now().toString(36)}`;
-    const now = new Date().toISOString();
-    this.db.prepare(
-      'INSERT INTO projects (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)',
-    ).run(projectId, name, now, now);
-    return projectId;
   }
 
   private _createBinding(channelId: string, externalConversationId: string, projectId: string): void {

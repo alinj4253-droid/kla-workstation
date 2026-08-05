@@ -1,10 +1,19 @@
 // @vitest-environment node
-import { describe, expect, it, beforeEach, afterEach } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { ChannelManager } from './channel-manager';
+import { createProject } from './project-creator';
+
+vi.mock('./project-creator', async () => {
+  const actual = await vi.importActual('./project-creator') as typeof import('./project-creator');
+  return {
+    ...actual,
+    createProject: vi.fn(),
+  };
+});
 
 // ---------------------------------------------------------------------------
 // AC-CHANNEL-03: 命令解析正确路由
@@ -393,6 +402,11 @@ describe('AC-CHANNEL-06: 项目绑定逻辑', () => {
       );
     `);
     mgr = new ChannelManager(db);
+    // Mock createProject to return a predictable project ID
+    (createProject as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      data: { id: 'mock-project-id', status: 'active', createdAt: new Date().toISOString() },
+    });
   });
 
   afterEach(() => {
@@ -400,42 +414,42 @@ describe('AC-CHANNEL-06: 项目绑定逻辑', () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('未绑定会话的普通消息返回 null projectId', () => {
-    const result = mgr.getOrCreateBinding('ch-1', 'conv-1', 'user-1', '你好');
+  it('未绑定会话的普通消息返回 null projectId', async () => {
+    const result = await mgr.getOrCreateBinding('ch-1', 'conv-1', 'user-1', '你好');
     expect(result.projectId).toBeNull();
     expect(result.isNew).toBe(false);
   });
 
-  it('/new 命令创建新项目并绑定', () => {
-    const result = mgr.getOrCreateBinding('ch-1', 'conv-1', 'user-1', '/new');
-    expect(result.projectId).not.toBeNull();
+  it('/new 命令创建新项目并绑定', async () => {
+    const result = await mgr.getOrCreateBinding('ch-1', 'conv-1', 'user-1', '/new');
+    expect(result.projectId).toBe('mock-project-id');
     expect(result.isNew).toBe(true);
-
-    // Verify project exists in DB
-    const project = db.prepare('SELECT id, name FROM projects WHERE id = ?').get(result.projectId) as { id: string; name: string };
-    expect(project).toBeDefined();
-    expect(project.name).toContain('Chat-');
 
     // Verify binding exists
     const binding = db.prepare('SELECT project_id FROM channel_bindings WHERE channel_id = ? AND external_conversation_id = ?').get('ch-1', 'conv-1') as { project_id: string };
     expect(binding).toBeDefined();
-    expect(binding.project_id).toBe(result.projectId);
+    expect(binding.project_id).toBe('mock-project-id');
   });
 
-  it('/new 自定义名称创建项目', () => {
-    const result = mgr.getOrCreateBinding('ch-1', 'conv-1', 'user-1', '/new 测试项目');
-    expect(result.projectId).not.toBeNull();
+  it('/new 自定义名称创建项目', async () => {
+    const result = await mgr.getOrCreateBinding('ch-1', 'conv-1', 'user-1', '/new 测试项目');
+    expect(result.projectId).toBe('mock-project-id');
     expect(result.isNew).toBe(true);
 
-    const project = db.prepare('SELECT name FROM projects WHERE id = ?').get(result.projectId) as { name: string };
-    expect(project.name).toBe('测试项目');
+    // Verify createProject was called with the custom name
+    expect(createProject).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        content: expect.objectContaining({ text: '测试项目' }),
+      }),
+    );
   });
 
-  it('已绑定会话返回已有 projectId', () => {
+  it('已绑定会话返回已有 projectId', async () => {
     // First call creates binding
-    const first = mgr.getOrCreateBinding('ch-1', 'conv-1', 'user-1', '/new');
+    const first = await mgr.getOrCreateBinding('ch-1', 'conv-1', 'user-1', '/new');
     // Second call should return the same binding
-    const second = mgr.getOrCreateBinding('ch-1', 'conv-1', 'user-1', '普通消息');
+    const second = await mgr.getOrCreateBinding('ch-1', 'conv-1', 'user-1', '普通消息');
     expect(second.projectId).toBe(first.projectId);
     expect(second.isNew).toBe(false);
   });

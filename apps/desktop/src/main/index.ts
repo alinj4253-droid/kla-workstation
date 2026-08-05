@@ -2118,6 +2118,19 @@ const registerChannelIpc = (db: ReturnType<typeof getDatabase>): void => {
     }
     return { ok: true };
   });
+  registerIpc('channels:delete', async (_event, input: { channelId: string }) => {
+    const row = db.prepare('SELECT secret_ref, enabled FROM channels WHERE id = ?').get(input.channelId) as { secret_ref: string | null; enabled: number } | undefined;
+    if (!row) return { ok: false, requestId: '-', error: { code: 'NOT_FOUND', message: '渠道不存在', retryable: false } };
+    // Stop if running
+    if (row.enabled) {
+      mgr.stop(input.channelId).catch(() => {});
+    }
+    if (row.secret_ref) {
+      db.prepare('DELETE FROM secrets WHERE id = ?').run(row.secret_ref);
+    }
+    db.prepare('DELETE FROM channels WHERE id = ?').run(input.channelId);
+    return { ok: true };
+  });
 };
 
 const registerMissingIpc = (db: ReturnType<typeof getDatabase>): void => {

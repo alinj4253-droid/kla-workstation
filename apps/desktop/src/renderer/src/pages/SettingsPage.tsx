@@ -21,6 +21,7 @@ import {
   MessageSquareMore,
   Monitor,
   Moon,
+  Pencil,
   Play,
   Plug,
   Plus,
@@ -2154,16 +2155,17 @@ const MOCK_RECENT_ACTIVITIES: RecentActivity[] = [
 ];
 
 function ChannelsSettings(): React.JSX.Element {
-  const [channels, setChannels] = useState<Array<{ id: string; type: string; name: string; enabled: boolean; status: string }>>([]);
+  const [channels, setChannels] = useState<Array<{ id: string; type: string; name: string; enabled: boolean; status: string; configJson?: Record<string, unknown>; secretRef?: string | null }>>([]);
   const [loading, setLoading] = useState(true);
   const [addOpen, setAddOpen] = useState(false);
+  const [editingChannel, setEditingChannel] = useState<{ id: string; type: string; name: string; enabled: boolean; status: string; configJson?: Record<string, unknown>; secretRef?: string | null } | null>(null);
   const [activities] = useState<RecentActivity[]>(MOCK_RECENT_ACTIVITIES);
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true);
     try {
-      const res = await (window.kunqing?.channels.list() as Promise<{ ok: boolean; data: Array<{ id: string; type: string; name: string; enabled: boolean; status: string; configJson?: Record<string, unknown> }> }> | undefined);
-      if (res?.data) setChannels(res.data);
+      const res = await (window.kunqing?.channels.list() as Promise<{ ok: boolean; data: Array<{ id: string; type: string; name: string; enabled: boolean; status: string; configJson?: Record<string, unknown>; secretRef?: string | null }> }> | undefined);
+      if (res?.data) setChannels(res.data as Array<{ id: string; type: string; name: string; enabled: boolean; status: string; configJson?: Record<string, unknown>; secretRef?: string | null }>);
     } catch { /* ignore */ }
     setLoading(false);
   }, []);
@@ -2189,6 +2191,14 @@ function ChannelsSettings(): React.JSX.Element {
     try {
       setChannels((prev) => prev.map((c) => c.id === id ? { ...c, enabled: !currentEnabled, status: !currentEnabled ? 'connecting' : 'disconnected' } : c));
       await window.kunqing?.channels.setEnabled({ channelId: id, enabled: !currentEnabled });
+    } catch { /* ignore */ }
+  };
+
+  const handleDelete = async (channel: { id: string; name: string; enabled: boolean }): Promise<void> => {
+    if (!confirm(`确定删除渠道「${channel.name}」吗？此操作不可撤销。`)) return;
+    try {
+      await window.kunqing?.channels.delete({ channelId: channel.id });
+      setChannels((prev) => prev.filter((c) => c.id !== channel.id));
     } catch { /* ignore */ }
   };
 
@@ -2224,7 +2234,7 @@ function ChannelsSettings(): React.JSX.Element {
       <SettingsHeading
         title="渠道配置"
         description="连接 Telegram、飞书、钉钉和企业微信群机器人，让群聊可从本地工作站收发消息。"
-        action={<button type="button" className="primary-button" onClick={() => setAddOpen(true)}><Plus size={15} /> 添加渠道</button>}
+        action={<button type="button" className="primary-button" onClick={() => { setEditingChannel(null); setAddOpen(true); }}><Plus size={15} /> 添加渠道</button>}
       />
       <div className="channel-guide">
         <span><b>1</b><CheckCircle2 size={14} /> 选择一个渠道并完成凭据配置</span>
@@ -2239,13 +2249,16 @@ function ChannelsSettings(): React.JSX.Element {
           {channels.length === 0 && <p className="model-empty">尚未配置渠道</p>}
           {channels.map((channel) => (
             <article className="channel-row" key={channel.id}>
-              <button type="button" className="channel-expand" aria-label={`展开 ${channel.name}`}><ChevronDown size={15} /></button>
               <span className="channel-icon">{iconMap[channel.type] ?? <Cable size={19} />}</span>
               <div>
                 <strong>{labelMap[channel.type] ?? channel.name}</strong>
                 <span>{detailMap[channel.type] ?? ''}</span>
               </div>
               <em className={`channel-tag channel-tag--${channel.enabled && channel.status === 'connected' ? 'ok' : 'off'}`}>{channel.status}</em>
+              <div className="channel-row-actions">
+                <button type="button" className="icon-button" aria-label={`编辑 ${channel.name}`} title="编辑" onClick={() => { setEditingChannel(channel); setAddOpen(true); }}><Pencil size={14} /></button>
+                <button type="button" className="icon-button" aria-label={`删除 ${channel.name}`} title="删除" onClick={() => void handleDelete(channel)}><Trash2 size={14} /></button>
+              </div>
               <button type="button" role="switch" aria-checked={channel.enabled} className={`toggle-switch${channel.enabled ? ' toggle-switch--on' : ''}`} onClick={() => void toggle(channel.id, channel.enabled)}><span /></button>
             </article>
           ))}
@@ -2305,17 +2318,26 @@ function ChannelsSettings(): React.JSX.Element {
       </div>
       </>
       )}
-      {addOpen && <ChannelAddDialog
-        onClose={() => setAddOpen(false)}
-        onSaved={() => { setAddOpen(false); void load(); }}
+      {(addOpen) && <ChannelAddDialog
+        key={editingChannel?.id ?? 'new'}
+        initialChannel={editingChannel}
+        onClose={() => { setAddOpen(false); setEditingChannel(null); }}
+        onSaved={() => { setAddOpen(false); setEditingChannel(null); void load(); }}
       />}
     </div>
   );
 }
 
-function ChannelAddDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }): React.JSX.Element {
-  const [type, setType] = useState<ChannelType>('telegram');
-  const [config, setConfig] = useState<Record<string, string>>({ ...CHANNEL_CONFIGS.telegram.defaults });
+function ChannelAddDialog({ initialChannel, onClose, onSaved }: { initialChannel?: { id: string; type: string; name: string; configJson?: Record<string, unknown>; secretRef?: string | null } | null; onClose: () => void; onSaved: () => void }): React.JSX.Element {
+  const isEdit = !!initialChannel?.id;
+  const initialType = (initialChannel?.type as ChannelType) ?? 'telegram';
+  const initialConfig = (initialChannel?.configJson as Record<string, string>) ?? {};
+  const [type, setType] = useState<ChannelType>(initialType);
+  const [config, setConfig] = useState<Record<string, string>>(() => {
+    // Merge saved config with defaults so all fields are present
+    const defaults = CHANNEL_CONFIGS[initialType]?.defaults ?? {};
+    return { ...defaults, ...initialConfig };
+  });
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
@@ -2340,10 +2362,12 @@ function ChannelAddDialog({ onClose, onSaved }: { onClose: () => void; onSaved: 
     return channelConfig.fields.every((f) => (config[f.key] ?? '').trim().length > 0);
   };
 
-  const buildSaveInput = (): { type: string; name: string; config: Record<string, string>; secret?: string } => {
+  const buildSaveInput = (): { id?: string; type: string; name: string; config: Record<string, string>; secret?: string } => {
     const cname = labelMap[type] ?? type;
     const { app_secret, ...rest } = config as Record<string, string>;
-    return app_secret ? { type, name: cname, config: rest, secret: app_secret } : { type, name: cname, config: rest };
+    const base = app_secret ? { type, name: cname, config: rest, secret: app_secret } : { type, name: cname, config: rest };
+    if (isEdit && initialChannel?.id) return { ...base, id: initialChannel.id };
+    return base;
   };
 
   const handleSave = async (): Promise<void> => {
@@ -2394,8 +2418,8 @@ function ChannelAddDialog({ onClose, onSaved }: { onClose: () => void; onSaved: 
       <div className="agent-dialog channel-dialog" onClick={(e) => e.stopPropagation()}>
         <header>
           <div>
-            <h3>添加渠道</h3>
-            <p>选择渠道类型并填写凭据信息，完成后可测试连通性。</p>
+            <h3>{isEdit ? '编辑渠道' : '添加渠道'}</h3>
+            <p>{isEdit ? '修改渠道配置信息，保存后需重新测试连通性。' : '选择渠道类型并填写凭据信息，完成后可测试连通性。'}</p>
           </div>
           <button type="button" className="icon-button" aria-label="关闭" onClick={onClose}><X size={18} /></button>
         </header>

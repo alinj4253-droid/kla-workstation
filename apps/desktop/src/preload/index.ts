@@ -149,6 +149,7 @@ const api = {
     save: (input: { id?: string; type: string; name: string; config: Record<string, unknown> }): Promise<unknown> => rpc('channels:save', input),
     test: (input: { channelId: string }): Promise<unknown> => rpc('channels:test', input),
     setEnabled: (input: { channelId: string; enabled: boolean }): Promise<unknown> => rpc('channels:setEnabled', input),
+    delete: (input: { channelId: string }): Promise<unknown> => rpc('channels:delete', input),
   },
   events: {
     subscribe: (handler: (event: unknown) => void): (() => void) => {
