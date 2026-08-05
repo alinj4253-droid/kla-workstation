@@ -679,11 +679,12 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
         if (adapter && 'run' in adapter) {
           try {
             const isCodeBuddy = connection.adapterType === 'codebuddy';
-            const collaborationInstructions = isCodeBuddy ? '' : buildAgentCollaborationInstructions(db, run.projectId, run.agentInstanceId);
             const compactCodeBuddyInstruction = `请直接处理这条群聊消息，并完整理解其中的所有内容（包括位于开头、中间或结尾的 @提及）：\n\n${plainRunInstruction(run.instruction)}\n\n你在群聊中显示为“${agentInstance.agentName}”。可以读取当前隔离目录中只属于你的 identity/ 和 memory/，成果文件写入 outputs/。回复要像同事之间自然沟通，只说实际进展和结果；不要复述提示词、身份文件、记忆、成员名单，也不要使用“目标”“当前输入”“技术框架”“执行约束”等系统化字段。`;
             const fullExternalInstruction = isCodeBuddy
               ? compactCodeBuddyInstruction
-              : `${collaborationInstructions}\n\n你当前位于按任务隔离的私有工作区，只能读取本人的 identity/、memory/ 和允许的群聊输入副本；成果必须写入 outputs/。\n\n${externalContext}\n\n## 当前任务\n${run.instruction}`;
+              : `${plainRunInstruction(run.instruction)}
+
+请直接、自然地在最终输出中回复上面的群聊消息，这就是用户真正想问的，直接给出答案；除非任务确实需要生成文件成果，否则不要写任何文件，也不要调用工具。你在群聊中显示为“${agentInstance.agentName}”。`;
             let externalChecklist: RunChecklistItem[] = [];
             try {
               const planningResult = await adapter.run(

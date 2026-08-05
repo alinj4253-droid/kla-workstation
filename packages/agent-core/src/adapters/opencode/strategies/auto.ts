@@ -28,7 +28,7 @@ export class OpencodeAutoStrategy implements VersionStrategy {
   buildRun(input: PreparedExternalRun): SpawnSpec {
     return {
       executable: input.executablePath,
-      args: ['run', input.instruction, ...input.args],
+      args: ['run', '--auto', input.instruction, ...input.args],
       cwd: input.workspaceRoot,
       env: input.env,
       shell: process.platform === 'win32',

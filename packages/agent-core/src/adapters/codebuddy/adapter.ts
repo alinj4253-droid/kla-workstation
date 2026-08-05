@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import * as path from 'node:path';
+import { buildSpawnInvocation } from '../spawn.js';
 import type {
   ExternalAgentAdapter, VersionStrategy, DetectInput, DetectedExecutable,
   ExecutableRef, VersionEvidence, CliConnectionSnapshot, AuthProbeResult,
@@ -113,16 +114,18 @@ export class CodeBuddyCliAdapter implements ExternalAgentAdapter {
   ): Promise<ExternalRunResult> {
     const start = Date.now();
     return new Promise((resolve) => {
-      const child = spawn(spec.executable, spec.args, {
+      const invocation = buildSpawnInvocation(spec);
+      const child = spawn(invocation.executable, invocation.args, {
         cwd: spec.cwd,
         env: {
           ...process.env,
           ...spec.env,
           PATH: buildCodeBuddySearchPaths({}).join(path.delimiter),
         },
-        shell: spec.shell,
-        stdio: ['pipe', 'pipe', 'pipe'],
+        shell: false,
+        stdio: spec.stdin ? ['pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'],
         signal,
+        ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
       });
       let stdout = ''; let stderr = ''; let exitCode: number | null = null;
       if (spec.stdin) { child.stdin?.write(spec.stdin); child.stdin?.end(); }

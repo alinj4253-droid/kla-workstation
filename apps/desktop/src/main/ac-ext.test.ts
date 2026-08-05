@@ -97,6 +97,39 @@ describe('AC-EXT-02', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 安全 spawn：永不启用 shell: true，Windows 命令经 cmd.exe 安全解析
+// ---------------------------------------------------------------------------
+describe('safe spawn invocation', () => {
+  it('shouldUseCmdShim 判断规则', async () => {
+    const { shouldUseCmdShim } = await import('./process-supervisor');
+    expect(shouldUseCmdShim('opencode', true, 'win32')).toBe(true);       // 裸名可能解析到 PATH 上的 .cmd
+    expect(shouldUseCmdShim('C:\\npm\\opencode.cmd', true, 'win32')).toBe(true);
+    expect(shouldUseCmdShim('C:\\bin\\tool.bat', true, 'win32')).toBe(true);
+    expect(shouldUseCmdShim('codex.exe', true, 'win32')).toBe(false);     // .exe 可直启
+    expect(shouldUseCmdShim('tool.com', true, 'win32')).toBe(false);
+    expect(shouldUseCmdShim('opencode', false, 'win32')).toBe(false);     // 无 shell 意图
+    expect(shouldUseCmdShim('opencode', true, 'linux')).toBe(false);      // 非 Windows
+  });
+
+  it('buildSpawnInvocation 对 win32 命令路由到 cmd.exe 且 shell 为 false', async () => {
+    const { buildSpawnInvocation } = await import('./process-supervisor');
+    const shimmed = buildSpawnInvocation({
+      executable: 'opencode',
+      args: ['run', 'a&b'],
+      shell: true,
+    });
+    if (process.platform === 'win32') {
+      expect(shimmed.executable).toBe(process.env.ComSpec ?? 'cmd.exe');
+      expect(shimmed.windowsVerbatimArguments).toBe(true);
+      expect(shimmed.args[3]).toBe('""opencode" "run" "a&b""');
+    }
+    const direct = buildSpawnInvocation({ executable: 'codex.exe', args: ['run'], shell: true });
+    expect(direct.executable).toBe('codex.exe');
+    expect(direct.windowsVerbatimArguments).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // AC-EXT-04: 取消和中断状态
 // ---------------------------------------------------------------------------
 describe('AC-EXT-04', () => {

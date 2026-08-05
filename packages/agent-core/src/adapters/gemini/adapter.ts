@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { buildSpawnInvocation } from '../spawn.js';
 import type {
   ExternalAgentAdapter, VersionStrategy, DetectInput, DetectedExecutable,
   ExecutableRef, VersionEvidence, CliConnectionSnapshot, AuthProbeResult,
@@ -84,12 +85,14 @@ export class GeminiCliAdapter implements ExternalAgentAdapter {
   ): Promise<ExternalRunResult> {
     const start = Date.now();
     return new Promise((resolve) => {
-      const child = spawn(spec.executable, spec.args, {
+      const invocation = buildSpawnInvocation(spec);
+      const child = spawn(invocation.executable, invocation.args, {
         cwd: spec.cwd,
         env: { ...process.env, ...spec.env },
-        shell: spec.shell,
-        stdio: ['pipe', 'pipe', 'pipe'],
+        shell: false,
+        stdio: spec.stdin ? ['pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'],
         signal,
+        ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
       });
 
       let stdout = '';
