@@ -1,6 +1,16 @@
 import ReactMarkdown from 'react-markdown';
 import rehypeRaw from 'rehype-raw';
+import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import remarkGfm from 'remark-gfm';
+
+const rehypeSchema = {
+  ...defaultSchema,
+  attributes: {
+    ...defaultSchema.attributes,
+    span: [['className']],
+    code: [['className']],
+  },
+};
 
 export type ConfirmedMention = {
   target: { scope: string; id: string };
@@ -43,7 +53,7 @@ export function MarkdownMessage({ content, mentions = [] }: MarkdownMessageProps
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
-      rehypePlugins={[rehypeRaw]}
+      rehypePlugins={[rehypeRaw, [rehypeSanitize, rehypeSchema]]}
     >
       {preprocessMentions(normalized, normalized === content ? mentions : [])}
     </ReactMarkdown>

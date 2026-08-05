@@ -4,6 +4,7 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type pino from 'pino';
 import type Database from 'better-sqlite3';
+import { buildSpawnInvocation } from './process-supervisor';
 import { cliAgentRegistry } from './cli-agent-registry';
 import { checkVersionCompatibility } from './version-compatibility';
 import { getStudioRoot } from './paths';
@@ -210,7 +211,15 @@ export class AgentConnectionService {
   private runCliCommand(args: string[], timeoutMs: number): Promise<{ exitCode: number | null; stdout: string; stderr: string }> {
     this.logger.debug({ executablePath: this.state.executablePath, args, timeoutMs }, 'AgentConnectionService.runCliCommand');
     return new Promise((resolve) => {
-      const child = spawn(this.state.executablePath, args, { cwd: this.state.smokeWorkspaceDir ?? undefined, shell: process.platform === 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
+      const invocation = buildSpawnInvocation({
+        executable: this.state.executablePath, args, shell: process.platform === 'win32',
+      });
+      const child = spawn(invocation.executable, invocation.args, {
+        cwd: this.state.smokeWorkspaceDir ?? undefined,
+        shell: false,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
+      });
       let stdout = ''; let stderr = '';
       let settled = false;
 

@@ -4,6 +4,10 @@ import { mkdir, writeFile, rm } from 'node:fs/promises';
 import Database from 'better-sqlite3';
 import { AgentConnectionService } from './agent-connection-service';
 
+vi.mock('electron', () => ({
+  app: { getPath: vi.fn(() => process.cwd()) },
+}));
+
 vi.mock('./cli-agent-registry', () => ({
   cliAgentRegistry: {
     getAdapter: vi.fn((type: string) => {
@@ -210,6 +214,12 @@ describe('AgentConnectionService', () => {
         id TEXT PRIMARY KEY, name TEXT, adapter_type TEXT, executable_path TEXT,
         args_json TEXT, strategy_id TEXT, detected_version TEXT,
         status TEXT, trust_tier TEXT, capabilities_json TEXT,
+        created_at TEXT, updated_at TEXT
+      );
+      CREATE TABLE agent_profiles (
+        id TEXT PRIMARY KEY, name TEXT, definition_id TEXT, definition_version TEXT,
+        runtime_mode TEXT, cli_connection_id TEXT, enabled INTEGER,
+        delegatable INTEGER, is_system_default INTEGER,
         created_at TEXT, updated_at TEXT
       );
     `);
