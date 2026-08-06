@@ -150,6 +150,10 @@ const api = {
     test: (input: { channelId: string }): Promise<unknown> => rpc('channels:test', input),
     setEnabled: (input: { channelId: string; enabled: boolean }): Promise<unknown> => rpc('channels:setEnabled', input),
     delete: (input: { channelId: string }): Promise<unknown> => rpc('channels:delete', input),
+    listBindings: (input: { channelId?: string }): Promise<unknown> => rpc('channels:listBindings', input),
+    previewConversation: (input: { channelId: string; externalConversationId: string }): Promise<unknown> => rpc('channels:previewConversation', input),
+    bind: (input: { channelId: string; externalConversationId: string; projectId: string; force?: boolean }): Promise<unknown> => rpc('channels:bind', input),
+    unbind: (input: { channelId: string; externalConversationId: string }): Promise<unknown> => rpc('channels:unbind', input),
   },
   events: {
     subscribe: (handler: (event: unknown) => void): (() => void) => {

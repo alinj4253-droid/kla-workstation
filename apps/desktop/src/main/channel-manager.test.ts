@@ -7,6 +7,15 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { ChannelManager } from './channel-manager';
 import { createProject } from './project-creator';
 
+vi.mock('electron', () => ({
+  safeStorage: { isEncryptionAvailable: () => true, encryptString: (s: string) => Buffer.from(s), decryptString: (b: Buffer) => b.toString(), isEncrypted: () => true },
+  app: { getPath: () => '/tmp/test', getVersion: () => '0.1.0-test' },
+  ipcMain: { handle: vi.fn() },
+  BrowserWindow: { fromWebContents: vi.fn() },
+  shell: { openPath: vi.fn(), openExternal: vi.fn() },
+  dialog: { showOpenDialog: vi.fn() },
+}));
+
 vi.mock('./project-creator', async () => {
   const actual = await vi.importActual('./project-creator') as typeof import('./project-creator');
   return {
@@ -633,5 +642,132 @@ describe('AC-CHANNEL-11: 附件下载校验', () => {
       externalId: 'f2', fileName: 'script.exe', mimeType: 'application/x-msdownload', sizeBytes: 1000, downloadUrl: 'https://example.com/script.exe',
     }, 'proj-1');
     expect(result).toBeNull();
+  });
+});
+
+describe('AC-CHANNEL-12: 手动绑定（bindConversation / unbind / list / preview / /id）', () => {
+  let db: Database.Database;
+  let tmpDir: string;
+  let mgr: ChannelManager;
+
+  const seedChannel = (id: string, type: string, name: string, configJson = '{}'): void => {
+    db.prepare(
+      "INSERT INTO channels (id, type, name, enabled, status, config_json, created_at) VALUES (?, ?, ?, 0, 'disconnected', ?, ?)",
+    ).run(id, type, name, configJson, new Date().toISOString());
+  };
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'channel-mgr-12-'));
+    db = new Database(join(tmpDir, 'test.db'));
+    db.exec(`CREATE TABLE channels (id TEXT PRIMARY KEY,type TEXT NOT NULL,name TEXT NOT NULL,enabled INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'disconnected',config_json TEXT,secret_ref TEXT,last_connected_at TEXT,last_error TEXT,last_test_result TEXT,last_tested_at TEXT,updated_at TEXT,created_at TEXT);CREATE TABLE channel_events (id INTEGER PRIMARY KEY AUTOINCREMENT,channel_id TEXT NOT NULL,external_event_id TEXT NOT NULL,direction TEXT NOT NULL,payload_json TEXT,status TEXT NOT NULL DEFAULT 'received',created_at TEXT NOT NULL);CREATE TABLE channel_bindings (id INTEGER PRIMARY KEY AUTOINCREMENT,channel_id TEXT NOT NULL,external_conversation_id TEXT NOT NULL,project_id TEXT NOT NULL,created_at TEXT NOT NULL);CREATE UNIQUE INDEX idx_channel_bindings_conversation ON channel_bindings(channel_id, external_conversation_id);CREATE TABLE projects (id TEXT PRIMARY KEY,name TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);CREATE TABLE secrets (id TEXT PRIMARY KEY,kind TEXT NOT NULL,ciphertext TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);CREATE TABLE idempotency_requests (key TEXT PRIMARY KEY,operation TEXT NOT NULL,request_hash TEXT NOT NULL,result_json TEXT NOT NULL,expires_at TEXT NOT NULL,created_at TEXT NOT NULL);`);
+    const now = new Date().toISOString();
+    db.prepare("INSERT INTO projects (id, name, created_at, updated_at) VALUES ('proj-a', '项目A', ?, ?)").run(now, now);
+    db.prepare("INSERT INTO projects (id, name, created_at, updated_at) VALUES ('proj-b', '项目B', ?, ?)").run(now, now);
+    seedChannel('ch-lark', 'lark', '飞书');
+    seedChannel('ch-wecom', 'wecom-webhook', '企微');
+    seedChannel('ch-tg', 'telegram', 'TG', JSON.stringify({ token: 'test-token' }));
+    mgr = new ChannelManager(db);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    db.close();
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('bindConversation 成功绑定', async () => {
+    const result = await mgr.bindConversation('ch-lark', 'oc_abc123', 'proj-a');
+    expect(result.ok).toBe(true);
+    const row = db.prepare('SELECT project_id FROM channel_bindings WHERE channel_id = ? AND external_conversation_id = ?').get('ch-lark', 'oc_abc123') as { project_id: string };
+    expect(row.project_id).toBe('proj-a');
+  });
+
+  it('重复绑定到同一项目幂等成功', async () => {
+    await mgr.bindConversation('ch-lark', 'oc_abc123', 'proj-a');
+    const result = await mgr.bindConversation('ch-lark', 'oc_abc123', 'proj-a');
+    expect(result.ok).toBe(true);
+    const count = db.prepare('SELECT COUNT(*) AS c FROM channel_bindings WHERE channel_id = ? AND external_conversation_id = ?').get('ch-lark', 'oc_abc123') as { c: number };
+    expect(count.c).toBe(1);
+  });
+
+  it('绑定到其他项目时返回 ALREADY_BOUND，force 后换绑', async () => {
+    await mgr.bindConversation('ch-lark', 'oc_abc123', 'proj-a');
+    const result = await mgr.bindConversation('ch-lark', 'oc_abc123', 'proj-b');
+    expect(result.ok).toBe(false);
+    expect(result.error?.code).toBe('ALREADY_BOUND');
+
+    const rebind = await mgr.bindConversation('ch-lark', 'oc_abc123', 'proj-b', true);
+    expect(rebind.ok).toBe(true);
+    expect(rebind.data?.alreadyBound).toBe('proj-a');
+    const row = db.prepare('SELECT project_id FROM channel_bindings WHERE channel_id = ? AND external_conversation_id = ?').get('ch-lark', 'oc_abc123') as { project_id: string };
+    expect(row.project_id).toBe('proj-b');
+  });
+
+  it('渠道不存在 / 项目不存在 / 仅出站渠道被拒绝', async () => {
+    expect((await mgr.bindConversation('ch-missing', 'c1', 'proj-a')).error?.code).toBe('CHANNEL_NOT_FOUND');
+    expect((await mgr.bindConversation('ch-lark', 'c1', 'proj-missing')).error?.code).toBe('PROJECT_NOT_FOUND');
+    expect((await mgr.bindConversation('ch-wecom', 'c1', 'proj-a')).error?.code).toBe('CHANNEL_NOT_BINDABLE');
+  });
+
+  it('unbindConversation 删除绑定', async () => {
+    await mgr.bindConversation('ch-lark', 'oc_abc123', 'proj-a');
+    const result = await mgr.unbindConversation('ch-lark', 'oc_abc123');
+    expect(result.ok).toBe(true);
+    const row = db.prepare('SELECT project_id FROM channel_bindings WHERE channel_id = ? AND external_conversation_id = ?').get('ch-lark', 'oc_abc123');
+    expect(row).toBeUndefined();
+  });
+
+  it('listBindings 联表返回项目名，可按渠道过滤', async () => {
+    await mgr.bindConversation('ch-lark', 'oc_abc123', 'proj-a');
+    await mgr.bindConversation('ch-tg', '123456', 'proj-b');
+    const all = mgr.listBindings();
+    expect(all).toHaveLength(2);
+    expect(all[0]).toMatchObject({ channelId: 'ch-tg', projectName: '项目B', channelType: 'telegram' });
+
+    const larkOnly = mgr.listBindings('ch-lark');
+    expect(larkOnly).toHaveLength(1);
+    expect(larkOnly[0]?.externalConversationId).toBe('oc_abc123');
+    expect(larkOnly[0]?.projectName).toBe('项目A');
+  });
+
+  it('previewConversation 调用适配器校验并返回群名', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true, result: { title: '测试群', type: 'group' } }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await mgr.previewConversation('ch-tg', '123456');
+    expect(result.ok).toBe(true);
+    expect(result.data?.exists).toBe(true);
+    expect(result.data?.verified).toBe(true);
+    expect(result.data?.name).toBe('测试群');
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/getChat?chat_id=123456'));
+  });
+
+  it('previewConversation 校验失败返回 exists=false', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: false, description: 'Bad Request: chat not found' }),
+    }));
+    const result = await mgr.previewConversation('ch-tg', '999');
+    expect(result.ok).toBe(true);
+    expect(result.data?.exists).toBe(false);
+  });
+
+  it('previewConversation 渠道不存在返回错误', async () => {
+    const result = await mgr.previewConversation('ch-missing', 'c1');
+    expect(result.ok).toBe(false);
+  });
+
+  it('"/id" 命令返回会话 ID', () => {
+    const result = mgr.processCommand('/id', 'ch-lark', 'oc_abc123');
+    expect(result.action).toBe('id');
+    expect(result.response).toContain('oc_abc123');
+    expect(result.response).toContain('飞书');
+  });
+
+  it('"/help" 命令包含 /id', () => {
+    const result = mgr.processCommand('/help', 'ch-lark', 'oc_abc123');
+    expect(result.response).toContain('/id');
   });
 });

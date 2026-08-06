@@ -59,6 +59,12 @@ export type DeliveryReceipt = {
   sentAt: string;
 };
 
+export type ExternalConversationInfo = {
+  name?: string;
+  exists: boolean;
+  error?: string;
+};
+
 export type ChannelEventSink = {
   onEvent(event: InboundChannelEvent): void;
   onError(error: Error): void;
@@ -72,4 +78,6 @@ export interface ChannelAdapter {
   stop(): Promise<void>;
   send(target: ExternalTarget, message: OutboundChannelMessage): Promise<DeliveryReceipt>;
   health(): ChannelHealth;
+  /** Optional: resolve/validate an external conversation for binding preview */
+  getConversationInfo?(target: ExternalTarget, config?: ResolvedChannelConfig): Promise<ExternalConversationInfo>;
 }

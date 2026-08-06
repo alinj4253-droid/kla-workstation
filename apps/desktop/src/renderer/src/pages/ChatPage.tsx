@@ -1,5 +1,5 @@
 import {
-  AlertTriangle, Brain, ExternalLink, FileText, FolderOpen, ListTree, Loader2, MoreVertical, Network,
+  AlertTriangle, Brain, ExternalLink, FileText, FolderOpen, Link, ListTree, Loader2, MoreVertical, Network,
   PanelLeftClose, PanelLeftOpen, Paperclip, Pencil, Send, Sparkles, Square, Trash2, UserPlus, Workflow, X,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -11,6 +11,7 @@ import { TaskWorkTreePanel } from '../components/TaskWorkTreePanel';
 import { TaskWorkFlowPanel } from '../components/TaskWorkFlowPanel';
 import { MemoryManager } from '../components/MemoryManager';
 import { AddAgentsModal } from '../components/AddAgentsModal';
+import { ChannelBindingsDialog } from '../components/ChannelBindingsDialog';
 import { displayAgentText, extractMentions, findMentionContext, insertComposerNewline, replaceMention, type MentionContext } from '../chat-input-utils';
 import type { BusinessProcess } from '@kunqing/native-agent-core';
 
@@ -112,6 +113,7 @@ export function ChatPage(): React.JSX.Element {
   const [renameValue, setRenameValue] = useState('');
   const [renameError, setRenameError] = useState('');
   const [dissolveOpen, setDissolveOpen] = useState(false);
+  const [channelBindOpen, setChannelBindOpen] = useState(false);
   const [projectActionBusy, setProjectActionBusy] = useState(false);
   const [stoppingAllRuns, setStoppingAllRuns] = useState(false);
   const [workTreeView, setWorkTreeView] = useState<'tree' | 'flow'>('tree');
@@ -852,6 +854,7 @@ export function ChatPage(): React.JSX.Element {
               <button type="button" className={`icon-button${moreMenuOpen ? ' icon-button--active' : ''}`} aria-label="更多操作" title="更多操作" onClick={() => setMoreMenuOpen((value) => !value)}><MoreVertical size={18} /></button>
               {moreMenuOpen && <div className="conversation-more-menu">
                 <button type="button" onClick={() => { setMoreMenuOpen(false); setRenameValue(activeProject.name); setRenameError(''); setRenameOpen(true); }}><Pencil size={15} />重命名</button>
+                <button type="button" onClick={() => { setMoreMenuOpen(false); setChannelBindOpen(true); }}><Link size={15} />绑定渠道会话</button>
                 <button type="button" className="conversation-more-menu__danger" onClick={() => { setMoreMenuOpen(false); setDissolveOpen(true); }}><Trash2 size={15} />解散群聊</button>
               </div>}
             </div>
@@ -1023,6 +1026,9 @@ export function ChatPage(): React.JSX.Element {
             <footer><button type="button" className="secondary-button" onClick={() => setDissolveOpen(false)}>取消</button><button type="button" className="primary-button danger" disabled={projectActionBusy} onClick={() => void dissolveProject()}>{projectActionBusy ? '处理中…' : '确认解散'}</button></footer>
           </div>
         </div>
+      )}
+      {channelBindOpen && (
+        <ChannelBindingsDialog projectId={projectId ?? ''} projectName={activeProject.name} onClose={() => setChannelBindOpen(false)} />
       )}
     </div>
   );

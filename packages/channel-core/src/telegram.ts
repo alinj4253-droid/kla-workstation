@@ -1,4 +1,4 @@
-import type { ChannelAdapter, ChannelTestResult, ResolvedChannelConfig, ChannelEventSink, ExternalTarget, OutboundChannelMessage, DeliveryReceipt, ChannelHealth, ChannelType, InboundChannelEvent, RemoteAttachment } from './types';
+import type { ChannelAdapter, ChannelTestResult, ResolvedChannelConfig, ChannelEventSink, ExternalTarget, OutboundChannelMessage, DeliveryReceipt, ChannelHealth, ChannelType, InboundChannelEvent, RemoteAttachment, ExternalConversationInfo } from './types';
 
 const TELEGRAM_API = 'https://api.telegram.org';
 
@@ -107,6 +107,21 @@ export class TelegramAdapter implements ChannelAdapter {
       lastError: this._lastError,
       uptimeMs: this._started ? Date.now() - this._startTime : 0,
     };
+  }
+
+  async getConversationInfo(target: ExternalTarget, config?: ResolvedChannelConfig): Promise<ExternalConversationInfo> {
+    const token = config ? config.secrets.token ?? (config.config.token as string) ?? this._token : this._token;
+    if (!token) return { exists: false };
+    try {
+      const resp = await fetch(`${TELEGRAM_API}/bot${token}/getChat?chat_id=${encodeURIComponent(target.conversationId)}`);
+      const data = await resp.json() as { ok: boolean; description?: string; result?: { title?: string; type?: string } };
+      if (data.ok && data.result) {
+        return { exists: true, ...(data.result.title ? { name: data.result.title } : {}) };
+      }
+      return { exists: false, ...(data.description ? { error: data.description } : {}) };
+    } catch (err) {
+      return { exists: false, error: err instanceof Error ? err.message : String(err) };
+    }
   }
 
   private async _poll(): Promise<void> {

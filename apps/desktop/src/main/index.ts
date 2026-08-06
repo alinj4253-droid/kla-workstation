@@ -2128,7 +2128,27 @@ const registerChannelIpc = (db: ReturnType<typeof getDatabase>): void => {
     if (row.secret_ref) {
       db.prepare('DELETE FROM secrets WHERE id = ?').run(row.secret_ref);
     }
+    db.prepare('DELETE FROM channel_bindings WHERE channel_id = ?').run(input.channelId);
     db.prepare('DELETE FROM channels WHERE id = ?').run(input.channelId);
+    return { ok: true };
+  });
+  registerIpc('channels:listBindings', async (_event, input: { channelId?: string }) => {
+    return { ok: true, data: mgr.listBindings(input?.channelId) };
+  });
+  registerIpc('channels:previewConversation', async (_event, input: { channelId: string; externalConversationId: string }) => {
+    const result = await mgr.previewConversation(input.channelId, input.externalConversationId.trim());
+    if (!result.ok) return { ok: false, requestId: '-', error: { code: 'PREVIEW_FAILED', message: result.error ?? '校验失败', retryable: false } };
+    return { ok: true, data: result.data };
+  });
+  registerIpc('channels:bind', async (_event, input: { channelId: string; externalConversationId: string; projectId: string; force?: boolean }) => {
+    const result = await mgr.bindConversation(input.channelId, input.externalConversationId.trim(), input.projectId, input.force === true);
+    if (!result.ok) {
+      return { ok: false, requestId: '-', error: { code: result.error?.code ?? 'BIND_FAILED', message: result.error?.message ?? '绑定失败', retryable: result.error?.retryable ?? false } };
+    }
+    return { ok: true, data: result.data };
+  });
+  registerIpc('channels:unbind', async (_event, input: { channelId: string; externalConversationId: string }) => {
+    await mgr.unbindConversation(input.channelId, input.externalConversationId.trim());
     return { ok: true };
   });
 };

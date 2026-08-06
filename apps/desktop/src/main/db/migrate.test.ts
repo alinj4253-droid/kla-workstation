@@ -22,13 +22,13 @@ describe('DB migration — clean install', () => {
     await rm(tmpDir, { recursive: true, force: true });
   });
 
-  it('runs all 16 migrations on empty database', () => {
+  it('runs all 17 migrations on empty database', () => {
     runMigrations(dbPath);
     const db = new Database(dbPath);
     const rows = db.prepare('SELECT name FROM _migrations ORDER BY id').all() as Array<{ id: number; name: string }>;
-    expect(rows.length).toBe(16);
+    expect(rows.length).toBe(17);
     expect(rows[0]!.name).toBe('001_initial');
-    expect(rows[15]!.name).toBe('018_local_knowledge_index');
+    expect(rows[16]!.name).toBe('019_channel_bindings_unique');
     db.close();
   });
 
@@ -61,8 +61,46 @@ describe('DB migration — clean install', () => {
     runMigrations(dbPath);
     const db = new Database(dbPath);
     const rows = db.prepare('SELECT name FROM _migrations ORDER BY id').all() as Array<{ name: string }>;
-    expect(rows.length).toBe(16);
+    expect(rows.length).toBe(17);
     db.close();
+  });
+
+  it('019 dedups duplicate bindings and enforces uniqueness', () => {
+    runMigrations(dbPath);
+    const db = new Database(dbPath);
+    // Simulate pre-019 state: drop the unique index and delete the migration row
+    db.prepare("DELETE FROM _migrations WHERE name = '019_channel_bindings_unique'").run();
+    db.prepare('DROP INDEX IF EXISTS idx_channel_bindings_conversation').run();
+
+    const now = new Date().toISOString();
+    db.prepare(
+      'INSERT INTO projects (id, name, created_at, updated_at, last_active_at) VALUES (?, ?, ?, ?, ?)',
+    ).run('p1', 'P1', now, now, now);
+    db.prepare(
+      "INSERT INTO channels (id, type, name, enabled, status, created_at) VALUES (?, 'lark', 'L', 0, 'disconnected', ?)",
+    ).run('c1', now);
+    const insertBinding = db.prepare(
+      'INSERT INTO channel_bindings (channel_id, external_conversation_id, project_id, created_at) VALUES (?, ?, ?, ?)',
+    );
+    insertBinding.run('c1', 'oc_x', 'p1', now);
+    insertBinding.run('c1', 'oc_x', 'p1', now);
+    insertBinding.run('c1', 'oc_y', 'p1', now);
+    db.close();
+
+    // Re-run migration — 019 should dedup and recreate the unique index
+    runMigrations(dbPath);
+
+    const checkDb = new Database(dbPath);
+    const dupRow = checkDb.prepare(
+      'SELECT COUNT(*) AS c FROM channel_bindings WHERE channel_id = ? AND external_conversation_id = ?',
+    ).get('c1', 'oc_x') as { c: number };
+    expect(dupRow.c).toBe(1);
+
+    const duplicateInsert = () => checkDb.prepare(
+      'INSERT INTO channel_bindings (channel_id, external_conversation_id, project_id, created_at) VALUES (?, ?, ?, ?)',
+    ).run('c1', 'oc_x', 'p1', new Date().toISOString());
+    expect(duplicateInsert).toThrow(/UNIQUE/);
+    checkDb.close();
   });
 
   it('creates FTS virtual tables', () => {
@@ -108,7 +146,7 @@ describe('DB migration — schema upgrade', () => {
 
     const checkDb = new Database(dbPath);
     const rows = checkDb.prepare('SELECT name FROM _migrations ORDER BY id').all() as Array<{ name: string }>;
-    expect(rows.length).toBe(16);
+    expect(rows.length).toBe(17);
     const names = rows.map((r) => r.name);
     expect(names.filter((n) => n === '009_create_skills_tables').length).toBe(1);
     checkDb.close();

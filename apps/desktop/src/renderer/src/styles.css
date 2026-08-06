@@ -3092,6 +3092,23 @@ button {
 .add-agents-dialog footer { display: flex; align-items: center; justify-content: flex-end; margin-top: 22px; gap: 9px; }
 .project-action-dialog__warning { display: flex; align-items: flex-start; margin-top: 20px; padding: 12px; gap: 9px; color: #7c4b10; font-size: 10px; line-height: 17px; background: #fff8e8; border: 1px solid #f0dfb8; border-radius: 7px; }
 
+.channel-bind-dialog label select { height: 40px; padding: 0 11px; color: var(--kq-text); background: #fbfbfe; border: 1px solid var(--kq-border); border-radius: 7px; outline: 0; }
+.channel-bind-dialog label select:focus { background: white; border-color: var(--kq-primary); box-shadow: 0 0 0 3px rgba(68, 65, 204, .08); }
+.channel-bind-dialog .channel-bind-form { display: flex; flex-direction: column; }
+.channel-bind-preview { display: flex; align-items: flex-start; margin-top: 14px; padding: 11px 12px; gap: 8px; font-size: 10px; line-height: 17px; border-radius: 7px; }
+.channel-bind-preview--ok { color: #1e6f3c; background: #e6f7ec; border: 1px solid #c7e9d3; }
+.channel-bind-preview--bad { color: var(--kq-danger); background: #fdf0f0; border: 1px solid #f3d3d3; }
+.channel-bind-dialog .channel-bind-form footer { margin-top: 18px; }
+.channel-bind-list { margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--kq-border); }
+.channel-bind-list > strong { color: var(--kq-text-secondary); font-size: 10px; }
+.channel-bind-list ul { margin: 10px 0 0; padding: 0; list-style: none; }
+.channel-bind-list li { display: flex; align-items: center; min-height: 44px; padding: 8px 10px; gap: 9px; background: #fbfbfe; border: 1px solid var(--kq-border); border-radius: 7px; }
+.channel-bind-list li + li { margin-top: 7px; }
+.channel-bind-list__icon { padding: 3px 6px; color: var(--kq-primary); font-size: 8px; background: #eeedff; border-radius: 4px; white-space: nowrap; }
+.channel-bind-list__id { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
+.channel-bind-list__id code { overflow: hidden; color: var(--kq-text); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.channel-bind-list__id small { color: var(--kq-text-tertiary); font-size: 8px; }
+
 .add-agents-dialog { display: flex; max-height: min(700px, calc(100vh - 64px)); flex-direction: column; }
 .add-agents-dialog .agent-search { margin: 18px 0 12px; }
 .add-agents-list { display: flex; min-height: 180px; padding: 2px; flex-direction: column; gap: 7px; overflow-y: auto; }
