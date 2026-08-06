@@ -81,8 +81,8 @@ export class ChannelManager {
   private readonly retryCounts: Map<string, number> = new Map();
   private readonly retryTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
   private readonly rateLimitMap: Map<string, number[]> = new Map(); // channelId -> timestamps of recent sends
-  /** Processing status timers: key = `${channelId}:${conversationId}`, value = timer */
-  private readonly processingTimers: Map<string, ReturnType<typeof setInterval>> = new Map();
+  /** Processing status tracking: key = `${channelId}:${conversationId}` */
+  private readonly processingTimers: Map<string, boolean> = new Map();
   private healthInterval: ReturnType<typeof setInterval> | null = null;
   private eventCallback: EventCallback | null = null;
 
@@ -177,7 +177,7 @@ export class ChannelManager {
       await active.adapter.stop();
       this.activeChannels.delete(channelId);
     }
-    this.db.prepare('UPDATE channels SET enabled = ?, status = ?, updated_at = ? WHERE id = ?').run(0, 'disconnected', new Date().toISOString(), channelId);
+    this.db.prepare('UPDATE channels SET status = ?, updated_at = ? WHERE id = ?').run('disconnected', new Date().toISOString(), channelId);
     this._emitEvent({ type: 'channel.status', channelId, data: { status: 'disconnected' } });
   }
 
@@ -197,6 +197,9 @@ export class ChannelManager {
   }
 
   async send(channelId: string, target: { conversationId: string; userId?: string }, message: { text: string }, idempotencyKey?: string): Promise<DeliveryReceipt> {
+    // Stop processing status updates before sending a reply
+    this._stopProcessingStatus(channelId, target.conversationId);
+
     // Check idempotency
     if (idempotencyKey) {
       const existing = this.db.prepare(
@@ -405,10 +408,12 @@ export class ChannelManager {
       // Handle /stop: cancel only runs triggered by this user in the bound project
       if (cmdResult.action === 'stop') {
         const binding = await this.getOrCreateBinding(channelId, event.externalConversationId, event.externalUserId, event.text);
+        const activeRuns: Array<{ id: string }> = [];
         if (binding.projectId) {
-          const activeRuns = this.db.prepare(
+          const runs = this.db.prepare(
             "SELECT id FROM agent_runs WHERE project_id = ? AND status IN ('queued', 'starting', 'running') AND requested_by_id = ?",
           ).all(binding.projectId, event.externalUserId) as Array<{ id: string }>;
+          activeRuns.push(...runs);
           for (const run of activeRuns) {
             this.db.prepare(
               "UPDATE agent_runs SET status = 'cancelled', finished_at = ? WHERE id = ?",
@@ -416,7 +421,7 @@ export class ChannelManager {
           }
           this._emitEvent({ type: 'channel.stop', channelId, data: { projectId: binding.projectId, runIds: activeRuns.map((r) => r.id) } });
         }
-        this._sendReply(channelId, event.externalConversationId, cmdResult.response);
+        this._sendReply(channelId, event.externalConversationId, activeRuns.length > 0 ? `已取消 ${activeRuns.length} 个运行` : '当前没有正在运行的对话');
         this.markProcessed(channelId, event.externalEventId);
         return;
       }
@@ -454,8 +459,14 @@ export class ChannelManager {
     }
 
     // If this was a /new or /use command, send the response and stop
-    if (cmdResult.action === 'new' || cmdResult.action === 'use') {
-      this._sendReply(channelId, event.externalConversationId, cmdResult.response);
+    if (cmdResult.action === 'new') {
+      const projectName = event.text.replace('/new', '').trim() || '新项目';
+      this._sendReply(channelId, event.externalConversationId, `项目「${projectName}」已创建，可以开始对话了！`);
+      this.markProcessed(channelId, event.externalEventId);
+      return;
+    }
+    if (cmdResult.action === 'use') {
+      this._sendReply(channelId, event.externalConversationId, '已绑定到指定项目，可以开始对话了！');
       this.markProcessed(channelId, event.externalEventId);
       return;
     }
@@ -464,6 +475,7 @@ export class ChannelManager {
     this._startProcessingStatus(channelId, event.externalConversationId);
     this._processInboundAsync(channelId, event, binding.projectId).catch((err) => {
       this.logger.error({ err, channelId }, 'ChannelManager: error processing inbound message');
+      this._stopProcessingStatus(channelId, event.externalConversationId);
     });
     this.markProcessed(channelId, event.externalEventId);
   }
@@ -526,27 +538,19 @@ export class ChannelManager {
     return chunks.map((chunk, idx) => (chunks.length > 1 ? `(${idx + 1}/${chunks.length}) ${chunk}` : chunk));
   }
 
-  /** Start periodic "processing" status updates for a channel conversation */
+  /** Send a single "processing" status message for a channel conversation */
   private _startProcessingStatus(channelId: string, conversationId: string): void {
     const key = `${channelId}:${conversationId}`;
     if (this.processingTimers.has(key)) return;
-    let counter = 0;
-    const timer = setInterval(() => {
-      counter++;
-      const dots = '.'.repeat(counter % 4);
-      this.send(channelId, { conversationId }, { text: `处理中${dots}` }).catch(() => {});
-    }, 2000);
-    this.processingTimers.set(key, timer);
+    // Send a single "processing" message — no timer to avoid spamming the chat
+    this.send(channelId, { conversationId }, { text: '处理中...' }).catch(() => {});
+    this.processingTimers.set(key, true);
   }
 
-  /** Stop periodic "processing" status updates for a channel conversation */
+  /** Clear processing status so the next message sends the actual reply */
   private _stopProcessingStatus(channelId: string, conversationId: string): void {
     const key = `${channelId}:${conversationId}`;
-    const timer = this.processingTimers.get(key);
-    if (timer) {
-      clearInterval(timer);
-      this.processingTimers.delete(key);
-    }
+    this.processingTimers.delete(key);
   }
 
   private async _sendReply(channelId: string, conversationId: string, text: string): Promise<void> {

@@ -2354,27 +2354,27 @@ app.whenReady().then(async () => {
         _mcpServer = mcpServer;
 
         // Channel reply: when a run completes, send the result back to the external channel
-        executor.onRunCompleted((_runId, projectId, resultMessageId) => {
+        executor.onRunCompleted((_runId, projectId, resultMessageId, triggerMessageId) => {
           if (!_channelManager) return;
           try {
-            // Check if the result message was triggered by a channel message
-            const triggerMsg = db.prepare(
+            // Get the agent's reply text from the result message
+            const resultMsg = db.prepare(
               `SELECT content_json FROM messages WHERE id = ?`,
             ).get(resultMessageId) as { content_json: string } | undefined;
-            if (!triggerMsg) return;
+            if (!resultMsg) return;
 
-            const content = JSON.parse(triggerMsg.content_json);
+            const content = JSON.parse(resultMsg.content_json);
             const text = typeof content.text === 'string' ? content.text : '';
 
-            // Find the user message that triggered this run (for channel context)
-            const userMsg = db.prepare(
-              `SELECT content_json FROM messages WHERE project_id = ? AND sender_type = 'user' ORDER BY created_at DESC LIMIT 1`,
-            ).get(projectId) as { content_json: string } | undefined;
-            if (!userMsg) return;
+            // Get the trigger message (user's original message) for channel context
+            const triggerMsg = db.prepare(
+              `SELECT content_json FROM messages WHERE id = ?`,
+            ).get(triggerMessageId) as { content_json: string } | undefined;
+            if (!triggerMsg) return;
 
-            const userContent = JSON.parse(userMsg.content_json);
-            const channelId = userContent.channelId as string | undefined;
-            const externalConversationId = userContent.externalConversationId as string | undefined;
+            const triggerContent = JSON.parse(triggerMsg.content_json);
+            const channelId = triggerContent.channelId as string | undefined;
+            const externalConversationId = triggerContent.externalConversationId as string | undefined;
             if (channelId && externalConversationId && text) {
               _channelManager.send(channelId, { conversationId: externalConversationId }, { text }).catch(() => {});
             }
