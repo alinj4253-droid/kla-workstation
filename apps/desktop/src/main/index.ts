@@ -2114,6 +2114,39 @@ const registerChannelIpc = (db: ReturnType<typeof getDatabase>): void => {
     }
     return { ok: true };
   });
+  registerIpc('channels:delete', async (_event, input: { channelId: string }) => {
+    const row = db.prepare('SELECT secret_ref, enabled FROM channels WHERE id = ?').get(input.channelId) as { secret_ref: string | null; enabled: number } | undefined;
+    if (!row) return { ok: false, requestId: '-', error: { code: 'NOT_FOUND', message: '渠道不存在', retryable: false } };
+    // Stop if running
+    if (row.enabled) {
+      mgr.stop(input.channelId).catch(() => {});
+    }
+    if (row.secret_ref) {
+      db.prepare('DELETE FROM secrets WHERE id = ?').run(row.secret_ref);
+    }
+    db.prepare('DELETE FROM channel_bindings WHERE channel_id = ?').run(input.channelId);
+    db.prepare('DELETE FROM channels WHERE id = ?').run(input.channelId);
+    return { ok: true };
+  });
+  registerIpc('channels:listBindings', async (_event, input: { channelId?: string }) => {
+    return { ok: true, data: mgr.listBindings(input?.channelId) };
+  });
+  registerIpc('channels:previewConversation', async (_event, input: { channelId: string; externalConversationId: string }) => {
+    const result = await mgr.previewConversation(input.channelId, input.externalConversationId.trim());
+    if (!result.ok) return { ok: false, requestId: '-', error: { code: 'PREVIEW_FAILED', message: result.error ?? '校验失败', retryable: false } };
+    return { ok: true, data: result.data };
+  });
+  registerIpc('channels:bind', async (_event, input: { channelId: string; externalConversationId: string; projectId: string; force?: boolean }) => {
+    const result = await mgr.bindConversation(input.channelId, input.externalConversationId.trim(), input.projectId, input.force === true);
+    if (!result.ok) {
+      return { ok: false, requestId: '-', error: { code: result.error?.code ?? 'BIND_FAILED', message: result.error?.message ?? '绑定失败', retryable: result.error?.retryable ?? false } };
+    }
+    return { ok: true, data: result.data };
+  });
+  registerIpc('channels:unbind', async (_event, input: { channelId: string; externalConversationId: string }) => {
+    await mgr.unbindConversation(input.channelId, input.externalConversationId.trim());
+    return { ok: true };
+  });
 };
 
 const registerMissingIpc = (db: ReturnType<typeof getDatabase>): void => {
@@ -2337,27 +2370,27 @@ app.whenReady().then(async () => {
         _mcpServer = mcpServer;
 
         // Channel reply: when a run completes, send the result back to the external channel
-        executor.onRunCompleted((_runId, projectId, resultMessageId) => {
+        executor.onRunCompleted((_runId, projectId, resultMessageId, triggerMessageId) => {
           if (!_channelManager) return;
           try {
-            // Check if the result message was triggered by a channel message
-            const triggerMsg = db.prepare(
+            // Get the agent's reply text from the result message
+            const resultMsg = db.prepare(
               `SELECT content_json FROM messages WHERE id = ?`,
             ).get(resultMessageId) as { content_json: string } | undefined;
-            if (!triggerMsg) return;
+            if (!resultMsg) return;
 
-            const content = JSON.parse(triggerMsg.content_json);
+            const content = JSON.parse(resultMsg.content_json);
             const text = typeof content.text === 'string' ? content.text : '';
 
-            // Find the user message that triggered this run (for channel context)
-            const userMsg = db.prepare(
-              `SELECT content_json FROM messages WHERE project_id = ? AND sender_type = 'user' ORDER BY created_at DESC LIMIT 1`,
-            ).get(projectId) as { content_json: string } | undefined;
-            if (!userMsg) return;
+            // Get the trigger message (user's original message) for channel context
+            const triggerMsg = db.prepare(
+              `SELECT content_json FROM messages WHERE id = ?`,
+            ).get(triggerMessageId) as { content_json: string } | undefined;
+            if (!triggerMsg) return;
 
-            const userContent = JSON.parse(userMsg.content_json);
-            const channelId = userContent.channelId as string | undefined;
-            const externalConversationId = userContent.externalConversationId as string | undefined;
+            const triggerContent = JSON.parse(triggerMsg.content_json);
+            const channelId = triggerContent.channelId as string | undefined;
+            const externalConversationId = triggerContent.externalConversationId as string | undefined;
             if (channelId && externalConversationId && text) {
               _channelManager.send(channelId, { conversationId: externalConversationId }, { text }).catch(() => {});
             }

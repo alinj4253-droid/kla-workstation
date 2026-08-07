@@ -314,7 +314,7 @@ function prepareParentDelivery(
 export type AgentExecutor = {
   (run: QueuedRun, signal: AbortSignal): Promise<void>;
   setScheduler(s: Scheduler): void;
-  onRunCompleted(cb: (runId: string, projectId: string, resultMessageId: string) => void): void;
+  onRunCompleted(cb: (runId: string, projectId: string, resultMessageId: string, triggerMessageId: string) => void): void;
 };
 
 export function createAgentExecutor(db: Database.Database, window: BrowserWindow, gateway: ModelGateway, scheduler?: Scheduler, toolRegistry?: ToolRegistry): AgentExecutor {
@@ -332,7 +332,7 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
   if (!toolRegistry) {
     registerProjectTools(registry, db, _scheduler, gateway);
   }
-  let _runCompletedCallback: ((runId: string, projectId: string, resultMessageId: string) => void) | null = null;
+  let _runCompletedCallback: ((runId: string, projectId: string, resultMessageId: string, triggerMessageId: string) => void) | null = null;
 
   const reportKnowledgeSkillActivity = (run: QueuedRun, activity: KnowledgeSkillActivity): void => {
     const eventType = activity.status === 'running'
@@ -550,7 +550,7 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
     runRepo.addEvent(run.runId, 'run.anchor', { messageId: agentMsgId });
     if (businessProcess) runRepo.addEvent(run.runId, 'run.business-process', businessProcess);
     runRepo.setResultMessage(run.runId, agentMsgId);
-    _runCompletedCallback?.(run.runId, run.projectId, agentMsgId);
+    _runCompletedCallback?.(run.runId, run.projectId, agentMsgId, run.triggerMessageId);
     await captureRunMemory(run, agentMsgId, responseText);
     runRepo.addEvent(run.runId, 'agent.completed', {
       definitionId: 'builtin.knowledge-manager',
@@ -615,6 +615,9 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
         memory, registry, contextBuilder, _scheduler,
       ).then(async () => {
         const completed = runRepo.getById(run.runId);
+        if (completed.resultMessageId) {
+          _runCompletedCallback?.(run.runId, run.projectId, completed.resultMessageId, run.triggerMessageId);
+        }
         await captureRunMemory(run, completed.resultMessageId ?? null);
         runRepo.addEvent(run.runId, 'agent.completed', { definitionId: 'builtin.orchestrator' });
       }).catch((err) => {
@@ -1038,7 +1041,7 @@ ${externalContext}
           runRepo.addEvent(run.runId, 'run.anchor', { messageId: agentMsgId });
 
           runRepo.setResultMessage(run.runId, agentMsgId);
-          _runCompletedCallback?.(run.runId, run.projectId, agentMsgId);
+          _runCompletedCallback?.(run.runId, run.projectId, agentMsgId, run.triggerMessageId);
 
           // 处理消息中的 @mention，触发目标智能体调度
           if (_scheduler) {
@@ -1250,7 +1253,7 @@ ${collaborationInstructions}`;
       runRepo.addEvent(run.runId, 'run.anchor', { messageId: agentMsgId });
 
       runRepo.setResultMessage(run.runId, agentMsgId);
-      _runCompletedCallback?.(run.runId, run.projectId, agentMsgId);
+      _runCompletedCallback?.(run.runId, run.projectId, agentMsgId, run.triggerMessageId);
       await captureRunMemory(run, agentMsgId, fullText, [...allPublishedPaths]);
 
       // 处理消息中的 @mention，触发目标智能体调度
@@ -1287,7 +1290,7 @@ ${collaborationInstructions}`;
     tools = createProjectTools(db, s, gateway);
   };
 
-  executor.onRunCompleted = (cb: (runId: string, projectId: string, resultMessageId: string) => void) => {
+  executor.onRunCompleted = (cb: (runId: string, projectId: string, resultMessageId: string, triggerMessageId: string) => void) => {
     _runCompletedCallback = cb;
   };
 

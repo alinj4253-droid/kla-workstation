@@ -139,4 +139,53 @@ describe('LarkAdapter', () => {
       )).resolves.toBeUndefined();
     });
   });
+
+  describe('getConversationInfo', () => {
+    it('returns exists with group name', async () => {
+      const fetchMock = vi.fn()
+        .mockResolvedValueOnce({
+          ok: true, status: 200,
+          json: vi.fn().mockResolvedValue({ code: 0, tenant_access_token: 'tok', expire: 7200 }),
+        })
+        .mockResolvedValueOnce({
+          ok: true, status: 200,
+          json: vi.fn().mockResolvedValue({ code: 0, data: { name: '项目群', chat_mode: 'group' } }),
+        });
+      vi.stubGlobal('fetch', fetchMock);
+      const info = await adapter.getConversationInfo(
+        { conversationId: 'oc_abc' },
+        { type: 'lark', config: { app_id: 'cli_xxx' }, secrets: { token: 'secret' } },
+      );
+      expect(info.exists).toBe(true);
+      expect(info.name).toBe('项目群');
+      expect(fetchMock).toHaveBeenLastCalledWith(expect.stringContaining('/im/v1/chats/oc_abc'), expect.anything());
+    });
+
+    it('returns exists=false when group not found', async () => {
+      vi.stubGlobal('fetch', vi.fn()
+        .mockResolvedValueOnce({
+          ok: true, status: 200,
+          json: vi.fn().mockResolvedValue({ code: 0, tenant_access_token: 'tok', expire: 7200 }),
+        })
+        .mockResolvedValueOnce({
+          ok: true, status: 200,
+          json: vi.fn().mockResolvedValue({ code: 230002, msg: 'chat not found' }),
+        }),
+      );
+      const info = await adapter.getConversationInfo(
+        { conversationId: 'oc_missing' },
+        { type: 'lark', config: { app_id: 'cli_xxx' }, secrets: { token: 'secret' } },
+      );
+      expect(info.exists).toBe(false);
+      expect(info.error).toContain('chat not found');
+    });
+
+    it('returns exists=false when no credentials', async () => {
+      const info = await adapter.getConversationInfo(
+        { conversationId: 'oc_abc' },
+        { type: 'lark', config: {}, secrets: {} },
+      );
+      expect(info.exists).toBe(false);
+    });
+  });
 });

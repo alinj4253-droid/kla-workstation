@@ -110,4 +110,35 @@ describe('TelegramAdapter', () => {
       )).rejects.toThrow('缺少');
     });
   });
+
+  describe('getConversationInfo', () => {
+    it('returns exists with group title', async () => {
+      const fetchMock = mockFetch({ ok: true, result: { title: '项目群', type: 'group' } });
+      vi.stubGlobal('fetch', fetchMock);
+      const info = await adapter.getConversationInfo(
+        { conversationId: '123456' },
+        { type: 'telegram', config: {}, secrets: { token: 'tok' } },
+      );
+      expect(info.exists).toBe(true);
+      expect(info.name).toBe('项目群');
+      expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/getChat?chat_id=123456'));
+    });
+
+    it('returns exists=false when getChat fails', async () => {
+      vi.stubGlobal('fetch', mockFetch({ ok: false, description: 'chat not found' }));
+      const info = await adapter.getConversationInfo(
+        { conversationId: '999' },
+        { type: 'telegram', config: {}, secrets: { token: 'tok' } },
+      );
+      expect(info.exists).toBe(false);
+    });
+
+    it('returns exists=false when no token', async () => {
+      const info = await adapter.getConversationInfo(
+        { conversationId: '123' },
+        { type: 'telegram', config: {}, secrets: {} },
+      );
+      expect(info.exists).toBe(false);
+    });
+  });
 });

@@ -8,6 +8,7 @@ import {
   Folder,
   FolderOpen,
   GitBranch,
+  Link,
   MoreHorizontal,
   Pencil,
   Plus,
@@ -25,6 +26,7 @@ import ReactMarkdown from 'react-markdown';
 import { GraphViewer } from '../components/GraphViewer';
 import { KnowledgeJobDialog } from '../components/KnowledgeJobDialog';
 import { WikiViewer } from '../components/WikiViewer';
+import { ChannelBindingsDialog } from '../components/ChannelBindingsDialog';
 
 type FileEntry = {
   name: string;
@@ -104,6 +106,7 @@ export function WorkspacePage(): React.JSX.Element {
   const [projectPanelOpen, setProjectPanelOpen] = useState(true);
   const [wikiViewerOpen, setWikiViewerOpen] = useState(false);
   const [knowledgeDetail, setKnowledgeDetail] = useState<{ fileId: string; fileName: string } | null>(null);
+  const [channelBindOpen, setChannelBindOpen] = useState(false);
 
   const activeProject = useMemo(() => projects.find((p) => p.id === projectId), [projectId, projects]);
   const pathParts = relativePath ? relativePath.split('/') : [];
@@ -284,6 +287,7 @@ export function WorkspacePage(): React.JSX.Element {
           <div className="workspace-actions">
             <button type="button" className="secondary-button" onClick={() => setGraphViewerOpen(true)}><GitBranch size={15} /> 图谱可视化</button>
             <button type="button" className="secondary-button" onClick={() => setWikiViewerOpen(true)}><FileText size={15} /> Wiki</button>
+            <button type="button" className="secondary-button" onClick={() => setChannelBindOpen(true)}><Link size={15} /> 绑定渠道会话</button>
             {(scopeType === 'shared' || systemDir === 'original-files') && (
               <>
                 <button type="button" className="secondary-button" onClick={() => void uploadFiles()}><Upload size={15} /> 上传文件</button>
@@ -427,6 +431,10 @@ export function WorkspacePage(): React.JSX.Element {
 
       {knowledgeDetail && (
         <KnowledgeJobDialog fileId={knowledgeDetail.fileId} fileName={knowledgeDetail.fileName} onClose={() => setKnowledgeDetail(null)} />
+      )}
+
+      {channelBindOpen && (
+        <ChannelBindingsDialog projectId={projectId} {...(activeProject?.name ? { projectName: activeProject.name } : {})} onClose={() => setChannelBindOpen(false)} />
       )}
     </div>
   );

@@ -1,4 +1,4 @@
-import type { ChannelAdapter, ChannelTestResult, ResolvedChannelConfig, ChannelEventSink, ExternalTarget, OutboundChannelMessage, DeliveryReceipt, ChannelHealth, ChannelType, InboundChannelEvent } from './types';
+import type { ChannelAdapter, ChannelTestResult, ResolvedChannelConfig, ChannelEventSink, ExternalTarget, OutboundChannelMessage, DeliveryReceipt, ChannelHealth, ChannelType, InboundChannelEvent, ExternalConversationInfo } from './types';
 import * as Lark from '@larksuiteoapi/node-sdk';
 
 const LARK_API = 'https://open.feishu.cn/open-apis';
@@ -143,23 +143,46 @@ export class LarkAdapter implements ChannelAdapter {
     };
   }
 
+  async getConversationInfo(target: ExternalTarget, config?: ResolvedChannelConfig): Promise<ExternalConversationInfo> {
+    const appId = config ? (config.config.app_id as string) ?? (config.config.appId as string) ?? this._appId : this._appId;
+    const appSecret = config ? config.secrets.token ?? (config.config.app_secret as string) ?? (config.config.appSecret as string) ?? this._appSecret : this._appSecret;
+    if (!appId || !appSecret) return { exists: false };
+    try {
+      const token = await this._fetchToken(appId, appSecret);
+      const resp = await fetch(`${LARK_API}/im/v1/chats/${encodeURIComponent(target.conversationId)}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await resp.json() as { code: number; msg?: string; data?: { name?: string; chat_mode?: string } };
+      if (data.code === 0) {
+        return { exists: true, ...(data.data?.name ? { name: data.data.name } : {}) };
+      }
+      return { exists: false, ...(data.msg ? { error: data.msg } : {}) };
+    } catch (err) {
+      return { exists: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
   // ─── 私有方法 ──────────────────────────────────────────────────────────────
 
   /** 获取 tenant_access_token（用于发送消息的 REST API） */
   private async _ensureToken(): Promise<void> {
     if (Date.now() < this._tokenExpiresAt - 60000) return;
+    const token = await this._fetchToken(this._appId, this._appSecret);
+    this._token = token;
+    this._tokenExpiresAt = Date.now() + 7200 * 1000;
+  }
+
+  private async _fetchToken(appId: string, appSecret: string): Promise<string> {
     const resp = await fetch(`${LARK_API}/auth/v3/tenant_access_token/internal`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ app_id: this._appId, app_secret: this._appSecret }),
+      body: JSON.stringify({ app_id: appId, app_secret: appSecret }),
     });
     const data = await resp.json() as { code: number; msg: string; tenant_access_token?: string; expire?: number };
     if (data.code === 0 && data.tenant_access_token) {
-      this._token = data.tenant_access_token;
-      this._tokenExpiresAt = Date.now() + (data.expire ?? 7200) * 1000;
-    } else {
-      throw new Error(`获取 token 失败: ${data.msg}`);
+      return data.tenant_access_token;
     }
+    throw new Error(`获取 token 失败: ${data.msg}`);
   }
 
   /** 处理飞书消息事件 */

@@ -21,6 +21,7 @@ import { TelegramAdapter, LarkAdapter, DingTalkAdapter, WeComWebhookAdapter } fr
 import { FileRepository, MessageRepository } from '@kunqing/database';
 import { getProjectRoot } from './paths';
 import { getLogger } from './logger';
+import { createProject } from './project-creator';
 
 const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024; // 100 MB
 
@@ -30,6 +31,12 @@ const CHANNEL_MAX_MESSAGE_LENGTH: Record<string, number> = {
   lark: 16384,
   dingtalk: 16384,
   'wecom-webhook': 4096,
+};
+const CHANNEL_TYPE_LABELS: Record<string, string> = {
+  telegram: 'Telegram',
+  lark: '飞书 / Lark',
+  dingtalk: '钉钉',
+  'wecom-webhook': '企业微信群机器人',
 };
 const ALLOWED_MIME_PREFIXES = [
   'image/', 'video/', 'audio/',
@@ -80,8 +87,8 @@ export class ChannelManager {
   private readonly retryCounts: Map<string, number> = new Map();
   private readonly retryTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
   private readonly rateLimitMap: Map<string, number[]> = new Map(); // channelId -> timestamps of recent sends
-  /** Processing status timers: key = `${channelId}:${conversationId}`, value = timer */
-  private readonly processingTimers: Map<string, ReturnType<typeof setInterval>> = new Map();
+  /** Processing status tracking: key = `${channelId}:${conversationId}` */
+  private readonly processingTimers: Map<string, boolean> = new Map();
   private healthInterval: ReturnType<typeof setInterval> | null = null;
   private eventCallback: EventCallback | null = null;
 
@@ -176,7 +183,7 @@ export class ChannelManager {
       await active.adapter.stop();
       this.activeChannels.delete(channelId);
     }
-    this.db.prepare('UPDATE channels SET enabled = ?, status = ?, updated_at = ? WHERE id = ?').run(0, 'disconnected', new Date().toISOString(), channelId);
+    this.db.prepare('UPDATE channels SET status = ?, updated_at = ? WHERE id = ?').run('disconnected', new Date().toISOString(), channelId);
     this._emitEvent({ type: 'channel.status', channelId, data: { status: 'disconnected' } });
   }
 
@@ -196,6 +203,9 @@ export class ChannelManager {
   }
 
   async send(channelId: string, target: { conversationId: string; userId?: string }, message: { text: string }, idempotencyKey?: string): Promise<DeliveryReceipt> {
+    // Stop processing status updates before sending a reply
+    this._stopProcessingStatus(channelId, target.conversationId);
+
     // Check idempotency
     if (idempotencyKey) {
       const existing = this.db.prepare(
@@ -323,7 +333,7 @@ export class ChannelManager {
   }
 
   /** Find or create a project binding for an external conversation */
-  getOrCreateBinding(channelId: string, externalConversationId: string, externalUserId: string, text: string): { projectId: string | null; isNew: boolean } {
+  async getOrCreateBinding(channelId: string, externalConversationId: string, externalUserId: string, text: string): Promise<{ projectId: string | null; isNew: boolean }> {
     // Check existing binding
     const binding = this.db.prepare(
       'SELECT project_id FROM channel_bindings WHERE channel_id = ? AND external_conversation_id = ?',
@@ -333,9 +343,15 @@ export class ChannelManager {
     // Check for new project command
     const trimmed = text.trim();
     if (trimmed === '/new' || trimmed.startsWith('/new ')) {
-      // Create a new project
+      // Create a new project using the full project-creator flow
       const projectName = trimmed.replace('/new', '').trim() || `Chat-${externalConversationId}`;
-      const projectId = this._createProject(projectName, channelId, externalConversationId);
+      const result = await createProject(this.db, {
+        content: { schemaVersion: 1, text: projectName },
+      });
+      if (!result.ok) {
+        throw new Error(result.error.message);
+      }
+      const projectId = result.data.id;
       this._createBinding(channelId, externalConversationId, projectId);
       return { projectId, isNew: true };
     }
@@ -356,8 +372,110 @@ export class ChannelManager {
     return { projectId: null, isNew: false };
   }
 
+  /** List channel bindings with joined channel/project info */
+  listBindings(channelId?: string): Array<{
+    channelId: string;
+    channelName: string;
+    channelType: string;
+    externalConversationId: string;
+    projectId: string;
+    projectName: string;
+    createdAt: string;
+  }> {
+    const where = channelId ? 'WHERE cb.channel_id = ?' : '';
+    const params = channelId ? [channelId] : [];
+    return this.db.prepare(`
+      SELECT cb.channel_id AS channelId, c.name AS channelName, c.type AS channelType,
+             cb.external_conversation_id AS externalConversationId,
+             cb.project_id AS projectId, p.name AS projectName,
+             cb.created_at AS createdAt
+      FROM channel_bindings cb
+      JOIN channels c ON c.id = cb.channel_id
+      LEFT JOIN projects p ON p.id = cb.project_id
+      ${where}
+      ORDER BY cb.created_at DESC
+    `).all(...params) as Array<{
+      channelId: string;
+      channelName: string;
+      channelType: string;
+      externalConversationId: string;
+      projectId: string;
+      projectName: string;
+      createdAt: string;
+    }>;
+  }
+
+  /** Preview an external conversation before binding */
+  async previewConversation(
+    channelId: string,
+    externalConversationId: string,
+  ): Promise<{ ok: boolean; data?: { name?: string; exists: boolean; verified: boolean; error?: string }; error?: string }> {
+    const row = this.db.prepare('SELECT id, type, config_json, secret_ref FROM channels WHERE id = ?').get(channelId) as ChannelRow | undefined;
+    if (!row) return { ok: false, error: '渠道不存在' };
+    const adapter = this.adapters.get(row.type);
+    if (!adapter) return { ok: false, error: `不支持的渠道类型: ${row.type}` };
+    if (!adapter.getConversationInfo) {
+      return { ok: true, data: { exists: true, verified: false } };
+    }
+    try {
+      const config = this._resolveConfig(row);
+      const info = await adapter.getConversationInfo({ conversationId: externalConversationId }, config);
+      return {
+        ok: true,
+        data: {
+          exists: info.exists,
+          verified: true,
+          ...(info.name ? { name: info.name } : {}),
+          ...(info.error ? { error: info.error } : {}),
+        },
+      };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  /** Bind an external conversation to a project (manual binding) */
+  async bindConversation(
+    channelId: string,
+    externalConversationId: string,
+    projectId: string,
+    force = false,
+  ): Promise<{ ok: boolean; data?: { alreadyBound?: string }; error?: { code: string; message: string; retryable: boolean } }> {
+    const channel = this.db.prepare('SELECT type FROM channels WHERE id = ?').get(channelId) as { type: string } | undefined;
+    if (!channel) return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: '渠道不存在', retryable: false } };
+    if (channel.type === 'wecom-webhook') {
+      return { ok: false, error: { code: 'CHANNEL_NOT_BINDABLE', message: '该渠道仅支持出站，无法绑定会话', retryable: false } };
+    }
+    const project = this.db.prepare('SELECT id FROM projects WHERE id = ?').get(projectId) as { id: string } | undefined;
+    if (!project) return { ok: false, error: { code: 'PROJECT_NOT_FOUND', message: '项目不存在', retryable: false } };
+
+    const existing = this.db.prepare(
+      'SELECT project_id FROM channel_bindings WHERE channel_id = ? AND external_conversation_id = ?',
+    ).get(channelId, externalConversationId) as { project_id: string } | undefined;
+
+    if (existing && existing.project_id === projectId) {
+      return { ok: true, data: { alreadyBound: projectId } };
+    }
+    if (existing && !force) {
+      return { ok: false, error: { code: 'ALREADY_BOUND', message: '该会话已绑定到其他项目', retryable: false } };
+    }
+
+    this._createBinding(channelId, externalConversationId, projectId);
+    return existing
+      ? { ok: true, data: { alreadyBound: existing.project_id } }
+      : { ok: true };
+  }
+
+  /** Remove a channel binding (does not touch messages or events) */
+  async unbindConversation(channelId: string, externalConversationId: string): Promise<{ ok: boolean }> {
+    this.db.prepare(
+      'DELETE FROM channel_bindings WHERE channel_id = ? AND external_conversation_id = ?',
+    ).run(channelId, externalConversationId);
+    return { ok: true };
+  }
+
   /** Process a text command */
-  processCommand(text: string, channelId: string, externalConversationId: string): { response: string; action: 'new' | 'use' | 'stop' | 'status' | 'projects' | 'help' | 'none' } {
+  processCommand(text: string, channelId: string, externalConversationId: string): { response: string; action: 'new' | 'use' | 'stop' | 'status' | 'projects' | 'help' | 'id' | 'none' } {
     const trimmed = text.trim();
     if (trimmed === '/new' || trimmed.startsWith('/new ')) {
       return { response: '正在创建新项目...', action: 'new' };
@@ -378,16 +496,24 @@ export class ChannelManager {
       const status = health?.connected ? '已连接' : '未连接';
       return { response: `渠道状态: ${status}\n活跃时间: ${health?.uptimeMs ? `${Math.round(health.uptimeMs / 1000)}秒` : 'N/A'}`, action: 'status' };
     }
+    if (trimmed === '/id') {
+      const row = this.db.prepare('SELECT type FROM channels WHERE id = ?').get(channelId) as { type: string } | undefined;
+      const typeLabel = row ? (CHANNEL_TYPE_LABELS[row.type] ?? row.type) : '未知';
+      return {
+        response: `会话 ID: \`${externalConversationId}\`\n渠道: ${typeLabel}\n在应用的「绑定渠道会话」中粘贴此 ID 即可绑定到项目。`,
+        action: 'id',
+      };
+    }
     if (trimmed === '/help') {
       return {
-        response: '可用命令:\n  `/new [名称]` — 创建新项目\n  `/projects` — 列出项目\n  `/use <shortId>` — 绑定到已有项目\n  `/stop` — 停止当前运行\n  `/status` — 查看渠道状态\n  `/help` — 显示此帮助',
+        response: '可用命令:\n  `/new [名称]` — 创建新项目\n  `/projects` — 列出项目\n  `/use <shortId>` — 绑定到已有项目\n  `/id` — 查看当前会话 ID\n  `/stop` — 停止当前运行\n  `/status` — 查看渠道状态\n  `/help` — 显示此帮助',
         action: 'help',
       };
     }
     return { response: '', action: 'none' };
   }
 
-  private _handleInbound(channelId: string, event: InboundChannelEvent): void {
+  private async _handleInbound(channelId: string, event: InboundChannelEvent): Promise<void> {
     // Dedup
     if (this.isDuplicate(channelId, event.externalEventId)) return;
     this.recordEvent(channelId, event.externalEventId, 'inbound', event);
@@ -397,11 +523,13 @@ export class ChannelManager {
     if (cmdResult.action !== 'none') {
       // Handle /stop: cancel only runs triggered by this user in the bound project
       if (cmdResult.action === 'stop') {
-        const binding = this.getOrCreateBinding(channelId, event.externalConversationId, event.externalUserId, event.text);
+        const binding = await this.getOrCreateBinding(channelId, event.externalConversationId, event.externalUserId, event.text);
+        const activeRuns: Array<{ id: string }> = [];
         if (binding.projectId) {
-          const activeRuns = this.db.prepare(
+          const runs = this.db.prepare(
             "SELECT id FROM agent_runs WHERE project_id = ? AND status IN ('queued', 'starting', 'running') AND requested_by_id = ?",
           ).all(binding.projectId, event.externalUserId) as Array<{ id: string }>;
+          activeRuns.push(...runs);
           for (const run of activeRuns) {
             this.db.prepare(
               "UPDATE agent_runs SET status = 'cancelled', finished_at = ? WHERE id = ?",
@@ -409,15 +537,30 @@ export class ChannelManager {
           }
           this._emitEvent({ type: 'channel.stop', channelId, data: { projectId: binding.projectId, runIds: activeRuns.map((r) => r.id) } });
         }
+        this._sendReply(channelId, event.externalConversationId, activeRuns.length > 0 ? `已取消 ${activeRuns.length} 个运行` : '当前没有正在运行的对话');
+        this.markProcessed(channelId, event.externalEventId);
+        return;
       }
 
-      this._sendReply(channelId, event.externalConversationId, cmdResult.response);
+      // For /new and /use, don't return early — let them fall through to getOrCreateBinding
+      if (cmdResult.action !== 'new' && cmdResult.action !== 'use') {
+        this._sendReply(channelId, event.externalConversationId, cmdResult.response);
+        this.markProcessed(channelId, event.externalEventId);
+        return;
+      }
+    }
+
+    // Check binding (creates project for /new, binds for /use)
+    let binding: { projectId: string | null; isNew: boolean };
+    try {
+      binding = await this.getOrCreateBinding(channelId, event.externalConversationId, event.externalUserId, event.text);
+    } catch (err) {
+      this.logger.error({ err, channelId }, 'ChannelManager: failed to create/find binding');
+      this._sendReply(channelId, event.externalConversationId, `操作失败: ${err instanceof Error ? err.message : String(err)}`);
       this.markProcessed(channelId, event.externalEventId);
       return;
     }
 
-    // Check binding
-    const binding = this.getOrCreateBinding(channelId, event.externalConversationId, event.externalUserId, event.text);
     if (!binding.projectId) {
       // No binding - show privacy prompt
       this._sendReply(channelId, event.externalConversationId,
@@ -425,8 +568,22 @@ export class ChannelManager {
         '  `/new [名称]` — 创建新项目\n' +
         '  `/projects` — 查看已有项目\n' +
         '  `/use <shortId>` — 绑定到已有项目\n' +
+        '  `/id` — 查看当前会话 ID（可在应用内绑定到项目）\n' +
         '  `/help` — 查看所有命令\n\n' +
         '注意：您的消息将被发送到鲲擎智能体处理。');
+      this.markProcessed(channelId, event.externalEventId);
+      return;
+    }
+
+    // If this was a /new or /use command, send the response and stop
+    if (cmdResult.action === 'new') {
+      const projectName = event.text.replace('/new', '').trim() || '新项目';
+      this._sendReply(channelId, event.externalConversationId, `项目「${projectName}」已创建，可以开始对话了！`);
+      this.markProcessed(channelId, event.externalEventId);
+      return;
+    }
+    if (cmdResult.action === 'use') {
+      this._sendReply(channelId, event.externalConversationId, '已绑定到指定项目，可以开始对话了！');
       this.markProcessed(channelId, event.externalEventId);
       return;
     }
@@ -435,6 +592,7 @@ export class ChannelManager {
     this._startProcessingStatus(channelId, event.externalConversationId);
     this._processInboundAsync(channelId, event, binding.projectId).catch((err) => {
       this.logger.error({ err, channelId }, 'ChannelManager: error processing inbound message');
+      this._stopProcessingStatus(channelId, event.externalConversationId);
     });
     this.markProcessed(channelId, event.externalEventId);
   }
@@ -497,27 +655,19 @@ export class ChannelManager {
     return chunks.map((chunk, idx) => (chunks.length > 1 ? `(${idx + 1}/${chunks.length}) ${chunk}` : chunk));
   }
 
-  /** Start periodic "processing" status updates for a channel conversation */
+  /** Send a single "processing" status message for a channel conversation */
   private _startProcessingStatus(channelId: string, conversationId: string): void {
     const key = `${channelId}:${conversationId}`;
     if (this.processingTimers.has(key)) return;
-    let counter = 0;
-    const timer = setInterval(() => {
-      counter++;
-      const dots = '.'.repeat(counter % 4);
-      this.send(channelId, { conversationId }, { text: `处理中${dots}` }).catch(() => {});
-    }, 2000);
-    this.processingTimers.set(key, timer);
+    // Send a single "processing" message — no timer to avoid spamming the chat
+    this.send(channelId, { conversationId }, { text: '处理中...' }).catch(() => {});
+    this.processingTimers.set(key, true);
   }
 
-  /** Stop periodic "processing" status updates for a channel conversation */
+  /** Clear processing status so the next message sends the actual reply */
   private _stopProcessingStatus(channelId: string, conversationId: string): void {
     const key = `${channelId}:${conversationId}`;
-    const timer = this.processingTimers.get(key);
-    if (timer) {
-      clearInterval(timer);
-      this.processingTimers.delete(key);
-    }
+    this.processingTimers.delete(key);
   }
 
   private async _sendReply(channelId: string, conversationId: string, text: string): Promise<void> {
@@ -697,20 +847,16 @@ export class ChannelManager {
     return { type: row.type as ChannelType, config, secrets };
   }
 
-  private _createProject(name: string, channelId: string, externalConversationId: string): string {
-    const projectId = `ch-${channelId.slice(0, 8)}-${Date.now().toString(36)}`;
-    const now = new Date().toISOString();
-    this.db.prepare(
-      'INSERT INTO projects (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)',
-    ).run(projectId, name, now, now);
-    return projectId;
-  }
-
   private _createBinding(channelId: string, externalConversationId: string, projectId: string): void {
     const now = new Date().toISOString();
-    this.db.prepare(
-      'INSERT INTO channel_bindings (channel_id, external_conversation_id, project_id, created_at) VALUES (?, ?, ?, ?)',
+    const result = this.db.prepare(
+      'INSERT OR IGNORE INTO channel_bindings (channel_id, external_conversation_id, project_id, created_at) VALUES (?, ?, ?, ?)',
     ).run(channelId, externalConversationId, projectId, now);
+    if (result.changes === 0) {
+      this.db.prepare(
+        'UPDATE channel_bindings SET project_id = ? WHERE channel_id = ? AND external_conversation_id = ?',
+      ).run(projectId, channelId, externalConversationId);
+    }
   }
 
   /** Calculate exponential backoff delay with jitter (in ms) */

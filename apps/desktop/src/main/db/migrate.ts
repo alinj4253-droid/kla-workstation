@@ -829,4 +829,16 @@ const migrations: Array<{ name: string; sql: string }> = [
       CREATE INDEX idx_knowledge_embeddings_source ON knowledge_chunk_embeddings(source_id);
     `,
   },
+  {
+    name: '019_channel_bindings_unique',
+    sql: `
+      DELETE FROM channel_bindings
+      WHERE rowid NOT IN (
+        SELECT MIN(rowid) FROM channel_bindings
+        GROUP BY channel_id, external_conversation_id
+      );
+      CREATE UNIQUE INDEX idx_channel_bindings_conversation
+        ON channel_bindings(channel_id, external_conversation_id);
+    `,
+  },
 ];

@@ -1,4 +1,4 @@
-import type { ChannelAdapter, ChannelTestResult, ResolvedChannelConfig, ChannelEventSink, ExternalTarget, OutboundChannelMessage, DeliveryReceipt, ChannelHealth, ChannelType, InboundChannelEvent } from './types';
+import type { ChannelAdapter, ChannelTestResult, ResolvedChannelConfig, ChannelEventSink, ExternalTarget, OutboundChannelMessage, DeliveryReceipt, ChannelHealth, ChannelType, InboundChannelEvent, ExternalConversationInfo } from './types';
 
 const DINGTALK_API = 'https://oapi.dingtalk.com';
 
@@ -98,6 +98,13 @@ export class DingTalkAdapter implements ChannelAdapter {
       lastError: this._lastError,
       uptimeMs: this._started ? Date.now() - this._startTime : 0,
     };
+  }
+
+  async getConversationInfo(target: ExternalTarget): Promise<ExternalConversationInfo> {
+    // Best-effort: real verification requires the DingTalk Stream inbound link (MVP stub).
+    // Message events carry openConversationId in the same `cid...` format used for sending.
+    const valid = /^cid[a-zA-Z0-9_\-=]+$/.test(target.conversationId);
+    return valid ? { exists: true } : { exists: false, error: '钉钉会话 ID 格式无效' };
   }
 
   private async _refreshToken(): Promise<void> {
