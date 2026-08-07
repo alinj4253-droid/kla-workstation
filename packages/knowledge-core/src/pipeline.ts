@@ -189,5 +189,9 @@ export async function runIngestionPipeline(ctx: PipelineContext): Promise<void> 
     ctx.log('知识入库流水线失败', { error: message });
     await ctx.setJobStatus('failed', 'failed', 0, 'PIPELINE_ERROR');
     await ctx.setSourceStatus('error');
+    // The caller must be able to distinguish a failed source from a successful
+    // ingestion. Keep the source/job state persisted above, then surface the
+    // original error so retrieval can report and retry it.
+    throw err;
   }
 }

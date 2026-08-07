@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "name": "PaddleOCR offline tool pack",
+  "version": "3.1.0",
+  "offline": true,
+  "runtime": {
+    "executable": "runtime/win32-x64/python/python.exe"
+  },
+  "entry": "runner/run_ocr.py",
+  "models": {
+    "detection": "models/PP-OCRv5_server_det",
+    "recognition": "models/PP-OCRv5_server_rec",
+    "classification": "models/PP-LCNet_x1_0_textline_ori"
+  },
+  "requiredPaths": [
+    "runtime/win32-x64/python/python.exe",
+    "runner/run_ocr.py",
+    "models/PP-OCRv5_server_det",
+    "models/PP-OCRv5_server_rec",
+    "models/PP-LCNet_x1_0_textline_ori"
+  ],
+  "networkPolicy": "deny"
+}

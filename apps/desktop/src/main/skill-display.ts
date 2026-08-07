@@ -9,6 +9,8 @@ const SKILL_LABELS: Record<string, string> = {
   'skill:load': '技能说明读取',
   'workflow:load': '协同工作流读取',
   'knowledge:ingest': '知识文件处理',
+  'process-knowledge-files': '知识文件处理',
+  'retrieve-knowledge': '混合知识检索',
   'local:ocr': 'PaddleOCR 本地识别',
   'local:embed': '本地知识向量化',
 };

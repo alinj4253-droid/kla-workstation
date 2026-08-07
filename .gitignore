@@ -16,6 +16,12 @@ dist-types/
 build/
 .workbuddy/
 
+# Generated PaddleOCR private-deployment bundle (assembled before packaging)
+.kqocr-build/
+apps/desktop/resources/tools/paddleocr/runtime/
+apps/desktop/resources/tools/paddleocr/models/
+apps/desktop/resources/tools/paddleocr/.model-cache/
+
 # Local runtime state
 .runtime/
 **/.runtime/

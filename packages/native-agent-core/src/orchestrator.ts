@@ -165,6 +165,38 @@ function instructionText(raw: string): string {
   return raw.trim();
 }
 
+export function isSimpleDirectTask(raw: string): boolean {
+  const text = instructionText(raw).replace(/\s+/g, ' ').trim().toLocaleLowerCase();
+  if (!text || text.length > 180) return false;
+  const asksCurrentFact = /天气|气温|温度|几点|时间|日期|星期几/u.test(text)
+    && !/分析|报告|文件|表格|图表|调研|研究|整理|汇总|方案|代码|网页|html/iu.test(text);
+  return /^(你好|您好|嗨|hello|hi|help|开始|继续|谢谢|感谢|收到|好的|ok|okay)[！!。.]?$/i.test(text)
+    || asksCurrentFact
+    || /^(?:你是谁|你能做什么|你有哪些能力|有什么帮助)/i.test(text);
+}
+
+function needsSpecialistWork(raw: string): boolean {
+  const text = instructionText(raw);
+  return /文件|文档|知识库|知识图谱|原始资料|附件|上传|导入|检索|调研|研究|竞品|市场|行业|报告|方案|代码|编程|HTML|网页|图表|数据分析|生成文件|制作|撰写/i.test(text)
+    || text.length > 260;
+}
+
+function chooseFallbackAgent<T extends { id: string; name: string; definitionId: string; runtimeMode: string }>(
+  task: string,
+  agents: T[],
+): T | undefined {
+  const text = instructionText(task);
+  const score = (agent: T): number => {
+    const identity = `${agent.definitionId} ${agent.name}`.toLocaleLowerCase();
+    if (/知识|文档|文件|知识库|图谱|入库/i.test(text) && /knowledge|知识/i.test(identity)) return 30;
+    if (/调研|研究|市场|行业|竞品|来源|核查/i.test(text) && /research|调研/i.test(identity)) return 30;
+    if (/代码|编程|html|网页|脚本|文件生成/i.test(text) && agent.runtimeMode === 'external-cli') return 30;
+    if (/research|knowledge|external-cli/i.test(identity)) return 10;
+    return 0;
+  };
+  return [...agents].sort((left, right) => score(right) - score(left))[0];
+}
+
 const INTERNAL_ORCHESTRATION_PROTOCOL_RE = /(?:^|\n)\s*(?:NEED_AGENTS|NEED_CLI|NEED_KM)\b/i;
 
 const ORCHESTRATOR_SYNTHESIS_SYSTEM_PROMPT = `你是群聊中的统筹管理智能体，现在所有已委派工作都已结束。
@@ -280,6 +312,18 @@ async function analyzeIntent(state: GraphState, config: { configurable: { ctx: I
   const ctx = config.configurable.ctx;
   ctx.signal.throwIfAborted();
 
+  const task = instructionText(ctx.instruction);
+  if (isSimpleDirectTask(task)) {
+    sendProgress(ctx, '直接回答', 45);
+    sendTrace(ctx, 'reasoning', '判断为轻量问题，直接回答', 'completed');
+    const direct = await ctx.services.generateText('fast', [
+      { role: 'system', content: '只回答用户这条轻量问题，语气自然简洁。不要委派成员、调用工具或输出内部协议。' },
+      { role: 'user', content: task },
+    ]);
+    const text = direct.text.trim() || '我可以继续帮你处理。';
+    return { messages: [{ role: 'assistant', content: text }], finalResponse: text, needsKnowledgeManager: false, needsCLIDelegation: false, artifacts: [] };
+  }
+
   sendProgress(ctx, '分析意图', 10);
   sendTrace(ctx, 'reasoning', '分析用户目标与任务边界', 'running');
   sendOrchestratorChecklist(ctx, 'analyzing', {
@@ -362,6 +406,15 @@ async function analyzeIntent(state: GraphState, config: { configurable: { ctx: I
     if (km) {
       cleanText = `${km.id}: ${cleanText || instructionText(ctx.instruction)}`;
       needsKM = false;
+      needsCLI = true;
+    }
+  }
+
+  // 模型漏掉委派协议时，只对明显的专业/复合任务做一次能力兜底；轻量问题已在上面直答。
+  if (!needsKM && !needsCLI && needsSpecialistWork(task)) {
+    const fallback = chooseFallbackAgent(task, availableAgents);
+    if (fallback) {
+      cleanText = `${fallback.id}: ${buildVisibleDelegationInstruction(task, task)}`;
       needsCLI = true;
     }
   }

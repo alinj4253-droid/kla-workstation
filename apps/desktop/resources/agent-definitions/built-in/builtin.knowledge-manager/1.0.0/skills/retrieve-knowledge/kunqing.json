@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "retrieve-knowledge",
+  "version": "1.0.0",
+  "entry": "SKILL.md",
+  "executionMode": "hybrid",
+  "requiredTools": [
+    "knowledge:search",
+    "knowledge:listGraph"
+  ],
+  "permissions": [
+    "group.knowledge:read",
+    "shared.knowledge:read"
+  ],
+  "compatibility": {
+    "codexSkill": true,
+    "kunqing": ">=0.1.0"
+  }
+}

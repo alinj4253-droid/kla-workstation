@@ -120,6 +120,13 @@ export class KnowledgeRepository extends BaseRepository {
     return row ?? null;
   }
 
+  getLatestJobForSource(sourceId: string): KnowledgeJobRow | null {
+    const row = this.db.prepare(
+      `SELECT ${J_COLS} FROM knowledge_ingestion_jobs WHERE source_id = ? ORDER BY created_at DESC LIMIT 1`,
+    ).get(sourceId) as KnowledgeJobRow | undefined;
+    return row ?? null;
+  }
+
   createJob(input: { scopeType: string; scopeId: string; sourceId: string }): KnowledgeJobRow {
     const id = randomUUID().toLowerCase().replace(/-/g, '').slice(0, 24);
     const now = this.now();

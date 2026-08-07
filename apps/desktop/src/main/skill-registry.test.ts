@@ -54,5 +54,25 @@ describe('SkillRegistry', () => {
     expect(snapshot[0]?.checksum).toMatch(/^[a-f0-9]{64}$/);
     const persisted = db.prepare("SELECT skill_id as skillId, skill_version as version FROM agent_run_skills WHERE run_id = 'run-1'").get() as { skillId: string; version: string };
     expect(persisted).toEqual({ skillId: 'document-chunking', version: '1.2.0' });
+    expect(registry.searchForRun('run-1', '读取文档后按语义切片')[0]?.id).toBe('document-chunking');
+    expect(registry.loadForRun('run-1', 'document-chunking', '1.2.0')).toContain('执行切片');
+    expect(registry.loadForRun('run-1', 'legacy-research')).toBeNull();
+  });
+
+  it('binds both official knowledge skills only to the knowledge-manager Run snapshot', () => {
+    const registry = new SkillRegistry(db, root);
+    registry.seedBuiltinSkills();
+
+    const knowledgeSkills = registry.snapshotForRun('run-knowledge', 'builtin.knowledge-manager', '1.0.0');
+    expect(knowledgeSkills.map((skill) => skill.id)).toEqual(expect.arrayContaining([
+      'process-knowledge-files',
+      'retrieve-knowledge',
+    ]));
+    expect(registry.loadForRun('run-knowledge', 'process-knowledge-files')).toContain('增量处理群聊原始文件');
+    expect(registry.loadForRun('run-knowledge', 'retrieve-knowledge')).toContain('全文、向量、图谱与 Wiki');
+
+    registry.snapshotForRun('run-researcher', 'builtin.researcher', '1.0.0');
+    expect(registry.loadForRun('run-researcher', 'process-knowledge-files')).toBeNull();
+    expect(registry.loadForRun('run-researcher', 'retrieve-knowledge')).toBeNull();
   });
 });

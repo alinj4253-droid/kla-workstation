@@ -106,11 +106,11 @@ export type ContextSnapshot = {
 };
 
 export type ContextBuilderOptions = {
-  /** 最多包含的最近消息数（默认 30） */
+  /** 最多包含的最近消息数（默认 12） */
   recentMessageLimit?: number;
-  /** 知识片段最大数量（默认 10） */
+  /** 知识片段最大数量（默认 6） */
   knowledgeChunkLimit?: number;
-  /** 共享知识片段最大数量（默认 5） */
+  /** 共享知识片段最大数量（默认 3） */
   sharedKnowledgeChunkLimit?: number;
 };
 
@@ -149,9 +149,9 @@ export class ContextBuilder {
     this.runRepo = new AgentRunRepository(db);
     this.fileRepo = new FileRepository(db);
     this.options = {
-      recentMessageLimit: options?.recentMessageLimit ?? 30,
-      knowledgeChunkLimit: options?.knowledgeChunkLimit ?? 10,
-      sharedKnowledgeChunkLimit: options?.sharedKnowledgeChunkLimit ?? 5,
+      recentMessageLimit: options?.recentMessageLimit ?? 12,
+      knowledgeChunkLimit: options?.knowledgeChunkLimit ?? 6,
+      sharedKnowledgeChunkLimit: options?.sharedKnowledgeChunkLimit ?? 3,
     };
   }
 
@@ -246,7 +246,7 @@ export class ContextBuilder {
     parts.push(`## 项目信息\n- 项目名称: ${snapshot.project.name}\n- 项目摘要: ${snapshot.project.summary || '(无)'}\n- 共享知识: ${snapshot.project.sharedKnowledgeEnabled ? '已开启' : '已关闭'}`);
 
     if (snapshot.skills.length > 0) {
-      parts.push(`## 可用技能（需要时调用 skill:load 读取正文）\n${snapshot.skills.map((skill) => `- ${skill.id}@${skill.version}：${skill.description}`).join('\n')}`);
+      parts.push(`## 自身技能目录\n先用 skill:search 按任务筛选，确定需要后再用 skill:load 读取正文；不要加载或复述无关技能。\n${snapshot.skills.map((skill) => `- ${skill.id}@${skill.version}：${skill.description}`).join('\n')}`);
     }
     if (snapshot.workflows.length > 0) {
       parts.push(`## 可用协同工作流（需要时调用 workflow:load 读取正文）\n${snapshot.workflows.map((workflow) => `- ${workflow.id}@${workflow.version}：${workflow.description}`).join('\n')}`);
@@ -346,7 +346,7 @@ export class ContextBuilder {
           `### 核心身份快照\n${identityText}`,
           roleText ? `### 群聊实例约束\n${roleText}` : '',
           adaptationText ? `### 群聊适应性补充\n${adaptationText}` : '',
-        ].filter(Boolean).join('\n\n').slice(0, 15_000);
+        ].filter(Boolean).join('\n\n').slice(0, 8_000);
       } catch {
         identity = null;
       }
@@ -355,7 +355,7 @@ export class ContextBuilder {
     const definitionSystemPrompt = loadAgentDefinitionText(
       row.definitionId ?? '',
       row.definitionVersion ?? '1.0.0',
-    ).systemPrompt?.slice(0, 12_000) ?? null;
+    ).systemPrompt?.slice(0, 4_000) ?? null;
 
     const permissions: string[] = [];
     if (row.permissionsJson) {
@@ -463,7 +463,7 @@ export class ContextBuilder {
     `).all(projectId, agentInstanceId) as MemoryRecord[];
 
     const ranked = rankMemories(query, rows, {
-      limit: 16,
+      limit: 10,
       minimumScore: query.trim() ? 0.42 : 0.52,
       shortTermHalfLifeHours: 72,
       longTermHalfLifeHours: 30 * 24,
@@ -476,11 +476,11 @@ export class ContextBuilder {
       ).run(new Date().toISOString(), ...selectedIds);
     }
 
-    const shortTerm = ranked.filter(({ record }) => record.scope === 'short-term').slice(0, 6);
-    const longTerm = ranked.filter(({ record }) => record.scope === 'long-term').slice(0, 8);
+    const shortTerm = ranked.filter(({ record }) => record.scope === 'short-term').slice(0, 4);
+    const longTerm = ranked.filter(({ record }) => record.scope === 'long-term').slice(0, 4);
     return {
-      shortTerm: shortTerm.map(({ record }) => `[${record.topicKey ?? record.type}] ${record.content.slice(0, 700)}`),
-      longTerm: longTerm.map(({ record }) => `[${record.pinned ? '固定规则' : record.topicKey ?? record.type}] ${record.content.slice(0, 900)}`),
+      shortTerm: shortTerm.map(({ record }) => `[${record.topicKey ?? record.type}] ${record.content.slice(0, 550)}`),
+      longTerm: longTerm.map(({ record }) => `[${record.pinned ? '固定规则' : record.topicKey ?? record.type}] ${record.content.slice(0, 750)}`),
     };
   }
 

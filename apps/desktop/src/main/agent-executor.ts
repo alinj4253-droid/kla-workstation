@@ -10,8 +10,14 @@ import { ContextBuilder } from './context-builder';
 import { createProjectTools, registerProjectTools } from './agent-tools';
 import { ToolRegistry, type AgentRole as LocalAgentRole } from './tool-registry';
 import { runOrchestrator } from './langgraph-orchestrator';
-import { runKnowledgeManager, type KMExecContext } from './langgraph-knowledge-manager';
-import { formatHybridKnowledgeResult, searchHybridKnowledge } from './hybrid-knowledge-search';
+import { searchHybridKnowledge } from './hybrid-knowledge-search';
+import { generateKnowledgeText, synthesizeKnowledgeAnswer } from './knowledge-rag';
+import { refreshKnowledgeBeforeSearch, syncKnowledgeSources } from './knowledge-sync';
+import {
+  executeKnowledgeFileProcessingSkill,
+  executeKnowledgeRetrievalSkills,
+  type KnowledgeSkillActivity,
+} from './knowledge-skill-execution';
 import { cliExecutor } from './cli-executor';
 import { cliAgentRegistry } from './cli-agent-registry';
 import { AgentRunRepository, MessageRepository } from '@kunqing/database';
@@ -199,9 +205,10 @@ function dispatchRunTrace(
   title: string,
   status: RunTraceStatus,
   detail?: string,
+  traceId?: string,
 ): void {
   const trace = {
-    id: randomUUID().toLowerCase().replace(/-/g, '').slice(0, 16),
+    id: traceId ?? randomUUID().toLowerCase().replace(/-/g, '').slice(0, 16),
     kind,
     title: sanitizeAgentDisplayText(db, run.projectId, title),
     status,
@@ -320,12 +327,37 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
     if (!window.isDestroyed()) window.webContents.send('event:dispatch', event);
   });
   let _scheduler = scheduler;
-  let tools = createProjectTools(db, _scheduler);
+  let tools = createProjectTools(db, _scheduler, gateway);
   const registry = toolRegistry ?? new ToolRegistry(db);
   if (!toolRegistry) {
-    registerProjectTools(registry, db, _scheduler);
+    registerProjectTools(registry, db, _scheduler, gateway);
   }
   let _runCompletedCallback: ((runId: string, projectId: string, resultMessageId: string) => void) | null = null;
+
+  const reportKnowledgeSkillActivity = (run: QueuedRun, activity: KnowledgeSkillActivity): void => {
+    const eventType = activity.status === 'running'
+      ? 'skill.started'
+      : activity.status === 'completed'
+        ? 'skill.completed'
+        : 'skill.failed';
+    runRepo.addEvent(run.runId, eventType, {
+      activityId: activity.id,
+      skillId: activity.skillId,
+      name: activity.name,
+      detail: activity.detail,
+    });
+    dispatchRunTrace(
+      db,
+      runRepo,
+      window,
+      run,
+      'tool',
+      `调用技能：${activity.name}`,
+      activity.status,
+      activity.detail,
+      activity.id,
+    );
+  };
 
   const captureRunMemory = async (
     run: QueuedRun,
@@ -626,30 +658,73 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
       }
 
       dispatchRunStatus(db, runRepo, window, run, 'running', { stage: '执行知识处理', progress: 25 });
-      dispatchRunTrace(db, runRepo, window, run, 'execution', '处理文档、知识图谱或 Wiki 任务', 'running');
-      const workspaceRoot = app?.getPath?.('userData') ?? join(process.cwd(), '.runtime');
-      const kmCtx: KMExecContext = {
-        db,
-        gateway,
-        runId: run.runId,
-        projectId: run.projectId,
-        agentInstanceId: run.agentInstanceId,
-        instruction: run.instruction,
-        triggerMessageId: run.triggerMessageId,
-        signal,
-        workspaceRoot,
-      };
+      dispatchRunTrace(db, runRepo, window, run, 'plan', '判断本次知识任务需要的技能', 'completed');
       const taskText = plainRunInstruction(run.instruction);
       const isIngestionTask = /\bfileId\s*[:=]|original-files|入库|切片|解析.{0,8}(文件|文档)|处理.{0,8}(文件|文档)|更新.{0,8}(知识库|图谱)/i.test(taskText);
+      let retrievalEvidenceCount = 0;
       let report: string;
       try {
-        report = isIngestionTask
-          ? await runKnowledgeManager(kmCtx)
-          : formatHybridKnowledgeResult(searchHybridKnowledge(db, taskText, run.projectId, 10));
+        if (isIngestionTask) {
+          report = await executeKnowledgeFileProcessingSkill({
+            registry: skillRegistry,
+            runId: run.runId,
+            report: (activity) => reportKnowledgeSkillActivity(run, activity),
+            execute: async () => {
+              const scope = /共享.{0,6}(知识|文件|资料)|shared-knowledge/i.test(taskText)
+                ? { scopeType: 'shared' as const, scopeId: 'shared-knowledge' }
+                : { scopeType: 'project' as const, scopeId: run.projectId };
+              const result = await syncKnowledgeSources(db, scope, gateway);
+              const successful = result.changedFileIds.length - result.failedFileIds.length;
+
+              if (result.failedFileIds.length > 0) {
+                const placeholders = result.failedFileIds.map(() => '?').join(', ');
+                const failedFiles = db.prepare(
+                  `SELECT name FROM files WHERE id IN (${placeholders}) ORDER BY name`,
+                ).all(...result.failedFileIds) as Array<{ name: string }>;
+                const names = failedFiles.map((file) => file.name).slice(0, 5).join('、');
+                const remaining = Math.max(0, failedFiles.length - 5);
+                const successNote = successful > 0 ? `已成功处理 ${successful} 个文件；` : '';
+                throw new Error(
+                  `${successNote}仍有 ${result.failedFileIds.length} 个文件处理失败：${names}${remaining > 0 ? ` 等 ${failedFiles.length} 个文件` : ''}`,
+                );
+              }
+
+              if (result.changedFileIds.length === 0 && result.deletedFileIds.length === 0) {
+                return '当前群聊的原始文件都已经完成知识处理，没有发现新增或变更内容。';
+              }
+
+              const parts = [
+                successful > 0 ? `已完成 ${successful} 个原始文件的知识处理` : '',
+                result.deletedFileIds.length > 0 ? `已将 ${result.deletedFileIds.length} 个移出目录的来源停止参与检索` : '',
+              ].filter(Boolean);
+              return `${parts.join('；')}。切片、摘要、标签、向量、图谱和 Wiki 已更新。`;
+            },
+          });
+        } else {
+          report = await executeKnowledgeRetrievalSkills({
+            registry: skillRegistry,
+            runId: run.runId,
+            report: (activity) => reportKnowledgeSkillActivity(run, activity),
+            synchronize: (onChangesDetected) => refreshKnowledgeBeforeSearch(db, gateway, run.projectId, {
+              onChangesDetected: (_scope, change) => onChangesDetected(change),
+            }),
+            retrieve: async () => {
+              const retrievalResult = searchHybridKnowledge(db, taskText, run.projectId, 12);
+              const synthesized = await synthesizeKnowledgeAnswer({
+                gateway,
+                query: taskText,
+                result: retrievalResult,
+                roleDirective: knowledgeRoleDirective,
+              });
+              retrievalEvidenceCount = synthesized.evidenceCount;
+              return synthesized.answer;
+            },
+          });
+        }
       } catch (error) {
         report = `当前无法完成知识处理：${error instanceof Error ? error.message : String(error)}`;
       }
-      dispatchRunTrace(db, runRepo, window, run, 'execution', '知识处理完成，生成验收摘要', 'completed');
+      dispatchRunStatus(db, runRepo, window, run, 'running', { stage: '整理知识结果', progress: 58 });
 
       const collaborationInstructions = buildAgentCollaborationInstructions(db, run.projectId, run.agentInstanceId);
       const researchAgent = db.prepare(
@@ -659,14 +734,15 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
          WHERE pai.project_id = ? AND ap.definition_id = 'builtin.researcher' AND ap.enabled = 1
          LIMIT 1`,
       ).get(run.projectId) as { id: string; name: string } | undefined;
-      const needsResearch = !report.startsWith('## 知识入库完成')
-        && /(调研|研究|检索|查找|核实|资料|竞品|市场|行业|最新|外部|research)/i.test(taskText);
+      const needsResearch = !isIngestionTask
+        && retrievalEvidenceCount === 0
+        && /(外部|公开网络|互联网|最新|近期|市场|行业|竞品|舆情|新闻|政策动态|research|公开调研)/i.test(taskText);
 
       let responseText = report;
-      try {
+      if (isIngestionTask) try {
         dispatchRunStatus(db, runRepo, window, run, 'running', { stage: '判断是否需要补充资料调研', progress: 72 });
         dispatchRunTrace(db, runRepo, window, run, 'reasoning', '根据知识处理结果判断后续协作', 'running');
-        const naturalResponse = await gateway.generateText('fast', [{
+        const naturalResponse = await generateKnowledgeText(gateway, [{
           role: 'user',
           content: `群聊交给你的任务：\n${taskText}\n\n知识处理流程返回：\n${report}\n\n请给出下一条正式群聊消息。如果现有资料不足且任务需要外部资料、事实核查或补充调研，就自然地 @资料调研智能体 并说明需要对方查什么、交回什么；否则直接给出简洁的处理结果。`,
         }], {
@@ -698,7 +774,7 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
           const collaborationResult = await waitForChildRuns(run, delegated.childRunIds, signal);
           dispatchRunTrace(db, runRepo, window, run, 'handoff', '资料调研结果已返回，继续整理知识', 'completed', collaborationResult);
           try {
-            const continuation = await gateway.generateText('fast', [{
+            const continuation = await generateKnowledgeText(gateway, [{
               role: 'user',
               content: `原任务：\n${taskText}\n\n知识处理结果：\n${report}\n\n资料调研反馈：\n${collaborationResult}\n\n请把两部分整理成一条给负责人看的自然交付，只保留关键结论、来源情况、知识库处理状态和必要风险。`,
             }], {
@@ -993,7 +1069,7 @@ ${externalContext}
       const projectInfo = db.prepare('SELECT name FROM projects WHERE id = ?').get(run.projectId) as { name: string } | undefined;
       const recentMessages = db.prepare(
         `SELECT sender_type as senderType, content_json as contentJson, created_at as createdAt
-         FROM messages WHERE project_id = ? ORDER BY created_at DESC LIMIT 20`,
+         FROM messages WHERE project_id = ? ORDER BY created_at DESC LIMIT 12`,
       ).all(run.projectId) as Array<{ senderType: string; contentJson: string; createdAt: string }>;
 
       const agentName = agentInstance?.agentName ?? '智能体';
@@ -1017,9 +1093,13 @@ ${memoryContext ? `\n${memoryContext}` : ''}
 
 ${collaborationInstructions}`;
 
-      const messages: Array<{ role: 'user' | 'assistant'; content: string }> = recentMessages.reverse().slice(-15).map((m) => ({
+      const messages: Array<{ role: 'user' | 'assistant'; content: string }> = recentMessages.reverse().slice(-10).map((m) => ({
         role: m.senderType === 'user' ? 'user' as const : 'assistant' as const,
-        content: (() => { try { return JSON.parse(m.contentJson).text ?? m.contentJson; } catch { return m.contentJson; } })(),
+        content: (() => {
+          let value: unknown = m.contentJson;
+          try { value = (JSON.parse(m.contentJson) as { text?: unknown }).text ?? m.contentJson; } catch { /* use raw */ }
+          return String(value).slice(0, 1_200);
+        })(),
       }));
 
       const slot: ModelSlot = agentInstance?.definitionId === 'builtin.knowledge-manager' ? 'fast' : 'reasoning';
@@ -1042,6 +1122,7 @@ ${collaborationInstructions}`;
             : 'researcher';
       const toolDefinitions = Object.fromEntries(registry.getDefinitionsForRole(toolRole).map((tool) => [tool.name, { description: tool.description, parameters: tool.parameters }]));
       const completedSteps: string[] = [];
+      let latestStepText = '';
       const allPublishedPaths = new Set<string>();
 
       for (let stepIndex = 0; stepIndex < plan.items.length; stepIndex++) {
@@ -1119,6 +1200,7 @@ ${collaborationInstructions}`;
           }
         }
 
+        latestStepText = stepText;
         completedSteps.push(`${stepIndex + 1}. ${step}\n${stepText}${collaborationResult ? `\n协作反馈：${collaborationResult}` : ''}`);
         if (compound) {
           checklist = checklist.map((item, index) => index === stepIndex ? { ...item, status: 'completed', detail: stepText.slice(0, 240) } : item);
@@ -1129,11 +1211,14 @@ ${collaborationInstructions}`;
 
       dispatchRunStatus(db, runRepo, window, run, 'running', { stage: '正在生成任务交付说明与成果汇报', progress: 92 });
       dispatchRunTrace(db, runRepo, window, run, 'reasoning', '汇总全部执行项并准备交付', 'running');
-      const finalResult = await gateway.generateText(slot, [{
-        role: 'user',
-        content: `负责人任务：${run.instruction}\n\n我的全部执行结果：\n${completedSteps.join('\n\n')}\n\n成果文件：${[...allPublishedPaths].join('、') || '无'}\n\n请向任务负责人交付，说明完成项、结果、成果路径和剩余风险。不要重复输出完整 HTML，不要输出运行状态或隐藏思维。`,
-      }], { system: systemMsg });
-      let fullText = finalResult.text.trim() || completedSteps[completedSteps.length - 1] || '任务已完成。';
+      let fullText = latestStepText || completedSteps[completedSteps.length - 1] || '任务已完成。';
+      if (compound) {
+        const finalResult = await gateway.generateText(slot, [{
+          role: 'user',
+          content: `负责人任务：${run.instruction}\n\n我的全部执行结果：\n${completedSteps.join('\n\n')}\n\n成果文件：${[...allPublishedPaths].join('、') || '无'}\n\n请向任务负责人交付，说明完成项、结果、成果路径和剩余风险。不要重复输出完整 HTML，不要输出运行状态或隐藏思维。`,
+        }], { system: systemMsg });
+        fullText = finalResult.text.trim() || fullText;
+      }
       dispatchRunTrace(db, runRepo, window, run, 'reasoning', '负责人交付内容已生成', 'completed');
       const agentMsgId = randomUUID().toLowerCase().replace(/-/g, '').slice(0, 24);
 
@@ -1199,7 +1284,7 @@ ${collaborationInstructions}`;
 
   executor.setScheduler = (s: Scheduler) => {
     _scheduler = s;
-    tools = createProjectTools(db, s);
+    tools = createProjectTools(db, s, gateway);
   };
 
   executor.onRunCompleted = (cb: (runId: string, projectId: string, resultMessageId: string) => void) => {

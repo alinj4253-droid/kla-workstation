@@ -9,6 +9,8 @@ import { buildModelProfileSnapshot } from './project-creator';
 import { SkillRegistry } from './skill-registry';
 import { WorkflowRegistry } from './workflow-registry';
 import { formatHybridKnowledgeResult, searchHybridKnowledge } from './hybrid-knowledge-search';
+import { refreshKnowledgeBeforeSearch } from './knowledge-sync';
+import type { ModelGateway } from './model-gateway';
 
 export interface ToolDefinition {
   name: string;
@@ -17,7 +19,7 @@ export interface ToolDefinition {
   execute: (args: Record<string, unknown>) => Promise<string>;
 }
 
-export function createProjectTools(db: Database.Database, scheduler?: Scheduler): ToolDefinition[] {
+export function createProjectTools(db: Database.Database, scheduler?: Scheduler, gateway: ModelGateway | null = null): ToolDefinition[] {
   const sRepo = new SearchRepository(db);
   const runRepo = new AgentRunRepository(db);
 
@@ -37,6 +39,7 @@ export function createProjectTools(db: Database.Database, scheduler?: Scheduler)
       async execute(args) {
         const { query, projectId, limit } = args as { query: string; projectId: string; limit?: number };
         try {
+          await refreshKnowledgeBeforeSearch(db, gateway, projectId);
           return formatHybridKnowledgeResult(searchHybridKnowledge(db, query, projectId, limit ?? 5));
         } catch (err) {
           return `搜索错误: ${err instanceof Error ? err.message : String(err)}`;
@@ -273,11 +276,32 @@ export function createProjectTools(db: Database.Database, scheduler?: Scheduler)
 }
 
 /** 将项目工具注册到 ToolRegistry，附加权限元数据 */
-export function registerProjectTools(registry: ToolRegistry, db: Database.Database, scheduler?: Scheduler): void {
+export function registerProjectTools(registry: ToolRegistry, db: Database.Database, scheduler?: Scheduler, gateway: ModelGateway | null = null): void {
   const sRepo = new SearchRepository(db);
   const runRepo = new AgentRunRepository(db);
 
   registry.registerAll([
+    {
+      name: 'skill:search',
+      description: '按当前任务从本次 Run 的自身技能快照中检索最匹配的技能。',
+      parameters: {
+        type: 'object',
+        properties: {
+          runId: { type: 'string', description: '当前 Run ID，由系统自动补充' },
+          query: { type: 'string', description: '当前要解决的问题或能力需求' },
+          limit: { type: 'number', description: '最多返回技能数，默认 3' },
+        },
+        required: ['runId', 'query'],
+      },
+      requiredCapabilities: ['read:skill'],
+      maxContentLength: 6_000,
+      async execute(args) {
+        const { runId, query, limit } = args as { runId: string; query: string; limit?: number };
+        const matches = new SkillRegistry(db).searchForRun(runId, query, limit ?? 3);
+        if (matches.length === 0) return '当前智能体没有匹配的已绑定技能';
+        return matches.map((skill) => `- ${skill.id}@${skill.version}：${skill.description}（所需工具：${skill.requiredTools.join('、') || '无'}）`).join('\n');
+      },
+    },
     {
       name: 'skill:load',
       description: '按需读取当前智能体定义已绑定的技能说明。只能读取自己的技能池。',
@@ -294,13 +318,7 @@ export function registerProjectTools(registry: ToolRegistry, db: Database.Databa
       maxContentLength: 20_000,
       async execute(args) {
         const { runId, skillId, version } = args as { runId: string; skillId: string; version?: string };
-        const owner = db.prepare(
-          `SELECT pai.definition_id as definitionId, pai.definition_version as definitionVersion
-           FROM agent_runs ar JOIN project_agent_instances pai ON pai.id = ar.agent_instance_id
-           WHERE ar.id = ?`,
-        ).get(runId) as { definitionId: string | null; definitionVersion: string | null } | undefined;
-        if (!owner?.definitionId) return '无法确认当前智能体定义，技能读取被拒绝';
-        const content = await new SkillRegistry(db).loadForDefinition(owner.definitionId, owner.definitionVersion ?? '1.0.0', skillId, version);
+        const content = new SkillRegistry(db).loadForRun(runId, skillId, version);
         return content ?? `技能 ${skillId}${version ? `@${version}` : ''} 未绑定到当前智能体`;
       },
     },
@@ -347,6 +365,7 @@ export function registerProjectTools(registry: ToolRegistry, db: Database.Databa
       async execute(args) {
         const { query, projectId, limit } = args as { query: string; projectId: string; limit?: number };
         try {
+          await refreshKnowledgeBeforeSearch(db, gateway, projectId);
           return formatHybridKnowledgeResult(searchHybridKnowledge(db, query, projectId, limit ?? 5));
         } catch (err) {
           return `搜索错误: ${err instanceof Error ? err.message : String(err)}`;

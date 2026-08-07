@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, protocol, safeStorage, shell } from 'electron';
 import type { OpenDialogOptions } from 'electron';
-import { access, copyFile, lstat, mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { access, copyFile, cp, lstat, mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { basename, dirname, isAbsolute, join, normalize, resolve, sep } from 'node:path';
@@ -27,8 +27,8 @@ import { MemoryManager as ConversationMemoryManager } from './memory-manager';
 import { ModelGateway } from './model-gateway';
 import { Scheduler } from './scheduler';
 import { createAgentExecutor } from './agent-executor';
-import { createPipelineContext } from './knowledge-pipeline-adapter';
-import { runIngestionPipeline } from '@kunqing/knowledge-core';
+import { ingestKnowledgeFile, prepareKnowledgeIngestion } from './knowledge-ingestion';
+import { refreshKnowledgeBeforeSearch } from './knowledge-sync';
 import { registerAppFileProtocol } from './app-file-protocol';
 import { TeamMcpServer } from './team-mcp-server';
 import { ToolRegistry } from './tool-registry';
@@ -315,6 +315,36 @@ const RESEARCHER_DEFINITION_PROMPT = `你是资料调研智能体。围绕负责
 const LEGACY_RESEARCHER_DEFINITION_PROMPT = '你是资料调研智能体，负责根据指令搜索知识库、分析信息并输出结构化调研报告。\n\n## 输出格式\n1. **调研摘要** — 关键发现概述\n2. **信息来源** — 引用来源 ID 和内容摘要\n3. **详细分析** — 按主题组织的信息\n4. **置信度评估** — 每个结论的可靠性标注\n\n## 限制\n- 不确定时明确告知而不是猜测';
 
 const installAgentDefinitions = async (root: string): Promise<void> => {
+  const bundledDefinitionRoots = [
+    join(process.resourcesPath, 'resources', 'agent-definitions'),
+    join(app.getAppPath(), 'resources', 'agent-definitions'),
+  ];
+  const bundledDefinitions = bundledDefinitionRoots.find((path) => existsSync(path));
+  if (bundledDefinitions) {
+    await cp(bundledDefinitions, join(root, 'agent-definitions'), {
+      recursive: true,
+      force: false,
+      errorOnExist: false,
+    });
+
+    // The graph report is an official managed template. Keep existing workspaces on
+    // the same visual contract while leaving every other agent definition untouched.
+    const graphProjectionSource = join(
+      bundledDefinitions,
+      'built-in',
+      'builtin.knowledge-manager',
+      '1.0.0',
+      'skills',
+      'graph-projection',
+    );
+    if (existsSync(graphProjectionSource)) {
+      await cp(
+        graphProjectionSource,
+        join(root, 'agent-definitions', 'built-in', 'builtin.knowledge-manager', '1.0.0', 'skills', 'graph-projection'),
+        { recursive: true, force: true, errorOnExist: false },
+      );
+    }
+  }
   const orchestratorDir = join(root, 'agent-definitions', 'built-in', 'builtin.orchestrator', '1.0.0');
   const knowledgeDir = join(root, 'agent-definitions', 'built-in', 'builtin.knowledge-manager', '1.0.0');
   const researcherDir = join(root, 'agent-definitions', 'built-in', 'builtin.researcher', '1.0.0');
@@ -380,7 +410,7 @@ description: Incrementally process new, changed, or deleted files in a group cha
 Read references/storage-schema.md when checking paths, lifecycle, or output contracts.`);
   await writeIfMissing(join(retrieveKnowledgeSkillDir, 'SKILL.md'), `---
 name: retrieve-knowledge
-description: Retrieve cited evidence from local group and shared knowledge using adaptive full-text, vector, knowledge-graph, and Wiki search. Use when the knowledge manager needs to answer a question from processed files or verify a claim against local knowledge.
+description: Retrieve and synthesize cited evidence from local group and shared knowledge using full-text, vector, knowledge-graph, and Wiki RAG. Use when the knowledge manager needs to answer a question from processed files or verify a claim against local knowledge.
 ---
 
 # Retrieve knowledge
@@ -388,8 +418,9 @@ description: Retrieve cited evidence from local group and shared knowledge using
 1. Identify whether the question needs exact text, semantic similarity, entity relationships, Wiki synthesis, or a mixture.
 2. Search the current group knowledge plus shared knowledge. Never read another group's private knowledge.
 3. Fuse channel rankings, remove duplicate evidence, and prefer evidence with clear provenance.
-4. Return the smallest sufficient evidence set with source file and location. Separate supported facts from inference and explicitly state gaps.
-5. Do not modify the knowledge base during retrieval.
+4. Synthesize the smallest sufficient evidence set into a direct answer. Cite the source file and location for every key conclusion.
+5. Never dump raw chunks, similarity scores, retrieval channels, or vector data into the user-facing response. Separate supported facts from inference and explicitly state gaps.
+6. Do not modify the knowledge base during retrieval.
 
 Read references/retrieval-policy.md when tuning channel choice or interpreting scores.`);
   await mkdir(join(processKnowledgeSkillDir, 'agents'), { recursive: true });
@@ -588,12 +619,11 @@ const registerWorkspaceIpc = (): void => {
       target = resolveInside(scopeRoot, input.relativePath);
       await access(target);
     } catch {
-      if (st === 'project') {
-        target = resolveInside(getProjectRoot(input.projectId), input.relativePath);
-      } else {
-        // For shared scope, only the scope root is valid
-        throw new DatabaseError('NOT_FOUND', '文件不存在');
-      }
+      const systemRoot = st === 'shared'
+        ? join(getStudioRoot(), 'shared-knowledge')
+        : getProjectRoot(input.projectId);
+      target = resolveInside(systemRoot, input.relativePath);
+      await access(target);
     }
     await assertNoSymlink(target);
     const message = await shell.openPath(target);
@@ -603,49 +633,14 @@ const registerWorkspaceIpc = (): void => {
 };
 
 const knowledgeIngestForFile = (db: ReturnType<typeof getDatabase>, fileId: string): unknown => {
-  const fileRepo = new FileRepository(db);
-  const file = fileRepo.getById(fileId);
-  if (!file) return null;
-  if (file.type !== 'file') return null;
-  const repo = new KnowledgeRepository(db);
-  const existing = file.currentVersionId ? repo.getSourceByFileAndVersion(fileId, file.currentVersionId) : repo.getSourceByFile(fileId);
-  if (existing) {
-    if (existing.status === 'ready') return existing;
-    if (existing.status !== 'error') return existing;
-    repo.setSourceStatus(existing.id, 'pending');
-    const oldJob = repo.getJob(existing.id);
-    if (oldJob) repo.setJobStatus(oldJob.id, 'queued');
-    return existing;
+  const prepared = prepareKnowledgeIngestion(db, fileId);
+  if (_gateway && prepared.started) {
+    return ingestKnowledgeFile(db, _gateway, fileId).catch((err: unknown) => {
+      getLogger().error({ err, fileId, sourceId: prepared.sourceId }, '知识入库流水线异常');
+      return prepared;
+    });
   }
-  const currentVersion = file.currentVersionId ? fileRepo.getCurrentVersion(file.id) : null;
-  const sourceInput: { scopeType: string; scopeId: string; fileId: string; versionId?: string; sha256?: string } = {
-    scopeType: file.scopeType,
-    scopeId: file.scopeId,
-    fileId: file.id,
-  };
-  if (file.currentVersionId) sourceInput.versionId = file.currentVersionId;
-  if (currentVersion?.sha256) sourceInput.sha256 = currentVersion.sha256;
-  const source = repo.createSource(sourceInput);
-  const job = repo.createJob({ scopeType: file.scopeType, scopeId: file.scopeId, sourceId: source.id });
-  repo.setSourceStatus(source.id, 'ingesting');
-  repo.setJobStatus(job.id, 'running', { stage: 'parsing' });
-
-  // Run the real ingestion pipeline asynchronously
-  if (_gateway) {
-    const root = file.scopeType === 'shared'
-      ? join(getStudioRoot(), 'shared-knowledge', 'original-files')
-      : join(getProjectRoot(file.scopeId), 'original-files');
-    const fileNode = fileRepo.getById(fileId);
-    if (fileNode) {
-      const filePath = resolveInside(root, fileNode.normalizedPath);
-      const ctx = createPipelineContext(db, _gateway, filePath, source.id, file.scopeType, file.scopeId);
-      runIngestionPipeline(ctx).catch((err: unknown) => {
-        getLogger().error({ err, fileId, sourceId: source.id }, '知识入库流水线异常');
-      });
-    }
-  }
-
-  return { source, job };
+  return prepared;
 };
 
 const registerFileIpc = (db: ReturnType<typeof getDatabase>): void => {
@@ -704,7 +699,6 @@ const registerFileIpc = (db: ReturnType<typeof getDatabase>): void => {
     if (sources.some(({ info }) => !info.isFile() || info.isSymbolicLink())) throw new DatabaseError('VALIDATION_FAILED', '只能导入普通文件');
     if (sources.some(({ info }) => info.size > MAX_FILE_BYTES)) throw new DatabaseError('VALIDATION_FAILED', '单个文件不能超过 100 MB');
     if (sources.reduce((total, { info }) => total + info.size, 0) > MAX_BATCH_BYTES) throw new DatabaseError('VALIDATION_FAILED', '单次导入总量不能超过 500 MB');
-    const importedFileIds: string[] = [];
     for (const { sourcePath } of sources) {
       const destName = basename(sourcePath);
       const destination = await nextAvailablePath(targetDirectory, destName);
@@ -726,7 +720,6 @@ const registerFileIpc = (db: ReturnType<typeof getDatabase>): void => {
           createdById: 'local-user',
           changeNote: 'upload',
         });
-        importedFileIds.push(existing.id);
       } else {
         const parentPath = normalizeRelativePath(input.relativePath);
         const file = fileRepo.create({
@@ -749,10 +742,9 @@ const registerFileIpc = (db: ReturnType<typeof getDatabase>): void => {
           changeNote: 'upload',
         });
         fileRepo.markReady(file.id);
-        importedFileIds.push(file.id);
       }
     }
-    importedFileIds.forEach((fid) => knowledgeIngestForFile(db, fid));
+    // 文件导入只登记原始文件；知识处理在智能体实际检索时按需完成。
     return { cancelled: false, importedCount: sources.length };
   });
 
@@ -909,9 +901,12 @@ const registerFileIpc = (db: ReturnType<typeof getDatabase>): void => {
     const sid = st === 'shared' ? 'shared-knowledge' : input.projectId;
     const normalizedInputPath = normalizeRelativePath(input.relativePath).replaceAll('\\', '/');
     const systemDirectories = ['agent-identities', 'agent-memories', 'knowledge', 'graph-visualization', 'outputs'];
-    const isProjectSystemFile = st === 'project'
-      && systemDirectories.some((directory) => normalizedInputPath === directory || normalizedInputPath.startsWith(`${directory}/`));
-    const root = isProjectSystemFile ? getProjectRoot(input.projectId) : await getScopeRoot(input);
+    const isSystemFile = systemDirectories.some(
+      (directory) => normalizedInputPath === directory || normalizedInputPath.startsWith(`${directory}/`),
+    );
+    const root = isSystemFile
+      ? (st === 'shared' ? join(getStudioRoot(), 'shared-knowledge') : getProjectRoot(input.projectId))
+      : await getScopeRoot(input);
     const target = resolveInside(root, normalizedInputPath);
     await assertNoSymlink(target);
     const info = await lstat(target);
@@ -1755,7 +1750,7 @@ const registerKnowledgeIpc = (db: ReturnType<typeof getDatabase>): void => {
     return { ok: true, data };
   });
   registerIpc('knowledge:ingest', async (_event, input: { fileId: string }) => {
-    const result = knowledgeIngestForFile(db, input.fileId);
+    const result = await knowledgeIngestForFile(db, input.fileId);
     return { ok: true, data: result };
   });
   registerIpc('knowledge:retryJob', async (_event, input: { jobId: string }) => {
@@ -1766,6 +1761,7 @@ const registerKnowledgeIpc = (db: ReturnType<typeof getDatabase>): void => {
     return { ok: true, data: repo.getJob(job.id) };
   });
   registerIpc('knowledge:search', async (_event, input: { query: string; projectId?: string; scopeType?: string; scopeId?: string; limit?: number }) => {
+    if (input.projectId && _gateway) await refreshKnowledgeBeforeSearch(db, _gateway, input.projectId);
     const data = input.projectId
       ? searchHybridKnowledge(db, input.query, input.projectId, input.limit ?? 20)
       : repo.search(input.query, input.scopeType, input.scopeId, input.limit ?? 50);
@@ -2329,7 +2325,7 @@ app.whenReady().then(async () => {
         const executor = createAgentExecutor(db, win, _gateway, undefined, toolRegistry);
         _scheduler = new Scheduler(db, executor);
         executor.setScheduler(_scheduler);
-        registerProjectTools(toolRegistry, db, _scheduler);
+        registerProjectTools(toolRegistry, db, _scheduler, _gateway);
 
         // 启动 Team MCP Server
         const mcpServer = new TeamMcpServer(toolRegistry, { role: 'external-cli', projectId: '', runId: '' });
@@ -2381,13 +2377,6 @@ app.whenReady().then(async () => {
       }
 
       const watcher = new FileWatcher(db);
-      watcher.onIngest = (fileId) => {
-        try {
-          knowledgeIngestForFile(db, fileId);
-        } catch (err) {
-          getLogger().error({ err, fileId }, 'Watcher 触发的知识入库失败');
-        }
-      };
       const allProjects = new ProjectRepository(db).list();
       const projectRoots = allProjects.map((p: { id: string }) => ({ projectId: p.id, rootPath: getProjectRoot(p.id) }));
       watcher.start(studioRoot, projectRoots);

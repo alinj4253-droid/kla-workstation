@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>知识图谱 - 完整视图</title>
+<script>__KUNQING_ECHARTS_RUNTIME__</script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Microsoft YaHei','PingFang SC','Helvetica Neue',Arial,sans-serif;background:linear-gradient(135deg,#0c0e1a 0%,#1a1c2e 50%,#0c0e1a 100%);color:#fff;min-height:100vh}
+.header{text-align:center;padding:30px 20px 10px;background:linear-gradient(180deg,rgba(255,107,53,0.12) 0%,transparent 100%)}
+.header h1{font-size:28px;font-weight:700;background:linear-gradient(90deg,#FF6B35,#F18F01,#FF6B35);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:6px;letter-spacing:2px}
+.header .sub{font-size:14px;color:#8B8FA3;margin-bottom:3px}
+.header .src{font-size:11px;color:#6B6F83;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:1000px;margin:0 auto}
+.stats{display:flex;justify-content:center;gap:20px;padding:15px;flex-wrap:wrap}
+.stat{text-align:center;background:rgba(255,255,255,0.05);padding:12px 20px;border-radius:12px;border:1px solid rgba(255,255,255,0.1);min-width:130px}
+.stat .num{font-size:24px;font-weight:700;color:#FF6B35}
+.stat .lbl{font-size:11px;color:#8B8FA3;margin-top:3px}
+.container{padding:15px;max-width:100%}
+.panel{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:14px;padding:15px;backdrop-filter:blur(10px)}
+.ptitle{font-size:16px;font-weight:600;margin-bottom:10px;padding-left:12px;border-left:4px solid #FF6B35}
+.chart-box{width:100%;height:calc(100vh - 340px);min-height:600px;display:flex;align-items:center;justify-content:center;color:#8B8FA3}
+.legend-bar{display:flex;flex-wrap:wrap;gap:12px;padding:10px 0;margin-top:8px}
+.legend-item{display:flex;align-items:center;gap:5px;font-size:12px;color:#ccc}
+.legend-dot{width:12px;height:12px;border-radius:3px}
+.controls{display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap}
+.ctrl-btn{padding:6px 14px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#ccc;cursor:pointer;font-size:12px;transition:all .3s}
+.ctrl-btn.active{background:#FF6B35;color:#fff;border-color:#FF6B35}
+.ctrl-btn:hover{border-color:rgba(255,107,53,0.5)}
+.ctrl-btn:focus-visible{outline:2px solid #F18F01;outline-offset:2px}
+.detail-panel{margin-top:10px;padding:10px;background:rgba(52,152,219,0.1);border-radius:8px;border-left:3px solid #3498DB;font-size:12px;color:#ccc;line-height:1.6;min-height:40px}
+footer{text-align:center;padding:15px;color:#6B6F83;font-size:11px}
+@media(max-width:900px){.chart-box{height:500px}.stats{gap:10px}.stat{min-width:100px}.header h1{font-size:24px}}
+</style>
+</head>
+<body>
+<div class="header">
+  <h1 id="graphTitle">知识图谱</h1>
+  <div class="sub" id="graphSubtitle"></div>
+  <div class="src" id="graphSource"></div>
+</div>
+<div class="stats" id="graphStats"></div>
+<div class="container">
+  <div class="panel">
+    <div class="ptitle" id="panelTitle">完整知识图谱</div>
+    <div class="controls">
+      <button class="ctrl-btn active" type="button" data-category="all">全部展示</button>
+      <span id="categoryControls"></span>
+      <button class="ctrl-btn" type="button" id="resetLayout">重置布局</button>
+      <button class="ctrl-btn" type="button" id="focusCore">聚焦核心节点</button>
+    </div>
+    <div class="chart-box" id="mainChart">正在加载图谱...</div>
+    <div class="legend-bar" id="legendBar"></div>
+    <div class="detail-panel" id="detailPanel">点击节点查看详细实体信息，或点击关系查看关系说明</div>
+  </div>
+</div>
+<footer id="graphFooter"></footer>
+
+<script>
+var graphData = __KUNQING_GRAPH_DATA__;
+var currentCategory = 'all';
+var chartElement = document.getElementById('mainChart');
+var detailPanel = document.getElementById('detailPanel');
+var nodesById = new Map(graphData.nodes.map(function(node){ return [node.id, node]; }));
+
+function escapeHtml(value) {
+  return String(value == null ? '' : value).replace(/[&<>"']/g, function(char) {
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char];
+  });
+}
+
+function renderDocumentChrome() {
+  document.title = graphData.title + ' - 完整视图';
+  document.getElementById('graphTitle').textContent = graphData.title;
+  document.getElementById('graphSubtitle').textContent = graphData.subtitle;
+  document.getElementById('graphSource').textContent = graphData.source;
+  document.getElementById('panelTitle').textContent = graphData.panelTitle;
+  document.getElementById('graphFooter').textContent = graphData.footer;
+
+  var stats = document.getElementById('graphStats');
+  graphData.stats.forEach(function(stat) {
+    var card = document.createElement('div');
+    card.className = 'stat';
+    var value = document.createElement('div');
+    value.className = 'num';
+    value.textContent = stat.value;
+    var label = document.createElement('div');
+    label.className = 'lbl';
+    label.textContent = stat.label;
+    card.append(value, label);
+    stats.append(card);
+  });
+
+  var controls = document.getElementById('categoryControls');
+  graphData.categories.forEach(function(category) {
+    var button = document.createElement('button');
+    button.className = 'ctrl-btn';
+    button.type = 'button';
+    button.dataset.category = category.id;
+    button.textContent = category.name;
+    controls.append(button);
+  });
+
+  var legend = document.getElementById('legendBar');
+  graphData.categories.forEach(function(category) {
+    var item = document.createElement('div');
+    item.className = 'legend-item';
+    var dot = document.createElement('div');
+    dot.className = 'legend-dot';
+    dot.style.background = category.color;
+    var label = document.createElement('span');
+    label.textContent = category.name;
+    item.append(dot, label);
+    legend.append(item);
+  });
+}
+
+renderDocumentChrome();
+
+if (!window.echarts) {
+  chartElement.textContent = '图谱内置交互组件未能加载，请重新生成图谱成果。';
+  detailPanel.textContent = '图谱数据已保留，但内置交互运行库未正确载入。';
+} else {
+  chartElement.textContent = '';
+  var chart = echarts.init(chartElement);
+
+  function getFilteredData() {
+    if (currentCategory === 'all') return { nodes: graphData.nodes, edges: graphData.edges };
+    var nodes = graphData.nodes.filter(function(node){ return node.category === currentCategory; });
+    var allowedIds = new Set(nodes.map(function(node){ return node.id; }));
+    return {
+      nodes: nodes,
+      edges: graphData.edges.filter(function(edge){ return allowedIds.has(edge.source) && allowedIds.has(edge.target); })
+    };
+  }
+
+  function buildOption() {
+    var data = getFilteredData();
+    var categoriesById = new Map(graphData.categories.map(function(category){ return [category.id, category]; }));
+    var categoryIndex = new Map(graphData.categories.map(function(category, index){ return [category.id, index]; }));
+    var graphNodes = data.nodes.map(function(node) {
+      var category = categoriesById.get(node.category) || graphData.categories[0];
+      return {
+        id: node.id,
+        name: node.label,
+        category: categoryIndex.get(node.category) || 0,
+        symbolSize: node.size,
+        itemStyle: { color: category ? category.color : '#888' },
+        details: node.details,
+        confidence: node.confidence
+      };
+    });
+    var graphEdges = data.edges.map(function(edge) {
+      var sourceNode = nodesById.get(edge.source);
+      var category = sourceNode ? categoriesById.get(sourceNode.category) : null;
+      return {
+        source: edge.source,
+        target: edge.target,
+        relationLabel: edge.label,
+        label: { show: true, formatter: edge.label, fontSize: 9, color: '#aaa', position: 'middle' },
+        lineStyle: {
+          color: category ? category.color : '#888',
+          width: edge.weight > 6 ? 2.5 : edge.weight > 4 ? 1.8 : 1.2,
+          curveness: 0.15,
+          type: edge.weight <= 3 ? 'dashed' : 'solid'
+        }
+      };
+    });
+    var count = graphNodes.length;
+    return {
+      tooltip: {
+        trigger: 'item',
+        formatter: function(params) {
+          if (params.data && params.data.details) {
+            return '<b>' + escapeHtml(params.data.name).replace(/\n/g, ' ') + '</b><br/>' + escapeHtml(params.data.details).replace(/\n/g, '<br/>');
+          }
+          if (params.data && params.data.relationLabel) {
+            var source = nodesById.get(params.data.source);
+            var target = nodesById.get(params.data.target);
+            return '<b>' + escapeHtml(source ? source.label : params.data.source) + '</b> → <b>' + escapeHtml(target ? target.label : params.data.target) + '</b><br/>' + escapeHtml(params.data.relationLabel);
+          }
+          return '';
+        }
+      },
+      legend: {
+        orient: 'vertical', right: 15, top: 'center',
+        textStyle: { fontSize: 12, color: '#ccc' },
+        data: graphData.categories.map(function(category){ return category.name; }),
+        inactiveColor: '#666'
+      },
+      graphic: count ? [] : [{type:'text',left:'center',top:'middle',style:{text:'当前分类暂无可展示的实体',fill:'#8B8FA3',fontSize:14}}],
+      series: [{
+        type: 'graph',
+        layout: 'force',
+        data: graphNodes,
+        links: graphEdges,
+        categories: graphData.categories.map(function(category){ return { name: category.name }; }),
+        roam: true,
+        label: {
+          show: true, position: 'right', fontSize: 10, color: '#ddd',
+          formatter: function(params){ return params.data.name.replace(/\n/g, ' '); }
+        },
+        force: {
+          repulsion: count > 220 ? 650 : 1200,
+          edgeLength: count > 220 ? [55, 150] : [80, 200],
+          gravity: 0.05,
+          friction: 0.6,
+          layoutAnimation: true
+        },
+        lineStyle: { color: '#666', width: 1.5, curveness: 0.15 },
+        emphasis: { focus: 'adjacency', lineStyle: { width: 4 }, label: { fontSize: 13 } },
+        draggable: true
+      }]
+    };
+  }
+
+  function resetLayout() {
+    chart.clear();
+    chart.setOption(buildOption(), true);
+  }
+
+  function focusCore() {
+    var data = getFilteredData();
+    var index = data.nodes.findIndex(function(node){ return node.id === graphData.coreNodeId; });
+    if (index < 0) return;
+    chart.dispatchAction({ type: 'downplay', seriesIndex: 0 });
+    chart.dispatchAction({ type: 'highlight', seriesIndex: 0, dataIndex: index });
+    chart.dispatchAction({ type: 'showTip', seriesIndex: 0, dataIndex: index });
+  }
+
+  chart.setOption(buildOption());
+  chart.on('click', function(params) {
+    if (params.data && params.data.details) {
+      var category = graphData.categories.find(function(item){ return item.id === dataCategory(params.data.id); });
+      detailPanel.innerHTML = '<b>实体名称：</b>' + escapeHtml(params.data.name).replace(/\n/g, ' ') + '<br/>' +
+        '<b>类型：</b>' + escapeHtml(category ? category.name : '其他') + '<br/>' +
+        '<b>详情：</b><br/>' + escapeHtml(params.data.details).replace(/\n/g, '<br/>');
+    } else if (params.data && params.data.relationLabel) {
+      var source = nodesById.get(params.data.source);
+      var target = nodesById.get(params.data.target);
+      detailPanel.innerHTML = '<b>关系：</b>' + escapeHtml(source ? source.label : params.data.source) + ' → ' + escapeHtml(target ? target.label : params.data.target) + '<br/><b>说明：</b>' + escapeHtml(params.data.relationLabel);
+    }
+  });
+
+  function dataCategory(nodeId) {
+    var node = nodesById.get(nodeId);
+    return node ? node.category : '';
+  }
+
+  document.querySelector('.controls').addEventListener('click', function(event) {
+    var button = event.target.closest('button[data-category]');
+    if (!button) return;
+    currentCategory = button.dataset.category;
+    document.querySelectorAll('button[data-category]').forEach(function(item){ item.classList.toggle('active', item === button); });
+    chart.setOption(buildOption(), true);
+  });
+  document.getElementById('resetLayout').addEventListener('click', resetLayout);
+  document.getElementById('focusCore').addEventListener('click', focusCore);
+  window.addEventListener('resize', function(){ chart.resize(); });
+}
+</script>
+</body>
+</html>
