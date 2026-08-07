@@ -14,7 +14,13 @@ export class KimiAutoStrategy implements VersionStrategy {
   buildAuthProbe(_connection: CliConnectionSnapshot): SpawnSpec | null { return null; }
 
   buildRun(input: PreparedExternalRun): SpawnSpec {
-    return { executable: input.executablePath, args: ['run', input.instruction, ...input.args], cwd: input.workspaceRoot, env: input.env, shell: process.platform === 'win32' };
+    return {
+      executable: input.executablePath,
+      args: ['-p', input.instruction, '--output-format', 'text', ...input.args],
+      cwd: input.workspaceRoot,
+      env: input.env,
+      shell: process.platform === 'win32',
+    };
   }
 
   parseStdout(chunk: Uint8Array, state: ParserState): ParsedAgentEvent[] {

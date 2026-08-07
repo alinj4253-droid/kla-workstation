@@ -16,16 +16,7 @@ const ADAPTER_RANGES: Record<string, KnownVersionRange[]> = {
   'opencode': [
     { min: '0.1.0', max: '9.99.99', label: '>=0.1.0 <=9.99.99' },
   ],
-  'codegeex': [
-    { min: '0.1.0', max: '9.99.99', label: '>=0.1.0 <=9.99.99' },
-  ],
   'kimi': [
-    { min: '0.1.0', max: '9.99.99', label: '>=0.1.0 <=9.99.99' },
-  ],
-  'minimax': [
-    { min: '0.1.0', max: '9.99.99', label: '>=0.1.0 <=9.99.99' },
-  ],
-  'marcode': [
     { min: '0.1.0', max: '9.99.99', label: '>=0.1.0 <=9.99.99' },
   ],
   'aion': [

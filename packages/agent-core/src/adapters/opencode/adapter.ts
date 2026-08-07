@@ -77,14 +77,6 @@ export class OpencodeCliAdapter implements ExternalAgentAdapter {
     sink?: AgentEventSink,
   ): Promise<ExternalRunResult> {
     const start = Date.now();
-    console.log('[OpencodeCliAdapter.spawnAndCollect]', {
-      executable: spec.executable,
-      args: spec.args,
-      cwd: spec.cwd,
-      shell: spec.shell,
-      env: spec.env,
-      processPlatform: process.platform
-    });
     return new Promise((resolve) => {
       const invocation = buildSpawnInvocation(spec);
       const child = spawn(invocation.executable, invocation.args, {
@@ -95,14 +87,8 @@ export class OpencodeCliAdapter implements ExternalAgentAdapter {
       if (spec.stdin) { child.stdin?.write(spec.stdin); child.stdin?.end(); }
       child.stdout?.on('data', (chunk: Buffer) => { const text = chunk.toString(); stdout += text; sink?.onStdout?.(text); });
       child.stderr?.on('data', (chunk: Buffer) => { const text = chunk.toString(); stderr += text; sink?.onStderr?.(text); });
-      child.on('exit', (code) => {
-        console.log('[OpencodeCliAdapter.spawnAndCollect] exit', { code, stdout, stderr, duration: Date.now() - start });
-        exitCode = code; resolve({ stdout, stderr, exitCode, durationMs: Date.now() - start });
-      });
-      child.on('error', (err) => {
-        console.log('[OpencodeCliAdapter.spawnAndCollect] error', err);
-        resolve({ stdout, stderr, exitCode, durationMs: Date.now() - start });
-      });
+      child.on('exit', (code) => { exitCode = code; resolve({ stdout, stderr, exitCode, durationMs: Date.now() - start }); });
+      child.on('error', () => resolve({ stdout, stderr, exitCode, durationMs: Date.now() - start }));
     });
   }
 }
