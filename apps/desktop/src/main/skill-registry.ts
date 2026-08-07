@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import type Database from 'better-sqlite3';
 import { getLogger } from './logger';
@@ -52,6 +53,20 @@ export type ResolvedSkillPackage = {
   requiredTools: string[];
   ordinal: number;
 };
+
+export type SkillSearchResult = Pick<ResolvedSkillPackage, 'id' | 'version' | 'name' | 'description' | 'requiredTools' | 'ordinal'> & { score: number };
+
+function skillSearchTerms(query: string): string[] {
+  const normalized = query.toLocaleLowerCase().trim();
+  const terms = new Set(normalized.match(/[a-z0-9][a-z0-9-]{1,}/g) ?? []);
+  for (const span of normalized.match(/[\u4e00-\u9fff]+/g) ?? []) {
+    if (span.length <= 4) terms.add(span);
+    for (let index = 0; index < span.length - 1; index++) {
+      terms.add(span.slice(index, index + 2));
+    }
+  }
+  return [...terms].slice(0, 80);
+}
 
 export function parseSkillMarkdown(markdown: string): { name: string | null; description: string | null; body: string } {
   const match = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
@@ -183,12 +198,66 @@ export class SkillRegistry {
       this.db.transaction(() => {
         remove.run(runId);
         const now = new Date().toISOString();
-        for (const skill of skills) insert.run(runId, skill.id, skill.version, skill.checksum, skill.packageRelPath, JSON.stringify(skill), now);
+        for (const skill of skills) {
+          let entryContent = '';
+          if (skill.packageRelPath) {
+            try { entryContent = readFileSync(join(this.studioRoot, skill.packageRelPath, skill.entryRelPath), 'utf8'); } catch { /* legacy package */ }
+          }
+          if (!entryContent) {
+            try {
+              const row = this.db.prepare('SELECT manifest_json as manifestJson FROM skill_packages WHERE id = ? AND version = ?')
+                .get(skill.id, skill.version) as { manifestJson: string } | undefined;
+              const manifest = row ? JSON.parse(row.manifestJson) as Partial<SkillPackageManifest> : {};
+              entryContent = typeof manifest.instructions === 'string' ? manifest.instructions : '';
+            } catch { /* keep metadata-only snapshot */ }
+          }
+          insert.run(runId, skill.id, skill.version, skill.checksum, skill.packageRelPath, JSON.stringify({ ...skill, entryContent }), now);
+        }
       })();
     } catch (err) {
       getLogger()?.warn({ err, runId }, 'SkillRegistry: Run 技能快照写入失败');
     }
     return skills;
+  }
+
+  searchForRun(runId: string, query: string, limit = 3): SkillSearchResult[] {
+    const rows = this.db.prepare(
+      'SELECT snapshot_json as snapshotJson FROM agent_run_skills WHERE run_id = ? ORDER BY created_at, skill_id',
+    ).all(runId) as Array<{ snapshotJson: string }>;
+    const normalized = query.toLocaleLowerCase().trim();
+    const terms = skillSearchTerms(normalized);
+    return rows.flatMap(({ snapshotJson }) => {
+      let skill: ResolvedSkillPackage;
+      try { skill = JSON.parse(snapshotJson) as ResolvedSkillPackage; } catch { return []; }
+      const id = skill.id.toLocaleLowerCase();
+      const name = skill.name.toLocaleLowerCase();
+      const description = skill.description.toLocaleLowerCase();
+      const searchable = `${id} ${name} ${description}`;
+      let score = normalized && searchable.includes(normalized) ? 12 : 0;
+      for (const term of terms) {
+        if (id.includes(term)) score += 5;
+        if (name.includes(term)) score += 4;
+        if (description.includes(term)) score += 2;
+      }
+      return [{ id: skill.id, version: skill.version, name: skill.name, description: skill.description, requiredTools: skill.requiredTools, ordinal: skill.ordinal, score }];
+    }).filter((skill) => skill.score > 0)
+      .sort((left, right) => right.score - left.score || left.ordinal - right.ordinal)
+      .slice(0, Math.max(1, Math.min(limit, 5)));
+  }
+
+  loadForRun(runId: string, skillId: string, skillVersion?: string): string | null {
+    const row = this.db.prepare(
+      `SELECT snapshot_json as snapshotJson FROM agent_run_skills
+       WHERE run_id = ? AND skill_id = ? ${skillVersion ? 'AND skill_version = ?' : ''}
+       ORDER BY created_at DESC LIMIT 1`,
+    ).get(...(skillVersion ? [runId, skillId, skillVersion] : [runId, skillId])) as { snapshotJson: string } | undefined;
+    if (!row) return null;
+    try {
+      const snapshot = JSON.parse(row.snapshotJson) as ResolvedSkillPackage & { entryContent?: string };
+      return snapshot.entryContent?.trim() || null;
+    } catch {
+      return null;
+    }
   }
 
   async loadForDefinition(definitionId: string, definitionVersion: string, skillId: string, skillVersion?: string): Promise<string | null> {
@@ -325,6 +394,6 @@ export class SkillRegistry {
         });
       }
     })();
-    getLogger()?.info('SkillRegistry: 内置技能与版本化绑定已安装');
+    getLogger(this.studioRoot)?.info('SkillRegistry: 内置技能与版本化绑定已安装');
   }
 }

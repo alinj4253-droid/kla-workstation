@@ -1,0 +1,10 @@
+# 本地存储契约
+
+- `original-files/`: 原始输入，只由用户文件操作修改。
+- `knowledge/knowledge-index.json`: 文档摘要、关键词和标签索引。
+- `knowledge/wiki/`: Wiki 页面及离线索引。
+- `graph-visualization/knowledge-graph.json`: 图谱投影数据。
+- `graph-visualization/knowledge-graph.html`: 离线图谱可视化。
+- SQLite: 切片、向量、图谱、溯源和处理状态的权威数据。
+
+文件身份使用 MD5 作为处理标记，同时保留 SHA-256 版本校验。源文件移出后停用对应来源，保留历史知识记录但禁止检索命中。

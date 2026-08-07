@@ -6,6 +6,11 @@ files:
   - out/**/*
   - package.json
   - node_modules/**/*
+extraResources:
+  - from: resources
+    to: resources
+    filter:
+      - "**/*"
 asar: true
 asarUnpack:
   - node_modules/better-sqlite3/**

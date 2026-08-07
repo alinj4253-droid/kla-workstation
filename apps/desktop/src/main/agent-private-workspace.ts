@@ -1,4 +1,4 @@
-import { access, cp, lstat, mkdir, readdir, writeFile } from 'node:fs/promises';
+import { access, cp, lstat, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { getStudioRoot } from './paths';
 
@@ -12,6 +12,20 @@ async function copyDirectoryIfPresent(source: string, target: string): Promise<v
   }
   await mkdir(target, { recursive: true });
   await cp(source, target, { recursive: true, force: true });
+}
+
+async function writeSkillIndex(workspaceRoot: string): Promise<void> {
+  const skillsRoot = join(workspaceRoot, 'skills');
+  const entries = await readdir(skillsRoot, { withFileTypes: true }).catch(() => []);
+  const lines: string[] = ['# 自身技能索引', '', '先根据当前任务选择最相关的技能，只在需要时读取对应 SKILL.md。', ''];
+  for (const entry of entries.filter((item) => item.isDirectory()).sort((left, right) => left.name.localeCompare(right.name))) {
+    const markdown = await readFile(join(skillsRoot, entry.name, 'SKILL.md'), 'utf8').catch(() => '');
+    const description = markdown.match(/^description:\s*(.+)$/mi)?.[1]?.trim()
+      ?? markdown.match(/^#\s+(.+)$/m)?.[1]?.trim()
+      ?? entry.name;
+    lines.push(`- ${entry.name}: ${description}`);
+  }
+  if (lines.length > 4) await writeFile(join(skillsRoot, 'INDEX.md'), `${lines.join('\n')}\n`, 'utf8');
 }
 
 /**
@@ -53,12 +67,13 @@ export async function prepareAgentPrivateWorkspace(input: {
     ] : []),
     mkdir(join(workspaceRoot, 'outputs'), { recursive: true }),
   ]);
+  await writeSkillIndex(workspaceRoot);
 
   await writeFile(join(workspaceRoot, 'WORKSPACE.md'), `# ${input.agentName} 私有执行工作区
 
 - \`identity/\`：仅包含当前智能体自己的身份与角色卡。
 - \`memory/\`：仅包含当前智能体自己的短期、长期和会话记忆。
-- \`skills/\`：仅包含当前智能体定义绑定的技能包，与群聊无关。
+- \`skills/\`：仅包含当前智能体定义绑定的技能包，与群聊无关；先读 INDEX.md 选择技能，再按需读对应 SKILL.md。
 - \`original-files/\`、\`knowledge/\`、\`graph-visualization/\`：本次任务允许读取的群聊输入副本。
 - \`outputs/\`：成果输出目录；需要交付的文件必须写入这里。
 

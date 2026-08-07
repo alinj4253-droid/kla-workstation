@@ -2,12 +2,19 @@ import { describe, expect, it } from 'vitest';
 import {
   buildSafeSynthesisFallback,
   containsInternalOrchestrationProtocol,
+  isSimpleDirectTask,
   removeUnverifiedAgentFailureClaims,
   runOrchestrator,
 } from '../src/orchestrator';
 import type { IGraphContext } from '../src/types';
 
 describe('orchestrator final response safety', () => {
+  it('keeps short weather and time questions out of team delegation', () => {
+    expect(isSimpleDirectTask('帮我查询一下今天上海天气')).toBe(true);
+    expect(isSimpleDirectTask('现在几点？')).toBe(true);
+    expect(isSimpleDirectTask('整理近三年天气数据并生成分析报告')).toBe(false);
+  });
+
   it('detects internal routing protocols before they enter formal chat messages', () => {
     expect(containsInternalOrchestrationProtocol('NEED_AGENTS codebuddy: 请继续发布成果')).toBe(true);
     expect(containsInternalOrchestrationProtocol('处理完成，成果已经发布。')).toBe(false);

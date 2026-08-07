@@ -10,13 +10,15 @@
     "build": "electron-rebuild -f -w better-sqlite3 && electron-vite build",
     "build:web": "vite build --config vite.web.config.ts",
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
-    "test": "node-gyp rebuild -C ./node_modules/better-sqlite3 2>nul & vitest run",
+    "test": "node-gyp rebuild -C ./node_modules/better-sqlite3 && vitest run",
     "test:watch": "vitest",
     "test:e2e": "vitest run tests/ --config vitest.config.ts",
+    "paddleocr:prepare": "node scripts/prepare-paddleocr-offline.mjs",
+    "paddleocr:verify": "node scripts/verify-paddleocr-offline.mjs",
     "licenses": "node scripts/generate-licenses.mjs",
     "postinstall": "node scripts/patch-electron-builder.mjs",
     "clean": "node scripts/clean-release.mjs",
-    "package:win": "pnpm clean && pnpm build && node scripts/generate-licenses.mjs && powershell -Command \"if (Test-Path 'D:\\temp\\kunqing-release\\win-unpacked') { Remove-Item 'D:\\temp\\kunqing-release\\win-unpacked' -Recurse -Force; Write-Host 'Removed stale win-unpacked' }\" && electron-builder --win nsis"
+    "package:win": "pnpm paddleocr:verify && pnpm clean && pnpm build && node scripts/generate-licenses.mjs && powershell -Command \"if (Test-Path 'D:\\temp\\kunqing-release\\win-unpacked') { Remove-Item 'D:\\temp\\kunqing-release\\win-unpacked' -Recurse -Force; Write-Host 'Removed stale win-unpacked' }\" && electron-builder --win nsis"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.16",
@@ -46,8 +48,10 @@
     "cytoscape": "^3.34.0",
     "dompurify": "^3.4.12",
     "drizzle-orm": "^0.45.2",
+    "echarts": "5.4.3",
     "lucide-react": "^1.24.0",
     "openai": "^6.48.0",
+    "pdf-parse": "1.1.1",
     "pino": "^10.3.1",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",

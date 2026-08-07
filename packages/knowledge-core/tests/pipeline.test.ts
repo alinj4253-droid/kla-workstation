@@ -123,9 +123,10 @@ describe('runIngestionPipeline', () => {
     const ctx = makeContext({
       readFile: vi.fn().mockRejectedValue(new Error('File not found')),
     });
-    await runIngestionPipeline(ctx);
+    await expect(runIngestionPipeline(ctx)).rejects.toThrow('File not found');
 
     expect(ctx.setSourceStatus).toHaveBeenCalledWith('error');
+    expect(ctx.setJobStatus).toHaveBeenCalledWith('failed', 'failed', 0, 'PIPELINE_ERROR');
   });
 
   it('reports progress through stages', async () => {

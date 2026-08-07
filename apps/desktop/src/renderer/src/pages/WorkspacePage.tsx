@@ -422,7 +422,7 @@ export function WorkspacePage(): React.JSX.Element {
       )}
 
       {graphViewerOpen && (
-        <GraphViewer scopeType={scopeType} scopeId={scopeType === 'shared' ? 'shared-knowledge' : projectId} projectId={projectId} onClose={() => setGraphViewerOpen(false)} />
+        <GraphViewer scopeType={scopeType} projectId={projectId} onClose={() => setGraphViewerOpen(false)} />
       )}
 
       {wikiViewerOpen && (

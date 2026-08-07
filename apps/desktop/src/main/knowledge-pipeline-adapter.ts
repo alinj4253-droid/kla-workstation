@@ -135,7 +135,7 @@ export function createPipelineContext(
     },
 
     async ocrExtract(targetPath: string): Promise<string> {
-      if (!isBuiltinToolEnabled(db, 'tool.paddle-ocr', false)) {
+      if (!isBuiltinToolEnabled(db, 'tool.paddle-ocr')) {
         throw new Error('PaddleOCR 本地模型包未启用或尚未安装');
       }
       return ocr.extract(targetPath);
@@ -348,7 +348,7 @@ export function createPipelineContext(
       progress?: number,
       errorCode?: string,
     ): Promise<void> {
-      const job = knowledgeRepo.getJob(sourceId);
+      const job = knowledgeRepo.getLatestJobForSource(sourceId);
       if (job) {
         const opts: { stage?: string; progress?: number; errorCode?: string } = {};
         if (stage !== undefined) opts.stage = stage;

@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "process-knowledge-files",
+  "version": "1.0.0",
+  "entry": "SKILL.md",
+  "executionMode": "hybrid",
+  "requiredTools": [
+    "workspace:readFile",
+    "knowledge:ingest",
+    "local:ocr",
+    "local:embed"
+  ],
+  "permissions": [
+    "group.original-files:read",
+    "group.knowledge:write"
+  ],
+  "compatibility": {
+    "codexSkill": true,
+    "kunqing": ">=0.1.0"
+  }
+}

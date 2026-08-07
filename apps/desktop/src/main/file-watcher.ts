@@ -14,8 +14,6 @@ export class FileWatcher {
   private messageRepo: MessageRepository;
   private db: Database.Database;
   private watchedDirs: Map<string, { scopeType: 'project' | 'shared'; scopeId: string }> = new Map();
-  /** Callback invoked when a new file or version is detected, receives the file ID */
-  onIngest: ((fileId: string) => void) | null = null;
 
   constructor(db: Database.Database) {
     this.db = db;
@@ -57,6 +55,12 @@ export class FileWatcher {
     this.watcher.on('add', (filePath) => { void this.handleChange(filePath); });
     this.watcher.on('change', (filePath) => { void this.handleChange(filePath); });
     this.watcher.on('unlink', (filePath) => { void this.handleDelete(filePath); });
+    this.watcher.on('error', (err) => {
+      // Windows can reject individual file handles while a document is being
+      // copied or parsed. Retrieval performs its own reconciliation, so a
+      // watcher error must be observable without becoming an unhandled reject.
+      getLogger().warn({ err, watchRoots }, 'FileWatcher: 文件监听暂时不可用，将由知识检索时重新同步');
+    });
 
     getLogger().info({ watchRoots }, 'FileWatcher: 已启动');
   }
@@ -130,10 +134,6 @@ export class FileWatcher {
           } catch { /* ignore */ }
         }
         getLogger().info({ relativePath: scope.relativePath, scopeType: scope.scopeType, scopeId: scope.scopeId }, 'FileWatcher: 新文件已注册');
-        // Trigger knowledge ingestion for new files
-        if (this.onIngest) {
-          setImmediate(() => this.onIngest!(file.id));
-        }
       } else {
         this.fileRepo.createVersion({
           fileId: existing.id,
@@ -145,10 +145,6 @@ export class FileWatcher {
           changeNote: 'watcher-detected',
         });
         getLogger().info({ relativePath: scope.relativePath, fileId: existing.id }, 'FileWatcher: 文件新版本已创建');
-        // Trigger knowledge ingestion for updated files
-        if (this.onIngest) {
-          setImmediate(() => this.onIngest!(existing.id));
-        }
       }
     } catch (err) {
       getLogger().error({ err, filePath }, 'FileWatcher: 处理文件变更失败');
@@ -163,7 +159,10 @@ export class FileWatcher {
       const existing = this.fileRepo.getByPath(scope.scopeType, scope.scopeId, scope.relativePath);
       if (existing && existing.status !== 'deleted') {
         this.fileRepo.softDelete(existing.id);
-        this.knowledgeRepo.removeKnowledgeForFile(existing.id);
+        // 保留知识记录，但让来源失活；检索只读取 ready 来源。
+        this.db.prepare(
+          "UPDATE knowledge_sources SET status = 'error', ingested_at = NULL WHERE file_id = ? AND status != 'error'",
+        ).run(existing.id);
         await materializeKnowledgeArtifacts(this.db, scope.scopeType, scope.scopeId);
         getLogger().info({ relativePath: scope.relativePath, fileId: existing.id }, 'FileWatcher: 文件已标记删除');
       }

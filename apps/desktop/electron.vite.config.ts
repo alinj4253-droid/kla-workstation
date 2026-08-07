@@ -7,7 +7,7 @@ export default defineConfig({
   main: {
     build: {
       rollupOptions: {
-        external: ['electron', 'better-sqlite3', 'pino', 'thread-stream'],
+        external: ['electron', 'better-sqlite3', 'pino', 'thread-stream', /^pdf-parse(?:\/|$)/],
         output: {
           format: 'cjs',
           entryFileNames: 'index.cjs',
