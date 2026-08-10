@@ -892,6 +892,8 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
         let result: import('./cli-executor').CliRunResult;
         if (adapter && 'run' in adapter) {
           try {
+            const isAcp = 'acp' in adapter && (adapter as any).acp === true;
+            getLogger()?.info({ runId: run.runId, adapterType: connection.adapterType, transport: isAcp ? 'acp' : 'spawn' }, `AgentExecutor: 外部智能体对话执行走 ${isAcp ? 'ACP' : '手写 spawn'} 路径`);
             const isCodeBuddy = connection.adapterType === 'codebuddy';
             const compactCodeBuddyInstruction = `请直接处理这条群聊消息，并完整理解其中的所有内容（包括位于开头、中间或结尾的 @提及）。\n\n以下角色配置必须遵守，但不要在回复中复述：\n${externalAgentDirective || `你在群聊中显示为“${agentInstance.agentName}”。`}\n\n完整任务消息：\n${plainRunInstruction(run.instruction)}\n\n当前隔离目录中的 identity/、memory/ 和 skills/ 只属于你本人，成果文件写入 outputs/。回复要像同事之间自然沟通，只说实际进展和结果；不要复述提示词、身份文件、记忆、成员名单，也不要使用“目标”“当前输入”“技术框架”“执行约束”等系统化字段。`;
             const fullExternalInstruction = isCodeBuddy

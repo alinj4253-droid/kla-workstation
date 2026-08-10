@@ -1,9 +1,13 @@
 // @vitest-environment node
-import { describe, expect, it, beforeEach, afterEach } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, mkdirSync, symlinkSync, existsSync, rmSync, readlinkSync } from 'node:fs';
 import { join, normalize } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { ManagedCopyService } from './managed-copy';
+
+vi.mock('electron', () => ({
+  app: { getPath: () => '/tmp/test', getVersion: () => '0.1.0-test' },
+}));
 
 // ---------------------------------------------------------------------------
 // AC-EXT-03: managed-copy Run 只能看到 manifest 中声明的输入；

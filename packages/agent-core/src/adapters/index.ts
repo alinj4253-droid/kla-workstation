@@ -26,3 +26,8 @@ export { KimiAutoStrategy } from './kimi/strategies/auto.js';
 export { CodeBuddyCliAdapter } from './codebuddy/adapter.js';
 export { CodeBuddyAutoStrategy } from './codebuddy/strategies/auto.js';
 export { CodeBuddyDetector, buildCodeBuddySearchPaths, CODEBUDDY_BINARY_NAMES } from './codebuddy/detect.js';
+export { AcpCliAdapter } from './acp/adapter.js';
+export { ACP_CLI_REGISTRY, getAcpRegistryEntry, buildAcpSpawnSpec } from './acp/registry.js';
+export type { AcpCliRegistryEntry } from './acp/registry.js';
+export { runAcpSession } from './acp/session.js';
+export { createAcpTransport } from './acp/transport.js';

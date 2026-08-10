@@ -53,6 +53,7 @@ export {
   CodeBuddyDetector,
   buildCodeBuddySearchPaths,
   CODEBUDDY_BINARY_NAMES,
+  AcpCliAdapter,
 } from './adapters/index.js';
 
 // 向后兼容别名（通过旧路径重导出）

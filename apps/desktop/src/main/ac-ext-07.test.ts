@@ -46,6 +46,84 @@ describe('AC-EXT-07', () => {
       expect(result.ok).toBe(true);
     });
 
+    it('Hermes (ACP) 能力矩阵与契约夹具一致', async () => {
+      const { AcpCliAdapter, validateCapabilities, getContract } = await import('@kunqing/agent-core');
+      const adapter = new AcpCliAdapter('hermes');
+      const caps = adapter.getCapabilities();
+      const result = validateCapabilities('hermes', caps);
+      if (!result.ok) {
+        console.error('Hermes 能力矩阵与契约不一致:', result.errors);
+        console.error('当前能力:', [...caps].sort());
+        console.error('契约期望:', getContract('hermes')?.expectedCapabilities);
+      }
+      expect(result.ok).toBe(true);
+    });
+
+    it('OpenCode (ACP) 能力矩阵与契约夹具一致', async () => {
+      const { AcpCliAdapter, validateCapabilities, getContract } = await import('@kunqing/agent-core');
+      const adapter = new AcpCliAdapter('opencode');
+      const caps = adapter.getCapabilities();
+      const result = validateCapabilities('opencode', caps);
+      if (!result.ok) {
+        console.error('OpenCode 能力矩阵与契约不一致:', result.errors);
+        console.error('当前能力:', [...caps].sort());
+        console.error('契约期望:', getContract('opencode')?.expectedCapabilities);
+      }
+      expect(result.ok).toBe(true);
+    });
+
+    it('Gemini (ACP) 能力矩阵与契约夹具一致', async () => {
+      const { AcpCliAdapter, validateCapabilities, getContract } = await import('@kunqing/agent-core');
+      const adapter = new AcpCliAdapter('gemini');
+      const caps = adapter.getCapabilities();
+      const result = validateCapabilities('gemini', caps);
+      if (!result.ok) {
+        console.error('Gemini 能力矩阵与契约不一致:', result.errors);
+        console.error('当前能力:', [...caps].sort());
+        console.error('契约期望:', getContract('gemini')?.expectedCapabilities);
+      }
+      expect(result.ok).toBe(true);
+    });
+
+    it('Qwen Code (ACP) 能力矩阵与契约夹具一致', async () => {
+      const { AcpCliAdapter, validateCapabilities, getContract } = await import('@kunqing/agent-core');
+      const adapter = new AcpCliAdapter('qwen-code');
+      const caps = adapter.getCapabilities();
+      const result = validateCapabilities('qwen-code', caps);
+      if (!result.ok) {
+        console.error('Qwen Code 能力矩阵与契约不一致:', result.errors);
+        console.error('当前能力:', [...caps].sort());
+        console.error('契约期望:', getContract('qwen-code')?.expectedCapabilities);
+      }
+      expect(result.ok).toBe(true);
+    });
+
+    it('Kimi (ACP) 能力矩阵与契约夹具一致', async () => {
+      const { AcpCliAdapter, validateCapabilities, getContract } = await import('@kunqing/agent-core');
+      const adapter = new AcpCliAdapter('kimi');
+      const caps = adapter.getCapabilities();
+      const result = validateCapabilities('kimi', caps);
+      if (!result.ok) {
+        console.error('Kimi 能力矩阵与契约不一致:', result.errors);
+        console.error('当前能力:', [...caps].sort());
+        console.error('契约期望:', getContract('kimi')?.expectedCapabilities);
+      }
+      expect(result.ok).toBe(true);
+    });
+
+    it('CodeBuddy (ACP) 能力矩阵与契约夹具一致', async () => {
+      const { AcpCliAdapter, validateCapabilities, getContract } = await import('@kunqing/agent-core');
+      const adapter = new AcpCliAdapter('codebuddy');
+      const caps = adapter.getCapabilities();
+      const result = validateCapabilities('codebuddy', caps);
+      if (!result.ok) {
+        console.error('CodeBuddy 能力矩阵与契约不一致:', result.errors);
+        console.error('当前能力:', [...caps].sort());
+        console.error('契约期望:', getContract('codebuddy')?.expectedCapabilities);
+      }
+      expect(result.ok).toBe(true);
+    });
+
     it('能力矩阵不能被意外修改', () => {
       const codexCaps = ['code-generation', 'file-read', 'file-write', 'terminal', 'search', 'network-access'].sort();
       const claudeCaps = ['code-generation', 'file-read', 'file-write', 'search', 'reasoning', 'network-access'].sort();
@@ -143,6 +221,66 @@ describe('AC-EXT-07', () => {
       expect(checkVersionCompatibility('claude-code', '10.0.0')).toBe('experimental');
       expect(checkVersionCompatibility('claude-code', null)).toBe('unknown');
     });
+
+    it('Hermes (ACP) 版本兼容范围与契约一致', async () => {
+      const { checkVersionCompatibility } = await import('./version-compatibility');
+      expect(checkVersionCompatibility('hermes', '0.1.0')).toBe('compatible');
+      expect(checkVersionCompatibility('hermes', '1.0.0')).toBe('compatible');
+      expect(checkVersionCompatibility('hermes', '9.99.99')).toBe('compatible');
+      expect(checkVersionCompatibility('hermes', '0.0.9')).toBe('incompatible');
+      expect(checkVersionCompatibility('hermes', '10.0.0')).toBe('experimental');
+      expect(checkVersionCompatibility('hermes', null)).toBe('unknown');
+    });
+
+    it('OpenCode (ACP) 版本兼容范围与契约一致', async () => {
+      const { checkVersionCompatibility } = await import('./version-compatibility');
+      expect(checkVersionCompatibility('opencode', '0.1.0')).toBe('compatible');
+      expect(checkVersionCompatibility('opencode', '1.18.13')).toBe('compatible');
+      expect(checkVersionCompatibility('opencode', '9.99.99')).toBe('compatible');
+      expect(checkVersionCompatibility('opencode', '0.0.9')).toBe('incompatible');
+      expect(checkVersionCompatibility('opencode', '10.0.0')).toBe('experimental');
+      expect(checkVersionCompatibility('opencode', null)).toBe('unknown');
+    });
+
+    it('Gemini (ACP) 版本兼容范围与契约一致', async () => {
+      const { checkVersionCompatibility } = await import('./version-compatibility');
+      expect(checkVersionCompatibility('gemini', '0.1.0')).toBe('compatible');
+      expect(checkVersionCompatibility('gemini', '0.46.0')).toBe('compatible');
+      expect(checkVersionCompatibility('gemini', '9.99.99')).toBe('compatible');
+      expect(checkVersionCompatibility('gemini', '0.0.9')).toBe('incompatible');
+      expect(checkVersionCompatibility('gemini', '10.0.0')).toBe('experimental');
+      expect(checkVersionCompatibility('gemini', null)).toBe('unknown');
+    });
+
+    it('Qwen Code (ACP) 版本兼容范围与契约一致', async () => {
+      const { checkVersionCompatibility } = await import('./version-compatibility');
+      expect(checkVersionCompatibility('qwen-code', '0.1.0')).toBe('compatible');
+      expect(checkVersionCompatibility('qwen-code', '1.0.0')).toBe('compatible');
+      expect(checkVersionCompatibility('qwen-code', '9.99.99')).toBe('compatible');
+      expect(checkVersionCompatibility('qwen-code', '0.0.9')).toBe('incompatible');
+      expect(checkVersionCompatibility('qwen-code', '10.0.0')).toBe('experimental');
+      expect(checkVersionCompatibility('qwen-code', null)).toBe('unknown');
+    });
+
+    it('Kimi (ACP) 版本兼容范围与契约一致', async () => {
+      const { checkVersionCompatibility } = await import('./version-compatibility');
+      expect(checkVersionCompatibility('kimi', '0.1.0')).toBe('compatible');
+      expect(checkVersionCompatibility('kimi', '1.0.0')).toBe('compatible');
+      expect(checkVersionCompatibility('kimi', '9.99.99')).toBe('compatible');
+      expect(checkVersionCompatibility('kimi', '0.0.9')).toBe('incompatible');
+      expect(checkVersionCompatibility('kimi', '10.0.0')).toBe('experimental');
+      expect(checkVersionCompatibility('kimi', null)).toBe('unknown');
+    });
+
+    it('CodeBuddy (ACP) 版本兼容范围与契约一致', async () => {
+      const { checkVersionCompatibility } = await import('./version-compatibility');
+      expect(checkVersionCompatibility('codebuddy', '0.1.0')).toBe('compatible');
+      expect(checkVersionCompatibility('codebuddy', '2.132.0')).toBe('compatible');
+      expect(checkVersionCompatibility('codebuddy', '9.99.99')).toBe('compatible');
+      expect(checkVersionCompatibility('codebuddy', '0.0.9')).toBe('incompatible');
+      expect(checkVersionCompatibility('codebuddy', '10.0.0')).toBe('experimental');
+      expect(checkVersionCompatibility('codebuddy', null)).toBe('unknown');
+    });
   });
 
   // ── parseVersion 契约 ─────────────────────────────────────────────────
@@ -233,7 +371,7 @@ describe('AC-EXT-07', () => {
     it('所有注册的适配器都有对应的契约', async () => {
       const { getContract } = await import('@kunqing/agent-core');
 
-      const registeredAdapters = ['codex', 'claude-code'];
+      const registeredAdapters = ['codex', 'claude-code', 'hermes', 'opencode', 'gemini', 'qwen-code', 'kimi', 'codebuddy'];
       for (const adapterType of registeredAdapters) {
         const contract = getContract(adapterType);
         expect(contract).toBeDefined();

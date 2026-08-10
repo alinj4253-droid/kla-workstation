@@ -5,10 +5,14 @@
  * AC-MODEL-01: 只通过文本生成测试、未通过工具调用测试的模型不能绑定统筹管理智能体。
  * AC-MODEL-02: 把内置智能体从 Provider A 的模型切换到兼容的 Provider B 后，无需修改智能体定义即可运行。
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { ModelGateway, validateModelForAgent, BUILTIN_AGENT_REQUIREMENTS } from './model-gateway';
 import type { ModelCapability } from './model-gateway';
+
+vi.mock('electron', () => ({
+  app: { getPath: () => '/tmp/test', getVersion: () => '0.1.0-test' },
+}));
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
