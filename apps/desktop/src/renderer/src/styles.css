@@ -3465,12 +3465,14 @@ button {
 .model-profile-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 11px; }
 .model-profile-header h4 { margin: 0; font-size: 11px; }
 .model-profile-list { display: flex; flex-direction: column; gap: 8px; }
-.model-profile-row { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; align-items: center; min-height: 48px; padding: 0 14px; gap: 10px; background: white; border: 1px solid var(--kq-border); border-radius: 7px; }
+.model-profile-header-row { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr 140px; align-items: center; padding: 0 14px; gap: 10px; font-size: 9px; color: var(--kq-text-tertiary); }
+.model-profile-row { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr 140px; align-items: center; min-height: 48px; padding: 0 14px; gap: 10px; background: white; border: 1px solid var(--kq-border); border-radius: 7px; }
 .model-profile-row strong { font-size: 10px; }
 .profile-provider,
 .profile-model,
 .profile-slot { font-size: 9px; color: var(--kq-text-secondary); }
 .profile-slot { color: var(--kq-text-tertiary); }
+.profile-row-actions { display: flex; gap: 6px; justify-content: flex-end; }
 
 @media (max-width: 1500px) {
   .topbar-search { width: min(300px, 30vw); }

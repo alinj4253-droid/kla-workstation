@@ -30,7 +30,7 @@ function createTestDb(): Database.Database {
     );
     CREATE TABLE IF NOT EXISTS model_profiles (
       id TEXT PRIMARY KEY, name TEXT NOT NULL, provider_id TEXT NOT NULL REFERENCES model_providers(id),
-      model_id TEXT NOT NULL, model_slot TEXT, parameters_json TEXT,
+      model_id TEXT NOT NULL, parameters_json TEXT,
       declared_capabilities_json TEXT, verified_capabilities_json TEXT,
       capability_tested_at TEXT, enabled INTEGER NOT NULL DEFAULT 1
     );
@@ -214,7 +214,7 @@ describe('AC-SET-03: 禁用后委派阻断', () => {
       );
       CREATE TABLE model_profiles (
         id TEXT PRIMARY KEY, name TEXT NOT NULL, provider_id TEXT NOT NULL REFERENCES model_providers(id),
-        model_id TEXT NOT NULL, model_slot TEXT, parameters_json TEXT,
+        model_id TEXT NOT NULL, parameters_json TEXT,
         declared_capabilities_json TEXT, verified_capabilities_json TEXT,
         capability_tested_at TEXT, enabled INTEGER NOT NULL DEFAULT 1
       );

@@ -86,7 +86,6 @@ function createDb(): Database.Database {
       name TEXT NOT NULL,
       provider_id TEXT NOT NULL,
       model_id TEXT NOT NULL,
-      model_slot TEXT,
       parameters_json TEXT,
       declared_capabilities_json TEXT,
       verified_capabilities_json TEXT,

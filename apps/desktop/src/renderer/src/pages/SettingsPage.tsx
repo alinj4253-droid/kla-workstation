@@ -1271,7 +1271,6 @@ function ProfileDialog({ editProfile, providers, onClose, onSaved }: { editProfi
   const [name, setName] = useState((editProfile?.name as string) ?? '');
   const [providerId, setProviderId] = useState((editProfile?.providerId as string) ?? '');
   const [modelId, setModelId] = useState((editProfile?.modelId as string) ?? '');
-  const [modelSlot, setModelSlot] = useState((editProfile?.modelSlot as string) ?? '');
   const [saving, setSaving] = useState(false);
 
   const submit = async (event: FormEvent): Promise<void> => {
@@ -1279,9 +1278,8 @@ function ProfileDialog({ editProfile, providers, onClose, onSaved }: { editProfi
     if (!name.trim() || !providerId || !modelId.trim()) return;
     setSaving(true);
     try {
-      const profileParams: { id?: string; name: string; providerId: string; modelId: string; modelSlot?: string } = { name: name.trim(), providerId, modelId: modelId.trim() };
+      const profileParams: { id?: string; name: string; providerId: string; modelId: string } = { name: name.trim(), providerId, modelId: modelId.trim() };
       if (isEdit) profileParams.id = editProfile.id as string;
-      if (modelSlot) profileParams.modelSlot = modelSlot;
       await window.kunqing?.models.saveProfile(profileParams);
       onSaved();
     } catch (err) { console.error('保存 Profile 失败', err); }
@@ -1292,7 +1290,7 @@ function ProfileDialog({ editProfile, providers, onClose, onSaved }: { editProfi
     <div className="modal-backdrop" role="presentation">
       <form className="model-dialog" onSubmit={(e) => void submit(e)}>
         <header>
-          <div><h3>{isEdit ? '编辑模型 Profile' : '添加模型 Profile'}</h3><p>Profile 绑定供应商和具体模型 ID，可选分配到智能体槽位。</p></div>
+          <div><h3>{isEdit ? '编辑模型 Profile' : '添加模型 Profile'}</h3><p>Profile 绑定供应商和具体模型 ID，创建后可在槽位绑定中选择。</p></div>
           <button type="button" className="icon-button" aria-label="关闭" onClick={onClose}><X size={18} /></button>
         </header>
         <label><span>名称 *</span><input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：GPT-4o 快速" /></label>
@@ -1303,14 +1301,6 @@ function ProfileDialog({ editProfile, providers, onClose, onSaved }: { editProfi
           </select>
         </label>
         <label><span>模型 ID *</span><input value={modelId} onChange={(e) => setModelId(e.target.value)} placeholder="例如：gpt-4o" /></label>
-        <label><span>分配槽位</span>
-          <select value={modelSlot} onChange={(e) => setModelSlot(e.target.value)}>
-            <option value="">不分配</option>
-            <option value="reasoning">推理 (reasoning)</option>
-            <option value="fast">快速 (fast)</option>
-            <option value="embedding">嵌入 (embedding)</option>
-          </select>
-        </label>
         <footer>
           <button type="button" className="secondary-button" onClick={onClose}>取消</button>
           <button type="submit" className="primary-button" disabled={saving || !name.trim() || !providerId || !modelId.trim()}>{saving ? '保存中…' : '保存'}</button>
@@ -1328,7 +1318,7 @@ function ProfilesTab({ profiles, providers, onRefresh, onAddProfile, onEditProfi
 
   const currentBindings: Record<string, { profileName: string; profileId: string }> = {};
   for (const p of profiles) {
-    const slot = p.modelSlot as string | null;
+    const slot = p.boundSlot as string | null;
     if (slot) currentBindings[slot] = { profileName: p.name as string, profileId: p.id as string };
   }
 
@@ -1352,7 +1342,12 @@ function ProfilesTab({ profiles, providers, onRefresh, onAddProfile, onEditProfi
               <div className="slot-edit">
                 <select value={assigningProfileId} onChange={(e) => setAssigningProfileId(e.target.value)}>
                   <option value="">-- 选择 Profile --</option>
-                  {profiles.map((p) => <option key={p.id as string} value={p.id as string}>{p.name as string}</option>)}
+                  {profiles
+                    .filter((p) => {
+                      const boundSlot = p.boundSlot as string | null;
+                      return !boundSlot || boundSlot === slot;
+                    })
+                    .map((p) => <option key={p.id as string} value={p.id as string}>{p.name as string}</option>)}
                 </select>
                 <button type="button" className="primary-button primary-button--small" onClick={() => void setSlot(slot, assigningProfileId)} disabled={!assigningProfileId}>确认</button>
                 <button type="button" className="secondary-button secondary-button--small" onClick={() => setEditingSlot(null)}>取消</button>
@@ -1372,13 +1367,20 @@ function ProfilesTab({ profiles, providers, onRefresh, onAddProfile, onEditProfi
         <button type="button" className="secondary-button secondary-button--small" onClick={() => void onRefresh()}><RefreshCw size={14} /> 刷新</button>
       </div>
       <div className="model-profile-list">
+        <div className="model-profile-header-row">
+          <span>名称</span>
+          <span>供应商</span>
+          <span>模型 ID</span>
+          <span>槽位绑定</span>
+          <span></span>
+        </div>
         {profiles.length === 0 && <p className="model-empty">尚未添加模型 Profile</p>}
         {profiles.map((p) => (
           <div className="model-profile-row" key={p.id as string}>
             <strong>{p.name as string}</strong>
             <span className="profile-provider">{(p.providerName as string) ?? p.providerId as string}</span>
             <span className="profile-model">{p.modelId as string}</span>
-            <span className="profile-slot">{(p.modelSlot as string) ? slotLabels[p.modelSlot as string] ?? (p.modelSlot as string) : '未分配'}</span>
+            <span className="profile-slot">{(p.boundSlot as string) ? slotLabels[p.boundSlot as string] ?? (p.boundSlot as string) : '未分配'}</span>
             <div className="profile-row-actions">
               <button type="button" className="secondary-button secondary-button--small" onClick={() => onEditProfile(p as Record<string, unknown>)}>编辑</button>
               <button type="button" className="secondary-button secondary-button--small" style={{ color: 'var(--kq-danger)' }} onClick={() => onDeleteProfile(p.id as string)}>删除</button>

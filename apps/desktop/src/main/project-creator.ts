@@ -431,10 +431,10 @@ export function seedFakeModelProvider(db: Database.Database): void {
 
   // 2. 创建两个 model_profiles（reasoning + fast 槽位）
   db.prepare(
-    `INSERT OR IGNORE INTO model_profiles (id, name, provider_id, model_id, model_slot, parameters_json, declared_capabilities_json, verified_capabilities_json, capability_tested_at, enabled)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+    `INSERT OR IGNORE INTO model_profiles (id, name, provider_id, model_id, parameters_json, declared_capabilities_json, verified_capabilities_json, capability_tested_at, enabled)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
   ).run(
-    FAKE_REASONING_PROFILE_ID, 'Fake Reasoning', FAKE_PROVIDER_ID, 'gpt-4o', 'reasoning',
+    FAKE_REASONING_PROFILE_ID, 'Fake Reasoning', FAKE_PROVIDER_ID, 'gpt-4o',
     JSON.stringify({ temperature: 0.7, maxTokens: 4096 }),
     JSON.stringify(['streaming', 'toolCalling', 'structuredOutput']),
     JSON.stringify(['streaming', 'toolCalling', 'structuredOutput']),
@@ -442,10 +442,10 @@ export function seedFakeModelProvider(db: Database.Database): void {
   );
 
   db.prepare(
-    `INSERT OR IGNORE INTO model_profiles (id, name, provider_id, model_id, model_slot, parameters_json, declared_capabilities_json, verified_capabilities_json, capability_tested_at, enabled)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+    `INSERT OR IGNORE INTO model_profiles (id, name, provider_id, model_id, parameters_json, declared_capabilities_json, verified_capabilities_json, capability_tested_at, enabled)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
   ).run(
-    FAKE_FAST_PROFILE_ID, 'Fake Fast', FAKE_PROVIDER_ID, 'gpt-4o-mini', 'fast',
+    FAKE_FAST_PROFILE_ID, 'Fake Fast', FAKE_PROVIDER_ID, 'gpt-4o-mini',
     JSON.stringify({ temperature: 0.3, maxTokens: 2048 }),
     JSON.stringify(['streaming']),
     JSON.stringify(['streaming']),

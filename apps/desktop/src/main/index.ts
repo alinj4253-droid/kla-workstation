@@ -1572,10 +1572,12 @@ const registerModelIpc = (db: ReturnType<typeof getDatabase>): void => {
   });
   registerIpc('models:listProfiles', async () => {
     const data = db.prepare(
-      `SELECT mp.id, mp.name, mp.provider_id as providerId, mp.model_id as modelId, mp.model_slot as modelSlot, mp.enabled,
+      `SELECT mp.id, mp.name, mp.provider_id as providerId, mp.model_id as modelId, mp.enabled,
+              msb.slot as boundSlot,
               prv.name as providerName, prv.type as providerType
        FROM model_profiles mp
        JOIN model_providers prv ON prv.id = mp.provider_id
+       LEFT JOIN model_slot_bindings msb ON msb.model_profile_id = mp.id
        ORDER BY mp.name`,
     ).all();
     return { ok: true, data };
@@ -1633,21 +1635,15 @@ const registerModelIpc = (db: ReturnType<typeof getDatabase>): void => {
       return { ok: true, data: { success: false, latencyMs: Date.now() - start, error: err instanceof Error ? err.message : String(err) } };
     }
   });
-  registerIpc('models:saveProfile', async (_event, input: { id?: string; name: string; providerId: string; modelId: string; modelSlot?: string }) => {
+  registerIpc('models:saveProfile', async (_event, input: { id?: string; name: string; providerId: string; modelId: string }) => {
     const repo = new ModelProfileRepository(db);
     let profileId: string;
     if (input.id) {
-      const changes: Record<string, unknown> = { name: input.name, providerId: input.providerId, modelId: input.modelId };
-      if (input.modelSlot !== undefined) changes.modelSlot = input.modelSlot;
-      repo.update(input.id, changes as Parameters<typeof repo.update>[1]);
+      repo.update(input.id, { name: input.name, providerId: input.providerId, modelId: input.modelId });
       profileId = input.id;
     } else {
-      const row = repo.create({ name: input.name, providerId: input.providerId, modelId: input.modelId, modelSlot: input.modelSlot } as never);
+      const row = repo.create({ name: input.name, providerId: input.providerId, modelId: input.modelId });
       profileId = row.id;
-    }
-    // 同步更新 model_slot_bindings 表，确保 ModelGateway 能正确解析槽位
-    if (input.modelSlot) {
-      db.prepare('INSERT OR REPLACE INTO model_slot_bindings (slot, model_profile_id, updated_at) VALUES (?, ?, ?)').run(input.modelSlot, profileId, new Date().toISOString());
     }
     return { ok: true, data: repo.getById(profileId) };
   });

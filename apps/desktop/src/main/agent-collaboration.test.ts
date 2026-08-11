@@ -26,7 +26,7 @@ function createDb(): Database.Database {
     );
     CREATE TABLE model_slot_bindings (slot TEXT PRIMARY KEY, model_profile_id TEXT);
     CREATE TABLE model_profiles (
-      id TEXT PRIMARY KEY, name TEXT, model_id TEXT, model_slot TEXT,
+      id TEXT PRIMARY KEY, name TEXT, model_id TEXT,
       parameters_json TEXT, verified_capabilities_json TEXT, provider_id TEXT, enabled INTEGER
     );
     CREATE TABLE model_providers (

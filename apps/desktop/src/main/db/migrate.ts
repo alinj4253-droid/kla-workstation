@@ -841,4 +841,11 @@ const migrations: Array<{ name: string; sql: string }> = [
         ON channel_bindings(channel_id, external_conversation_id);
     `,
   },
+  {
+    name: '020_cleanup_model_slot',
+    sql: `
+      DROP INDEX IF EXISTS idx_model_profiles_provider_model;
+      ALTER TABLE model_profiles DROP COLUMN model_slot;
+    `,
+  },
 ];
