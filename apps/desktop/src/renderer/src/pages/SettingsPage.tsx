@@ -11,6 +11,7 @@ import {
   Cpu,
   ExternalLink,
   FileCode,
+  FileText,
   FolderOpen,
   Gauge,
   Globe,
@@ -46,6 +47,8 @@ import {
 } from 'lucide-react';
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { NavLink, Navigate, Route, Routes, useNavigate } from 'react-router-dom';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 const secondaryNavClass = ({ isActive }: { isActive: boolean }): string => `settings-nav-link${isActive ? ' settings-nav-link--active' : ''}`;
 const OPERATIONS_SESSION_KEY = 'kunqing.operationsAccess';
@@ -1076,6 +1079,100 @@ function AgentActionDialog({ dialog, onClose, onRefresh }: { dialog: { type: str
   );
 }
 
+const MODEL_CONFIG_GUIDE = `# 模型配置指南
+
+## 一、添加供应商
+
+1. 在"模型管理"页面的**供应商**标签页下，点击"添加供应商"按钮。
+2. 填写以下信息：
+   - **名称**：方便识别的名称，如"阿里通义千问"
+   - **类型**：选择供应商类型（如 OpenAI 兼容、Ollama 等）
+   - **Base URL**：API 地址，例如 \`https://dashscope.aliyuncs.com/compatible-mode/v1\`
+   - **API Key**：从供应商平台获取的密钥
+3. 点击"保存"完成添加。
+
+> **提示**：国内常用供应商推荐地址：
+> - **阿里通义千问**：\`https://dashscope.aliyuncs.com/compatible-mode/v1\`
+> - **DeepSeek**：\`https://api.deepseek.com\`
+> - **硅基流动**：\`https://api.siliconflow.cn/v1\`
+> - **智谱 GLM**：\`https://open.bigmodel.cn/api/paas/v4\`
+> - **零一万物**：\`https://api.lingyiwanwu.com/v1\`
+> - **本地 Ollama**：\`http://localhost:11434/v1\`
+
+## 二、测试连接
+
+添加供应商后，点击卡片上的"测试连接"按钮验证配置是否可用：
+- 如果显示 **连通 (xxx ms)**，表示配置正确
+- 如果显示 **测试失败**，请检查 Base URL 和 API Key 是否正确
+- 部分供应商需要额外填写**模型 ID** 才能测试
+
+## 三、管理模型 Profile
+
+Profile 是模型的具体配置实例，将供应商和模型 ID 绑定在一起。
+
+### 添加 Profile
+
+1. 切换到**模型配置**标签页
+2. 点击"添加 Profile"按钮
+3. 选择供应商、填写模型 ID（如 \`qwen-plus\`、\`deepseek-chat\`）
+4. 保存后即可使用
+
+### 启用/禁用
+
+通过开关控制 Profile 是否可用。禁用后，已绑定该 Profile 的槽位将无法使用。
+
+### 删除 Profile
+
+点击删除按钮移除不再需要的 Profile。如果 Profile 已绑定槽位，需先解绑。
+
+## 四、槽位绑定
+
+应用提供三个功能槽位，分别对应不同用途：
+
+| 槽位 | 用途 | 推荐模型 |
+|------|------|---------|
+| **推理** | 智能体对话、知识问答、工具调用 | 强大的对话模型，如 \`qwen-plus\`、\`deepseek-chat\` |
+| **快速** | 标题生成、摘要等轻量任务 | 轻量快速模型，如 \`qwen-turbo\` |
+| **嵌入** | 知识库向量化 | 嵌入模型，如 \`text-embedding-v3\` |
+
+在"模型配置"标签页的**槽位绑定**区域，为每个槽位选择合适的 Profile。
+
+## 五、常见问题
+
+**Q: 测试连接失败怎么办？**
+A: 检查网络连接、Base URL 是否正确（注意 \`/v1\` 后缀）、API Key 是否有效。
+
+**Q: 为什么添加 Profile 时提示唯一约束错误？**
+A: 同一供应商下可以创建多个模型 ID 相同的 Profile，请确保模型 ID 正确。
+
+**Q: 如何配置本地模型？**
+A: 使用 Ollama 等本地推理工具，Base URL 填 \`http://localhost:11434/v1\`，类型选 OpenAI 兼容。
+`;
+
+function ModelGuideDialog({ onClose }: { onClose: () => void }): React.JSX.Element {
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <div className="model-guide-dialog" role="dialog" aria-modal="true" aria-labelledby="model-guide-title">
+        <header>
+          <div>
+            <h3 id="model-guide-title">模型配置指南</h3>
+            <p>快速上手模型供应商、Profile 和槽位绑定</p>
+          </div>
+          <button type="button" className="icon-button" aria-label="关闭" onClick={onClose}><X size={18} /></button>
+        </header>
+        <div className="model-guide-dialog__body">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            {MODEL_CONFIG_GUIDE}
+          </ReactMarkdown>
+        </div>
+        <footer>
+          <button type="button" className="primary-button" onClick={onClose}>知道了</button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
 function ModelsSettings(): React.JSX.Element {
   const [tab, setTab] = useState<'providers' | 'profiles'>('providers');
   const [providers, setProviders] = useState<Record<string, unknown>[]>([]);
@@ -1089,6 +1186,7 @@ function ModelsSettings(): React.JSX.Element {
   const [profileDialogOpen, setProfileDialogOpen] = useState(false);
   const [editingProfile, setEditingProfile] = useState<Record<string, unknown> | null>(null);
   const [deletingProfileId, setDeletingProfileId] = useState<string | null>(null);
+  const [guideOpen, setGuideOpen] = useState(false);
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true);
@@ -1126,7 +1224,7 @@ function ModelsSettings(): React.JSX.Element {
       <SettingsHeading
         title="模型管理"
         description="管理模型供应商和模型 Profile，将模型分配给智能体槽位。"
-        action={<a className="text-link" href="https://platform.openai.com/docs" target="_blank" rel="noreferrer">查看配置指南 <ExternalLink size={13} /></a>}
+        action={<button type="button" className="text-link" onClick={() => setGuideOpen(true)}><FileText size={13} /> 查看配置指南</button>}
       />
       <div className="settings-tabs">
         <button type="button" className={`settings-tab${tab === 'providers' ? ' settings-tab--active' : ''}`} onClick={() => setTab('providers')}>供应商</button>
@@ -1194,6 +1292,7 @@ function ModelsSettings(): React.JSX.Element {
         <ProfilesTab profiles={profiles} providers={providers} onRefresh={load} onAddProfile={() => { setEditingProfile(null); setProfileDialogOpen(true); }} onEditProfile={(p) => { setEditingProfile(p); setProfileDialogOpen(true); }} onDeleteProfile={(id) => { if (confirm('确认删除此 Profile？')) { window.kunqing?.models.deleteProfile({ id }); void load(); } }} />
       )}
       {profileDialogOpen && <ProfileDialog editProfile={editingProfile} providers={providers} onClose={() => { setProfileDialogOpen(false); setEditingProfile(null); }} onSaved={() => { setProfileDialogOpen(false); setEditingProfile(null); void load(); }} />}
+      {guideOpen && <ModelGuideDialog onClose={() => setGuideOpen(false)} />}
     </div>
   );
 }
