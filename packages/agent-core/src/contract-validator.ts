@@ -145,6 +145,36 @@ const CLI_CONTRACTS: Record<string, AdapterContract> = {
       },
     ],
   },
+  qoder: {
+    adapterType: 'qoder',
+    targetVersion: '0.1.0',
+    versionRange: '>=0.1.0 <=9.99.99',
+    helpOutputHash: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    expectedCapabilities: ['code-generation', 'file-read', 'file-write', 'search', 'reasoning', 'network-access'].sort() as AdapterCapability[],
+    strategies: [
+      {
+        strategyId: 'acp',
+        emptyArgs: ['--acp'],
+        simpleArgs: ['--acp'],
+        shouldDelegateMin: 0,
+      },
+    ],
+  },
+  'qoder-cn': {
+    adapterType: 'qoder-cn',
+    targetVersion: '0.1.0',
+    versionRange: '>=0.1.0 <=9.99.99',
+    helpOutputHash: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    expectedCapabilities: ['code-generation', 'file-read', 'file-write', 'search', 'reasoning', 'network-access'].sort() as AdapterCapability[],
+    strategies: [
+      {
+        strategyId: 'acp',
+        emptyArgs: ['--acp'],
+        simpleArgs: ['--acp'],
+        shouldDelegateMin: 0,
+      },
+    ],
+  },
 };
 
 export function getContract(adapterType: string): AdapterContract | undefined {

@@ -19,6 +19,10 @@ export class CliAgentRegistry {
     // codebuddy 已迁移到 ACP 路径（codebuddy --acp 原生支持）；旧手写适配器保留为 fallback
     this.register(new AcpCliAdapter('codebuddy'));
     this.register(new AcpCliAdapter('hermes'));
+    // qoder 走 ACP 路径（qodercli --acp 原生支持，官方 docs.qoder.com/cli/acp）
+    this.register(new AcpCliAdapter('qoder'));
+    // qoder-cn 走 ACP 路径（qoderclicn --acp 原生支持，独立产品线，官方 docs.qoder.cn/cli/acp）
+    this.register(new AcpCliAdapter('qoder-cn'));
   }
 
   register(adapter: ExternalAgentAdapter): void {

@@ -34,6 +34,12 @@ const ADAPTER_RANGES: Record<string, KnownVersionRange[]> = {
   'hermes': [
     { min: '0.1.0', max: '9.99.99', label: '>=0.1.0 <=9.99.99' },
   ],
+  'qoder': [
+    { min: '0.1.0', max: '9.99.99', label: '>=0.1.0 <=9.99.99' },
+  ],
+  'qoder-cn': [
+    { min: '0.1.0', max: '9.99.99', label: '>=0.1.0 <=9.99.99' },
+  ],
 };
 
 function parseSemver(v: string): { major: number; minor: number; patch: number } | null {

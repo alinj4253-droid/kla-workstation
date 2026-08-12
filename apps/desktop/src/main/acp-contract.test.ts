@@ -28,7 +28,7 @@ describe('AC-EXT-08 (ACP 适配器契约)', () => {
 
   describe('注册表条目契约', () => {
     it('注册表覆盖全部期望的用户可见 CLI', () => {
-      expect(ACP_TYPES).toEqual(['codebuddy', 'gemini', 'hermes', 'kimi', 'opencode', 'qwen-code']);
+      expect(ACP_TYPES).toEqual(['codebuddy', 'gemini', 'hermes', 'kimi', 'opencode', 'qoder', 'qoder-cn', 'qwen-code']);
     });
 
     it('每个条目都已明确记录 verified 状态与启动参数', () => {
@@ -55,7 +55,7 @@ describe('AC-EXT-08 (ACP 适配器契约)', () => {
     it('未实测（verified:false）的 CLI 不得标注能力可用（L1275）', () => {
       // 未实测条目仍可注册（迁移待实测），但契约测试只对 verified 条目强制能力匹配
       const pending = ACP_CLI_REGISTRY.filter((e) => !e.verified).map((e) => e.type);
-      expect(pending.sort()).toEqual(['gemini', 'hermes', 'kimi', 'qwen-code']);
+      expect(pending.sort()).toEqual(['gemini', 'hermes', 'kimi', 'qoder', 'qoder-cn', 'qwen-code']);
     });
   });
 

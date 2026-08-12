@@ -109,6 +109,34 @@ export const ACP_CLI_REGISTRY: AcpCliRegistryEntry[] = [
     // 已实测：v2.132.0 握手 + 完整 prompt 生命周期（initialize/session-new/prompt/事件流/close）
     verified: true,
   },
+  {
+    type: 'qoder',
+    command: 'qodercli',
+    // 官方文档（docs.qoder.com/cli/acp）：qodercli --acp 启动 ACP server，stdio JSON-RPC 通信。
+    // 认证复用 CLI 登录态，可配 QODER_PERSONAL_ACCESS_TOKEN 自动登录。Windows 下需 .cmd shim。
+    args: ['--acp'],
+    // 官方 CLI reference：qodercli --version 显示版本并退出
+    versionArgs: ['--version'],
+    env: {},
+    trustTier: 'sandboxed',
+    capabilities: ['code-generation', 'file-read', 'file-write', 'search', 'reasoning', 'network-access'],
+    // 未实测：启动参数来自官方文档，待真实 CLI 实测后启用
+    verified: false,
+  },
+  {
+    type: 'qoder-cn',
+    command: 'qoderclicn',
+    // 官方文档（docs.qoder.cn/cli/acp）：qoderclicn --acp 启动 ACP server，stdio JSON-RPC 通信。
+    // 独立产品线（账号/模型池与 qoder 不互通），认证可配 QODERCN_PERSONAL_ACCESS_TOKEN。
+    args: ['--acp'],
+    // 官方 CLI reference：qoderclicn --version 显示版本并退出
+    versionArgs: ['--version'],
+    env: {},
+    trustTier: 'sandboxed',
+    capabilities: ['code-generation', 'file-read', 'file-write', 'search', 'reasoning', 'network-access'],
+    // 未实测：启动参数来自官方文档，待真实 CLI 实测后启用
+    verified: false,
+  },
 ];
 
 export function getAcpRegistryEntry(type: string): AcpCliRegistryEntry | undefined {

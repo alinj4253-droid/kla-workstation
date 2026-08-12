@@ -124,6 +124,32 @@ describe('AC-EXT-07', () => {
       expect(result.ok).toBe(true);
     });
 
+    it('Qoder (ACP) 能力矩阵与契约夹具一致', async () => {
+      const { AcpCliAdapter, validateCapabilities, getContract } = await import('@kunqing/agent-core');
+      const adapter = new AcpCliAdapter('qoder');
+      const caps = adapter.getCapabilities();
+      const result = validateCapabilities('qoder', caps);
+      if (!result.ok) {
+        console.error('Qoder 能力矩阵与契约不一致:', result.errors);
+        console.error('当前能力:', [...caps].sort());
+        console.error('契约期望:', getContract('qoder')?.expectedCapabilities);
+      }
+      expect(result.ok).toBe(true);
+    });
+
+    it('Qoder CN (ACP) 能力矩阵与契约夹具一致', async () => {
+      const { AcpCliAdapter, validateCapabilities, getContract } = await import('@kunqing/agent-core');
+      const adapter = new AcpCliAdapter('qoder-cn');
+      const caps = adapter.getCapabilities();
+      const result = validateCapabilities('qoder-cn', caps);
+      if (!result.ok) {
+        console.error('Qoder CN 能力矩阵与契约不一致:', result.errors);
+        console.error('当前能力:', [...caps].sort());
+        console.error('契约期望:', getContract('qoder-cn')?.expectedCapabilities);
+      }
+      expect(result.ok).toBe(true);
+    });
+
     it('能力矩阵不能被意外修改', () => {
       const codexCaps = ['code-generation', 'file-read', 'file-write', 'terminal', 'search', 'network-access'].sort();
       const claudeCaps = ['code-generation', 'file-read', 'file-write', 'search', 'reasoning', 'network-access'].sort();
@@ -281,6 +307,26 @@ describe('AC-EXT-07', () => {
       expect(checkVersionCompatibility('codebuddy', '10.0.0')).toBe('experimental');
       expect(checkVersionCompatibility('codebuddy', null)).toBe('unknown');
     });
+
+    it('Qoder (ACP) 版本兼容范围与契约一致', async () => {
+      const { checkVersionCompatibility } = await import('./version-compatibility');
+      expect(checkVersionCompatibility('qoder', '0.1.0')).toBe('compatible');
+      expect(checkVersionCompatibility('qoder', '1.0.0')).toBe('compatible');
+      expect(checkVersionCompatibility('qoder', '9.99.99')).toBe('compatible');
+      expect(checkVersionCompatibility('qoder', '0.0.9')).toBe('incompatible');
+      expect(checkVersionCompatibility('qoder', '10.0.0')).toBe('experimental');
+      expect(checkVersionCompatibility('qoder', null)).toBe('unknown');
+    });
+
+    it('Qoder CN (ACP) 版本兼容范围与契约一致', async () => {
+      const { checkVersionCompatibility } = await import('./version-compatibility');
+      expect(checkVersionCompatibility('qoder-cn', '0.1.0')).toBe('compatible');
+      expect(checkVersionCompatibility('qoder-cn', '1.0.0')).toBe('compatible');
+      expect(checkVersionCompatibility('qoder-cn', '9.99.99')).toBe('compatible');
+      expect(checkVersionCompatibility('qoder-cn', '0.0.9')).toBe('incompatible');
+      expect(checkVersionCompatibility('qoder-cn', '10.0.0')).toBe('experimental');
+      expect(checkVersionCompatibility('qoder-cn', null)).toBe('unknown');
+    });
   });
 
   // ── parseVersion 契约 ─────────────────────────────────────────────────
@@ -371,7 +417,7 @@ describe('AC-EXT-07', () => {
     it('所有注册的适配器都有对应的契约', async () => {
       const { getContract } = await import('@kunqing/agent-core');
 
-      const registeredAdapters = ['codex', 'claude-code', 'hermes', 'opencode', 'gemini', 'qwen-code', 'kimi', 'codebuddy'];
+      const registeredAdapters = ['codex', 'claude-code', 'hermes', 'opencode', 'gemini', 'qwen-code', 'kimi', 'codebuddy', 'qoder', 'qoder-cn'];
       for (const adapterType of registeredAdapters) {
         const contract = getContract(adapterType);
         expect(contract).toBeDefined();
