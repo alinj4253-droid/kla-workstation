@@ -561,7 +561,7 @@ export async function seedDefaultProfiles(db: Database.Database): Promise<void> 
     const slot = (row.definitionId === 'builtin.knowledge-manager' || row.definitionId === 'builtin.researcher') ? 'fast' : 'reasoning';
 
     const snapshot = db.prepare(
-      `SELECT mp.id as profileId, mp.name as profileName, mp.model_id as modelId, mp.model_slot as modelSlot,
+      `SELECT mp.id as profileId, mp.name as profileName, mp.model_id as modelId,
               mp.parameters_json as parametersJson, mp.verified_capabilities_json as verifiedCapabilitiesJson,
               prv.id as providerId, prv.name as providerName, prv.type as providerType, prv.base_url as baseUrl
        FROM model_slot_bindings msb
@@ -569,7 +569,7 @@ export async function seedDefaultProfiles(db: Database.Database): Promise<void> 
        JOIN model_providers prv ON prv.id = mp.provider_id
        WHERE msb.slot = ? AND mp.enabled = 1`,
     ).get(slot) as {
-      profileId: string; profileName: string; modelId: string; modelSlot: string | null;
+      profileId: string; profileName: string; modelId: string;
       parametersJson: string | null; verifiedCapabilitiesJson: string | null;
       providerId: string; providerName: string; providerType: string; baseUrl: string | null;
     } | undefined;
@@ -584,7 +584,7 @@ export async function seedDefaultProfiles(db: Database.Database): Promise<void> 
       providerType: snapshot.providerType,
       baseUrl: snapshot.baseUrl,
       modelId: snapshot.modelId,
-      modelSlot: snapshot.modelSlot,
+      modelSlot: slot,
       parameters: snapshot.parametersJson ? JSON.parse(snapshot.parametersJson) : null,
       capabilities: snapshot.verifiedCapabilitiesJson ? JSON.parse(snapshot.verifiedCapabilitiesJson) : null,
       capturedAt: new Date().toISOString(),
