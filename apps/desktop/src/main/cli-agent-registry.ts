@@ -33,6 +33,11 @@ export class CliAgentRegistry {
     return this.adapters.get(type);
   }
 
+  /** 全部注册的适配器类型（按注册顺序） */
+  listAdapterTypes(): string[] {
+    return [...this.adapters.keys()];
+  }
+
   async detectAll(input?: DetectInput): Promise<Array<{ type: string; executables: DetectedExecutable[] }>> {
     const controller = new AbortController();
     const entries = [...this.adapters.entries()];

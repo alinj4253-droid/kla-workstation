@@ -1296,6 +1296,9 @@ const registerAgentIpc = (db: ReturnType<typeof getDatabase>): void => {
     }
     return { ok: true, data };
   });
+  registerIpc('agents:listAdapterTypes', async () => {
+    return { ok: true, data: cliAgentRegistry.listAdapterTypes() };
+  });
   registerIpc('agents:listCliConnections', async () => {
     const rows = db.prepare('SELECT id, name, adapter_type as adapterType, executable_path as executablePath, detected_version as detectedVersion, status, trust_tier as trustTier FROM cli_connections ORDER BY created_at DESC').all() as Array<{ id: string; name: string; adapterType: string; executablePath: string; detectedVersion: string | null; status: string; trustTier: string }>;
     const data = rows.map((r) => ({

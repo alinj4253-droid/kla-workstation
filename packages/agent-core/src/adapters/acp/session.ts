@@ -258,3 +258,29 @@ export async function runAcpSession(options: AcpSessionRunOptions): Promise<AcpS
     ...(stopReason ? { stopReason } : {}),
   };
 }
+
+/**
+ * smoke 测试握手：仅 initialize + session/new + session/close，不发起真实 prompt，
+ * 不触发计费/依赖账号额度。用于验证 ACP 协议端点可用（agent-connection-service 调用）。
+ */
+export async function acpSmokeHandshake(
+  transport: AcpTransport,
+  signal: AbortSignal,
+  workspaceRoot = process.cwd(),
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    await transport.app.connectWith(transport.stream, async (ctx) => {
+      await ctx.request(methods.agent.initialize, {
+        protocolVersion: PROTOCOL_VERSION,
+        clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } },
+        clientInfo: { name: 'kun-ai-chat', version: '0.1.0' },
+      });
+      const session = await ctx.buildSession(workspaceRoot).start({ cancellationSignal: signal });
+      session.dispose();
+      await ctx.request(methods.agent.session.close, { sessionId: session.sessionId }).catch(() => undefined);
+    });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}

@@ -555,14 +555,41 @@ interface WizardSnapshot {
   failedAtStep?: string;
 }
 
+const ADAPTER_LABELS: Record<string, string> = {
+  codex: 'Codex CLI',
+  'claude-code': 'Claude Code',
+  aion: 'Aion CLI',
+  gemini: 'Gemini CLI',
+  'qwen-code': 'Qwen Code',
+  opencode: 'Opencode',
+  kimi: 'Kimi',
+  codebuddy: 'CodeBuddy',
+  hermes: 'Hermes',
+  qoder: 'Qoder',
+  'qoder-cn': 'Qoder CN',
+};
+
 function ConnectionWizardDialog({ onClose, onAdded }: { onClose: () => void; onAdded: () => void }): React.JSX.Element {
   const [snap, setSnap] = useState<WizardSnapshot | null>(null);
   const [name, setName] = useState('');
+  const [adapterTypes, setAdapterTypes] = useState<Array<{ type: string; label: string }>>([]);
   const [adapterType, setAdapterType] = useState('codex');
   const [executable, setExecutable] = useState('');
   const [mode, setMode] = useState<'auto' | 'manual'>('auto');
   const [working, setWorking] = useState(false);
   const [timeoutMinutes, setTimeoutMinutes] = useState(30);
+
+  useEffect(() => {
+    (async () => {
+      const bridge = window.kunqing?.agents;
+      if (!bridge) return;
+      const res = (await bridge.listAdapterTypes().catch(() => undefined)) as { ok: boolean; data: string[] } | undefined;
+      const types = res?.ok ? res.data : [];
+      if (types.length === 0) return;
+      setAdapterTypes(types.map((t) => ({ type: t, label: ADAPTER_LABELS[t] ?? t })));
+      if (!types.includes('codex')) setAdapterType(types[0]!);
+    })();
+  }, []);
 
   const updateSnap = (res: { ok: boolean; data: WizardSnapshot } | undefined): void => {
     if (res?.data) setSnap(res.data);
@@ -648,14 +675,9 @@ function ConnectionWizardDialog({ onClose, onAdded }: { onClose: () => void; onA
           </label>
           <label><span>适配器类型</span>
             <select value={adapterType} onChange={(e) => setAdapterType(e.target.value)}>
-              <option value="codex">Codex CLI</option>
-              <option value="claude-code">Claude Code</option>
-              <option value="aion">Aion CLI</option>
-              <option value="gemini">Gemini CLI</option>
-              <option value="qwen-code">Qwen Code</option>
-              <option value="opencode">Opencode</option>
-              <option value="kimi">Kimi</option>
-              <option value="codebuddy">CodeBuddy</option>
+              {adapterTypes.map((t) => (
+                <option key={t.type} value={t.type}>{t.label}</option>
+              ))}
               <option value="custom">自定义</option>
             </select>
           </label>

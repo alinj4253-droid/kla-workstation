@@ -72,6 +72,7 @@ const api = {
     getProjectInstances: (input: { projectId: string }): Promise<unknown> => rpc('agents:getProjectInstances', input),
     addProjectInstances: (input: { projectId: string; profileIds: string[] }): Promise<unknown> => rpc('agents:addProjectInstances', input),
     detectCli: (): Promise<unknown> => rpc('agents:detectCli'),
+    listAdapterTypes: (): Promise<unknown> => rpc('agents:listAdapterTypes'),
     listCliConnections: (): Promise<unknown> => rpc('agents:listCliConnections'),
     saveCliConnection: (input: { name: string; adapterType: string; executablePath: string }): Promise<unknown> => rpc('agents:saveCliConnection', input),
     testCliConnection: (input: { connectionId: string }): Promise<unknown> => rpc('agents:testCliConnection', input),
