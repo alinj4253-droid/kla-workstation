@@ -29,5 +29,9 @@ export { CodeBuddyDetector, buildCodeBuddySearchPaths, CODEBUDDY_BINARY_NAMES } 
 export { AcpCliAdapter } from './acp/adapter.js';
 export { ACP_CLI_REGISTRY, getAcpRegistryEntry, buildAcpSpawnSpec } from './acp/registry.js';
 export type { AcpCliRegistryEntry } from './acp/registry.js';
+export { buildSpawnInvocation } from './spawn.js';
+export type { SpawnInvocation } from './spawn.js';
 export { runAcpSession } from './acp/session.js';
 export { createAcpTransport } from './acp/transport.js';
+export type { AcpSessionRunOptions, AcpSessionResult } from './acp/session.js';
+export type { AcpTransportOptions, AcpTransport } from './acp/transport.js';
