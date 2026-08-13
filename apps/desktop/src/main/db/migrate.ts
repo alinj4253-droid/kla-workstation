@@ -848,4 +848,11 @@ const migrations: Array<{ name: string; sql: string }> = [
       ALTER TABLE model_profiles DROP COLUMN model_slot;
     `,
   },
+  {
+    name: '021_agent_runs_project_idx',
+    sql: `
+      CREATE INDEX IF NOT EXISTS idx_agent_runs_project
+        ON agent_runs(project_id, created_at DESC);
+    `,
+  },
 ];

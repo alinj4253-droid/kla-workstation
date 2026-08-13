@@ -16,7 +16,7 @@ import { getLogger } from './logger';
 import { getProjectRoot, getStudioRoot, setStudioRoot } from './paths';
 import { addProjectAgents, createProject, safeFileName, seedDefaultProfiles, buildModelProfileSnapshot, ensureProjectAgentFiles } from './project-creator';
 import { processMessageMentions } from './message-router';
-import { normalizeAgentMessageContent, sanitizeAgentDisplayText } from './agent-collaboration';
+import { normalizeAgentMessageContent } from './agent-collaboration';
 import { ContextBuilder } from './context-builder';
 import { SkillRegistry } from './skill-registry';
 import { WorkflowRegistry } from './workflow-registry';
@@ -1087,25 +1087,76 @@ const registerMessageIpc = (db: ReturnType<typeof getDatabase>): void => {
   });
   registerIpc('messages:listRunActivity', async (_event, input: { projectId: string; limit?: number }) => {
     const runs = runRepo.listByProject(input.projectId, Math.min(input.limit ?? 12, 30));
+
+    // 批量查询当前项目所有 agent 名称（仅一次）
+    const agentNames = db.prepare(
+      `SELECT pai.id, ap.name
+       FROM project_agent_instances pai
+       JOIN agent_profiles ap ON ap.id = pai.agent_profile_id
+       WHERE pai.project_id = ?
+       ORDER BY LENGTH(pai.id) DESC, pai.ordinal`,
+    ).all(input.projectId) as Array<{ id: string; name: string }>;
+    const agentNameMap = new Map(agentNames.map((a) => [a.id, a.name]));
+    const sanitize = (text: string): string => {
+      if (!text) return text;
+      let s = text;
+      for (const agent of agentNames) {
+        if (!agent.id || !s.includes(agent.id)) continue;
+        s = s.split(agent.id).join(agent.name || '智能体');
+      }
+      return s;
+    };
+
+    // 批量查询所有 run 的 events（一次查询替代 N 次）
+    const runIds = runs.map((r) => r.id);
+    const allEvents: Array<{
+      id: string; runId: string; seq: number; type: string; payloadJson: string | null; createdAt: string;
+    }> = runIds.length > 0
+      ? db.prepare(
+          `SELECT id, run_id as runId, seq, type, payload_json as payloadJson, created_at as createdAt
+           FROM agent_run_events WHERE run_id IN (${runIds.map(() => '?').join(',')})
+           ORDER BY run_id, seq`,
+        ).all(...runIds) as Array<{
+          id: string; runId: string; seq: number; type: string; payloadJson: string | null; createdAt: string;
+        }>
+      : [];
+    const eventsByRunId = new Map<string, typeof allEvents>();
+    for (const event of allEvents) {
+      let list = eventsByRunId.get(event.runId);
+      if (!list) { list = []; eventsByRunId.set(event.runId, list); }
+      list.push(event);
+    }
+
     const data = runs.map((run) => {
-      const agent = db.prepare(
-        `SELECT ap.name FROM project_agent_instances pai JOIN agent_profiles ap ON ap.id = pai.agent_profile_id WHERE pai.id = ?`,
-      ).get(run.agentInstanceId) as { name: string } | undefined;
-      const runEvents = runRepo.listEvents(run.id);
-      const traces = runEvents
-        .filter((event) => event.type === 'run.trace' && event.payloadJson)
-        .map((event) => {
-          try { return JSON.parse(event.payloadJson!) as Record<string, unknown>; } catch { return null; }
-        })
-        .filter((event): event is Record<string, unknown> => event !== null)
-        .map((event) => ({
-          ...event,
-          ...(typeof event.title === 'string' ? { title: sanitizeAgentDisplayText(db, input.projectId, event.title) } : {}),
-          ...(typeof event.detail === 'string' ? { detail: sanitizeAgentDisplayText(db, input.projectId, event.detail) } : {}),
-        }));
-      const checklistEvent = [...runEvents].reverse().find((event) => event.type === 'run.checklist' && event.payloadJson);
-      const businessProcessEvent = [...runEvents].reverse().find((event) => event.type === 'run.business-process' && event.payloadJson);
-      const anchorEvent = [...runEvents].reverse().find((event) => event.type === 'run.anchor' && event.payloadJson);
+      const runEvents = eventsByRunId.get(run.id) ?? [];
+      const agentName = agentNameMap.get(run.agentInstanceId);
+
+      // 单次遍历：收集 traces + 记录每种特殊事件的最后一条
+      const traces: Array<Record<string, unknown>> = [];
+      let checklistEvent: typeof allEvents[number] | undefined;
+      let businessProcessEvent: typeof allEvents[number] | undefined;
+      let anchorEvent: typeof allEvents[number] | undefined;
+      for (const event of runEvents) {
+        if (event.type === 'run.checklist' && event.payloadJson) {
+          checklistEvent = event;
+        } else if (event.type === 'run.business-process' && event.payloadJson) {
+          businessProcessEvent = event;
+        } else if (event.type === 'run.anchor' && event.payloadJson) {
+          anchorEvent = event;
+        } else if (event.type === 'run.trace' && event.payloadJson) {
+          try {
+            const parsed = JSON.parse(event.payloadJson) as Record<string, unknown>;
+            if (parsed && typeof parsed === 'object') {
+              traces.push({
+                ...parsed,
+                ...(typeof parsed.title === 'string' ? { title: sanitize(parsed.title) } : {}),
+                ...(typeof parsed.detail === 'string' ? { detail: sanitize(parsed.detail) } : {}),
+              });
+            }
+          } catch { /* skip malformed trace payload */ }
+        }
+      }
+
       let anchorMessageId = run.triggerMessageId;
       if (anchorEvent?.payloadJson) {
         try {
@@ -1123,8 +1174,8 @@ const registerMessageIpc = (db: ReturnType<typeof getDatabase>): void => {
             const row = item as Record<string, unknown>;
             return {
               ...row,
-              ...(typeof row.title === 'string' ? { title: sanitizeAgentDisplayText(db, input.projectId, row.title) } : {}),
-              ...(typeof row.detail === 'string' ? { detail: sanitizeAgentDisplayText(db, input.projectId, row.detail) } : {}),
+              ...(typeof row.title === 'string' ? { title: sanitize(row.title) } : {}),
+              ...(typeof row.detail === 'string' ? { detail: sanitize(row.detail) } : {}),
             };
           }),
         };
@@ -1136,7 +1187,7 @@ const registerMessageIpc = (db: ReturnType<typeof getDatabase>): void => {
       return {
         runId: run.id,
         agentId: run.agentInstanceId,
-        agentName: agent?.name ?? '智能体',
+        agentName: agentName ?? '智能体',
         anchorMessageId,
         triggerMessageId: run.triggerMessageId ?? undefined,
         parentRunId: run.parentRunId ?? undefined,
