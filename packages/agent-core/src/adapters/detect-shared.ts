@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { existsSync } from 'node:fs';
 
 const execFileAsync = promisify(execFile);
 
@@ -67,6 +68,9 @@ export async function tryExec(
     return { executablePath: binary, source: 'path', versionHint: version };
   } catch {
     if (process.platform === 'win32') {
+      if (path.isAbsolute(binary) && !existsSync(binary)) {
+        return null;
+      }
       try {
         const result = await execFileAsync(binary, args, {
           env, shell: true, timeout, windowsHide: true, signal,

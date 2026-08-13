@@ -1,9 +1,14 @@
 // @vitest-environment node
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+
+vi.mock('electron', () => ({
+  app: { getPath: () => '/tmp/test', getVersion: () => '0.1.0-test' },
+}));
+
 import { scanDatabase, scanLogFiles, runKeyScan, type ScanResult } from './key-scanner';
 
 function createTestDb(seedSecret: boolean): Database.Database {

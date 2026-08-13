@@ -5,7 +5,8 @@ import { cliAgentRegistry } from './cli-agent-registry';
 import { getProjectRoot } from './paths';
 import { sanitizeEnv } from './env-sanitizer';
 import { normalizeChunk, isStructuredEvent } from './event-normalizer';
-import type { CliConnectionConfig } from '@kunqing/agent-core';
+import { getLogger } from './logger';
+import type { CliConnectionConfig, ExternalAgentAdapter, ExternalRunResult } from '@kunqing/agent-core';
 
 export type CliRunOptions = {
   connection: CliConnectionConfig;
@@ -31,9 +32,107 @@ export type CliRunResult = {
 export class CliExecutor {
   private supervisor = new ProcessSupervisor();
   private runMap = new Map<string, { connectionId: string; runId: string }>();
+  private acpRuns = new Map<string, { abort: () => void }>();
+
+  /**
+   * 判断该连接是否应走 ACP 长连接路径。
+   * 只有适配器显式声明 acp 支持时才启用；其余连接保持原有 spawn 模型。
+   */
+  private isAcpConnection(adapterType: string): boolean {
+    const adapter = cliAgentRegistry.getAdapter(adapterType);
+    return !!adapter && 'acp' in adapter && (adapter as any).acp === true;
+  }
+
+  private async executeAcp(
+    options: CliRunOptions,
+    adapter: ExternalAgentAdapter,
+  ): Promise<CliRunResult> {
+    const logger = getLogger();
+    const { connection, instruction, projectId, window } = options;
+    const runId = `acp-${randomUUID().slice(0, 8)}`;
+    const start = Date.now();
+    const abortController = new AbortController();
+    let stdout = '';
+    let stderr = '';
+
+    logger?.info({ runId, adapterType: connection.adapterType, adapter: adapter.type }, 'CliExecutor: 走 ACP 长连接路径（executeAcp）');
+
+    const dispatch = (event: Record<string, unknown>): void => {
+      if (!window.isDestroyed()) window.webContents.send('event:dispatch', event);
+    };
+    const onStdout = (data: string): void => {
+      stdout += data;
+      for (const event of normalizeChunk(data, runId)) {
+        dispatch({ type: 'cli.event', runId: options.activityRunId ?? runId, projectId, event });
+        if (isStructuredEvent(event)) {
+          dispatch({ type: `cli.event.${event.type.replace('.', '_')}`, runId: options.activityRunId ?? runId, projectId, event });
+        }
+      }
+    };
+    const onStderr = (data: string): void => {
+      stderr += data;
+      for (const event of normalizeChunk(data, runId)) {
+        dispatch({
+          type: 'cli.event',
+          runId: options.activityRunId ?? runId,
+          projectId,
+          event: { ...event, protocol_degraded: true, _source: 'stderr' },
+        });
+      }
+    };
+
+    const connSnapshot: import('@kunqing/agent-core').CliConnectionSnapshot = {
+      id: connection.id,
+      name: connection.name,
+      adapterType: connection.adapterType,
+      executablePath: connection.executablePath,
+      strategyId: connection.strategyId,
+      trustTier: connection.trustTier,
+      capabilities: connection.capabilities ?? [],
+      secretRefs: connection.secretRefs ?? [],
+      detectedVersion: connection.detectedVersion,
+    };
+
+    const abortRun = (): void => {
+      abortController.abort();
+      this.acpRuns.delete(runId);
+    };
+    const onAbort = (): void => abortRun();
+    this.acpRuns.set(runId, { abort: abortRun });
+    if (options.signal) options.signal.addEventListener('abort', onAbort);
+
+    let result: ExternalRunResult;
+    try {
+      result = await adapter.run(
+        {
+          connection: connSnapshot,
+          instruction,
+          workspaceRoot: options.workspaceRoot ?? getProjectRoot(projectId),
+        },
+        { onStdout, onStderr },
+        abortController.signal,
+      );
+    } finally {
+      this.acpRuns.delete(runId);
+      if (options.signal) options.signal.removeEventListener('abort', onAbort);
+    }
+
+    return {
+      exitCode: result.exitCode,
+      output: stdout + (stderr ? `\n${stderr}` : ''),
+      durationMs: result.durationMs,
+      cancelled: result.exitCode === null,
+    };
+  }
 
   async execute(options: CliRunOptions): Promise<CliRunResult> {
     const { connection, instruction, projectId, window, signal } = options;
+    if (this.isAcpConnection(connection.adapterType)) {
+      const adapter = cliAgentRegistry.getAdapter(connection.adapterType)!;
+      return this.executeAcp({ ...options, connection }, adapter);
+    }
+    getLogger()?.info({ runId: `cli-${randomUUID().slice(0, 8)}`, adapterType: connection.adapterType }, 'CliExecutor: 走手写 spawn 路径（非 ACP）');
+
     const runId = `cli-${randomUUID().slice(0, 8)}`;
     const start = Date.now();
 
@@ -118,14 +217,25 @@ export class CliExecutor {
   }
 
   cancelRun(runId: string): void {
+    const acpRun = this.acpRuns.get(runId);
+    if (acpRun) {
+      acpRun.abort();
+      this.acpRuns.delete(runId);
+      return;
+    }
     this.supervisor.cancel(runId);
   }
 
   cancelAll(): void {
+    for (const [runId, run] of this.acpRuns) {
+      run.abort();
+      this.acpRuns.delete(runId);
+    }
     this.supervisor.cancelAll();
   }
 
   isRunning(runId: string): boolean {
+    if (this.acpRuns.has(runId)) return true;
     return this.supervisor.isRunning(runId);
   }
 

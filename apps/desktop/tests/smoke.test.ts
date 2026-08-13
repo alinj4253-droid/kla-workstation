@@ -37,8 +37,8 @@ describe('Web build smoke test', () => {
 });
 
 describe('Main process build smoke test', () => {
-  it('produces main/index.js', () => {
-    const mainJs = resolve(import.meta.dirname, '..', 'out', 'main', 'index.js');
+  it('produces main/index.cjs', () => {
+    const mainJs = resolve(import.meta.dirname, '..', 'out', 'main', 'index.cjs');
     expect(existsSync(mainJs)).toBe(true);
   });
 

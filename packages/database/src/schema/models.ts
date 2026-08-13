@@ -19,7 +19,6 @@ export const modelProfiles = sqliteTable('model_profiles', {
   name: text('name').notNull(),
   providerId: text('provider_id').notNull().references(() => modelProviders.id),
   modelId: text('model_id').notNull(),
-  modelSlot: text('model_slot', { enum: ['reasoning', 'fast', 'embedding'] }),
   parametersJson: text('parameters_json'),
   declaredCapabilitiesJson: text('declared_capabilities_json'),
   verifiedCapabilitiesJson: text('verified_capabilities_json'),
@@ -27,7 +26,6 @@ export const modelProfiles = sqliteTable('model_profiles', {
   enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
 }, (table) => [
   uniqueIndex('idx_model_profiles_name').on(table.name),
-  uniqueIndex('idx_model_profiles_provider_model').on(table.providerId, table.modelId),
 ]);
 
 export const modelSlotBindings = sqliteTable('model_slot_bindings', {

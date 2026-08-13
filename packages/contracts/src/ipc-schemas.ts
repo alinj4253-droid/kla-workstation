@@ -277,7 +277,7 @@ export const modelProfileDtoSchema = z.object({
   name: z.string(),
   providerId: z.string(),
   modelId: z.string(),
-  modelSlot: z.enum(['reasoning', 'fast', 'embedding']).nullable().optional(),
+  boundSlots: z.string().nullable().optional(),
   enabled: z.boolean(),
 });
 

@@ -11,6 +11,7 @@ import {
   Cpu,
   ExternalLink,
   FileCode,
+  FileText,
   FolderOpen,
   Gauge,
   Globe,
@@ -46,6 +47,8 @@ import {
 } from 'lucide-react';
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { NavLink, Navigate, Route, Routes, useNavigate } from 'react-router-dom';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 const secondaryNavClass = ({ isActive }: { isActive: boolean }): string => `settings-nav-link${isActive ? ' settings-nav-link--active' : ''}`;
 const OPERATIONS_SESSION_KEY = 'kunqing.operationsAccess';
@@ -554,14 +557,41 @@ interface WizardSnapshot {
   failedAtStep?: string;
 }
 
+const ADAPTER_LABELS: Record<string, string> = {
+  codex: 'Codex CLI',
+  'claude-code': 'Claude Code',
+  aion: 'Aion CLI',
+  gemini: 'Gemini CLI',
+  'qwen-code': 'Qwen Code',
+  opencode: 'Opencode',
+  kimi: 'Kimi',
+  codebuddy: 'CodeBuddy',
+  hermes: 'Hermes',
+  qoder: 'Qoder',
+  'qoder-cn': 'Qoder CN',
+};
+
 function ConnectionWizardDialog({ onClose, onAdded }: { onClose: () => void; onAdded: () => void }): React.JSX.Element {
   const [snap, setSnap] = useState<WizardSnapshot | null>(null);
   const [name, setName] = useState('');
+  const [adapterTypes, setAdapterTypes] = useState<Array<{ type: string; label: string }>>([]);
   const [adapterType, setAdapterType] = useState('codex');
   const [executable, setExecutable] = useState('');
   const [mode, setMode] = useState<'auto' | 'manual'>('auto');
   const [working, setWorking] = useState(false);
   const [timeoutMinutes, setTimeoutMinutes] = useState(30);
+
+  useEffect(() => {
+    (async () => {
+      const bridge = window.kunqing?.agents;
+      if (!bridge) return;
+      const res = (await bridge.listAdapterTypes().catch(() => undefined)) as { ok: boolean; data: string[] } | undefined;
+      const types = res?.ok ? res.data : [];
+      if (types.length === 0) return;
+      setAdapterTypes(types.map((t) => ({ type: t, label: ADAPTER_LABELS[t] ?? t })));
+      if (!types.includes('codex')) setAdapterType(types[0]!);
+    })();
+  }, []);
 
   const updateSnap = (res: { ok: boolean; data: WizardSnapshot } | undefined): void => {
     if (res?.data) setSnap(res.data);
@@ -647,14 +677,9 @@ function ConnectionWizardDialog({ onClose, onAdded }: { onClose: () => void; onA
           </label>
           <label><span>适配器类型</span>
             <select value={adapterType} onChange={(e) => setAdapterType(e.target.value)}>
-              <option value="codex">Codex CLI</option>
-              <option value="claude-code">Claude Code</option>
-              <option value="aion">Aion CLI</option>
-              <option value="gemini">Gemini CLI</option>
-              <option value="qwen-code">Qwen Code</option>
-              <option value="opencode">Opencode</option>
-              <option value="kimi">Kimi</option>
-              <option value="codebuddy">CodeBuddy</option>
+              {adapterTypes.map((t) => (
+                <option key={t.type} value={t.type}>{t.label}</option>
+              ))}
               <option value="custom">自定义</option>
             </select>
           </label>
@@ -1078,6 +1103,100 @@ function AgentActionDialog({ dialog, onClose, onRefresh }: { dialog: { type: str
   );
 }
 
+const MODEL_CONFIG_GUIDE = `# 模型配置指南
+
+## 一、添加供应商
+
+1. 在"模型管理"页面的**供应商**标签页下，点击"添加供应商"按钮。
+2. 填写以下信息：
+   - **名称**：方便识别的名称，如"阿里通义千问"
+   - **类型**：选择供应商类型（如 OpenAI 兼容、Ollama 等）
+   - **Base URL**：API 地址，例如 \`https://dashscope.aliyuncs.com/compatible-mode/v1\`
+   - **API Key**：从供应商平台获取的密钥
+3. 点击"保存"完成添加。
+
+> **提示**：国内常用供应商推荐地址：
+> - **阿里通义千问**：\`https://dashscope.aliyuncs.com/compatible-mode/v1\`
+> - **DeepSeek**：\`https://api.deepseek.com\`
+> - **硅基流动**：\`https://api.siliconflow.cn/v1\`
+> - **智谱 GLM**：\`https://open.bigmodel.cn/api/paas/v4\`
+> - **零一万物**：\`https://api.lingyiwanwu.com/v1\`
+> - **本地 Ollama**：\`http://localhost:11434/v1\`
+
+## 二、测试连接
+
+添加供应商后，点击卡片上的"测试连接"按钮验证配置是否可用：
+- 如果显示 **连通 (xxx ms)**，表示配置正确
+- 如果显示 **测试失败**，请检查 Base URL 和 API Key 是否正确
+- 部分供应商需要额外填写**模型 ID** 才能测试
+
+## 三、管理模型 Profile
+
+Profile 是模型的具体配置实例，将供应商和模型 ID 绑定在一起。
+
+### 添加 Profile
+
+1. 切换到**模型配置**标签页
+2. 点击"添加 Profile"按钮
+3. 选择供应商、填写模型 ID（如 \`qwen-plus\`、\`deepseek-chat\`）
+4. 保存后即可使用
+
+### 启用/禁用
+
+通过开关控制 Profile 是否可用。禁用后，已绑定该 Profile 的槽位将无法使用。
+
+### 删除 Profile
+
+点击删除按钮移除不再需要的 Profile。如果 Profile 已绑定槽位，需先解绑。
+
+## 四、槽位绑定
+
+应用提供三个功能槽位，分别对应不同用途：
+
+| 槽位 | 用途 | 推荐模型 |
+|------|------|---------|
+| **推理** | 智能体对话、知识问答、工具调用 | 强大的对话模型，如 \`qwen-plus\`、\`deepseek-chat\` |
+| **快速** | 标题生成、摘要等轻量任务 | 轻量快速模型，如 \`qwen-turbo\` |
+| **嵌入** | 知识库向量化 | 嵌入模型，如 \`text-embedding-v3\` |
+
+在"模型配置"标签页的**槽位绑定**区域，为每个槽位选择合适的 Profile。
+
+## 五、常见问题
+
+**Q: 测试连接失败怎么办？**
+A: 检查网络连接、Base URL 是否正确（注意 \`/v1\` 后缀）、API Key 是否有效。
+
+**Q: 为什么添加 Profile 时提示唯一约束错误？**
+A: 同一供应商下可以创建多个模型 ID 相同的 Profile，请确保模型 ID 正确。
+
+**Q: 如何配置本地模型？**
+A: 使用 Ollama 等本地推理工具，Base URL 填 \`http://localhost:11434/v1\`，类型选 OpenAI 兼容。
+`;
+
+function ModelGuideDialog({ onClose }: { onClose: () => void }): React.JSX.Element {
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <div className="model-guide-dialog" role="dialog" aria-modal="true" aria-labelledby="model-guide-title">
+        <header>
+          <div>
+            <h3 id="model-guide-title">模型配置指南</h3>
+            <p>快速上手模型供应商、Profile 和槽位绑定</p>
+          </div>
+          <button type="button" className="icon-button" aria-label="关闭" onClick={onClose}><X size={18} /></button>
+        </header>
+        <div className="model-guide-dialog__body">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            {MODEL_CONFIG_GUIDE}
+          </ReactMarkdown>
+        </div>
+        <footer>
+          <button type="button" className="primary-button" onClick={onClose}>知道了</button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
 function ModelsSettings(): React.JSX.Element {
   const [tab, setTab] = useState<'providers' | 'profiles'>('providers');
   const [providers, setProviders] = useState<Record<string, unknown>[]>([]);
@@ -1091,6 +1210,7 @@ function ModelsSettings(): React.JSX.Element {
   const [profileDialogOpen, setProfileDialogOpen] = useState(false);
   const [editingProfile, setEditingProfile] = useState<Record<string, unknown> | null>(null);
   const [deletingProfileId, setDeletingProfileId] = useState<string | null>(null);
+  const [guideOpen, setGuideOpen] = useState(false);
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true);
@@ -1128,7 +1248,7 @@ function ModelsSettings(): React.JSX.Element {
       <SettingsHeading
         title="模型管理"
         description="管理模型供应商和模型 Profile，将模型分配给智能体槽位。"
-        action={<a className="text-link" href="https://platform.openai.com/docs" target="_blank" rel="noreferrer">查看配置指南 <ExternalLink size={13} /></a>}
+        action={<button type="button" className="text-link" onClick={() => setGuideOpen(true)}><FileText size={13} /> 查看配置指南</button>}
       />
       <div className="settings-tabs">
         <button type="button" className={`settings-tab${tab === 'providers' ? ' settings-tab--active' : ''}`} onClick={() => setTab('providers')}>供应商</button>
@@ -1196,6 +1316,7 @@ function ModelsSettings(): React.JSX.Element {
         <ProfilesTab profiles={profiles} providers={providers} onRefresh={load} onAddProfile={() => { setEditingProfile(null); setProfileDialogOpen(true); }} onEditProfile={(p) => { setEditingProfile(p); setProfileDialogOpen(true); }} onDeleteProfile={(id) => { if (confirm('确认删除此 Profile？')) { window.kunqing?.models.deleteProfile({ id }); void load(); } }} />
       )}
       {profileDialogOpen && <ProfileDialog editProfile={editingProfile} providers={providers} onClose={() => { setProfileDialogOpen(false); setEditingProfile(null); }} onSaved={() => { setProfileDialogOpen(false); setEditingProfile(null); void load(); }} />}
+      {guideOpen && <ModelGuideDialog onClose={() => setGuideOpen(false)} />}
     </div>
   );
 }
@@ -1273,7 +1394,6 @@ function ProfileDialog({ editProfile, providers, onClose, onSaved }: { editProfi
   const [name, setName] = useState((editProfile?.name as string) ?? '');
   const [providerId, setProviderId] = useState((editProfile?.providerId as string) ?? '');
   const [modelId, setModelId] = useState((editProfile?.modelId as string) ?? '');
-  const [modelSlot, setModelSlot] = useState((editProfile?.modelSlot as string) ?? '');
   const [saving, setSaving] = useState(false);
 
   const submit = async (event: FormEvent): Promise<void> => {
@@ -1281,9 +1401,8 @@ function ProfileDialog({ editProfile, providers, onClose, onSaved }: { editProfi
     if (!name.trim() || !providerId || !modelId.trim()) return;
     setSaving(true);
     try {
-      const profileParams: { id?: string; name: string; providerId: string; modelId: string; modelSlot?: string } = { name: name.trim(), providerId, modelId: modelId.trim() };
+      const profileParams: { id?: string; name: string; providerId: string; modelId: string } = { name: name.trim(), providerId, modelId: modelId.trim() };
       if (isEdit) profileParams.id = editProfile.id as string;
-      if (modelSlot) profileParams.modelSlot = modelSlot;
       await window.kunqing?.models.saveProfile(profileParams);
       onSaved();
     } catch (err) { console.error('保存 Profile 失败', err); }
@@ -1294,7 +1413,7 @@ function ProfileDialog({ editProfile, providers, onClose, onSaved }: { editProfi
     <div className="modal-backdrop" role="presentation">
       <form className="model-dialog" onSubmit={(e) => void submit(e)}>
         <header>
-          <div><h3>{isEdit ? '编辑模型 Profile' : '添加模型 Profile'}</h3><p>Profile 绑定供应商和具体模型 ID，可选分配到智能体槽位。</p></div>
+          <div><h3>{isEdit ? '编辑模型 Profile' : '添加模型 Profile'}</h3><p>Profile 绑定供应商和具体模型 ID，创建后可在槽位绑定中选择。</p></div>
           <button type="button" className="icon-button" aria-label="关闭" onClick={onClose}><X size={18} /></button>
         </header>
         <label><span>名称 *</span><input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：GPT-4o 快速" /></label>
@@ -1305,14 +1424,6 @@ function ProfileDialog({ editProfile, providers, onClose, onSaved }: { editProfi
           </select>
         </label>
         <label><span>模型 ID *</span><input value={modelId} onChange={(e) => setModelId(e.target.value)} placeholder="例如：gpt-4o" /></label>
-        <label><span>分配槽位</span>
-          <select value={modelSlot} onChange={(e) => setModelSlot(e.target.value)}>
-            <option value="">不分配</option>
-            <option value="reasoning">推理 (reasoning)</option>
-            <option value="fast">快速 (fast)</option>
-            <option value="embedding">嵌入 (embedding)</option>
-          </select>
-        </label>
         <footer>
           <button type="button" className="secondary-button" onClick={onClose}>取消</button>
           <button type="submit" className="primary-button" disabled={saving || !name.trim() || !providerId || !modelId.trim()}>{saving ? '保存中…' : '保存'}</button>
@@ -1332,8 +1443,9 @@ function ProfilesTab({ profiles, providers, onRefresh, onAddProfile, onEditProfi
     const value = profile.boundSlots;
     if (Array.isArray(value)) return value.filter((slot): slot is string => typeof slot === 'string');
     if (typeof value === 'string') return value.split(',').map((slot) => slot.trim()).filter(Boolean);
-    // Keep compatibility with older IPC payloads that do not expose boundSlots yet.
-    return typeof profile.modelSlot === 'string' && profile.modelSlot ? [profile.modelSlot] : [];
+    // Keep compatibility with IPC payloads emitted before aggregate slot bindings.
+    const legacySlot = profile.boundSlot ?? profile.modelSlot;
+    return typeof legacySlot === 'string' && legacySlot ? [legacySlot] : [];
   };
 
   const currentBindings: Record<string, { profileName: string; profileId: string }> = {};
@@ -1367,7 +1479,9 @@ function ProfilesTab({ profiles, providers, onRefresh, onAddProfile, onEditProfi
               <div className="slot-edit">
                 <select value={assigningProfileId} onChange={(e) => setAssigningProfileId(e.target.value)}>
                   <option value="">-- 选择 Profile --</option>
-                  {profiles.map((p) => <option key={p.id as string} value={p.id as string}>{p.name as string}</option>)}
+                  {profiles.map((p) => (
+                    <option key={p.id as string} value={p.id as string}>{p.name as string}</option>
+                  ))}
                 </select>
                 <button type="button" className="primary-button primary-button--small" onClick={() => void setSlot(slot, assigningProfileId)} disabled={!assigningProfileId}>确认</button>
                 <button type="button" className="secondary-button secondary-button--small" onClick={() => setEditingSlot(null)}>取消</button>
@@ -1388,6 +1502,13 @@ function ProfilesTab({ profiles, providers, onRefresh, onAddProfile, onEditProfi
         <button type="button" className="secondary-button secondary-button--small" onClick={() => void onRefresh()}><RefreshCw size={14} /> 刷新</button>
       </div>
       <div className="model-profile-list">
+        <div className="model-profile-header-row">
+          <span>名称</span>
+          <span>供应商</span>
+          <span>模型 ID</span>
+          <span>槽位绑定</span>
+          <span></span>
+        </div>
         {profiles.length === 0 && <p className="model-empty">尚未添加模型 Profile</p>}
         {profiles.map((p) => (
           <div className="model-profile-row" key={p.id as string}>

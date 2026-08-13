@@ -28,9 +28,10 @@ export class QwenCodeAutoStrategy implements VersionStrategy {
   buildRun(input: PreparedExternalRun): SpawnSpec {
     return {
       executable: input.executablePath,
-      args: ['run', input.instruction, ...input.args],
+      args: [...input.args],
       cwd: input.workspaceRoot,
       env: input.env,
+      stdin: new TextEncoder().encode(input.instruction),
       shell: process.platform === 'win32',
     };
   }

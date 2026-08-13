@@ -1,4 +1,4 @@
-import { CodexCliAdapter, ClaudeCodeCliAdapter, AionCliAdapter, GeminiCliAdapter, QwenCodeCliAdapter, OpencodeCliAdapter, KimiCliAdapter, CodeBuddyCliAdapter } from '@kunqing/agent-core';
+import { CodexCliAdapter, ClaudeCodeCliAdapter, AionCliAdapter, AcpCliAdapter } from '@kunqing/agent-core';
 import type { ExternalAgentAdapter, DetectedExecutable, DetectInput } from '@kunqing/agent-core';
 
 export class CliAgentRegistry {
@@ -8,11 +8,21 @@ export class CliAgentRegistry {
     this.register(new CodexCliAdapter());
     this.register(new ClaudeCodeCliAdapter());
     this.register(new AionCliAdapter());
-    this.register(new GeminiCliAdapter());
-    this.register(new QwenCodeCliAdapter());
-    this.register(new OpencodeCliAdapter());
-    this.register(new KimiCliAdapter());
-    this.register(new CodeBuddyCliAdapter());
+    // gemini 已迁移到 ACP 路径（gemini --acp 原生支持）；旧手写适配器保留为 fallback
+    this.register(new AcpCliAdapter('gemini'));
+    // qwen-code 已迁移到 ACP 路径（qwen --acp 原生支持）；旧手写适配器保留为 fallback
+    this.register(new AcpCliAdapter('qwen-code'));
+    // opencode 已迁移到 ACP 路径（opencode acp 原生支持）；旧手写适配器保留为 fallback
+    this.register(new AcpCliAdapter('opencode'));
+    // kimi 已迁移到 ACP 路径（kimi acp 原生支持）；旧手写适配器保留为 fallback
+    this.register(new AcpCliAdapter('kimi'));
+    // codebuddy 已迁移到 ACP 路径（codebuddy --acp 原生支持）；旧手写适配器保留为 fallback
+    this.register(new AcpCliAdapter('codebuddy'));
+    this.register(new AcpCliAdapter('hermes'));
+    // qoder 走 ACP 路径（qodercli --acp 原生支持，官方 docs.qoder.com/cli/acp）
+    this.register(new AcpCliAdapter('qoder'));
+    // qoder-cn 走 ACP 路径（qoderclicn --acp 原生支持，独立产品线，官方 docs.qoder.cn/cli/acp）
+    this.register(new AcpCliAdapter('qoder-cn'));
   }
 
   register(adapter: ExternalAgentAdapter): void {
@@ -21,6 +31,11 @@ export class CliAgentRegistry {
 
   getAdapter(type: string): ExternalAgentAdapter | undefined {
     return this.adapters.get(type);
+  }
+
+  /** 全部注册的适配器类型（按注册顺序） */
+  listAdapterTypes(): string[] {
+    return [...this.adapters.keys()];
   }
 
   async detectAll(input?: DetectInput): Promise<Array<{ type: string; executables: DetectedExecutable[] }>> {

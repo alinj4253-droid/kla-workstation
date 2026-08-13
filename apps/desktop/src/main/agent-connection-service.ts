@@ -185,19 +185,36 @@ export class AgentConnectionService {
     }
     this.logger.info({ executablePath: this.state.executablePath }, 'AgentConnectionService.runSmokeTest');
     try {
-      // 使用适配器策略的 buildVersionProbe 获取正确的探测参数
-      const evidence: import('@kunqing/agent-core').VersionEvidence = {
-        rawVersion: this.state.detectedVersion ?? '',
-        semver: null,
-        source: 'stdout',
-      };
-      const strategy = this.adapter.selectStrategy(evidence);
-      const probeArgs = strategy?.buildVersionProbe({ executablePath: this.state.executablePath }).args ?? ['--version'];
-      const result = await this.runCliCommand(probeArgs, 5000);
-      const passed = result.exitCode === 0 && result.stdout.trim().length > 0;
-      this.logger.info({ exitCode: result.exitCode, stdoutLen: result.stdout.length, passed }, 'AgentConnectionService.runSmokeTest result');
+      const isAcp = 'acp' in this.adapter && (this.adapter as any).acp === true;
+      let passed: boolean;
+      let detail: string;
+      if (isAcp && 'smokeAcp' in this.adapter) {
+        // ACP CLI：通过真实 initialize 握手验证协议端点可用（无需认证即可握手）
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 8000);
+        try {
+          const smoke = await (this.adapter as any).smokeAcp({ executablePath: this.state.executablePath }, controller.signal);
+          passed = !!smoke?.ok;
+          detail = smoke?.error ?? 'ACP initialize 握手成功';
+        } finally {
+          clearTimeout(timeout);
+        }
+      } else {
+        // 使用适配器策略的 buildVersionProbe 获取正确的探测参数
+        const evidence: import('@kunqing/agent-core').VersionEvidence = {
+          rawVersion: this.state.detectedVersion ?? '',
+          semver: null,
+          source: 'stdout',
+        };
+        const strategy = this.adapter.selectStrategy(evidence);
+        const probeArgs = strategy?.buildVersionProbe({ executablePath: this.state.executablePath }).args ?? ['--version'];
+        const result = await this.runCliCommand(probeArgs, 5000);
+        passed = result.exitCode === 0 && result.stdout.trim().length > 0;
+        detail = `exit code ${result.exitCode}，输出: ${result.stderr.slice(0, 200) || result.stdout.slice(0, 200)}`;
+      }
+      this.logger.info({ passed }, 'AgentConnectionService.runSmokeTest result');
       if (!passed) {
-        this.state = { ...this.state, step: 'failed', smokeTestResult: 'failed', error: { code: 'SMOKE_TEST_FAILED', message: `Smoke 测试未通过：exit code ${result.exitCode}，输出: ${result.stderr.slice(0, 200)}`, retryable: true }, failedAtStep: 'smokeTesting' };
+        this.state = { ...this.state, step: 'failed', smokeTestResult: 'failed', error: { code: 'SMOKE_TEST_FAILED', message: `Smoke 测试未通过：${detail}`, retryable: true }, failedAtStep: 'smokeTesting' };
       } else {
         this.state = { ...this.state, step: 'reviewingCapabilitiesAndRisk', smokeTestResult: 'passed' };
       }

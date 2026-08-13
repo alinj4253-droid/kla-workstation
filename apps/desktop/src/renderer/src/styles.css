@@ -3294,6 +3294,86 @@ button {
 .agent-dialog label { margin-top: 15px; }
 .dialog-warning { display: flex; align-items: flex-start; margin-top: 17px; padding: 12px; gap: 9px; color: #5c5228; font-size: 9px; line-height: 15px; background: #fff8d9; border: 1px solid #eee1a5; border-radius: 7px; }
 
+.model-guide-dialog {
+  display: flex;
+  width: min(680px, calc(100vw - 48px));
+  max-height: min(720px, calc(100vh - 56px));
+  flex-direction: column;
+  padding: 26px;
+  background: white;
+  border: 1px solid var(--kq-border);
+  border-radius: 13px;
+  box-shadow: 0 28px 70px rgba(31, 29, 60, 0.24);
+}
+.model-guide-dialog header { display: flex; align-items: flex-start; justify-content: space-between; flex-shrink: 0; }
+.model-guide-dialog header h3 { margin: 0; font-size: 20px; line-height: 28px; font-weight: 630; }
+.model-guide-dialog header p { margin: 3px 0 0; color: var(--kq-text-tertiary); font-size: 11px; line-height: 18px; }
+.model-guide-dialog__body {
+  flex: 1;
+  min-height: 0;
+  margin: 20px -26px 0;
+  padding: 0 26px;
+  overflow-y: auto;
+  font-size: 11px;
+  line-height: 19px;
+  color: var(--kq-text);
+}
+.model-guide-dialog__body h1 { margin: 0 0 16px; font-size: 18px; font-weight: 630; }
+.model-guide-dialog__body h2 { margin: 22px 0 10px; font-size: 14px; font-weight: 630; }
+.model-guide-dialog__body h3 { margin: 18px 0 8px; font-size: 12px; font-weight: 630; }
+.model-guide-dialog__body h4 { margin: 14px 0 6px; font-size: 11px; font-weight: 630; }
+.model-guide-dialog__body p { margin: 0 0 10px; }
+.model-guide-dialog__body ul,
+.model-guide-dialog__body ol { margin: 0 0 10px; padding-left: 20px; }
+.model-guide-dialog__body li { margin-bottom: 4px; }
+.model-guide-dialog__body code {
+  padding: 1px 5px;
+  font-size: 10px;
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  background: #f3f2f9;
+  border-radius: 4px;
+}
+.model-guide-dialog__body pre {
+  margin: 0 0 10px;
+  padding: 12px 14px;
+  overflow-x: auto;
+  font-size: 10px;
+  line-height: 17px;
+  background: #f6f6fa;
+  border: 1px solid var(--kq-border);
+  border-radius: 7px;
+}
+.model-guide-dialog__body pre code { padding: 0; background: none; }
+.model-guide-dialog__body blockquote {
+  margin: 0 0 10px;
+  padding: 10px 14px;
+  color: var(--kq-text-secondary);
+  background: #f8f8fa;
+  border-left: 3px solid var(--kq-primary);
+  border-radius: 0 7px 7px 0;
+  font-size: 10px;
+  line-height: 17px;
+}
+.model-guide-dialog__body blockquote p { margin: 0; }
+.model-guide-dialog__body table {
+  width: 100%;
+  margin: 0 0 10px;
+  border-collapse: collapse;
+  font-size: 10px;
+}
+.model-guide-dialog__body th,
+.model-guide-dialog__body td {
+  padding: 7px 10px;
+  text-align: left;
+  border: 1px solid var(--kq-border);
+}
+.model-guide-dialog__body th {
+  font-weight: 630;
+  background: #f6f6fa;
+}
+.model-guide-dialog__body strong { font-weight: 630; }
+.model-guide-dialog footer { display: flex; justify-content: flex-end; flex-shrink: 0; margin-top: 18px; gap: 9px; }
+
 .model-card-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
 .model-card,
 .custom-model-card { min-height: 205px; padding: 22px; background: white; border: 1px solid var(--kq-border); border-radius: 9px; }
@@ -3466,12 +3546,14 @@ button {
 .model-profile-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 11px; }
 .model-profile-header h4 { margin: 0; font-size: 11px; }
 .model-profile-list { display: flex; flex-direction: column; gap: 8px; }
-.model-profile-row { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; align-items: center; min-height: 48px; padding: 0 14px; gap: 10px; background: white; border: 1px solid var(--kq-border); border-radius: 7px; }
+.model-profile-header-row { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr 140px; align-items: center; padding: 0 14px; gap: 10px; font-size: 9px; color: var(--kq-text-tertiary); }
+.model-profile-row { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr 140px; align-items: center; min-height: 48px; padding: 0 14px; gap: 10px; background: white; border: 1px solid var(--kq-border); border-radius: 7px; }
 .model-profile-row strong { font-size: 10px; }
 .profile-provider,
 .profile-model,
 .profile-slot { font-size: 9px; color: var(--kq-text-secondary); }
 .profile-slot { color: var(--kq-text-tertiary); }
+.profile-row-actions { display: flex; gap: 6px; justify-content: flex-end; }
 
 @media (max-width: 1500px) {
   .topbar-search { width: min(300px, 30vw); }

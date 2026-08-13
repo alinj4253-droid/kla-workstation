@@ -53,7 +53,16 @@ export {
   CodeBuddyDetector,
   buildCodeBuddySearchPaths,
   CODEBUDDY_BINARY_NAMES,
+  AcpCliAdapter,
+  ACP_CLI_REGISTRY,
+  getAcpRegistryEntry,
+  buildAcpSpawnSpec,
+  runAcpSession,
+  createAcpTransport,
 } from './adapters/index.js';
+export type { AcpCliRegistryEntry } from './adapters/index.js';
+export type { AcpSessionRunOptions, AcpSessionResult } from './adapters/index.js';
+export type { AcpTransportOptions, AcpTransport } from './adapters/index.js';
 
 // 向后兼容别名（通过旧路径重导出）
 export { CodexCliAdapter as CodexCliAdapterLegacy, CodexAutoStrategy as CodexAutoStrategyLegacy } from './codex-adapter.js';
@@ -61,3 +70,5 @@ export { ClaudeCodeCliAdapter as ClaudeCodeCliAdapterLegacy, ClaudeCodeAutoStrat
 
 export { getContract, validateCapabilities, validateStrategy } from './contract-validator.js';
 export type { AdapterContract, StrategyContract } from './contract-validator.js';
+export { buildSpawnInvocation } from './adapters/index.js';
+export type { SpawnInvocation } from './adapters/index.js';
