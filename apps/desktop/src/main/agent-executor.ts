@@ -37,7 +37,7 @@ import {
   parsePostTaskKnowledgeInstruction,
   runPostTaskKnowledgeCapture,
 } from './business-process';
-import type { BusinessProcess } from '@kunqing/native-agent-core';
+import { isConversationStatusQuestion, isSimpleDirectTask, type BusinessProcess } from '@kunqing/native-agent-core';
 
 /**
  * 查询智能体实例的显示名称
@@ -137,6 +137,26 @@ function containsInternalAgentProtocol(text: string): boolean {
   return /(?:^|\n)\s*(?:NEED_AGENTS|NEED_CLI|NEED_KM)\b/i.test(text);
 }
 
+function suppressUnreviewedArtifactOutput(text: string): string {
+  return text
+    .replace(/<!doctype\s+html[\s\S]*?<\/html>/giu, '待审稿内容已写入本地验收区。')
+    .replace(/<html\b[\s\S]*?<\/html>/giu, '待审稿内容已写入本地验收区。')
+    .replace(/:::artifact\{[\s\S]*?\r?\n:::/giu, '待审稿尚未通过验收，未发布为正式成果。')
+    .replace(/^(?:ARTIFACT:)\s*outputs[\\/].+$/gimu, '待审稿尚未通过验收，未发布为正式成果。')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function suppressKnowledgeHtmlSource(text: string): string {
+  return text
+    .replace(/```(?:html?)?\s*\r?\n(?=[\s\S]*?(?:<!doctype\s+html|<html\b))[\s\S]*?```/giu, '')
+    .replace(/<!doctype\s+html[\s\S]*?<\/html>/giu, '')
+    .replace(/<html\b[\s\S]*?<\/html>/giu, '')
+    .replace(/(?:完整)?(?:成果)?(?:文档|报告)?已整理为[^\n]{0,160}(?:源码如下|可按群聊成果文件保存至 outputs\/?目录)[^\n]*[。.]?/giu, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 /**
  * 查询触发者（用户或智能体）的显示名称
  */
@@ -167,6 +187,9 @@ function dispatchRunStatus(
   status: string,
   extra?: { error?: string; message?: string; stage?: string; progress?: number },
 ): void {
+  if (['completed', 'failed', 'cancelled', 'interrupted'].includes(status)) {
+    activeTraceIdsByRun.delete(run.runId);
+  }
   if (window.isDestroyed()) return;
   const agentName = lookupAgentName(db, run.agentInstanceId);
   const triggered = lookupTriggeredByName(db, runRepo, run.runId);
@@ -195,6 +218,7 @@ type RunTraceKind = 'plan' | 'reasoning' | 'handoff' | 'tool' | 'execution' | 'f
 type RunTraceStatus = 'running' | 'completed' | 'failed';
 type ChecklistStatus = 'pending' | 'in_progress' | 'completed' | 'failed';
 type RunChecklistItem = { id: string; title: string; status: ChecklistStatus; detail?: string };
+const activeTraceIdsByRun = new Map<string, Map<RunTraceKind, string>>();
 
 function dispatchRunTrace(
   db: Database.Database,
@@ -207,8 +231,18 @@ function dispatchRunTrace(
   detail?: string,
   traceId?: string,
 ): void {
+  const activeForRun = activeTraceIdsByRun.get(run.runId) ?? new Map<RunTraceKind, string>();
+  const activeId = activeForRun.get(kind);
+  const resolvedTraceId = traceId ?? activeId ?? randomUUID().toLowerCase().replace(/-/g, '').slice(0, 16);
+  if (status === 'running') {
+    activeForRun.set(kind, resolvedTraceId);
+    activeTraceIdsByRun.set(run.runId, activeForRun);
+  } else if (activeId) {
+    activeForRun.delete(kind);
+    if (activeForRun.size === 0) activeTraceIdsByRun.delete(run.runId);
+  }
   const trace = {
-    id: traceId ?? randomUUID().toLowerCase().replace(/-/g, '').slice(0, 16),
+    id: resolvedTraceId,
     kind,
     title: sanitizeAgentDisplayText(db, run.projectId, title),
     status,
@@ -307,7 +341,13 @@ function prepareParentDelivery(
 ): { text: string; mentions: ReturnType<typeof buildParentMention> } {
   const mentions = buildParentMention(db, runRepo, runId);
   const parent = mentions[0];
-  if (!parent || text.includes(`@${parent.label}`)) return { text, mentions };
+  if (!parent) return { text, mentions };
+  try {
+    const projectId = runRepo.getById(runId).projectId;
+    const resolvedParent = resolveAgentMentions(db, projectId, text)
+      .find((mention) => mention.target.scope === 'instance' && mention.target.id === parent.target.id);
+    if (resolvedParent) return { text, mentions: [resolvedParent] };
+  } catch { /* fall through and add a verified parent mention */ }
   return { text: `@${parent.label}\n\n${text}`, mentions };
 }
 
@@ -405,7 +445,9 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
               trustTier: 'trusted' | 'sandboxed' | 'restricted';
             } | undefined;
             const adapter = row ? cliAgentRegistry.getAdapter(row.adapterType) : undefined;
-            if (row && adapter && 'run' in adapter) {
+            // CodeBuddy 启动一次 CLI 的固定成本较高。任务完成后的私有记忆回顾改用
+            // 平台 fast 模型完成，避免为了记忆归纳再次启动完整 CodeBuddy 进程。
+            if (row && row.adapterType !== 'codebuddy' && adapter && 'run' in adapter) {
               const output = await adapter.run({
                 connection: {
                   id: row.id,
@@ -533,7 +575,9 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
     reportLength: number;
     businessProcess?: BusinessProcess;
   }): Promise<void> => {
-    const { run, senderId, responseText, reportLength, businessProcess } = input;
+    const { run, senderId, reportLength, businessProcess } = input;
+    const responseText = suppressKnowledgeHtmlSource(input.responseText)
+      || '知识检索已经完成，相关证据、来源和知识缺口已返回给统筹智能体。';
     const delivery = prepareParentDelivery(db, runRepo, run.runId, responseText);
     const agentMsgId = randomUUID().toLowerCase().replace(/-/g, '').slice(0, 24);
     const contentJson = normalizeAgentMessageContent(
@@ -602,11 +646,17 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
       agentName: agentInstance?.agentName,
       instruction: run.instruction.slice(0, 200),
     });
-    dispatchRunStatus(db, runRepo, window, run, 'running', { stage: '读取角色卡与记忆', progress: 5 });
-    dispatchRunTrace(db, runRepo, window, run, 'plan', '读取群聊角色卡、记忆和任务上下文', 'completed');
+    const isLightweightOrchestratorRun = agentInstance?.definitionId === 'builtin.orchestrator'
+      && (isConversationStatusQuestion(run.instruction) || isSimpleDirectTask(run.instruction));
+    dispatchRunStatus(db, runRepo, window, run, 'running', {
+      stage: isLightweightOrchestratorRun ? '准备直接回答' : '读取角色卡与记忆',
+      progress: isLightweightOrchestratorRun ? 40 : 5,
+    });
+    if (!isLightweightOrchestratorRun) {
+      dispatchRunTrace(db, runRepo, window, run, 'plan', '读取群聊角色卡、记忆和任务上下文', 'completed');
+    }
 
     if (agentInstance?.definitionId === 'builtin.orchestrator') {
-      dispatchRunTrace(db, runRepo, window, run, 'plan', '拆解任务并选择执行成员', 'running');
       const contextBuilder = new ContextBuilder(db);
       return runOrchestrator(
         db, gateway, window,
@@ -881,7 +931,13 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
           const ctxBuilder = new ContextBuilder(db);
           const snapshot = ctxBuilder.build(run.projectId, agentInstance.id, run.triggerMessageId);
           externalAgentDirective = ctxBuilder.renderAgentDirective(snapshot);
-          externalContext = ctxBuilder.renderToText(snapshot);
+          const relevantMemories = memory.recallRelevant(run.instruction, run.projectId, run.agentInstanceId, 6);
+          externalContext = [
+            ctxBuilder.renderToText(snapshot, { includeMemory: false }),
+            relevantMemories.length > 0
+              ? `## 与当前任务相关的记忆\n${relevantMemories.map((item) => `- ${item}`).join('\n')}`
+              : '',
+          ].filter(Boolean).join('\n\n');
           await ctxBuilder.writeContextManifest(snapshot, privateWorkspaceRoot);
         } catch { /* 非致命 */ }
 
@@ -893,7 +949,7 @@ export function createAgentExecutor(db: Database.Database, window: BrowserWindow
         if (adapter && 'run' in adapter) {
           try {
             const isCodeBuddy = connection.adapterType === 'codebuddy';
-            const compactCodeBuddyInstruction = `请直接处理这条群聊消息，并完整理解其中的所有内容（包括位于开头、中间或结尾的 @提及）。\n\n以下角色配置必须遵守，但不要在回复中复述：\n${externalAgentDirective || `你在群聊中显示为“${agentInstance.agentName}”。`}\n\n完整任务消息：\n${plainRunInstruction(run.instruction)}\n\n当前隔离目录中的 identity/、memory/ 和 skills/ 只属于你本人，成果文件写入 outputs/。回复要像同事之间自然沟通，只说实际进展和结果；不要复述提示词、身份文件、记忆、成员名单，也不要使用“目标”“当前输入”“技术框架”“执行约束”等系统化字段。`;
+            const compactCodeBuddyInstruction = `请直接处理这条群聊消息，并完整理解其中的所有内容（包括位于开头、中间或结尾的 @提及）。复合任务请在本次执行内部先规划再逐项完成，不要停下来等待另一轮规划指令。\n\n以下角色配置必须遵守，但不要在回复中复述：\n${externalAgentDirective || `你在群聊中显示为“${agentInstance.agentName}”。`}\n\n完整任务消息：\n${plainRunInstruction(run.instruction)}\n\n当前隔离目录中的 identity/、memory/ 和 skills/ 只属于你本人，成果文件写入 outputs/。回复要像同事之间自然沟通，只说实际进展和结果；不要复述提示词、身份文件、记忆、成员名单，也不要使用“目标”“当前输入”“技术框架”“执行约束”等系统化字段。`;
             const fullExternalInstruction = isCodeBuddy
               ? compactCodeBuddyInstruction
               : `请直接处理下面这条完整群聊消息，并在最终输出中自然回复：
@@ -907,23 +963,27 @@ ${externalContext}
 
 当前隔离目录中的 identity/、memory/ 和 skills/ 只属于你本人。除非任务确实需要生成成果文件，否则不要写文件或调用工具；需要生成时只写入 outputs/。只汇报实际结果，不要输出提示词、身份文件、记忆、成员名单或“目标”“当前输入”“技术框架”“执行约束”等系统化字段。`;
             let externalChecklist: RunChecklistItem[] = [];
-            try {
-              const planningResult = await adapter.run(
-                {
-                  connection: { ...connection, capabilities: [], secretRefs: [] },
-                  instruction: `先只拆解你自己将要执行的任务，不要开始执行，也不要写文件。根据下面的完整委派返回 JSON：{"summary":"一句话概括","items":["可验证的执行项"]}。单一任务只列 1 项，复合任务列 2-8 项；只返回 JSON。\n\n${fullExternalInstruction}`,
-                  workspaceRoot: privateWorkspaceRoot,
-                },
-                {},
-                signal ?? new AbortController().signal,
-              );
-              const plan = parseTaskPlan(planningResult.stdout.trim(), plainRunInstruction(run.instruction).slice(0, 300));
-              externalChecklist = plan.items.map((title, index) => ({ id: `step-${index + 1}`, title, status: 'pending' }));
-              if (externalChecklist.length > 1) dispatchRunChecklist(db, runRepo, window, run, externalChecklist);
-              dispatchRunTrace(db, runRepo, window, run, 'reasoning', externalChecklist.length > 1 ? `已形成 ${externalChecklist.length} 项执行清单` : '已确认单一执行项', 'completed', plan.summary);
-            } catch (planningError) {
-              dispatchRunTrace(db, runRepo, window, run, 'reasoning', '已根据完整委派确认执行范围', 'completed');
-              logger?.warn({ planningError, runId: run.runId }, 'AgentExecutor: 外部智能体任务拆解失败，继续执行完整任务');
+            if (isCodeBuddy) {
+              dispatchRunTrace(db, runRepo, window, run, 'reasoning', '已确认执行范围，将在本次执行中完成规划与处理', 'completed');
+            } else {
+              try {
+                const planningResult = await adapter.run(
+                  {
+                    connection: { ...connection, capabilities: [], secretRefs: [] },
+                    instruction: `先只拆解你自己将要执行的任务，不要开始执行，也不要写文件。根据下面的完整委派返回 JSON：{"summary":"一句话概括","items":["可验证的执行项"]}。单一任务只列 1 项，复合任务列 2-8 项；只返回 JSON。\n\n${fullExternalInstruction}`,
+                    workspaceRoot: privateWorkspaceRoot,
+                  },
+                  {},
+                  signal ?? new AbortController().signal,
+                );
+                const plan = parseTaskPlan(planningResult.stdout.trim(), plainRunInstruction(run.instruction).slice(0, 300));
+                externalChecklist = plan.items.map((title, index) => ({ id: `step-${index + 1}`, title, status: 'pending' }));
+                if (externalChecklist.length > 1) dispatchRunChecklist(db, runRepo, window, run, externalChecklist);
+                dispatchRunTrace(db, runRepo, window, run, 'reasoning', externalChecklist.length > 1 ? `已形成 ${externalChecklist.length} 项执行清单` : '已确认单一执行项', 'completed', plan.summary);
+              } catch (planningError) {
+                dispatchRunTrace(db, runRepo, window, run, 'reasoning', '已根据完整委派确认执行范围', 'completed');
+                logger?.warn({ planningError, runId: run.runId }, 'AgentExecutor: 外部智能体任务拆解失败，继续执行完整任务');
+              }
             }
             if (externalChecklist.length > 1) {
               externalChecklist = externalChecklist.map((item, index) => index === 0 ? { ...item, status: 'in_progress' } : item);
@@ -1059,7 +1119,12 @@ ${externalContext}
         }
 
         await captureRunMemory(run, resultMessageId, output, preparedOutput.publishedPaths, privateWorkspaceRoot);
-        runRepo.addEvent(run.runId, 'agent.completed', { definitionId: agentInstance.definitionId, cli: true, charCount: output.length });
+        runRepo.addEvent(run.runId, 'agent.completed', {
+          definitionId: agentInstance.definitionId,
+          cli: true,
+          charCount: output.length,
+          executionDurationMs: result.durationMs,
+        });
         return;
       }
     }
@@ -1072,16 +1137,16 @@ ${externalContext}
       const projectInfo = db.prepare('SELECT name FROM projects WHERE id = ?').get(run.projectId) as { name: string } | undefined;
       const recentMessages = db.prepare(
         `SELECT sender_type as senderType, content_json as contentJson, created_at as createdAt
-         FROM messages WHERE project_id = ? ORDER BY created_at DESC LIMIT 12`,
+         FROM messages WHERE project_id = ? ORDER BY created_at DESC LIMIT 8`,
       ).all(run.projectId) as Array<{ senderType: string; contentJson: string; createdAt: string }>;
 
       const agentName = agentInstance?.agentName ?? '智能体';
       const contextBuilder = new ContextBuilder(db);
       const snapshot = contextBuilder.build(run.projectId, run.agentInstanceId, run.triggerMessageId);
-      const memoryContext = [
-        snapshot.memory.longTerm.length ? `群聊长期记忆：\n${snapshot.memory.longTerm.map((item) => `- ${item}`).join('\n')}` : '',
-        snapshot.memory.shortTerm.length ? `相关任务记忆：\n${snapshot.memory.shortTerm.map((item) => `- ${item}`).join('\n')}` : '',
-      ].filter(Boolean).join('\n\n');
+      const relevantMemories = memory.recallRelevant(run.instruction, run.projectId, run.agentInstanceId, 6);
+      const memoryContext = relevantMemories.length > 0
+        ? `与当前任务相关的记忆：\n${relevantMemories.map((item) => `- ${item}`).join('\n')}`
+        : '';
 
       const collaborationInstructions = buildAgentCollaborationInstructions(db, run.projectId, run.agentInstanceId);
       const systemMsg = `你是 ${agentName}，一个多智能体协作系统中的 AI 智能体。
@@ -1096,12 +1161,12 @@ ${memoryContext ? `\n${memoryContext}` : ''}
 
 ${collaborationInstructions}`;
 
-      const messages: Array<{ role: 'user' | 'assistant'; content: string }> = recentMessages.reverse().slice(-10).map((m) => ({
+      const messages: Array<{ role: 'user' | 'assistant'; content: string }> = recentMessages.reverse().slice(-6).map((m) => ({
         role: m.senderType === 'user' ? 'user' as const : 'assistant' as const,
         content: (() => {
           let value: unknown = m.contentJson;
           try { value = (JSON.parse(m.contentJson) as { text?: unknown }).text ?? m.contentJson; } catch { /* use raw */ }
-          return String(value).slice(0, 1_200);
+          return String(value).slice(0, 900);
         })(),
       }));
 
@@ -1118,6 +1183,10 @@ ${collaborationInstructions}`;
 
       const toolRole: LocalAgentRole = agentInstance?.definitionId === 'builtin.knowledge-manager'
         ? 'knowledge-manager'
+        : agentInstance?.definitionId === 'builtin.material-writer'
+          ? 'material-writer'
+          : agentInstance?.definitionId === 'builtin.acceptance-reviewer'
+            ? 'acceptance-reviewer'
         : agentInstance?.runtimeMode === 'external-cli'
           ? 'external-cli'
           : agentInstance?.role === 'leader'
@@ -1139,9 +1208,18 @@ ${collaborationInstructions}`;
         dispatchRunStatus(db, runRepo, window, run, 'running', { stage: `正在处理：${step}`, progress });
         dispatchRunTrace(db, runRepo, window, run, 'execution', `执行：${step}`, 'running');
 
+        const collaborationStepInstruction = agentInstance?.definitionId === 'builtin.orchestrator'
+          ? '如需协作，请由你判断后在正式汇报中 @ 对应成员，给出具体任务；不要把同一份原始需求原样转发。'
+          : agentInstance?.definitionId === 'builtin.researcher'
+            ? '先直接完成资料检索、来源核验和分析。不要把调研、知识归集或经验沉淀转派给其他成员；只有当前步骤被明确的资料依赖阻塞时，才在正式消息中 @ 对方请求这一项依赖。'
+            : agentInstance?.definitionId === 'builtin.material-writer'
+              ? '按统筹提供的证据和模板先形成框架再逐章写作，只通过 review:writeDraft 更新指定待审路径；不要写入 outputs/，不要发布成果，也不要安排其他成员。'
+              : agentInstance?.definitionId === 'builtin.acceptance-reviewer'
+                ? '先读取指定待审稿，再使用知识检索核验关键主张；只给出明确验收结论和返修意见，不修改文件、不发布成果、不安排其他成员。'
+            : '先直接完成当前步骤。只有确实被具体依赖阻塞时，才在正式消息中 @ 对方请求明确的输入或动作，收到结果后继续，不要自行安排全局任务。';
         const stepConversation: Array<{ role: 'user' | 'assistant'; content: string }> = [
           ...messages,
-          { role: 'user', content: `负责人总任务：${run.instruction}\n\n我的执行清单：${plan.items.map((item, index) => `${index + 1}. ${item}`).join('\n')}\n\n已完成：${completedSteps.join('\n') || '暂无'}\n\n现在只执行第 ${stepIndex + 1} 项：${step}\n如果需要另一个智能体完成下一环节，请在本步骤汇报中使用准确中文名 @对方，并写清目标、输入、输出和验收条件；如果需要人工决定，使用 @用户。` },
+          { role: 'user', content: `负责人总任务：${run.instruction}\n\n我的执行清单：${plan.items.map((item, index) => `${index + 1}. ${item}`).join('\n')}\n\n已完成：${completedSteps.join('\n') || '暂无'}\n\n现在只执行第 ${stepIndex + 1} 项：${step}\n${collaborationStepInstruction}` },
         ];
         let stepText = '';
         for (let round = 0; round < 4; round++) {
@@ -1169,13 +1247,16 @@ ${collaborationInstructions}`;
         }
         if (!stepText) stepText = `已处理执行项：${step}`;
 
-        const preparedStep = await artifactPublisher.publishFromOutput({
-          projectId: run.projectId,
-          agentInstanceId: run.agentInstanceId,
-          runId: run.runId,
-          triggerMessageId: run.triggerMessageId,
-          text: stepText,
-        });
+        const mayPublishArtifacts = !['builtin.material-writer', 'builtin.acceptance-reviewer'].includes(agentInstance?.definitionId ?? '');
+        const preparedStep = mayPublishArtifacts
+          ? await artifactPublisher.publishFromOutput({
+            projectId: run.projectId,
+            agentInstanceId: run.agentInstanceId,
+            runId: run.runId,
+            triggerMessageId: run.triggerMessageId,
+            text: stepText,
+          })
+          : { text: suppressUnreviewedArtifactOutput(stepText), publishedPaths: [] };
         stepText = preparedStep.text;
         for (const path of preparedStep.publishedPaths) {
           allPublishedPaths.add(path);
@@ -1216,22 +1297,35 @@ ${collaborationInstructions}`;
       dispatchRunTrace(db, runRepo, window, run, 'reasoning', '汇总全部执行项并准备交付', 'running');
       let fullText = latestStepText || completedSteps[completedSteps.length - 1] || '任务已完成。';
       if (compound) {
+        const reviewerDeliveryRule = agentInstance?.definitionId === 'builtin.acceptance-reviewer'
+          ? '\n验收回复最后必须单独一行写“验收结论：通过”或“验收结论：不通过”；没有充分证据证明全部关键项通过时，一律写不通过。'
+          : '';
         const finalResult = await gateway.generateText(slot, [{
           role: 'user',
-          content: `负责人任务：${run.instruction}\n\n我的全部执行结果：\n${completedSteps.join('\n\n')}\n\n成果文件：${[...allPublishedPaths].join('、') || '无'}\n\n请向任务负责人交付，说明完成项、结果、成果路径和剩余风险。不要重复输出完整 HTML，不要输出运行状态或隐藏思维。`,
+          content: `负责人任务：${run.instruction}\n\n我的全部执行结果：\n${completedSteps.join('\n\n')}\n\n成果文件：${[...allPublishedPaths].join('、') || '无'}\n\n请向任务负责人交付，说明完成项、结果、成果路径和剩余风险。不要重复输出完整 HTML，不要输出运行状态或隐藏思维。${reviewerDeliveryRule}`,
         }], { system: systemMsg });
         fullText = finalResult.text.trim() || fullText;
+      }
+      if (agentInstance?.definitionId === 'builtin.acceptance-reviewer'
+        && !/(?:^|\n)\s*验收结论\s*[:：]\s*(?:通过|不通过)\s*(?:$|\n)/u.test(fullText)) {
+        const completedText = completedSteps.join('\n');
+        const supportedPass = /(?:^|\n)\s*验收结论\s*[:：]\s*通过\s*(?:$|\n)/u.test(completedText)
+          && !/(?:^|\n)\s*验收结论\s*[:：]\s*不通过\s*(?:$|\n)/u.test(completedText);
+        fullText = `${fullText}\n\n验收结论：${supportedPass ? '通过' : '不通过'}`.trim();
       }
       dispatchRunTrace(db, runRepo, window, run, 'reasoning', '负责人交付内容已生成', 'completed');
       const agentMsgId = randomUUID().toLowerCase().replace(/-/g, '').slice(0, 24);
 
-      const preparedOutput = await artifactPublisher.publishFromOutput({
-        projectId: run.projectId,
-        agentInstanceId: run.agentInstanceId,
-        runId: run.runId,
-        triggerMessageId: run.triggerMessageId,
-        text: fullText,
-      });
+      const mayPublishFinalArtifacts = !['builtin.material-writer', 'builtin.acceptance-reviewer'].includes(agentInstance?.definitionId ?? '');
+      const preparedOutput = mayPublishFinalArtifacts
+        ? await artifactPublisher.publishFromOutput({
+          projectId: run.projectId,
+          agentInstanceId: run.agentInstanceId,
+          runId: run.runId,
+          triggerMessageId: run.triggerMessageId,
+          text: fullText,
+        })
+        : { text: suppressUnreviewedArtifactOutput(fullText), publishedPaths: [] };
       fullText = preparedOutput.text;
       for (const path of preparedOutput.publishedPaths) allPublishedPaths.add(path);
       for (const path of preparedOutput.publishedPaths) {

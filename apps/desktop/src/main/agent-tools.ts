@@ -1,8 +1,8 @@
 import type Database from 'better-sqlite3';
 import { SearchRepository, AgentRunRepository } from '@kunqing/database';
 import { getProjectRoot } from './paths';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { join, dirname } from 'node:path';
+import { copyFile, readFile, writeFile, mkdir } from 'node:fs/promises';
+import { join, dirname, resolve, sep } from 'node:path';
 import type { Scheduler } from './scheduler';
 import { ToolRegistry } from './tool-registry';
 import { buildModelProfileSnapshot } from './project-creator';
@@ -11,6 +11,7 @@ import { WorkflowRegistry } from './workflow-registry';
 import { formatHybridKnowledgeResult, searchHybridKnowledge } from './hybrid-knowledge-search';
 import { refreshKnowledgeBeforeSearch } from './knowledge-sync';
 import type { ModelGateway } from './model-gateway';
+import { formatBochaSearchResults, searchBochaWeb } from './bocha-web-search';
 
 export interface ToolDefinition {
   name: string;
@@ -43,6 +44,30 @@ export function createProjectTools(db: Database.Database, scheduler?: Scheduler,
           return formatHybridKnowledgeResult(searchHybridKnowledge(db, query, projectId, limit ?? 5));
         } catch (err) {
           return `搜索错误: ${err instanceof Error ? err.message : String(err)}`;
+        }
+      },
+    },
+    {
+      name: 'web:search',
+      description: 'Use Bocha web search to find public web sources and return concise results with source links.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Search question or topic' },
+          count: { type: 'number', description: 'Number of results, default 5, maximum 20' },
+          freshness: { type: 'string', description: 'noLimit, day, week, month, or year' },
+          summary: { type: 'boolean', description: 'Request page summaries, default true' },
+          include: { type: 'string', description: 'Optional comma-separated sites or domains to include' },
+          exclude: { type: 'string', description: 'Optional comma-separated sites or domains to exclude' },
+        },
+        required: ['query'],
+      },
+      async execute(args) {
+        const input = args as { query: string; count?: number; freshness?: 'noLimit' | 'day' | 'week' | 'month' | 'year'; summary?: boolean; include?: string; exclude?: string };
+        try {
+          return formatBochaSearchResults(await searchBochaWeb(db, input));
+        } catch (err) {
+          return `Web search failed: ${err instanceof Error ? err.message : String(err)}`;
         }
       },
     },
@@ -282,6 +307,98 @@ export function registerProjectTools(registry: ToolRegistry, db: Database.Databa
 
   registry.registerAll([
     {
+      name: 'review:writeDraft',
+      description: '将材料待审稿写入本地验收暂存区；该文件不会作为群聊成果发布',
+      parameters: {
+        type: 'object',
+        properties: {
+          projectId: { type: 'string', description: '项目 ID' },
+          relativePath: { type: 'string', description: '待审稿相对路径，必须位于 .runtime/review-drafts/ 且为 HTML' },
+          content: { type: 'string', description: '完整 HTML 待审稿内容' },
+        },
+        required: ['projectId', 'relativePath', 'content'],
+      },
+      requiredCapabilities: ['write:review-draft'],
+      allowedPathPrefixes: ['.runtime/review-drafts/'],
+      maxContentLength: 2000,
+      async execute(args) {
+        const { projectId, relativePath, content } = args as { projectId: string; relativePath: string; content: string };
+        const normalized = relativePath.replaceAll('\\', '/').replace(/^\.\//, '');
+        if (!normalized.startsWith('.runtime/review-drafts/') || normalized.includes('..') || !/\.html?$/i.test(normalized)) {
+          return '待审稿路径不合法：必须位于 .runtime/review-drafts/ 且为 HTML 文件';
+        }
+        const projectRoot = resolve(getProjectRoot(projectId));
+        const filePath = resolve(projectRoot, normalized);
+        if (!filePath.startsWith(projectRoot + sep)) return '待审稿路径超出群聊工作区';
+        await mkdir(dirname(filePath), { recursive: true });
+        await writeFile(filePath, content, 'utf8');
+        return `待审稿已保存到 ${normalized}，尚未发布，等待验收`;
+      },
+    },
+    {
+      name: 'review:promoteArtifact',
+      description: '仅供统筹智能体在验收通过后，把待审稿提升为 outputs/ 下的正式成果',
+      parameters: {
+        type: 'object',
+        properties: {
+          projectId: { type: 'string', description: '项目 ID' },
+          draftRelativePath: { type: 'string', description: '已通过验收的 .runtime/review-drafts/ 文件' },
+          outputRelativePath: { type: 'string', description: '正式成果路径，必须位于 outputs/' },
+        },
+        required: ['projectId', 'draftRelativePath', 'outputRelativePath'],
+      },
+      requiredCapabilities: ['promote:reviewed-output'],
+      maxContentLength: 2000,
+      async execute(args) {
+        const { projectId, draftRelativePath, outputRelativePath } = args as {
+          projectId: string; draftRelativePath: string; outputRelativePath: string;
+        };
+        const draft = draftRelativePath.replaceAll('\\', '/').replace(/^\.\//, '');
+        const output = outputRelativePath.replaceAll('\\', '/').replace(/^\.\//, '');
+        if (!draft.startsWith('.runtime/review-drafts/') || draft.includes('..') || !/\.html?$/i.test(draft)) {
+          return '提升失败：待审稿路径不合法';
+        }
+        if (!output.startsWith('outputs/') || output.includes('..') || !/\.html?$/i.test(output)) {
+          return '提升失败：正式成果路径必须位于 outputs/ 且为 HTML 文件';
+        }
+        const projectRoot = resolve(getProjectRoot(projectId));
+        const source = resolve(projectRoot, draft);
+        const destination = resolve(projectRoot, output);
+        if (!source.startsWith(projectRoot + sep) || !destination.startsWith(projectRoot + sep)) {
+          return '提升失败：文件路径超出群聊工作区';
+        }
+        await mkdir(dirname(destination), { recursive: true });
+        await copyFile(source, destination);
+        return `验收通过的成果已发布到 ${output}`;
+      },
+    },
+    {
+      name: 'web:search',
+      description: 'Use Bocha web search to find public web sources and return concise results with source links.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Search question or topic' },
+          count: { type: 'number', description: 'Number of results, default 5, maximum 20' },
+          freshness: { type: 'string', description: 'noLimit, day, week, month, or year' },
+          summary: { type: 'boolean', description: 'Request page summaries, default true' },
+          include: { type: 'string', description: 'Optional comma-separated sites or domains to include' },
+          exclude: { type: 'string', description: 'Optional comma-separated sites or domains to exclude' },
+        },
+        required: ['query'],
+      },
+      requiredCapabilities: ['network:search'],
+      maxContentLength: 12_000,
+      async execute(args) {
+        const input = args as { query: string; count?: number; freshness?: 'noLimit' | 'day' | 'week' | 'month' | 'year'; summary?: boolean; include?: string; exclude?: string };
+        try {
+          return formatBochaSearchResults(await searchBochaWeb(db, input));
+        } catch (err) {
+          return `Web search failed: ${err instanceof Error ? err.message : String(err)}`;
+        }
+      },
+    },
+    {
       name: 'skill:search',
       description: '按当前任务从本次 Run 的自身技能快照中检索最匹配的技能。',
       parameters: {
@@ -384,8 +501,8 @@ export function registerProjectTools(registry: ToolRegistry, db: Database.Databa
         required: ['projectId', 'relativePath'],
       },
       requiredCapabilities: ['read:file'],
-      allowedPathPrefixes: ['original-files/', 'outputs/', 'wiki/', 'agent-memories/', 'agent-identities/'],
-      maxContentLength: 10000,
+      allowedPathPrefixes: ['original-files/', 'outputs/', 'wiki/', 'knowledge/', '.runtime/review-drafts/', 'agent-memories/', 'agent-identities/'],
+      maxContentLength: 50000,
       async execute(args) {
         const { projectId, relativePath } = args as { projectId: string; relativePath: string };
         try {

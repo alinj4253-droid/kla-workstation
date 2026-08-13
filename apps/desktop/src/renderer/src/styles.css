@@ -3460,6 +3460,7 @@ button {
 .slot-unset { color: var(--kq-text-tertiary); font-style: italic; }
 .slot-edit { display: flex; align-items: center; gap: 6px; }
 .slot-edit select { min-width: 180px; height: 30px; padding: 0 8px; font-size: 10px; border: 1px solid var(--kq-border); border-radius: 5px; background: white; color: var(--kq-text); outline: 0; }
+.slot-error { margin: 8px 0 0; color: var(--kq-danger); font-size: 10px; }
 
 /* Profile List */
 .model-profile-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 11px; }

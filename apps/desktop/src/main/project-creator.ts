@@ -16,6 +16,8 @@ export { validateEffectivePermissions, type PermissionDefinition } from './permi
 const ORCHESTRATOR_PROFILE_ID = 'builtin-orchestrator-profile';
 const KNOWLEDGE_PROFILE_ID = 'builtin-knowledge-profile';
 const RESEARCHER_PROFILE_ID = 'builtin-researcher-profile';
+const MATERIAL_WRITER_PROFILE_ID = 'builtin-material-writer-profile';
+const ACCEPTANCE_REVIEWER_PROFILE_ID = 'builtin-acceptance-reviewer-profile';
 
 function extractProjectName(text: string, templateId?: string): string {
   if (templateId) {
@@ -210,6 +212,8 @@ export async function createProject(
   const orchInstanceId = generateInstanceId(projectId, 'orch');
   const knowInstanceId = generateInstanceId(projectId, 'know');
   const resInstanceId = generateInstanceId(projectId, 'res');
+  const writerInstanceId = generateInstanceId(projectId, 'writer');
+  const reviewerInstanceId = generateInstanceId(projectId, 'reviewer');
   const projectRoot = getProjectRoot(projectId);
 
   const projectRepo = new ProjectRepository(db);
@@ -228,6 +232,8 @@ export async function createProject(
     const leaderProfile = profileRepo.getById(ORCHESTRATOR_PROFILE_ID);
     const knowledgeProfile = profileRepo.getById(KNOWLEDGE_PROFILE_ID);
     const researcherProfile = profileRepo.getById(RESEARCHER_PROFILE_ID);
+    const materialWriterProfile = profileRepo.getById(MATERIAL_WRITER_PROFILE_ID);
+    const acceptanceReviewerProfile = profileRepo.getById(ACCEPTANCE_REVIEWER_PROFILE_ID);
 
     instanceRepo.create({
       id: orchInstanceId,
@@ -268,14 +274,45 @@ export async function createProject(
       ordinal: 2,
     });
 
+    instanceRepo.create({
+      id: writerInstanceId,
+      projectId,
+      agentProfileId: materialWriterProfile.id,
+      definitionId: materialWriterProfile.definitionId,
+      definitionVersion: materialWriterProfile.definitionVersion,
+      role: 'teammate',
+      runtimeMode: 'native-model',
+      identityRelPath: `agent-identities/${writerInstanceId}/IDENTITY.md`,
+      memoryRelPath: `agent-memories/${writerInstanceId}`,
+      ordinal: 3,
+    });
+
+    instanceRepo.create({
+      id: reviewerInstanceId,
+      projectId,
+      agentProfileId: acceptanceReviewerProfile.id,
+      definitionId: acceptanceReviewerProfile.definitionId,
+      definitionVersion: acceptanceReviewerProfile.definitionVersion,
+      role: 'teammate',
+      runtimeMode: 'native-model',
+      identityRelPath: `agent-identities/${reviewerInstanceId}/IDENTITY.md`,
+      memoryRelPath: `agent-memories/${reviewerInstanceId}`,
+      ordinal: 4,
+    });
+
     // 仅创建用户选择的 CLI 智能体（排除内置智能体 profile ID）
     const BUILTIN_PROFILE_IDS = new Set([
       ORCHESTRATOR_PROFILE_ID,  // 'builtin-orchestrator-profile'
       KNOWLEDGE_PROFILE_ID,     // 'builtin-knowledge-profile'
       RESEARCHER_PROFILE_ID,    // 'builtin-researcher-profile'
+      MATERIAL_WRITER_PROFILE_ID,
+      ACCEPTANCE_REVIEWER_PROFILE_ID,
     ]);
     const requestedIds = input.requestedAgentProfileIds ?? [];
     const cliRequestedIds = requestedIds.filter((id) => !BUILTIN_PROFILE_IDS.has(id));
+    if (cliRequestedIds.length > 4) {
+      throw new Error('群聊已包含 5 个内置智能体，最多还能添加 4 个外部智能体');
+    }
 
     if (cliRequestedIds.length > 0) {
       const placeholders = cliRequestedIds.map(() => '?').join(',');
@@ -288,7 +325,7 @@ export async function createProject(
          ORDER BY name`,
       ).all(...cliRequestedIds) as Array<{ id: string; name: string; definitionId: string; definitionVersion: string; cliConnectionId: string }>;
 
-      let cliOrdinal = 3;
+      let cliOrdinal = 5;
       for (const cliProfile of cliProfiles) {
         const cliInstanceId = generateInstanceId(projectId, `cli-${cliProfile.id.slice(0, 8)}`);
         instanceRepo.create({
@@ -333,6 +370,7 @@ export async function createProject(
     await mkdir(join(projectRoot, '.runtime', 'versions'), { recursive: true });
     await mkdir(join(projectRoot, '.runtime', 'run-temp'), { recursive: true });
     await mkdir(join(projectRoot, '.runtime', 'sandboxes'), { recursive: true });
+    await mkdir(join(projectRoot, '.runtime', 'review-drafts'), { recursive: true });
 
     for (const instance of allInstances) {
       const instId = instance.id;
@@ -520,10 +558,46 @@ export async function seedDefaultProfiles(db: Database.Database): Promise<void> 
     });
   }
 
-  const existing = profileRepo.listByEnabled();
+  const hasWriterDef = existingDefs.some((d) => d.id === 'builtin.material-writer');
+  if (!hasWriterDef) {
+    defRepo.create({
+      id: 'builtin.material-writer',
+      kind: 'built-in',
+      isBuiltin: true,
+      manifestRelPath: 'agents/builtin-material-writer/manifest.json',
+      maxPermissionsJson: JSON.stringify({
+        read: ['group.original-files', 'group.knowledge', 'shared.knowledge', 'group.messages'],
+        write: ['self.memory', 'group.review-drafts'],
+        network: 'model-gateway-only',
+        shell: 'deny',
+      }),
+      modelRequirementsJson: JSON.stringify(['streaming', 'toolCalling', 'structuredOutput']),
+    });
+  }
+
+  const hasReviewerDef = existingDefs.some((d) => d.id === 'builtin.acceptance-reviewer');
+  if (!hasReviewerDef) {
+    defRepo.create({
+      id: 'builtin.acceptance-reviewer',
+      kind: 'built-in',
+      isBuiltin: true,
+      manifestRelPath: 'agents/builtin-acceptance-reviewer/manifest.json',
+      maxPermissionsJson: JSON.stringify({
+        read: ['group.original-files', 'group.knowledge', 'shared.knowledge', 'group.messages', 'group.review-drafts'],
+        write: ['self.memory'],
+        network: 'model-gateway-only',
+        shell: 'deny',
+      }),
+      modelRequirementsJson: JSON.stringify(['streaming', 'toolCalling', 'structuredOutput']),
+    });
+  }
+
+  const existing = db.prepare('SELECT definition_id as definitionId FROM agent_profiles').all() as Array<{ definitionId: string }>;
   const hasOrch = existing.some((p) => p.definitionId === 'builtin.orchestrator');
   const hasKnow = existing.some((p) => p.definitionId === 'builtin.knowledge-manager');
   const hasRes = existing.some((p) => p.definitionId === 'builtin.researcher');
+  const hasWriter = existing.some((p) => p.definitionId === 'builtin.material-writer');
+  const hasReviewer = existing.some((p) => p.definitionId === 'builtin.acceptance-reviewer');
 
   if (!hasOrch) {
     db.prepare(
@@ -545,6 +619,54 @@ export async function seedDefaultProfiles(db: Database.Database): Promise<void> 
        VALUES (?, ?, ?, ?, ?, 1, 0, 0, ?, ?)`,
     ).run(RESEARCHER_PROFILE_ID, '资料调研智能体', 'builtin.researcher', '1.0.0', 'native-model', now, now);
   }
+
+  if (!hasWriter) {
+    db.prepare(
+      `INSERT INTO agent_profiles (id, name, definition_id, definition_version, runtime_mode, enabled, delegatable, is_system_default, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 1, 0, 0, ?, ?)`,
+    ).run(MATERIAL_WRITER_PROFILE_ID, '材料编写智能体', 'builtin.material-writer', '1.0.0', 'native-model', now, now);
+  }
+
+  if (!hasReviewer) {
+    db.prepare(
+      `INSERT INTO agent_profiles (id, name, definition_id, definition_version, runtime_mode, enabled, delegatable, is_system_default, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 1, 0, 0, ?, ?)`,
+    ).run(ACCEPTANCE_REVIEWER_PROFILE_ID, '验收智能体', 'builtin.acceptance-reviewer', '1.0.0', 'native-model', now, now);
+  }
+
+  // 历史群聊在容量允许时补齐官方写作/验收角色。两者作为一个闭环补充，
+  // 不会为了塞入单个角色而突破每群 9 个智能体的上限。
+  const projects = db.prepare("SELECT id FROM projects WHERE status != 'archived' ORDER BY created_at").all() as Array<{ id: string }>;
+  const builtinAdditions = [
+    { profileId: MATERIAL_WRITER_PROFILE_ID, suffix: 'writer', definitionId: 'builtin.material-writer' },
+    { profileId: ACCEPTANCE_REVIEWER_PROFILE_ID, suffix: 'reviewer', definitionId: 'builtin.acceptance-reviewer' },
+  ];
+  const touchedProjects: string[] = [];
+  for (const project of projects) {
+    const instances = new AgentInstanceRepository(db).listByProject(project.id);
+    const existingProfileIds = new Set(instances.map((instance) => instance.agentProfileId));
+    const missing = builtinAdditions.filter((item) => !existingProfileIds.has(item.profileId));
+    if (missing.length === 0 || instances.length + missing.length > 9) continue;
+    let ordinal = instances.reduce((max, instance) => Math.max(max, instance.ordinal), -1) + 1;
+    for (const item of missing) {
+      const profile = profileRepo.getById(item.profileId);
+      const instanceId = generateInstanceId(project.id, item.suffix);
+      new AgentInstanceRepository(db).create({
+        id: instanceId,
+        projectId: project.id,
+        agentProfileId: profile.id,
+        definitionId: item.definitionId,
+        definitionVersion: profile.definitionVersion,
+        role: 'teammate',
+        runtimeMode: 'native-model',
+        identityRelPath: `agent-identities/${instanceId}/IDENTITY.md`,
+        memoryRelPath: `agent-memories/${instanceId}`,
+        ordinal: ordinal++,
+      });
+    }
+    touchedProjects.push(project.id);
+  }
+  for (const projectId of touchedProjects) await ensureProjectAgentFiles(db, projectId);
 }
 
 /** 根据 agent_instance_id 解析当前 slot 绑定的模型快照，用于 Run 创建时快照 */

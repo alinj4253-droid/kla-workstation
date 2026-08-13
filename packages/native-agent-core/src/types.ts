@@ -8,6 +8,9 @@ export interface DelegatableAgentInfo {
   role: string;
   definitionId: string;
   runtimeMode: string;
+  capabilities?: string;
+  /** Public, non-memory role information available to the team leader for dispatch. */
+  coordinationProfile?: string;
 }
 
 export type BusinessProcessActionType =
@@ -73,7 +76,7 @@ export interface ToolCall {
 
 export interface ExecContextSnapshot {
   snapshotChecksum: string;
-  messages: ModelMessage[];
+  messages: Array<ModelMessage & { senderName?: string }>;
 }
 
 export interface SubRunParams {
@@ -140,6 +143,15 @@ export interface IGraphContext {
 
     getRunStatus(runId: string): { status: string; resultMessageId?: string; errorMessage?: string };
 
+    /** Returns every nested handoff below a Run so the leader can wait for the whole branch. */
+    getRunDescendants?(runId: string): Array<{
+      runId: string;
+      agentInstanceId: string;
+      status: string;
+      resultMessageId?: string;
+      errorMessage?: string;
+    }>;
+
     getParentRunId(runId: string): string | null;
 
     getRunAgentInstanceId(runId: string): string | null;
@@ -158,7 +170,7 @@ export interface IGraphContext {
 
     extractLongTermMemory(projectId: string, agentInstanceId: string): number;
 
-    buildMemoryContext(projectId: string, agentInstanceId: string): string;
+    buildMemoryContext(projectId: string, agentInstanceId: string, query?: string): string;
 
     buildContextSnapshot(projectId: string, agentInstanceId: string, triggerMessageId: string): Promise<ExecContextSnapshot>;
 
@@ -188,13 +200,26 @@ export interface OrchestratorGraphState {
   agentInstanceId: string;
   runId: string;
   instruction: string;
+  resolvedTask?: string;
   triggerMessageId: string;
   messages: ModelMessage[];
   subAgentResult: string;
   finalResponse: string;
   needsKnowledgeManager: boolean;
   needsCLIDelegation: boolean;
+  /** True only when the current delegation batch was explicitly declared independent. */
+  parallelDelegationApproved?: boolean;
+  /** Work the root orchestrator must perform itself before replanning. */
+  selfInstruction?: string;
   cliDelegations: CLIDelegation[];
+  recoveryCount: number;
+  /** Signatures of decisions already attempted in the adaptive planner loop. */
+  plannerHistory?: string[];
+  materializationPass?: number;
+  reviewAttempted?: boolean;
+  reviewPass?: boolean;
+  reviewFindings?: string;
+  draftArtifactPath?: string;
   knowledgeCurated: boolean;
   artifacts: Array<{ relativePath: string; content: string }>;
 }

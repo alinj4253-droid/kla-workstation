@@ -105,6 +105,20 @@ describe('ToolRegistry', () => {
           return '已删除';
         },
       },
+      {
+        name: 'review:writeDraft',
+        description: '写待审稿',
+        parameters: { type: 'object', properties: {}, required: [] },
+        requiredCapabilities: ['write:review-draft'],
+        async execute() { return '待审稿已保存'; },
+      },
+      {
+        name: 'review:promoteArtifact',
+        description: '提升已验收成果',
+        parameters: { type: 'object', properties: {}, required: [] },
+        requiredCapabilities: ['promote:reviewed-output'],
+        async execute() { return '正式成果已发布'; },
+      },
     ]);
   });
 
@@ -121,6 +135,19 @@ describe('ToolRegistry', () => {
       const defs = registry.getDefinitionsForRole('orchestrator');
       const names = defs.map((d) => d.name);
       expect(names).not.toContain('delete:file');
+    });
+
+    it('writer only sees draft writing while reviewer only gets read tools', () => {
+      const writerNames = registry.getDefinitionsForRole('material-writer').map((item) => item.name);
+      expect(writerNames).toContain('review:writeDraft');
+      expect(writerNames).not.toContain('publish_artifact');
+      expect(writerNames).not.toContain('review:promoteArtifact');
+
+      const reviewerNames = registry.getDefinitionsForRole('acceptance-reviewer').map((item) => item.name);
+      expect(reviewerNames).toContain('knowledge:search');
+      expect(reviewerNames).toContain('workspace:readFile');
+      expect(reviewerNames).not.toContain('review:writeDraft');
+      expect(reviewerNames).not.toContain('publish_artifact');
     });
   });
 
@@ -202,6 +229,12 @@ describe('ToolRegistry', () => {
 
     it('knowledge-manager 可以使用 publish_artifact（report-only）', () => {
       expect(registry.canRoleUseTool('knowledge-manager', 'publish_artifact')).toBe(true);
+    });
+
+    it('only orchestrator can promote an accepted draft', () => {
+      expect(registry.canRoleUseTool('orchestrator', 'review:promoteArtifact')).toBe(true);
+      expect(registry.canRoleUseTool('material-writer', 'review:promoteArtifact')).toBe(false);
+      expect(registry.canRoleUseTool('acceptance-reviewer', 'review:promoteArtifact')).toBe(false);
     });
 
     it('unknown tool 返回 false', () => {

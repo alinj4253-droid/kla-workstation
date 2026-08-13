@@ -17,8 +17,28 @@ import { randomUUID } from 'node:crypto';
 import { normalizeAgentMessageContent } from './agent-collaboration';
 import { AgentArtifactPublisher } from './agent-artifact-publisher';
 import { getSkillDisplayName } from './skill-display';
+import { loadAgentCoordinationSummary } from './agent-identity';
 
 export type ExecContext = IGraphContext;
+
+function agentCapabilities(definitionId: string, runtimeMode: string, name: string): string {
+  if (definitionId === 'builtin.knowledge-manager' || /知识|文档/i.test(name)) {
+    return '本地制度和群聊知识检索；读取原始文件；切片、摘要、标签、向量、图谱、Wiki；归集可复用知识';
+  }
+  if (definitionId === 'builtin.researcher' || /调研|研究/i.test(name)) {
+    return '公开网络资料、行业/市场/竞品调研、来源核验和外部事实补充';
+  }
+  if (definitionId === 'builtin.material-writer' || /材料编写|写作/i.test(name)) {
+    return '依据证据和模板先列框架、逐章编写、统一校对并生成 HTML 待审稿';
+  }
+  if (definitionId === 'builtin.acceptance-reviewer' || /验收|审核/i.test(name)) {
+    return '读取材料待审稿，检索本地知识证据，核验事实与来源并给出通过或返修结论';
+  }
+  if (runtimeMode === 'external-cli' || /code|代码|编程/i.test(`${definitionId} ${name}`)) {
+    return '代码、脚本、HTML 和文件成果生成；可在本地工作区执行外部 CLI';
+  }
+  return '根据自身角色卡和可用技能完成专属工作，并返回可验收结果';
+}
 
 export async function runOrchestrator(
   db: Database.Database,
@@ -186,6 +206,29 @@ export async function runOrchestrator(
         } as { status: string; resultMessageId?: string; errorMessage?: string };
       },
 
+      getRunDescendants(rootRunId: string) {
+        return db.prepare(
+          `WITH RECURSIVE descendants AS (
+             SELECT id, parent_run_id, agent_instance_id, status, result_message_id, error_message, created_at
+             FROM agent_runs WHERE parent_run_id = ?
+             UNION ALL
+             SELECT child.id, child.parent_run_id, child.agent_instance_id, child.status,
+                    child.result_message_id, child.error_message, child.created_at
+             FROM agent_runs child
+             JOIN descendants parent ON child.parent_run_id = parent.id
+           )
+           SELECT id as runId, agent_instance_id as agentInstanceId, status,
+                  result_message_id as resultMessageId, error_message as errorMessage
+           FROM descendants ORDER BY created_at`,
+        ).all(rootRunId) as Array<{
+          runId: string;
+          agentInstanceId: string;
+          status: string;
+          resultMessageId?: string;
+          errorMessage?: string;
+        }>;
+      },
+
       getParentRunId(runId: string): string | null {
         try {
           const run = runRepo.getById(runId);
@@ -280,17 +323,49 @@ export async function runOrchestrator(
         return memory.extractLongTerm(projectId, agentInstanceId);
       },
 
-      buildMemoryContext(projectId: string, agentInstanceId: string): string {
-        return memory.buildMemoryContext(projectId, agentInstanceId);
+      buildMemoryContext(projectId: string, agentInstanceId: string, query = ''): string {
+        if (query.trim()) {
+          return memory.recallRelevant(query, projectId, agentInstanceId, 6).join('\n');
+        }
+        return memory.buildMemoryContext(projectId, agentInstanceId).slice(0, 2_000);
       },
 
       async buildContextSnapshot(projectId: string, agentInstanceId: string, triggerMessageId: string): Promise<ExecContextSnapshot> {
+        const rows = db.prepare(
+          `SELECT id, sender_type as senderType, sender_id as senderId, content_json as contentJson, created_at as createdAt
+           FROM messages
+           WHERE project_id = ? AND kind IN ('text', 'artifact')
+           ORDER BY created_at DESC
+           LIMIT 80`,
+        ).all(projectId) as Array<{ id: string; senderType: string; senderId: string; contentJson: string; createdAt: string }>;
+        const memberNames = new Map(fullSnapshot.members.map((member) => [member.instanceId, member.name]));
+        const chronological = rows.reverse();
+        const selectedIndexes = new Set<number>();
+        const takeLatest = (senderType: string, limit: number): void => {
+          let remaining = limit;
+          for (let index = chronological.length - 1; index >= 0 && remaining > 0; index -= 1) {
+            if (chronological[index]?.senderType !== senderType) continue;
+            selectedIndexes.add(index);
+            remaining -= 1;
+          }
+        };
+        // 用户多轮需求优先；只保留少量智能体正式结果作为“已有成果”上下文。
+        takeLatest('user', 12);
+        takeLatest('agent', 6);
+        const messages = chronological
+          .filter((row, index) => selectedIndexes.has(index) || row.id === triggerMessageId)
+          .map((row) => {
+            let content = row.contentJson;
+            try { content = (JSON.parse(content) as { text?: string }).text ?? content; } catch { /* use raw */ }
+            return {
+              role: (row.senderType === 'user' ? 'user' : 'assistant') as 'user' | 'assistant',
+              content: content.slice(0, 1_200),
+              ...(row.senderType === 'agent' ? { senderName: memberNames.get(row.senderId) ?? '群聊成员' } : {}),
+            };
+          });
         return {
           snapshotChecksum: fullSnapshot.snapshotChecksum,
-          messages: fullSnapshot.messages.map((m) => ({
-            role: (m.senderType === 'user' ? 'user' : 'assistant') as 'user' | 'assistant',
-            content: m.content,
-          })),
+          messages,
         };
       },
 
@@ -303,7 +378,7 @@ export async function runOrchestrator(
       },
 
       renderSnapshotToText(_snapshot: ExecContextSnapshot): string {
-        return contextBuilder.renderToText(fullSnapshot);
+        return contextBuilder.renderToText(fullSnapshot, { includeMemory: false });
       },
 
       getKmInstance(projectId: string) {
@@ -318,18 +393,25 @@ export async function runOrchestrator(
 
       getProjectDelegatableAgents(projectId: string) {
         const rows = db.prepare(
-          `SELECT pai.id, ap.name, pai.role, ap.definition_id as definitionId, pai.runtime_mode as runtimeMode
+          `SELECT pai.id, ap.name, pai.role, ap.definition_id as definitionId, pai.runtime_mode as runtimeMode,
+                  pai.identity_rel_path as identityRelPath
            FROM project_agent_instances pai
            JOIN agent_profiles ap ON ap.id = pai.agent_profile_id
            WHERE pai.project_id = ? AND ap.enabled = 1
            ORDER BY pai.ordinal`,
-        ).all(projectId) as Array<{ id: string; name: string; role: string; definitionId: string; runtimeMode: string }>;
+        ).all(projectId) as Array<{ id: string; name: string; role: string; definitionId: string; runtimeMode: string; identityRelPath: string | null }>;
         return rows.map((r) => ({
           id: r.id,
           name: r.name,
           role: r.role,
           definitionId: r.definitionId,
           runtimeMode: r.runtimeMode,
+          capabilities: agentCapabilities(r.definitionId, r.runtimeMode, r.name),
+          coordinationProfile: loadAgentCoordinationSummary(projectId, r.identityRelPath, {
+            name: r.name,
+            runtimeMode: r.runtimeMode,
+            definitionId: r.definitionId,
+          }),
         }));
       },
 

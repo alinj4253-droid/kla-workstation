@@ -5,8 +5,10 @@
   "type": "module",
   "main": "./out/main/index.cjs",
   "scripts": {
+    "predev": "pnpm --filter @kunqing/native-agent-core build",
     "dev": "electron-rebuild -f -w better-sqlite3 && electron-vite dev",
     "dev:web": "vite --config vite.web.config.ts",
+    "prebuild": "pnpm --filter @kunqing/native-agent-core build",
     "build": "electron-rebuild -f -w better-sqlite3 && electron-vite build",
     "build:web": "vite build --config vite.web.config.ts",
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",

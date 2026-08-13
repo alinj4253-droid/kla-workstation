@@ -106,11 +106,11 @@ export type ContextSnapshot = {
 };
 
 export type ContextBuilderOptions = {
-  /** 最多包含的最近消息数（默认 12） */
+  /** 最多包含的最近消息数（默认 8） */
   recentMessageLimit?: number;
-  /** 知识片段最大数量（默认 6） */
+  /** 知识片段最大数量（默认 4） */
   knowledgeChunkLimit?: number;
-  /** 共享知识片段最大数量（默认 3） */
+  /** 共享知识片段最大数量（默认 2） */
   sharedKnowledgeChunkLimit?: number;
 };
 
@@ -149,9 +149,9 @@ export class ContextBuilder {
     this.runRepo = new AgentRunRepository(db);
     this.fileRepo = new FileRepository(db);
     this.options = {
-      recentMessageLimit: options?.recentMessageLimit ?? 12,
-      knowledgeChunkLimit: options?.knowledgeChunkLimit ?? 6,
-      sharedKnowledgeChunkLimit: options?.sharedKnowledgeChunkLimit ?? 3,
+      recentMessageLimit: options?.recentMessageLimit ?? 8,
+      knowledgeChunkLimit: options?.knowledgeChunkLimit ?? 4,
+      sharedKnowledgeChunkLimit: options?.sharedKnowledgeChunkLimit ?? 2,
     };
   }
 
@@ -236,7 +236,7 @@ export class ContextBuilder {
   /**
    * 将 ContextSnapshot 渲染为 System Prompt 的上下文文本块
    */
-  renderToText(snapshot: ContextSnapshot): string {
+  renderToText(snapshot: ContextSnapshot, options?: { includeMemory?: boolean }): string {
     const parts: string[] = [];
 
     // Definition 系统规则与群聊实例身份必须先于普通上下文出现。
@@ -266,12 +266,14 @@ export class ContextBuilder {
       parts.push(`## 历史滚动摘要\n${snapshot.rollingSummary}`);
     }
 
-    // 记忆
-    if (snapshot.memory.shortTerm.length > 0) {
-      parts.push(`## 短期记忆\n${snapshot.memory.shortTerm.join('\n')}`);
-    }
-    if (snapshot.memory.longTerm.length > 0) {
-      parts.push(`## 长期知识\n${snapshot.memory.longTerm.join('\n')}`);
+    // 直接执行模式会按当前任务单独召回记忆，避免把同一批通用记忆重复注入。
+    if (options?.includeMemory !== false) {
+      if (snapshot.memory.shortTerm.length > 0) {
+        parts.push(`## 短期记忆\n${snapshot.memory.shortTerm.join('\n')}`);
+      }
+      if (snapshot.memory.longTerm.length > 0) {
+        parts.push(`## 长期知识\n${snapshot.memory.longTerm.join('\n')}`);
+      }
     }
 
     // 引用文件
@@ -346,7 +348,7 @@ export class ContextBuilder {
           `### 核心身份快照\n${identityText}`,
           roleText ? `### 群聊实例约束\n${roleText}` : '',
           adaptationText ? `### 群聊适应性补充\n${adaptationText}` : '',
-        ].filter(Boolean).join('\n\n').slice(0, 8_000);
+        ].filter(Boolean).join('\n\n').slice(0, 3_000);
       } catch {
         identity = null;
       }
@@ -355,7 +357,7 @@ export class ContextBuilder {
     const definitionSystemPrompt = loadAgentDefinitionText(
       row.definitionId ?? '',
       row.definitionVersion ?? '1.0.0',
-    ).systemPrompt?.slice(0, 4_000) ?? null;
+    ).systemPrompt?.slice(0, 2_000) ?? null;
 
     const permissions: string[] = [];
     if (row.permissionsJson) {
@@ -427,7 +429,7 @@ export class ContextBuilder {
           return `[${m.senderType}] ${content.slice(0, 200)}`;
         })
         .join('\n');
-      rollingSummary = `以下为更早消息的摘要（共 ${olderMessages.length} 条）：\n${olderText.slice(0, 2000)}`;
+      rollingSummary = `更早消息摘要（${olderMessages.length} 条）：\n${olderText.slice(0, 1200)}`;
     }
 
     const messages = allMessages.map((m) => {
@@ -437,7 +439,7 @@ export class ContextBuilder {
         id: m.id,
         senderType: m.senderType,
         senderId: m.senderId,
-        content: content.slice(0, 2000),
+        content: content.slice(0, 1200),
         replyToId: m.replyToId,
         createdAt: m.createdAt,
       };
@@ -459,11 +461,11 @@ export class ContextBuilder {
       WHERE mr.project_id = ? AND mr.status = 'active'
         AND mr.agent_instance_id = ?
       ORDER BY mr.last_reinforced_at DESC
-      LIMIT 120
+      LIMIT 40
     `).all(projectId, agentInstanceId) as MemoryRecord[];
 
     const ranked = rankMemories(query, rows, {
-      limit: 10,
+      limit: 8,
       minimumScore: query.trim() ? 0.42 : 0.52,
       shortTermHalfLifeHours: 72,
       longTermHalfLifeHours: 30 * 24,
@@ -476,11 +478,11 @@ export class ContextBuilder {
       ).run(new Date().toISOString(), ...selectedIds);
     }
 
-    const shortTerm = ranked.filter(({ record }) => record.scope === 'short-term').slice(0, 4);
-    const longTerm = ranked.filter(({ record }) => record.scope === 'long-term').slice(0, 4);
+    const shortTerm = ranked.filter(({ record }) => record.scope === 'short-term').slice(0, 3);
+    const longTerm = ranked.filter(({ record }) => record.scope === 'long-term').slice(0, 3);
     return {
-      shortTerm: shortTerm.map(({ record }) => `[${record.topicKey ?? record.type}] ${record.content.slice(0, 550)}`),
-      longTerm: longTerm.map(({ record }) => `[${record.pinned ? '固定规则' : record.topicKey ?? record.type}] ${record.content.slice(0, 750)}`),
+      shortTerm: shortTerm.map(({ record }) => `[${record.topicKey ?? record.type}] ${record.content.slice(0, 400)}`),
+      longTerm: longTerm.map(({ record }) => `[${record.pinned ? '固定规则' : record.topicKey ?? record.type}] ${record.content.slice(0, 550)}`),
     };
   }
 

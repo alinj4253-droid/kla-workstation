@@ -285,6 +285,8 @@ interface AgentCardData {
 const MOCK_AGENT_CARDS: AgentCardData[] = [
   { id: 'builtin.orchestrator', name: '统筹管理智能体', definitionVersion: '1.0.0', framework: 'LangGraph.js', modelProfile: 'GPT-4o (默认)', skills: ['任务拆解', '结果汇总', '团队 MCP'], permissions: ['read', 'write', 'delegate'], testStatus: 'passed', referencedChats: 3, isBuiltin: true, enabled: true },
   { id: 'builtin.knowledge-manager', name: '知识管理智能体', definitionVersion: '1.0.0', framework: 'LangGraph.js', modelProfile: 'GPT-4o-mini (默认)', skills: ['文档解析', '知识图谱', 'Wiki 生成'], permissions: ['read', 'write'], testStatus: 'passed', referencedChats: 2, isBuiltin: true, enabled: true },
+  { id: 'builtin.material-writer', name: '材料编写智能体', definitionVersion: '1.0.0', framework: 'Loop Engine', modelProfile: '推理模型', skills: ['材料编写', '模板应用', 'HTML 待审稿'], permissions: ['read', 'draft'], testStatus: 'passed', referencedChats: 0, isBuiltin: true, enabled: true },
+  { id: 'builtin.acceptance-reviewer', name: '验收智能体', definitionVersion: '1.0.0', framework: 'Loop Engine', modelProfile: '推理模型', skills: ['知识检索', '来源溯源', '成果验收'], permissions: ['read', 'review'], testStatus: 'passed', referencedChats: 0, isBuiltin: true, enabled: true },
   { id: 'codex', name: 'Codex CLI', definitionVersion: '0.1.0', framework: 'external-cli', modelProfile: '-', skills: ['代码生成', '文件读写', '终端执行'], permissions: ['read', 'write', 'execute'], testStatus: 'untested', referencedChats: 0, isBuiltin: false, enabled: false, adapterType: 'codex', executablePath: 'codex', detectedVersion: '0.1.0' },
   { id: 'claude-code', name: 'Claude Code', definitionVersion: '0.1.0', framework: 'external-cli', modelProfile: '-', skills: ['代码生成', '文件读写', '搜索', '推理'], permissions: ['read', 'write'], testStatus: 'untested', referencedChats: 0, isBuiltin: false, enabled: false, adapterType: 'claude-code', executablePath: 'claude', detectedVersion: '0.1.0' },
   { id: 'aion', name: 'Aion CLI', definitionVersion: '0.1.0', framework: 'external-cli', modelProfile: '-', skills: ['代码生成', '文件读写', '搜索'], permissions: ['read', 'write', 'delegate'], testStatus: 'untested', referencedChats: 0, isBuiltin: false, enabled: false, adapterType: 'aion', executablePath: 'aion', detectedVersion: '0.1.0' },
@@ -1323,21 +1325,34 @@ function ProfileDialog({ editProfile, providers, onClose, onSaved }: { editProfi
 function ProfilesTab({ profiles, providers, onRefresh, onAddProfile, onEditProfile, onDeleteProfile }: { profiles: Record<string, unknown>[]; providers: Record<string, unknown>[]; onRefresh: () => Promise<void>; onAddProfile: () => void; onEditProfile: (p: Record<string, unknown>) => void; onDeleteProfile: (id: string) => void }): React.JSX.Element {
   const [editingSlot, setEditingSlot] = useState<string | null>(null);
   const [assigningProfileId, setAssigningProfileId] = useState('');
+  const [slotError, setSlotError] = useState('');
 
   const slotLabels: Record<string, string> = { reasoning: '推理 (reasoning)', fast: '快速 (fast)', embedding: '嵌入 (embedding)' };
+  const profileBoundSlots = (profile: Record<string, unknown>): string[] => {
+    const value = profile.boundSlots;
+    if (Array.isArray(value)) return value.filter((slot): slot is string => typeof slot === 'string');
+    if (typeof value === 'string') return value.split(',').map((slot) => slot.trim()).filter(Boolean);
+    // Keep compatibility with older IPC payloads that do not expose boundSlots yet.
+    return typeof profile.modelSlot === 'string' && profile.modelSlot ? [profile.modelSlot] : [];
+  };
 
   const currentBindings: Record<string, { profileName: string; profileId: string }> = {};
   for (const p of profiles) {
-    const slot = p.modelSlot as string | null;
-    if (slot) currentBindings[slot] = { profileName: p.name as string, profileId: p.id as string };
+    for (const slot of profileBoundSlots(p)) {
+      currentBindings[slot] = { profileName: p.name as string, profileId: p.id as string };
+    }
   }
 
   const setSlot = async (slot: string, profileId: string): Promise<void> => {
     try {
-      await window.kunqing?.models.setSlot({ slot, modelProfileId: profileId });
+      const result = await window.kunqing?.models.setSlot({ slot, modelProfileId: profileId }) as { ok?: boolean; error?: { message?: string } } | undefined;
+      if (result && result.ok === false) throw new Error(result.error?.message ?? '槽位绑定失败');
       await onRefresh();
-    } catch { /* ignore */ }
-    setEditingSlot(null);
+      setSlotError('');
+      setEditingSlot(null);
+    } catch (error) {
+      setSlotError(error instanceof Error ? error.message : '槽位绑定失败');
+    }
   };
 
   return (
@@ -1360,11 +1375,12 @@ function ProfilesTab({ profiles, providers, onRefresh, onAddProfile, onEditProfi
             ) : (
               <div className="slot-value">
                 <span className={currentBindings[slot] ? '' : 'slot-unset'}>{currentBindings[slot]?.profileName ?? '未设置'}</span>
-                <button type="button" className="secondary-button secondary-button--small" onClick={() => { setEditingSlot(slot); setAssigningProfileId(currentBindings[slot]?.profileId ?? ''); }}>更换</button>
+                <button type="button" className="secondary-button secondary-button--small" onClick={() => { setSlotError(''); setEditingSlot(slot); setAssigningProfileId(currentBindings[slot]?.profileId ?? ''); }}>更换</button>
               </div>
             )}
           </div>
         ))}
+        {slotError && <p className="slot-error" role="alert">{slotError}</p>}
       </div>
       <div className="model-profile-header">
         <h4>已保存的 Profile</h4>
@@ -1378,7 +1394,7 @@ function ProfilesTab({ profiles, providers, onRefresh, onAddProfile, onEditProfi
             <strong>{p.name as string}</strong>
             <span className="profile-provider">{(p.providerName as string) ?? p.providerId as string}</span>
             <span className="profile-model">{p.modelId as string}</span>
-            <span className="profile-slot">{(p.modelSlot as string) ? slotLabels[p.modelSlot as string] ?? (p.modelSlot as string) : '未分配'}</span>
+            <span className="profile-slot">{profileBoundSlots(p).map((slot) => slotLabels[slot] ?? slot).join('、') || '未分配'}</span>
             <div className="profile-row-actions">
               <button type="button" className="secondary-button secondary-button--small" onClick={() => onEditProfile(p as Record<string, unknown>)}>编辑</button>
               <button type="button" className="secondary-button secondary-button--small" style={{ color: 'var(--kq-danger)' }} onClick={() => onDeleteProfile(p.id as string)}>删除</button>
@@ -1530,6 +1546,9 @@ interface SkillRow {
 const AGENT_REQUIREMENTS: Array<{ id: string; name: string; capabilities: string[] }> = [
   { id: 'builtin.orchestrator', name: '统筹管理智能体', capabilities: ['streaming', 'toolCalling', 'structuredOutput'] },
   { id: 'builtin.knowledge-manager', name: '知识管理智能体', capabilities: ['streaming', 'structuredOutput'] },
+  { id: 'builtin.researcher', name: '资料调研智能体', capabilities: ['streaming', 'structuredOutput'] },
+  { id: 'builtin.material-writer', name: '材料编写智能体', capabilities: ['streaming', 'toolCalling', 'structuredOutput'] },
+  { id: 'builtin.acceptance-reviewer', name: '验收智能体', capabilities: ['streaming', 'toolCalling', 'structuredOutput'] },
 ];
 
 interface ToolConfig {

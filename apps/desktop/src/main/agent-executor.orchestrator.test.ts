@@ -10,6 +10,10 @@ import { AgentRunRepository } from '@kunqing/database';
 import { createAgentExecutor } from './agent-executor';
 import type { Scheduler } from './scheduler';
 
+const { externalAdapterRun } = vi.hoisted(() => ({
+  externalAdapterRun: vi.fn(),
+}));
+
 vi.mock('electron', () => ({
   BrowserWindow: class {
     webContents = { send: vi.fn() };
@@ -61,6 +65,7 @@ vi.mock('./memory-manager', () => ({
     getReflectionContext = () => ({ shortTerm: [], longTerm: [] });
     captureTurn = vi.fn(async () => null);
     buildMemoryContext = () => '';
+    recallRelevant = () => [];
   },
 }));
 
@@ -91,13 +96,17 @@ vi.mock('./agent-artifact-publisher', () => ({
 }));
 
 vi.mock('./cli-executor', () => ({ cliExecutor: { execute: vi.fn() } }));
-vi.mock('./cli-agent-registry', () => ({ cliAgentRegistry: { getAdapter: () => undefined } }));
+vi.mock('./cli-agent-registry', () => ({
+  cliAgentRegistry: {
+    getAdapter: (adapterType: string) => adapterType === 'codebuddy' ? { run: externalAdapterRun } : undefined,
+  },
+}));
 vi.mock('./business-process', () => ({
   parsePostTaskKnowledgeInstruction: vi.fn(() => null),
   runPostTaskKnowledgeCapture: vi.fn(),
 }));
 vi.mock('./logger', () => ({ getLogger: () => undefined }));
-vi.mock('./paths', () => ({ getProjectRoot: () => tmpdir() }));
+vi.mock('./paths', () => ({ getProjectRoot: () => tmpdir(), getStudioRoot: () => tmpdir() }));
 vi.mock('./agent-identity', () => ({ applyAgentRoleAdaptations: vi.fn() }));
 
 describe('AgentExecutor 编排器路径：完成后触发渠道回复回调', () => {
@@ -108,6 +117,7 @@ describe('AgentExecutor 编排器路径：完成后触发渠道回复回调', ()
   let window: { webContents: { send: (channel: string, ...args: unknown[]) => void }; isDestroyed: () => boolean };
 
   beforeEach(() => {
+    externalAdapterRun.mockReset();
     dir = mkdtempSync(join(tmpdir(), 'exec-orch-'));
     dbPath = join(dir, 'test.db');
     runMigrations(dbPath);
@@ -213,5 +223,90 @@ describe('AgentExecutor 编排器路径：完成后触发渠道回复回调', ()
     await executor(queuedRun, new AbortController().signal);
 
     expect(calls).toHaveLength(0);
+  });
+
+  it('CodeBuddy 每个任务只启动一次 CLI，并使用 fast 模型整理私有记忆', async () => {
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO cli_connections
+       (id, name, adapter_type, executable_path, strategy_id, status, trust_tier)
+       VALUES (?, ?, 'codebuddy', ?, 'auto', 'compatible', 'trusted')`,
+    ).run('cli-codebuddy', 'CodeBuddy CLI', 'codebuddy');
+    db.prepare(
+      `INSERT INTO agent_profiles
+       (id, name, definition_id, definition_version, runtime_mode, cli_connection_id, enabled, delegatable, is_system_default, created_at, updated_at)
+       VALUES (?, ?, ?, '1.0.0', 'external-cli', ?, 1, 1, 0, ?, ?)`,
+    ).run('prof-codebuddy', 'CodeBuddy', 'custom.codebuddy', 'cli-codebuddy', now, now);
+    db.prepare(
+      `INSERT INTO project_agent_instances
+       (id, project_id, agent_profile_id, definition_id, definition_version, role, runtime_mode, cli_connection_id, ordinal, created_at)
+       VALUES (?, ?, ?, ?, '1.0.0', 'teammate', 'external-cli', ?, 1, ?)`,
+    ).run('inst-codebuddy', 'proj-1', 'prof-codebuddy', 'custom.codebuddy', 'cli-codebuddy', now);
+
+    externalAdapterRun.mockResolvedValue({
+      exitCode: 0,
+      stdout: '`@统筹管理智能体` 接待安排文件已经生成并发送。',
+      stderr: '',
+      durationMs: 1_200,
+    });
+    const gateway = {
+      generateText: vi.fn(async () => ({
+        text: JSON.stringify({
+          topic: '接待安排',
+          taskSummary: '已生成接待安排文件',
+          decisions: [], reusableInsights: [], preferences: [], constraints: [], unresolved: [],
+          confidence: 0.8, importance: 0.6, longTermWorth: false,
+          shortTermSummary: '已完成接待安排文件。', longTermSummary: '', roleAdaptations: [],
+        }),
+      })),
+    };
+    const scheduler = { enqueue: vi.fn(), cancelProject: vi.fn(), cancelRun: vi.fn() };
+    const toolRegistry = { getDefinitionsForRole: () => [], execute: vi.fn() };
+    const executor = createAgentExecutor(db, window as never, gateway as never, scheduler as unknown as Scheduler, toolRegistry as never);
+    const parentRun = runRepo.create({
+      projectId: 'proj-1',
+      agentInstanceId: 'inst-orch',
+      requestedByType: 'user',
+      requestedById: 'u-1',
+      instruction: '请生成接待安排文件',
+      triggerMessageId: 'trig-1',
+    });
+    const run = runRepo.create({
+      projectId: 'proj-1',
+      agentInstanceId: 'inst-codebuddy',
+      requestedByType: 'agent',
+      requestedById: 'inst-orch',
+      instruction: '@CodeBuddy 请生成接待安排 HTML 文件并发送',
+      triggerMessageId: 'trig-1',
+      parentRunId: parentRun.id,
+    });
+
+    await executor({
+      runId: run.id,
+      projectId: run.projectId,
+      agentInstanceId: run.agentInstanceId,
+      instruction: run.instruction ?? '',
+      triggerMessageId: run.triggerMessageId ?? '',
+    }, new AbortController().signal);
+
+    expect(externalAdapterRun).toHaveBeenCalledTimes(1);
+    expect(externalAdapterRun.mock.calls[0]?.[0]?.instruction).toContain('本次执行内部先规划再逐项完成');
+    expect(gateway.generateText).toHaveBeenCalledTimes(1);
+    const resultMessage = db.prepare(
+      `SELECT content_json as contentJson FROM messages
+       WHERE project_id = 'proj-1' AND sender_id = 'inst-codebuddy'
+       ORDER BY created_at DESC LIMIT 1`,
+    ).get() as { contentJson: string };
+    const content = JSON.parse(resultMessage.contentJson) as {
+      text: string;
+      mentions: Array<{ target: { id: string }; start: number }>;
+    };
+    expect(content.text).toMatch(/^@统筹管理智能体\n\n`@统筹管理智能体`/u);
+    expect(content.mentions).toEqual([expect.objectContaining({
+      target: { scope: 'instance', id: 'inst-orch' },
+      start: 0,
+    })]);
+    // 交回父任务由原统筹 loop 收集结果，不应再启动一个重复统筹 Run。
+    expect(scheduler.enqueue).not.toHaveBeenCalled();
   });
 });

@@ -300,11 +300,12 @@ export function AgentWorkTree({
     return () => window.clearInterval(timer);
   }, [terminal]);
 
-  const latestRunningIndex = run.traces.reduce((latest, trace, index) => trace.status === 'running' ? index : latest, -1);
-  const visibleTraces = run.traces.map((trace, index) => {
-    if (trace.status !== 'running') return trace;
-    return index !== latestRunningIndex || terminal ? { ...trace, status: 'completed' as const } : trace;
-  });
+  // 运行中的轨迹必须由后端明确发出 completed/failed 才能结束。
+  // 不能为了视觉效果把旧的 running 轨迹直接标成完成，否则工作树会出现“尚未执行却已完成”。
+  const terminalTraceStatus = run.status === 'failed' ? 'failed' : 'completed';
+  const visibleTraces = run.traces.map((trace) => (
+    terminal && trace.status === 'running' ? { ...trace, status: terminalTraceStatus as typeof trace.status } : trace
+  ));
   const latestTrace = visibleTraces[visibleTraces.length - 1];
   const currentStatusText = latestTrace?.status === 'running' ? latestTrace.title : run.stage || latestTrace?.title;
   const statusLabel = run.status === 'completed'

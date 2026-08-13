@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "document-authoring",
+  "version": "1.0.0",
+  "entry": "SKILL.md",
+  "agentDefinitions": ["builtin.material-writer"],
+  "executionMode": "instructions",
+  "requiredTools": ["skill:search", "skill:load", "workspace:readFile", "review:writeDraft"],
+  "permissions": ["read:file", "read:skill", "write:review-draft"]
+}
+

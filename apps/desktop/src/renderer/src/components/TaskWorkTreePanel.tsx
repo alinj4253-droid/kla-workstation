@@ -21,6 +21,13 @@ interface TaskWorkTreePanelProps {
 
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
 
+function isSubtreeTerminal(run: RunActivity, allRuns: RunActivity[]): boolean {
+  if (!TERMINAL_STATUSES.has(run.status)) return false;
+  return allRuns
+    .filter((candidate) => candidate.parentRunId === run.runId)
+    .every((child) => isSubtreeTerminal(child, allRuns));
+}
+
 function messageText(message: MessageItem | undefined): string {
   if (!message) return '未关联到当前消息列表的任务';
   try {
@@ -57,16 +64,30 @@ function WorkRunBranch({
   const agentName = projectAgents.find((agent) => agent.id === run.agentId)?.agentName ?? run.agentName ?? '智能体';
   const requesterName = projectAgents.find((agent) => agent.id === run.requestedById)?.agentName;
   const relationLabel = requesterName ? `${requesterName}委派` : run.requestedByType === 'user' ? '用户发起' : '协作执行';
-  const latestChildAt = children.reduce((latest, child) => {
-    const value = Date.parse(child.updatedAt);
-    return Number.isFinite(value) ? Math.max(latest, value) : latest;
-  }, 0);
   const shouldSplitRoot = depth === 0 && children.length > 0;
+  const descendantsTerminal = !shouldSplitRoot || children.every((child) => isSubtreeTerminal(child, allRuns));
   const finalTraces = shouldSplitRoot
-    ? run.traces.filter((trace) => Date.parse(trace.at) > latestChildAt || /收集完成|验收|汇总|提交|交付|最终/.test(trace.title))
+    ? run.traces.filter((trace) => /收集完成|验收|汇总|提交|交付|最终|结果已全部返回/.test(trace.title))
     : [];
   const finalTraceIds = new Set(finalTraces.map((trace) => trace.id));
-  const planningRun = finalTraces.length > 0 ? { ...run, traces: run.traces.filter((trace) => !finalTraceIds.has(trace.id)) } : run;
+  const finalChecklist = shouldSplitRoot
+    ? (run.checklist?.items ?? []).filter((item) => /validate|deliver|验收|核对|交付|汇总/i.test(`${item.id} ${item.title}`))
+    : [];
+  const finalChecklistIds = new Set(finalChecklist.map((item) => item.id));
+  const planningChecklist = shouldSplitRoot && run.checklist
+    ? { ...run.checklist, items: run.checklist.items.filter((item) => !finalChecklistIds.has(item.id)) }
+    : run.checklist;
+  const planningRun = shouldSplitRoot
+    ? {
+      ...run,
+      // 子任务尚未完成时，根节点不能在视觉上提前显示为已完成。
+      status: descendantsTerminal ? run.status : (TERMINAL_STATUSES.has(run.status) ? 'running' : run.status) as RunActivity['status'],
+      ...(descendantsTerminal ? {} : { stage: '等待成员返回结果' }),
+      traces: run.traces.filter((trace) => !finalTraceIds.has(trace.id)),
+      ...(planningChecklist ? { checklist: planningChecklist } : {}),
+    }
+    : run;
+  const showFinalContinuation = shouldSplitRoot && descendantsTerminal && (finalTraces.length > 0 || finalChecklist.length > 0);
 
   return (
     <div className="task-run-branch" data-depth={Math.min(depth, 4)}>
@@ -104,18 +125,17 @@ function WorkRunBranch({
             ))}
           </div>
         )}
-        {finalTraces.length > 0 && (
+        {showFinalContinuation && (
           <div className="task-run-continuation">
             <div className="task-run-branch__heading"><strong>{agentName}</strong><span>最终汇总</span></div>
             <AgentWorkTree
-              run={{ ...run, traces: finalTraces }}
+              run={{ ...run, traces: finalTraces, checklist: { ...(run.checklist ?? { items: [], updatedAt: new Date().toISOString() }), items: finalChecklist } }}
               projectAgents={projectAgents}
               onCancel={onCancelRun}
               formatTime={formatTime}
               autoCollapse={false}
               forceExpanded={forceExpanded}
               phaseLabel="验收、汇总与交付"
-              hideChecklist
             />
           </div>
         )}

@@ -358,13 +358,22 @@ export class SkillRegistry {
         ['retrieve-knowledge', '按问题自适应融合全文、向量、图谱与 Wiki 检索，并返回可溯源证据。', ['knowledge:search', 'knowledge:listGraph']],
         ['document-ingestion', '文档导入与语义切片：解析文件、分块并保留来源位置。', ['workspace:readFile']],
         ['entity-relation-extraction', '实体关系抽取：形成带置信度和来源的知识图谱。', ['knowledge:search']],
-        ['provenance-validation', '来源溯源与验证：核验知识与原始资料的一致性。', ['workspace:readFile', 'knowledge:search']],
+        ['provenance-validation', '来源溯源与验证：逐项建立“材料主张 -> 知识证据 -> 原始来源位置”的对应关系，核验知识与原始资料的一致性，识别变造、夸大、冲突和来源缺口。', ['workspace:readFile', 'knowledge:search']],
         ['wiki-materialization', 'Wiki 生成：将知识图谱整理为可读知识文档。', ['publish_artifact']],
         ['graph-projection', '图谱投影：生成前端可视化所需的节点和边数据。', ['knowledge:listGraph', 'publish_artifact']],
       ]],
       ['builtin.researcher', [
         ['information-retrieval', '信息检索：搜索、筛选并排序与任务相关的资料。', ['knowledge:search']],
         ['source-analysis', '来源分析：评估可靠性并交叉验证不同来源。', ['knowledge:search']],
+        ['web-search', '网页搜索：通过博查检索公开网页，核验来源并综合形成带引用的调研结论。', ['web:search']],
+      ]],
+      ['builtin.material-writer', [
+        ['document-authoring', '材料编写：依据证据和模板先列框架，再逐章写作并生成完整 HTML 待审稿。', ['skill:search', 'skill:load', 'workspace:readFile', 'review:writeDraft']],
+      ]],
+      ['builtin.acceptance-reviewer', [
+        ['retrieve-knowledge', '按问题自适应融合全文、向量、图谱与 Wiki 检索，并返回可溯源证据。', ['knowledge:search', 'knowledge:listGraph']],
+        ['provenance-validation', '来源溯源与验证：核验材料主张与原始知识的一致性。', ['workspace:readFile', 'knowledge:search']],
+        ['deliverable-acceptance', '成果验收：按需求、模板、证据和文件完整性给出明确通过或不通过结论。', ['workspace:readFile', 'knowledge:search', 'skill:load']],
       ]],
     ] as const;
     const legacyInsert = this.db.prepare(

@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "retrieve-knowledge",
+  "version": "1.0.0",
+  "entry": "SKILL.md",
+  "agentDefinitions": ["builtin.acceptance-reviewer"],
+  "executionMode": "instructions",
+  "requiredTools": ["knowledge:search", "knowledge:listGraph"],
+  "permissions": ["read:knowledge"]
+}
+

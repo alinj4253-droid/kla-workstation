@@ -11,9 +11,17 @@
 
 - **rc** — hardwired configuration loader
 
+## (MIT AND Zlib)
+
+- **pako** — zlib port to javascript - fast, modularized, with browser support
+
 ## (MIT OR CC0-1.0)
 
 - **type-fest** — A collection of essential TypeScript types
+
+## (MIT OR GPL-3.0-or-later)
+
+- **jszip** — Create, read and edit .zip files with JavaScript http://stuartk.com/jszip
 
 ## (MIT OR WTFPL)
 
@@ -57,8 +65,10 @@
 - **aria-query** — Programmatic access to the ARIA specification
 - **baseline-browser-mapping** — A library for obtaining browser versions with their maximum supported Baseline feature set and Widely Available status.
 - **class-variance-authority** — Class Variance Authority 🧬
+- **crc-32** — Pure-JS CRC-32
 - **detect-libc** — Node.js module to detect the C standard library (libc) implementation family and version
 - **drizzle-orm** — Drizzle ORM package for SQL databases
+- **echarts** — Apache ECharts is a powerful, interactive charting and data visualization library for browser
 - **ejs** — Embedded JavaScript templates
 - **eslint-visitor-keys** — Constants and utilities about visitor keys to traverse AST.
 - **expect-type** — (no description)
@@ -67,16 +77,28 @@
 - **jake** — JavaScript build tool, similar to Make or Rake
 - **long** — A Long class for representing a 64-bit two's-complement integer value.
 - **openai** — The official TypeScript library for the OpenAI API
+- **readdir-glob** — Recursive fs.readdir with streaming API and glob filtering.
 - **sumchecker** — Checksum validator
 - **tunnel-agent** — HTTP proxy tunneling agent. Formerly part of mikeal/request, now a standalone module.
 - **typescript** — TypeScript is a language for application scale JavaScript development
 - **xml-name-validator** — Validates whether a string matches the production for an XML name or qualified name
+
+## BSD
+
+- **duck** — Rich matchers inspired by Hamcrest. Useful for generating helpful assertion failure messages in tests.
 
 ## BSD-2-Clause
 
 - **@electron-internal/extract-zip** — Fast, safe, native zip extraction for Node.js. Drop-in replacement for extract-zip.
 - **@electron/osx-sign** — Codesign Electron macOS apps
 - **@electron/windows-sign** — Codesign Electron Windows apps
+- **cheerio-select** — CSS selector engine supporting jQuery selectors
+- **css-select** — a CSS selector compiler/engine
+- **css-what** — a CSS selector parser
+- **dingbat-to-unicode** — Mapping from Dingbat fonts, such as Symbol, Webdings and Wingdings, to Unicode code points
+- **domelementtype** — all the types of nodes in htmlparser2's dom
+- **domhandler** — Handler for htmlparser2 that turns pages into a dom
+- **domutils** — Utilities for working with htmlparser2's dom
 - **dotenv** — Loads environment variables from .env file
 - **dotenv-expand** — Expand environment variables using dotenv
 - **entities** — Encode & decode XML and HTML entities with ease & speed
@@ -86,6 +108,10 @@
 - **estraverse** — ECMAScript JS AST traversal functions
 - **esutils** — utility box for ECMAScript language tools
 - **http-cache-semantics** — Parses Cache-Control and other headers. Helps building correct HTTP caches and proxies
+- **lop** — Create parsers using parser combinators with helpful error messages
+- **mammoth** — Convert Word documents from docx to simple HTML and Markdown
+- **nth-check** — Parses and compiles CSS nth-checks to highly optimized functions.
+- **option** — The option type, also known as the maybe type, for JavaScript
 - **uri-js** — An RFC 3986/3987 compliant, scheme extendable URI/IRI parsing/validating/resolving library for JavaScript.
 - **webidl-conversions** — Implements the WebIDL algorithms for converting to and from JavaScript values
 
@@ -116,6 +142,7 @@
 - **source-map-js** — Generates and consumes source maps
 - **sprintf-js** — JavaScript sprintf implementation
 - **tough-cookie** — RFC6265 Cookies and Cookie Jar for node.js
+- **zrender** — A lightweight graphic library providing 2d draw for Apache ECharts
 
 ## BlueOak-1.0.0
 
@@ -146,12 +173,14 @@
 - **@ungap/structured-clone** — A structuredClone polyfill
 - **abbrev** — Like ruby's abbrev module, but in js
 - **at-least-node** — Lightweight Node.js version sniffing/comparison
+- **boolbase** — two functions: One that returns true, one that returns false
 - **chownr** — like `chown -R`
 - **cliui** — easily create complex multi-column command-line-interfaces
 - **electron-to-chromium** — Provides a list of electron-to-chromium version mappings
 - **flatted** — A super light and fast circular JSON parser.
 - **foreground-child** — Run a child as if it's the foreground process. Give it stdio. Exit when it exits.
 - **fs.realpath** — Use node's fs.realpath, but fall back to the JS implementation if the native one fails
+- **fstream** — Advanced file system stream things
 - **get-caller-file** — (no description)
 - **glob** — the most correct and second fastest glob implementation in JavaScript
 - **glob-parent** — Extract the non-magic parent path from a glob string.
@@ -161,6 +190,7 @@
 - **inherits** — Browser-friendly inheritance fully compatible with standard node.js inherits()
 - **isexe** — Minimal module to check if a file is executable.
 - **json-stringify-safe** — Like JSON.stringify, but doesn't blow up on circular refs.
+- **listenercount** — backwards compatible version of builtin events.listenercount
 - **lru-cache** — A cache object that deletes the least-recently-used items.
 - **lucide-react** — A Lucide icon library package for React applications.
 - **minimatch** — a glob matcher in javascript
@@ -225,6 +255,8 @@
 - **@eslint-community/regexpp** — Regular expression parser for ECMAScript.
 - **@eslint/js** — ESLint JavaScript language implementation
 - **@exodus/bytes** — Various operations on Uint8Array data
+- **@fast-csv/format** — fast-csv formatting module
+- **@fast-csv/parse** — fast-csv parsing package
 - **@floating-ui/core** — Positioning library for floating elements: tooltips, popovers, dropdowns, and more
 - **@floating-ui/dom** — Floating UI for the web
 - **@floating-ui/react-dom** — Floating UI for React DOM
@@ -317,6 +349,7 @@
 - **@types/mdast** — TypeScript definitions for mdast
 - **@types/ms** — TypeScript definitions for ms
 - **@types/node** — TypeScript definitions for node
+- **@types/pdf-parse** — TypeScript definitions for pdf-parse
 - **@types/react** — TypeScript definitions for react
 - **@types/react-dom** — TypeScript definitions for react-dom
 - **@types/responselike** — TypeScript definitions for responselike
@@ -345,6 +378,9 @@
 - **ansi-regex** — Regular expression for matching ANSI escape codes
 - **ansi-styles** — ANSI escape codes for styling strings in the terminal
 - **app-builder-lib** — electron-builder lib
+- **archiver** — a streaming interface for archive generation
+- **archiver-utils** — utility functions for archiver
+- **argparse** — Very powerful CLI arguments parser. Native port of argparse - python's options parsing library
 - **aria-hidden** — Cast aria-hidden to everything, except...
 - **assertion-error** — Error constructor for test and validation frameworks that implements standardized AssertionError specification.
 - **async** — Higher-order functions and common patterns for asynchronous code
@@ -358,6 +394,7 @@
 - **base64-js** — Base64 encoding/decoding in pure JS
 - **better-sqlite3** — The fastest and simplest library for SQLite in Node.js.
 - **bidi-js** — A JavaScript implementation of the Unicode Bidirectional Algorithm
+- **binary** — Unpack multibyte binary values from buffers
 - **bindings** — Helper module for loading your native module's .node file
 - **bl** — Buffer List: collect buffers and access with a standard readable Buffer interface, streamable too!
 - **bluebird** — Full featured Promises/A+ implementation with exceptionally good performance
@@ -365,7 +402,9 @@
 - **brace-expansion** — Brace expansion as known from sh/bash
 - **browserslist** — Share target browsers between different front-end tools, like Autoprefixer, Stylelint and babel-env-preset
 - **buffer** — Node.js Buffer API, for the browser
+- **buffer-crc32** — A pure javascript CRC32 algorithm that plays nice with binary data
 - **buffer-from** — (no description)
+- **buffer-indexof-polyfill** — This is a polyfill for Buffer#indexOf introduced in NodeJS 4.0.
 - **builder-util** — (no description)
 - **builder-util-runtime** — (no description)
 - **cac** — Simple yet powerful framework for building command-line apps.
@@ -381,6 +420,7 @@
 - **character-entities-legacy** — List of legacy HTML named character references that don’t need a trailing semicolon
 - **character-reference-invalid** — Map of invalid numeric character references to their replacements, according to HTML
 - **check-error** — Error comparison and information related utility for node and the browser
+- **cheerio** — The fast, flexible & elegant library for parsing and manipulating HTML and XML.
 - **chokidar** — Minimal and efficient cross-platform file watching library
 - **chromium-pickle-js** — Binary value packing and unpacking
 - **ci-info** — Get details about the current Continuous Integration environment
@@ -392,10 +432,12 @@
 - **comma-separated-tokens** — Parse and stringify comma-separated tokens
 - **commander** — the complete solution for node.js command-line programs
 - **compare-version** — Compare semver version numbers
+- **compress-commons** — a library that defines a common interface for working with archive formats within node
 - **concat-map** — concatenative mapdashery
 - **convert-source-map** — Converts a source-map from/to  different formats and allows adding/changing properties.
 - **cookie** — HTTP server cookie parsing and serialization
 - **core-util-is** — The `util.is*` functions introduced in Node v0.12.
+- **crc32-stream** — a streaming CRC32 checksumer
 - **cross-dirname** — (no description)
 - **cross-spawn** — Cross platform child_process#spawn and child_process#spawnSync
 - **css-tree** — A tool set for CSS: fast detailed parser (CSS → AST), walker (AST traversal), generator (AST → CSS) and lexer (validation and matching) based on specs and browser implementations
@@ -403,6 +445,7 @@
 - **csstype** — Strict TypeScript and Flow types for style based on MDN data
 - **cytoscape** — Graph theory (a.k.a. network) library for analysis and visualisation
 - **data-urls** — Parses data: URLs
+- **dayjs** — 2KB immutable date time library alternative to Moment.js with the same modern API 
 - **debug** — Lightweight debugging utility for Node.js and the browser
 - **decimal.js** — An arbitrary-precision Decimal type for JavaScript.
 - **decode-named-character-reference** — Decode named character references
@@ -421,6 +464,7 @@
 - **dir-compare** — Node JS directory compare
 - **dmg-builder** — (no description)
 - **dom-accessibility-api** — Implements https://w3c.github.io/accname/
+- **dom-serializer** — render domhandler DOM nodes to a string
 - **drizzle-kit** — (no description)
 - **dunder-proto** — If available, the `Object.prototype.__proto__` accessor and mutator, call-bound
 - **eastasianwidth** — Get East Asian Width from a character.
@@ -431,6 +475,7 @@
 - **electron-vite** — Electron build tooling based on Vite
 - **electron-winstaller** — Module to generate Windows installers for Electron apps
 - **emoji-regex** — A regular expression to match all Emoji-only symbols as per the Unicode Standard.
+- **encoding-sniffer** — Implementation of the HTML encoding sniffer algo, with stream support
 - **end-of-stream** — Call a callback when a readable/writable/duplex stream has completed or failed.
 - **enhanced-resolve** — Offers a async require.resolve function. It's highly configurable.
 - **env-paths** — Get paths for storing things like data, config, cache, etc
@@ -449,6 +494,8 @@
 - **estree-walker** — Traverse an ESTree-compliant AST
 - **eventemitter3** — EventEmitter3 focuses on performance while maintaining a Node.js AND browser compatible interface.
 - **eventsource-parser** — Streaming, source-agnostic EventSource/Server-Sent Events parser
+- **exceljs** — Excel Workbook Manager - Read and Write xlsx and csv Files.
+- **fast-csv** — CSV parser and writer
 - **fast-deep-equal** — Fast deep equal
 - **fast-json-stable-stringify** — deterministic `JSON.stringify()` - a faster version of substack's json-stable-strigify without jsonify
 - **fast-levenshtein** — Efficient implementation of Levenshtein algorithm  with locale-specific collator support.
@@ -481,6 +528,7 @@
 - **hast-util-from-parse5** — hast utility to transform from a `parse5` AST
 - **hast-util-parse-selector** — hast utility to create an element from a simple CSS selector
 - **hast-util-raw** — hast utility to reparse a tree
+- **hast-util-sanitize** — hast utility to sanitize nodes
 - **hast-util-to-jsx-runtime** — hast utility to transform to preact, react, solid, svelte, vue, etc
 - **hast-util-to-parse5** — hast utility to transform to a `parse5` AST
 - **hast-util-whitespace** — hast utility to check if a node is inter-element whitespace
@@ -488,10 +536,13 @@
 - **html-encoding-sniffer** — Sniff the encoding from a HTML byte stream
 - **html-url-attributes** — Map of URL attributes in HTML
 - **html-void-elements** — List of HTML void tag names
+- **htmlparser2** — Fast & forgiving HTML/XML parser
 - **http-proxy-agent** — An HTTP(s) proxy `http.Agent` implementation for HTTP
 - **http2-wrapper** — HTTP2 client, just with the familiar `https` API
 - **https-proxy-agent** — An HTTP(s) proxy `http.Agent` implementation for HTTPS
+- **iconv-lite** — Convert character encodings in pure javascript.
 - **ignore** — Ignore is a manager and filter for .gitignore rules, the one used by eslint, gitbook and many others.
+- **immediate** — A cross browser microtask library
 - **imurmurhash** — An incremental implementation of MurmurHash3
 - **indent-string** — Indent each line in a string
 - **inline-style-parser** — An inline style parser.
@@ -521,12 +572,27 @@
 - **keyv** — Simple key-value storage with support for multiple backends
 - **langsmith** — Client library to connect to the LangSmith Observability and Evaluation Platform.
 - **lazy-val** — (no description)
+- **lazystream** — Open Node Streams on demand.
 - **levn** — Light ECMAScript (JavaScript) Value Notation - human written, concise, typed, flexible
+- **lie** — A basic but performant promise implementation
 - **locate-path** — Get the first path that exists on disk of multiple paths
 - **lodash** — Lodash modular utilities.
+- **lodash.defaults** — The lodash method `_.defaults` exported as a module.
+- **lodash.difference** — The lodash method `_.difference` exported as a module.
+- **lodash.escaperegexp** — The lodash method `_.escapeRegExp` exported as a module.
+- **lodash.flatten** — The lodash method `_.flatten` exported as a module.
+- **lodash.groupby** — The lodash method `_.groupBy` exported as a module.
 - **lodash.identity** — The modern build of lodash’s `_.identity` as a module.
+- **lodash.isboolean** — The lodash method `_.isBoolean` exported as a module.
+- **lodash.isequal** — The Lodash method `_.isEqual` exported as a module.
+- **lodash.isfunction** — The Lodash method `_.isFunction` exported as a module.
+- **lodash.isnil** — The lodash method `_.isNil` exported as a module.
+- **lodash.isplainobject** — The lodash method `_.isPlainObject` exported as a module.
+- **lodash.isundefined** — The modern build of lodash’s `_.isUndefined` as a module.
 - **lodash.merge** — The Lodash method `_.merge` exported as a module.
 - **lodash.pickby** — The lodash method `_.pickBy` exported as a module.
+- **lodash.union** — The lodash method `_.union` exported as a module.
+- **lodash.uniq** — The lodash method `_.uniq` exported as a module.
 - **longest-streak** — Count the longest repeating streak of a substring
 - **loupe** — Inspect utility for Node.js and browsers
 - **lowercase-keys** — Lowercase the keys of an object
@@ -594,9 +660,11 @@
 - **natural-compare** — Compare strings containing a mix of letters and numbers in the way a human being would in sort order.
 - **node-abi** — Get the Node ABI for a given target and runtime, and vice versa.
 - **node-api-version** — Gets the supported Node-API version for a specific node or electron version
+- **node-ensure** — Async module-loading library and protocol for bundlers/loaders targeting isomorphic apps and Node.js.
 - **node-gyp** — Node.js native addon build tool
 - **node-int64** — Support for representing 64-bit integers in JavaScript
 - **node-releases** — Node.js releases data
+- **normalize-path** — Normalize slashes in a file path to be posix/unix-like forward slashes. Also condenses repeat slashes to a single slash and removes and trailing slashes, unless disabled.
 - **normalize-url** — Normalize a URL
 - **object-inspect** — string representations of objects in node and the browser
 - **object-keys** — An Object.keys replacement, in case Object.keys is not available. From https://github.com/es-shims/es5-shim
@@ -612,11 +680,14 @@
 - **p-timeout** — Timeout a promise after a specified amount of time
 - **parse-entities** — Parse HTML character references
 - **parse5** — HTML parser and serializer.
+- **parse5-htmlparser2-tree-adapter** — htmlparser2 tree adapter for parse5.
+- **parse5-parser-stream** — Streaming HTML parser with scripting support.
 - **path-exists** — Check if a path exists
 - **path-is-absolute** — Node.js 0.12 path.isAbsolute() ponyfill
 - **path-key** — Get the PATH environment variable key cross-platform
 - **pathe** — Universal filesystem path utils
 - **pathval** — Object value retrieval given a string path
+- **pdf-parse** — Pure javascript cross-platform module to extract text from PDFs.
 - **pe-library** — Node.js library for Portable Executable format
 - **picomatch** — Blazing fast and accurate glob matcher written in JavaScript, with no dependencies and full support for standard and extended Bash glob features, including braces, extglobs, POSIX brackets, and regular expressions.
 - **pino** — super fast, all natural json logger
@@ -656,6 +727,7 @@
 - **real-require** — Keep require and import consistent after bundling or transpiling
 - **redent** — Strip redundant indentation and indent the string
 - **rehype-raw** — rehype plugin to reparse the tree (and raw nodes)
+- **rehype-sanitize** — rehype plugin to sanitize HTML
 - **remark-gfm** — remark plugin to support GFM (autolink literals, footnotes, strikethrough, tables, tasklists)
 - **remark-parse** — remark plugin to add support for parsing markdown input
 - **remark-rehype** — remark plugin that turns markdown into HTML to support rehype
@@ -671,10 +743,12 @@
 - **rollup** — Next-generation ES module bundler
 - **safe-buffer** — Safer Node.js Buffer API
 - **safe-stable-stringify** — Deterministic and safely JSON.stringify to quickly serialize JavaScript objects
+- **safer-buffer** — Modern Buffer API polyfill without footguns
 - **scheduler** — Cooperative scheduler for the browser environment.
 - **semver-compare** — compare two semver version strings, returning -1, 0, or 1
 - **serialize-error** — Serialize/deserialize an error into a plain object
 - **set-cookie-parser** — Parses set-cookie headers into objects
+- **setimmediate** — A shim for the setImmediate efficient script yielding API
 - **shebang-command** — Get the command from a shebang
 - **shebang-regex** — Regular expression for matching a shebang line
 - **side-channel** — Store information about any JS value in a side channel. Uses WeakMap if available.
@@ -727,6 +801,7 @@
 - **tsx** — TypeScript Execute (tsx): Node.js enhanced with esbuild to run TypeScript & ESM files
 - **type-check** — type-check allows you to check the types of JavaScript values at runtime with a Haskell like type syntax.
 - **ulid** — A universally-unique, lexicographically-sortable, identifier generator
+- **underscore** — JavaScript's functional programming helper library.
 - **undici** — An HTTP/1.1 client, written from scratch for Node.js
 - **undici-types** — A stand-alone types package for Undici
 - **unified** — parse, inspect, transform, and serialize content through syntax trees
@@ -741,6 +816,7 @@
 - **use-callback-ref** — The same useRef, but with callback
 - **use-sidecar** — Sidecar code splitting utils
 - **util-deprecate** — The Node.js `util.deprecate()` function with browser support
+- **uuid** — RFC4122 (v1, v4, and v5) UUIDs
 - **vfile** — Virtual file format for text processing
 - **vfile-location** — vfile utility to convert between positional (line and column-based) and offset (range-based) locations
 - **vfile-message** — vfile utility to create a virtual message
@@ -750,6 +826,7 @@
 - **w3c-xmlserializer** — A per-spec XML serializer implementation
 - **web-namespaces** — Map of web namespaces
 - **webcrypto-core** — Common layer to be used by crypto libraries based on WebCrypto API for input validation.
+- **whatwg-encoding** — Decode strings according to the WHATWG Encoding Standard
 - **whatwg-mimetype** — Parses, serializes, and manipulates MIME types, according to the WHATWG MIME Sniffing Standard
 - **whatwg-url** — An implementation of the WHATWG URL Standard's URL API and parsing machinery
 - **why-is-node-running** — Node is running but you don't know why? why-is-node-running is here to help you.
@@ -760,6 +837,7 @@
 - **xmlchars** — Utilities for determining if characters belong to character classes defined by the XML specs.
 - **yargs** — yargs the modern, pirate-themed, successor to optimist.
 - **yocto-queue** — Tiny queue data structure
+- **zip-stream** — a streaming zip archive generator.
 - **zod** — TypeScript-first schema declaration and validation library with static type inference
 - **zustand** — 🐻 Bear necessities for state management in React
 - **zwitch** — Handle values based on a property
@@ -768,6 +846,11 @@
 
 - **@csstools/color-helpers** — Color helpers to ease transformation between formats, gamut, etc
 - **@csstools/css-syntax-patches-for-csstree** — CSS syntax patches for CSS tree
+
+## MIT/X11
+
+- **chainsaw** — Build chainable fluent interfaces the easy way... with a freakin' chainsaw!
+- **traverse** — Traverse and transform objects by visiting every node on a recursive walk
 
 ## MPL-2.0
 
@@ -780,7 +863,12 @@
 
 ## Unknown
 
+- **buffers** — Treat a collection of Buffers as a single contiguous partially mutable Buffer.
 - **ini** — An ini encoder/decoder for node
+
+## Unlicense
+
+- **big-integer** — An arbitrary length integer library for Javascript
 
 ## WTFPL OR ISC
 
@@ -791,5 +879,5 @@
 - **truncate-utf8-bytes** — Truncate string to given length in bytes
 
 ---
-生成时间: 2026-07-29T09:38:41.558Z
-总包数: 724
+生成时间: 2026-08-12T09:23:29.952Z
+总包数: 797

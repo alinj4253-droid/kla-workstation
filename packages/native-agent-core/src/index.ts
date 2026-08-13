@@ -25,6 +25,8 @@ export {
 } from './tool-utils.js';
 
 export {
+  isConversationStatusQuestion,
+  isSimpleDirectTask,
   runOrchestrator,
 } from './orchestrator.js';
 

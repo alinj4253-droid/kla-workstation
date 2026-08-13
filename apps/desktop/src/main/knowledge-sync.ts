@@ -8,10 +8,43 @@ import { contentFingerprints, ingestKnowledgeFile } from './knowledge-ingestion'
 
 export type KnowledgeSyncScope = { scopeType: 'project' | 'shared'; scopeId: string };
 export type KnowledgeSyncResult = { changedFileIds: string[]; deletedFileIds: string[]; failedFileIds: string[] };
-export type KnowledgeSyncOptions = { deferRecentFailures?: boolean; maxConcurrency?: number };
+export type KnowledgeSyncOptions = {
+  retryIncompleteSources?: boolean;
+  maxConcurrency?: number;
+};
 export type KnowledgeSyncObserver = {
   onChangesDetected?: (scope: KnowledgeSyncScope, change: KnowledgeSyncResult) => void | Promise<void>;
 };
+
+export function recoverInterruptedKnowledgeIngestions(db: Database.Database): number {
+  try {
+    const rows = db.prepare(
+      `SELECT DISTINCT source_id as sourceId
+       FROM knowledge_ingestion_jobs
+       WHERE status = 'running'`,
+    ).all() as Array<{ sourceId: string }>;
+    if (rows.length === 0) return 0;
+
+    const now = new Date().toISOString();
+    const sourceIds = rows.map((row) => row.sourceId);
+    const placeholders = sourceIds.map(() => '?').join(', ');
+    db.transaction(() => {
+      db.prepare(
+        `UPDATE knowledge_ingestion_jobs
+         SET status = 'failed', stage = 'interrupted', error_code = 'APP_RESTARTED', updated_at = ?
+         WHERE status = 'running'`,
+      ).run(now);
+      db.prepare(
+        `UPDATE knowledge_sources
+         SET status = 'error', ingested_at = NULL
+         WHERE status = 'ingesting' AND id IN (${placeholders})`,
+      ).run(...sourceIds);
+    })();
+    return rows.length;
+  } catch {
+    return 0;
+  }
+}
 
 function deactivateSourcesForFile(db: Database.Database, fileId: string): void {
   db.prepare(
@@ -103,7 +136,8 @@ export async function syncKnowledgeSources(
     }
 
     const current = fileRepo.getCurrentVersion(file.id);
-    if (file.status === 'deleted') fileRepo.markReady(file.id);
+    const restored = file.status === 'deleted';
+    if (restored) fileRepo.markReady(file.id);
     if (!current || current.sha256 !== fingerprints.sha256) {
       fileRepo.createVersion({
         fileId: file.id,
@@ -117,20 +151,18 @@ export async function syncKnowledgeSources(
       changedFileIds.push(file.id);
       continue;
     }
+    if (restored) {
+      changedFileIds.push(file.id);
+      continue;
+    }
 
     const source = knowledgeRepo.getSourceByFileAndVersion(file.id, current.id);
-    let deferRetry = false;
-    if (source && options?.deferRecentFailures && (source.status === 'error' || source.status === 'ingesting')) {
-      try {
-        const job = knowledgeRepo.getLatestJobForSource(source.id);
-        const updatedAt = Date.parse(job?.updatedAt ?? '');
-        const delay = source.status === 'ingesting' ? 4 * 60 * 60_000 : 30 * 60_000;
-        deferRetry = Number.isFinite(updatedAt) && Date.now() - updatedAt < delay;
-      } catch {
-        // Legacy test databases may not have the jobs table; retry as before.
-      }
-    }
-    if ((!source || source.status !== 'ready') && !deferRetry) changedFileIds.push(file.id);
+    const retryIncompleteSource = options?.retryIncompleteSources ?? true;
+    // A file can already be registered by the upload path before its first
+    // knowledge_source is created. Missing sources are always a real ingest
+    // gap; retryIncompleteSources only controls retries of an existing
+    // non-ready source during a retrieval refresh.
+    if (!source || (retryIncompleteSource && source.status !== 'ready')) changedFileIds.push(file.id);
     if (source && source.contentMd5 !== fingerprints.md5) knowledgeRepo.updateSourceMetadata(source.id, { contentMd5: fingerprints.md5 });
   }
 
@@ -174,7 +206,10 @@ export async function refreshKnowledgeBeforeSearch(
   projectId: string,
   observer?: KnowledgeSyncObserver,
 ): Promise<KnowledgeSyncResult> {
-  const retrievalOptions: KnowledgeSyncOptions = { deferRecentFailures: true, maxConcurrency: 2 };
+  const retrievalOptions: KnowledgeSyncOptions = {
+    retryIncompleteSources: false,
+    maxConcurrency: 2,
+  };
   const project = await syncKnowledgeSources(db, { scopeType: 'project', scopeId: projectId }, gateway, observer, retrievalOptions);
   const shared = await syncKnowledgeSources(db, { scopeType: 'shared', scopeId: 'shared-knowledge' }, gateway, observer, retrievalOptions);
   return {

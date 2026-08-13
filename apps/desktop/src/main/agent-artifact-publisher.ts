@@ -47,11 +47,10 @@ export function prepareAgentOutput(text: string): PreparedAgentOutput {
       seen.add(relativePath);
       referencedPaths.push(relativePath);
     }
-    const htmlCode = content.trim();
-    return `\`\`\`html\n${htmlCode}\n\`\`\`\n\n📎 已生成 HTML 文件：${basename(relativePath)}`;
+    return `已生成成果文件：${relativePath}`;
   });
 
-  // 兼容未遵循 artifact 协议、直接输出完整 HTML 的智能体：自动落盘并把聊天正文改为代码块。
+  // 兼容未遵循 artifact 协议、直接输出完整 HTML 的智能体：自动落盘，只在群聊中保留文件说明。
   if (inlineHtml.length === 0) {
     const rawHtml = cleanText.match(/<!doctype\s+html[\s\S]*?<\/html>/i)?.[0]
       ?? cleanText.match(/<html\b[\s\S]*?<\/html>/i)?.[0];
@@ -61,7 +60,7 @@ export function prepareAgentOutput(text: string): PreparedAgentOutput {
       inlineHtml.push({ relativePath, content: rawHtml });
       referencedPaths.push(relativePath);
       seen.add(relativePath);
-      cleanText = cleanText.replace(rawHtml, `\`\`\`html\n${rawHtml.trim()}\n\`\`\`\n\n📎 已生成 HTML 文件：${basename(relativePath)}`);
+      cleanText = cleanText.replace(rawHtml, `已生成成果文件：${relativePath}`);
     }
   }
 
@@ -278,6 +277,10 @@ export class AgentArtifactPublisher {
       } catch { /* 文件不存在或越界时忽略，文本回复仍正常提交 */ }
     }
 
-    return { text: prepared.text, publishedPaths };
+    const missingPathNotes = publishedPaths.filter((filePath) => !prepared.text.includes(filePath));
+    const text = missingPathNotes.length > 0
+      ? [prepared.text, `已生成成果文件：${missingPathNotes.join('、')}`].filter(Boolean).join('\n\n')
+      : prepared.text;
+    return { text, publishedPaths };
   }
 }

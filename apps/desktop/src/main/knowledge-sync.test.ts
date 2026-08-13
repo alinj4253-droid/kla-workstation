@@ -5,12 +5,17 @@ vi.mock('electron', () => ({
   app: { getPath: vi.fn(() => process.cwd()), getAppPath: vi.fn(() => process.cwd()) },
 }));
 import Database from 'better-sqlite3';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FileRepository, KnowledgeRepository } from '@kunqing/database';
 import { setStudioRoot } from './paths';
-import { refreshKnowledgeBeforeSearch, syncKnowledgeSources } from './knowledge-sync';
+import {
+  recoverInterruptedKnowledgeIngestions,
+  refreshKnowledgeBeforeSearch,
+  syncKnowledgeSources,
+} from './knowledge-sync';
 
 function createDb(): Database.Database {
   const db = new Database(':memory:');
@@ -99,7 +104,7 @@ describe('knowledge source synchronization', () => {
     expect(fileRepo.getById(artifact.id)?.status).toBe('ready');
 
     await writeFile(join(originalRoot, 'brief.txt'), 'version two', 'utf8');
-    const restored = await syncKnowledgeSources(db, { scopeType: 'project', scopeId: 'project-1' });
+    const restored = await refreshKnowledgeBeforeSearch(db, null, 'project-1');
     expect(restored.changedFileIds).toEqual([original!.id]);
     expect(fileRepo.getById(original!.id)?.status).toBe('ready');
   });
@@ -117,7 +122,30 @@ describe('knowledge source synchronization', () => {
     expect(new FileRepository(db).getByPath('shared', 'shared-knowledge', 'shared.txt')).not.toBeNull();
   });
 
-  it('defers a recently failed source during retrieval but allows an explicit retry', async () => {
+  it('ingests an uploaded file that has a current version but no knowledge source', async () => {
+    const fileRepo = new FileRepository(db);
+    const content = 'uploaded evidence';
+    await writeFile(join(originalRoot, 'uploaded-after-registration.txt'), content, 'utf8');
+
+    // Mirror the upload flow: file/version rows exist, while ingestion has
+    // not started yet and therefore no knowledge_sources row exists.
+    const file = fileRepo.create({
+      scopeType: 'project', scopeId: 'project-1', type: 'file',
+      name: 'uploaded-after-registration.txt',
+      normalizedPath: 'uploaded-after-registration.txt', origin: 'upload',
+    });
+    fileRepo.createVersion({
+      fileId: file.id, storageRelPath: 'original-files/uploaded-after-registration.txt',
+      size: Buffer.byteLength(content), sha256: createHash('sha256').update(content).digest('hex'),
+      createdByType: 'user', createdById: 'user',
+      changeNote: 'upload',
+    });
+
+    const refreshed = await refreshKnowledgeBeforeSearch(db, null, 'project-1');
+    expect(refreshed.changedFileIds).toContain(file.id);
+  });
+
+  it('does not retry an unchanged incomplete source during retrieval but allows explicit processing', async () => {
     await writeFile(join(originalRoot, 'retry.txt'), 'retry evidence', 'utf8');
     await syncKnowledgeSources(db, { scopeType: 'project', scopeId: 'project-1' });
     const file = new FileRepository(db).getByPath('project', 'project-1', 'retry.txt')!;
@@ -125,20 +153,34 @@ describe('knowledge source synchronization', () => {
     const source = repo.createSource({
       scopeType: 'project', scopeId: 'project-1', fileId: file.id, versionId: file.currentVersionId!,
     });
-    repo.setSourceStatus(source.id, 'error');
+    repo.setSourceStatus(source.id, 'ingesting');
     const job = repo.createJob({ scopeType: 'project', scopeId: 'project-1', sourceId: source.id });
-    repo.setJobStatus(job.id, 'failed', { errorCode: 'OCR timeout' });
+    repo.setJobStatus(job.id, 'running', { stage: 'parsing', progress: 5 });
 
-    const deferred = await syncKnowledgeSources(
-      db,
-      { scopeType: 'project', scopeId: 'project-1' },
-      null,
-      undefined,
-      { deferRecentFailures: true },
-    );
+    const deferred = await refreshKnowledgeBeforeSearch(db, null, 'project-1');
     expect(deferred.changedFileIds).toEqual([]);
 
     const explicit = await syncKnowledgeSources(db, { scopeType: 'project', scopeId: 'project-1' });
     expect(explicit.changedFileIds).toEqual([file.id]);
+  });
+
+  it('marks orphaned ingestion jobs as interrupted without deleting existing knowledge', async () => {
+    await writeFile(join(originalRoot, 'orphaned.txt'), 'existing evidence', 'utf8');
+    await syncKnowledgeSources(db, { scopeType: 'project', scopeId: 'project-1' });
+    const file = new FileRepository(db).getByPath('project', 'project-1', 'orphaned.txt')!;
+    const repo = new KnowledgeRepository(db);
+    const source = repo.createSource({
+      scopeType: 'project', scopeId: 'project-1', fileId: file.id, versionId: file.currentVersionId!,
+    });
+    repo.setSourceStatus(source.id, 'ingesting');
+    const job = repo.createJob({ scopeType: 'project', scopeId: 'project-1', sourceId: source.id });
+    repo.setJobStatus(job.id, 'running', { stage: 'parsing', progress: 5 });
+
+    expect(recoverInterruptedKnowledgeIngestions(db)).toBe(1);
+    expect(repo.getSource(source.id)?.status).toBe('error');
+    expect(repo.getLatestJobForSource(source.id)).toMatchObject({
+      status: 'failed', stage: 'interrupted', errorCode: 'APP_RESTARTED',
+    });
+    expect(new FileRepository(db).getById(file.id)?.status).toBe('ready');
   });
 });

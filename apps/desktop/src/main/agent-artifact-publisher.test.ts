@@ -66,7 +66,8 @@ describe('AgentArtifactPublisher', () => {
       text: output,
     });
 
-    expect(result.text).toContain('已生成 HTML 文件：report.html');
+    expect(result.text).toContain('已生成成果文件：outputs/report.html');
+    expect(result.text).not.toContain('```html');
     expect(result.publishedPaths).toEqual(['outputs/report.html']);
     expect(await readFile(join(getProjectRoot('group-1'), 'outputs', 'report.html'), 'utf8')).toContain('<h1>报告</h1>');
 
@@ -93,10 +94,11 @@ describe('AgentArtifactPublisher', () => {
     expect(prepared.referencedPaths).toEqual(['outputs/doubao-geo-brainstorm.html']);
   });
 
-  it('turns raw HTML into a code block and a right-side preview artifact', () => {
+  it('turns raw HTML into a right-side preview artifact without leaking source', () => {
     const prepared = prepareAgentOutput('<!doctype html><html><body><h1>仪表盘</h1></body></html>');
-    expect(prepared.text).toContain('```html');
-    expect(prepared.text).toContain('<h1>仪表盘</h1>');
+    expect(prepared.text).toContain('已生成成果文件：');
+    expect(prepared.text).not.toContain('```html');
+    expect(prepared.text).not.toContain('<h1>仪表盘</h1>');
     expect(prepared.inlineHtml).toHaveLength(1);
     expect(prepared.referencedPaths[0]).toMatch(/^outputs\/generated-[a-f0-9]{10}\.html$/);
   });
@@ -125,6 +127,7 @@ describe('AgentArtifactPublisher', () => {
     const second = await publisher.publishFromOutput(input);
 
     expect(first.publishedPaths).toEqual(['outputs/final-report.pdf']);
+    expect(first.text).toContain('outputs/final-report.pdf');
     expect(second.publishedPaths).toEqual(['outputs/final-report.pdf']);
     expect((db.prepare("SELECT COUNT(*) AS count FROM messages WHERE kind = 'artifact'").get() as { count: number }).count).toBe(1);
     expect(events).toHaveLength(2);

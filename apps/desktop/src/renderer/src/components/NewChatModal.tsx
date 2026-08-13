@@ -18,12 +18,16 @@ const BUILTIN_DESCRIPTIONS: Record<string, string> = {
   'builtin.orchestrator': '拆解目标、安排协作并综合团队结论。',
   'builtin.knowledge-manager': '处理文档、构建 Wiki 与可追溯知识图谱。',
   'builtin.researcher': '信息检索、资料分析和事实核查。',
+  'builtin.material-writer': '依据证据和模板先列框架，再逐章形成完整材料。',
+  'builtin.acceptance-reviewer': '检索知识证据，核验材料真实性和完整性。',
 };
 
 const BUILTIN_TONES: Record<string, string> = {
   'builtin.orchestrator': 'indigo',
   'builtin.knowledge-manager': 'cyan',
   'builtin.researcher': 'green',
+  'builtin.material-writer': 'violet',
+  'builtin.acceptance-reviewer': 'orange',
 };
 
 function getBadge(runtimeMode: string, delegatable: boolean): string {

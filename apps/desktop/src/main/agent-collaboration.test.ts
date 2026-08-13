@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import {
   buildAgentCollaborationInstructions,
+  isAllowedAgentHandoff,
   normalizeAgentMessageContent,
   resolveAgentMentions,
   sanitizeAgentDisplayText,
@@ -35,7 +36,9 @@ function createDb(): Database.Database {
     CREATE TABLE agent_runs (
       id TEXT PRIMARY KEY, project_id TEXT NOT NULL, agent_instance_id TEXT NOT NULL,
       trigger_message_id TEXT, parent_run_id TEXT,
-      requested_by_type TEXT NOT NULL DEFAULT 'user', requested_by_id TEXT NOT NULL DEFAULT ''
+      requested_by_type TEXT NOT NULL DEFAULT 'user', requested_by_id TEXT NOT NULL DEFAULT '',
+      instruction TEXT, status TEXT NOT NULL DEFAULT 'queued',
+      created_at TEXT NOT NULL DEFAULT '2026-01-01T00:00:00.000Z'
     );
   `);
   db.prepare("INSERT INTO agent_profiles VALUES ('p-leader', '统筹管理智能体', 'builtin.orchestrator', 1)").run();
@@ -91,6 +94,33 @@ describe('agent collaboration mentions', () => {
       db,
       'group-1',
       JSON.stringify({ text: '@不存在智能体 请处理', mentions: [{ target: { scope: 'instance', id: 'group-1-know' }, label: '不存在智能体', start: 0, end: 7 }] }),
+    )) as { mentions: unknown[] };
+    expect(normalized.mentions).toEqual([]);
+  });
+
+  it('only resolves actionable mentions outside Markdown code', () => {
+    const text = [
+      '代码示例：`@知识管理智能体 请处理`',
+      '```text',
+      '@资料调研智能体 这也是示例',
+      '```',
+      '@知识管理智能体 请检索公司地址并返回准确出处。',
+    ].join('\n');
+    const mentions = resolveAgentMentions(db, 'group-1', text);
+    expect(mentions).toEqual([expect.objectContaining({
+      target: { scope: 'instance', id: 'group-1-know' },
+      label: '知识管理智能体',
+      start: text.lastIndexOf('@知识管理智能体'),
+    })]);
+  });
+
+  it('does not route a mention that exists only inside Markdown code', () => {
+    const normalized = JSON.parse(normalizeAgentMessageContent(
+      db,
+      'group-1',
+      JSON.stringify({ text: '示例：`@知识管理智能体 请处理`' }),
+      [],
+      'group-1-orch',
     )) as { mentions: unknown[] };
     expect(normalized.mentions).toEqual([]);
   });
@@ -260,43 +290,16 @@ describe('agent collaboration mentions', () => {
     expect(runRepo.create).not.toHaveBeenCalled();
   });
 
-  it('allows a research agent to hand new findings to knowledge after another sender already used knowledge', () => {
-    db.prepare(
-      `INSERT INTO agent_runs
-       (id, project_id, agent_instance_id, trigger_message_id, requested_by_type, requested_by_id)
-       VALUES ('run-orch-know', 'group-1', 'group-1-know', 'root-message', 'agent', 'group-1-orch')`,
-    ).run();
-    const runRepo = {
-      countRunsByTrigger: vi.fn(() => 2),
-      getAncestorChain: vi.fn(() => []),
-      create: vi.fn(() => ({ id: 'run-research-know' })),
-      addEvent: vi.fn(),
-    };
-    const scheduler = { enqueue: vi.fn() };
-
-    processMessageMentions(
-      db, runRepo as never, scheduler as never, 'group-1',
-      JSON.stringify({
-        text: '@知识管理智能体 请把我补充的资料纳入知识库并更新结论',
-        mentions: [{ target: { scope: 'instance', id: 'group-1-know' } }],
-      }),
-      'root-message', 'group-1-research', 'research-run', 'agent', 'research-message',
-    );
-
-    expect(runRepo.create).toHaveBeenCalledWith(expect.objectContaining({
-      agentInstanceId: 'group-1-know',
-      requestedById: 'group-1-research',
-      instruction: '@知识管理智能体 请把我补充的资料纳入知识库并更新结论',
-    }));
-    expect(scheduler.enqueue).toHaveBeenCalledTimes(1);
+  it('blocks a research agent from handing research findings to knowledge curation', () => {
+    expect(isAllowedAgentHandoff(db, 'group-1', 'group-1-research', 'group-1-know', '@知识管理智能体 请把调研结果归集到知识库')).toBe(false);
   });
 
-  it('blocks a duplicate sender-to-target edge within the same root task', () => {
+  it('blocks an equivalent duplicate instruction to the same target within the same root task', () => {
     db.prepare(
       `INSERT INTO agent_runs
-       (id, project_id, agent_instance_id, trigger_message_id, requested_by_type, requested_by_id)
-       VALUES ('run-research-know', 'group-1', 'group-1-know', 'root-message', 'agent', 'group-1-research')`,
-    ).run();
+       (id, project_id, agent_instance_id, trigger_message_id, requested_by_type, requested_by_id, instruction, status)
+       VALUES ('run-orch-know', 'group-1', 'group-1-know', 'root-message', 'agent', 'group-1-orch', ?, 'running')`,
+    ).run('@知识管理智能体 请检查公司制度并输出相关证据');
     const runRepo = {
       countRunsByTrigger: vi.fn(() => 2),
       getAncestorChain: vi.fn(() => []),
@@ -308,14 +311,74 @@ describe('agent collaboration mentions', () => {
     processMessageMentions(
       db, runRepo as never, scheduler as never, 'group-1',
       JSON.stringify({
-        text: '@知识管理智能体 请再次整理同一批调研资料并更新结论',
+        text: '@知识管理智能体，请检查公司制度并输出相关证据。',
         mentions: [{ target: { scope: 'instance', id: 'group-1-know' } }],
       }),
-      'root-message', 'group-1-research', 'research-run-2', 'agent', 'research-message-2',
+      'root-message', 'group-1-orch', 'orchestrator-run', 'agent', 'orchestrator-message-2',
     );
 
     expect(runRepo.create).not.toHaveBeenCalled();
     expect(scheduler.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('blocks an equivalent instruction that already completed', () => {
+    db.prepare(
+      `INSERT INTO agent_runs
+       (id, project_id, agent_instance_id, trigger_message_id, requested_by_type, requested_by_id, instruction, status)
+       VALUES ('run-orch-know-complete', 'group-1', 'group-1-know', 'root-message', 'agent', 'group-1-orch', ?, 'completed')`,
+    ).run('@知识管理智能体 请检查公司制度并输出相关证据');
+    const runRepo = {
+      countRunsByTrigger: vi.fn(() => 2),
+      getAncestorChain: vi.fn(() => []),
+      create: vi.fn(),
+      addEvent: vi.fn(),
+    };
+    const scheduler = { enqueue: vi.fn() };
+
+    processMessageMentions(
+      db, runRepo as never, scheduler as never, 'group-1',
+      JSON.stringify({
+        text: '@知识管理智能体 请检查公司制度并输出相关证据',
+        mentions: [{ target: { scope: 'instance', id: 'group-1-know' } }],
+      }),
+      'root-message', 'group-1-orch', 'orchestrator-run', 'agent', 'orchestrator-message-3',
+    );
+
+    expect(runRepo.create).not.toHaveBeenCalled();
+    expect(scheduler.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('allows a materially different follow-up instruction to the same target', () => {
+    db.prepare(
+      `INSERT INTO agent_runs
+       (id, project_id, agent_instance_id, trigger_message_id, requested_by_type, requested_by_id, instruction, status)
+       VALUES ('run-orch-review', 'group-1', 'group-1-know', 'root-message', 'agent', 'group-1-orch', ?, 'completed')`,
+    ).run('@知识管理智能体 请审阅报告草稿并给出结论');
+    const runRepo = {
+      countRunsByTrigger: vi.fn(() => 2),
+      getAncestorChain: vi.fn(() => []),
+      create: vi.fn(() => ({ id: 'follow-up-run' })),
+      addEvent: vi.fn(),
+    };
+    const scheduler = { enqueue: vi.fn() };
+    const followUp = '@知识管理智能体 你上次只给出了不通过结论，请重新审阅并列出具体返修项';
+
+    processMessageMentions(
+      db, runRepo as never, scheduler as never, 'group-1',
+      JSON.stringify({
+        text: followUp,
+        mentions: [{ target: { scope: 'instance', id: 'group-1-know' } }],
+      }),
+      'root-message', 'group-1-orch', 'orchestrator-run', 'agent', 'orchestrator-message-3',
+    );
+
+    expect(runRepo.create).toHaveBeenCalledTimes(1);
+    expect(runRepo.create).toHaveBeenCalledWith(expect.objectContaining({
+      agentInstanceId: 'group-1-know',
+      requestedById: 'group-1-orch',
+      instruction: followUp,
+    }));
+    expect(scheduler.enqueue).toHaveBeenCalledTimes(1);
   });
 
   it('prefers the longest agent name when group member names overlap', () => {

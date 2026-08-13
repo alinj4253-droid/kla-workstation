@@ -129,9 +129,10 @@ describe('createProjectTools', () => {
   });
 
   it('returns all project tools', () => {
-    expect(tools).toHaveLength(7);
+    expect(tools).toHaveLength(8);
     const names = tools.map((t) => t.name);
     expect(names).toContain('knowledge:search');
+    expect(names).toContain('web:search');
     expect(names).toContain('workspace:readFile');
     expect(names).toContain('project:search');
     expect(names).toContain('knowledge:listGraph');

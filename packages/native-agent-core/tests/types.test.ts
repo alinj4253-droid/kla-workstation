@@ -71,6 +71,9 @@ describe('IGraphContext interface', () => {
         getKmInstance(_projectId) {
           return null;
         },
+        getProjectDelegatableAgents() {
+          return [];
+        },
         getMessageContent(_messageId) {
           return 'message content';
         },
@@ -121,6 +124,7 @@ describe('IGraphContext interface', () => {
         getProjectRoot() { return '/tmp'; },
         renderSnapshotToText() { return ''; },
         getKmInstance() { return null; },
+        getProjectDelegatableAgents() { return []; },
         getMessageContent() { return null; },
         getLogger() { return { info() {}, warn() {}, error() {} }; },
       },
@@ -145,6 +149,10 @@ describe('OrchestratorGraphState type', () => {
       subAgentResult: 'sub result',
       finalResponse: 'final response',
       needsKnowledgeManager: false,
+      needsCLIDelegation: false,
+      cliDelegations: [],
+      recoveryCount: 0,
+      knowledgeCurated: false,
       artifacts: [{ relativePath: 'output.md', content: '# Output' }],
     };
     expect(state.messages).toHaveLength(1);
@@ -163,6 +171,10 @@ describe('OrchestratorGraphState type', () => {
       subAgentResult: '',
       finalResponse: '',
       needsKnowledgeManager: false,
+      needsCLIDelegation: false,
+      cliDelegations: [],
+      recoveryCount: 0,
+      knowledgeCurated: false,
       artifacts: [],
     };
     expect(state.messages).toEqual([]);

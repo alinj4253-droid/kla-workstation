@@ -24,6 +24,14 @@ describe('BUILTIN_AGENT_REQUIREMENTS', () => {
     expect(res!.requiredCapabilities).toContain('streaming');
     expect(res!.requiredCapabilities).toContain('structuredOutput');
   });
+
+  it('requires reasoning tool support for writer and acceptance reviewer', () => {
+    for (const definitionId of ['builtin.material-writer', 'builtin.acceptance-reviewer']) {
+      const requirement = BUILTIN_AGENT_REQUIREMENTS.find((item) => item.definitionId === definitionId);
+      expect(requirement).toBeDefined();
+      expect(requirement!.requiredCapabilities).toEqual(expect.arrayContaining(['streaming', 'toolCalling', 'structuredOutput']));
+    }
+  });
 });
 
 describe('validateModelForAgent', () => {

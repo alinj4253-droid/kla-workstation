@@ -1,0 +1,24 @@
+schemaVersion: 1
+id: builtin.material-writer
+version: 1.0.0
+displayName: 材料编写智能体
+runtime: native-model
+framework: loop-engine
+entry: nativeAgentLoop
+defaultModelSlot: reasoning
+modelRequirements:
+  - streaming
+  - toolCalling
+  - structuredOutput
+skills:
+  - document-authoring
+tools:
+  - skill.search
+  - skill.load
+  - workspace.read
+  - review.writeDraft
+  - memory.writeOwn
+memoryPolicy:
+  shortTermTtlHours: 72
+  longTermWrite: candidate-then-commit
+

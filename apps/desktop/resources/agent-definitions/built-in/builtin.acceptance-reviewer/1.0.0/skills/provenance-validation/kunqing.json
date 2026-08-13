@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "provenance-validation",
+  "version": "1.0.0",
+  "entry": "SKILL.md",
+  "agentDefinitions": ["builtin.acceptance-reviewer"],
+  "executionMode": "instructions",
+  "requiredTools": ["workspace:readFile", "knowledge:search"],
+  "permissions": ["read:file", "read:knowledge"]
+}
+

@@ -18,6 +18,14 @@ export const BUILTIN_AGENT_REQUIREMENTS: AgentCapabilityRequirements[] = [
     definitionId: 'builtin.researcher',
     requiredCapabilities: ['streaming', 'structuredOutput'],
   },
+  {
+    definitionId: 'builtin.material-writer',
+    requiredCapabilities: ['streaming', 'toolCalling', 'structuredOutput'],
+  },
+  {
+    definitionId: 'builtin.acceptance-reviewer',
+    requiredCapabilities: ['streaming', 'toolCalling', 'structuredOutput'],
+  },
 ];
 
 export function validateModelForAgent(

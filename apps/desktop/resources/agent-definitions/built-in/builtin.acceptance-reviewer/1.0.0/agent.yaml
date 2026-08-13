@@ -1,0 +1,26 @@
+schemaVersion: 1
+id: builtin.acceptance-reviewer
+version: 1.0.0
+displayName: 验收智能体
+runtime: native-model
+framework: loop-engine
+entry: nativeAgentLoop
+defaultModelSlot: reasoning
+modelRequirements:
+  - streaming
+  - toolCalling
+  - structuredOutput
+skills:
+  - retrieve-knowledge
+  - provenance-validation
+  - deliverable-acceptance
+tools:
+  - skill.search
+  - skill.load
+  - knowledge.search
+  - workspace.read
+  - memory.writeOwn
+memoryPolicy:
+  shortTermTtlHours: 72
+  longTermWrite: candidate-then-commit
+

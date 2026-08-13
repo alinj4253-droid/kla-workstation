@@ -59,7 +59,7 @@ describe('SkillRegistry', () => {
     expect(registry.loadForRun('run-1', 'legacy-research')).toBeNull();
   });
 
-  it('binds both official knowledge skills only to the knowledge-manager Run snapshot', () => {
+  it('binds official skills to knowledge, writer and reviewer definitions', () => {
     const registry = new SkillRegistry(db, root);
     registry.seedBuiltinSkills();
 
@@ -72,7 +72,23 @@ describe('SkillRegistry', () => {
     expect(registry.loadForRun('run-knowledge', 'retrieve-knowledge')).toContain('全文、向量、图谱与 Wiki');
 
     registry.snapshotForRun('run-researcher', 'builtin.researcher', '1.0.0');
+    expect(registry.resolveForDefinition('builtin.researcher', '1.0.0').find((skill) => skill.id === 'web-search')?.requiredTools).toContain('web:search');
+    expect(registry.loadForRun('run-researcher', 'web-search')).toContain('网页搜索');
     expect(registry.loadForRun('run-researcher', 'process-knowledge-files')).toBeNull();
     expect(registry.loadForRun('run-researcher', 'retrieve-knowledge')).toBeNull();
+
+    const writerSkills = registry.snapshotForRun('run-writer', 'builtin.material-writer', '1.0.0');
+    expect(writerSkills.map((skill) => skill.id)).toEqual(['document-authoring']);
+    expect(registry.loadForRun('run-writer', 'document-authoring')).toContain('先列框架');
+    expect(registry.loadForRun('run-writer', 'retrieve-knowledge')).toBeNull();
+
+    const reviewerSkills = registry.snapshotForRun('run-reviewer', 'builtin.acceptance-reviewer', '1.0.0');
+    expect(reviewerSkills.map((skill) => skill.id)).toEqual(expect.arrayContaining([
+      'retrieve-knowledge',
+      'provenance-validation',
+      'deliverable-acceptance',
+    ]));
+    expect(registry.loadForRun('run-reviewer', 'retrieve-knowledge')).toContain('全文、向量、图谱与 Wiki');
+    expect(registry.loadForRun('run-reviewer', 'provenance-validation')).toContain('材料主张');
   });
 });

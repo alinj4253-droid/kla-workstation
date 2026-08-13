@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import { LocalOcrService } from './local-ocr';
+import { hasBochaApiKey } from './bocha-web-search';
 
 export type BuiltinToolStatus = 'ready' | 'optional' | 'disabled';
 
@@ -28,6 +29,7 @@ export const isBuiltinToolEnabled = (db: Database.Database, id: string, defaultV
 export async function listBuiltinTools(db: Database.Database): Promise<BuiltinToolInfo[]> {
   const ocr = await new LocalOcrService().status();
   const definitions: Array<Omit<BuiltinToolInfo, 'enabled'>> = [
+    { id: 'tool.bocha-web-search', name: '博查网页搜索', description: '通过博查 API 搜索公开网页，返回带来源链接和摘要的资料，供资料调研智能体使用。', category: '检索', status: hasBochaApiKey(db) ? 'ready' : 'optional', statusText: hasBochaApiKey(db) ? '已配置并可用' : '等待配置 API Key', isBuiltin: true, config: { endpoint: 'https://api.bocha.cn/v1/web-search', scope: '公开网页' } },
     { id: 'tool.document-parser', name: '本地文档解析器', description: '解析 TXT、Markdown、HTML、JSON、CSV、PDF、DOCX 和 XLSX，不上传原始文件。', category: '解析', status: 'ready', statusText: '已就绪', isBuiltin: true, config: { formats: 'TXT / MD / HTML / PDF / DOCX / XLSX', runtime: 'Node.js' } },
     { id: 'tool.paddle-ocr', name: 'PaddleOCR 本地模型包', description: '识别图片与扫描件文字，仅在常规解析无法获得正文时调用。', category: 'OCR', status: ocr.available ? 'ready' : 'optional', statusText: ocr.detail, isBuiltin: true, config: { runtime: 'PaddleOCR CLI', dataPolicy: '仅本地' } },
     { id: 'tool.local-embedding', name: '本地向量化引擎', description: '生成 384 维多语言离线向量；可无缝替换为 BGE-small-zh ONNX 模型包。', category: '向量', status: 'ready', statusText: '内置基础模型已就绪', isBuiltin: true, config: { model: 'kunqing-feature-hash-multilingual-v1', dimensions: '384' } },

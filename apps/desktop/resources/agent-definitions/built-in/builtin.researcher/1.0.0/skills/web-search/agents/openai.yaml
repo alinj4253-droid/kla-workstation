@@ -1,0 +1,6 @@
+interface:
+  display_name: "网页搜索"
+  short_description: "搜索公开网页资料并保留来源链接，帮助调研智能体核验事实"
+  default_prompt: "Use $web-search to find current public sources for this research question."
+policy:
+  allow_implicit_invocation: true

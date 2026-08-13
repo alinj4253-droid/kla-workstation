@@ -166,7 +166,7 @@ describe('createProject', () => {
 
     // Agent instances queryable
     const instances = instanceRepo.listByProject(projectId);
-    expect(instances.length).toBe(3);
+    expect(instances.length).toBe(5);
     expect(new Set(instances.map((instance) => instance.id)).size).toBe(instances.length);
     expect(instances.every((instance) => instance.id.startsWith(`${projectId}-`))).toBe(true);
 
@@ -175,11 +175,13 @@ describe('createProject', () => {
     expect(leader!.agentProfileId).toBe('builtin-orchestrator-profile');
 
     const teammates = instances.filter((i) => i.role === 'teammate');
-    expect(teammates.length).toBe(2);
+    expect(teammates.length).toBe(4);
     const knowledgeTeammate = teammates.find((t) => t.agentProfileId === 'builtin-knowledge-profile');
     expect(knowledgeTeammate).toBeDefined();
     const researcherTeammate = teammates.find((t) => t.agentProfileId === 'builtin-researcher-profile');
     expect(researcherTeammate).toBeDefined();
+    expect(teammates.find((t) => t.agentProfileId === 'builtin-material-writer-profile')).toBeDefined();
+    expect(teammates.find((t) => t.agentProfileId === 'builtin-acceptance-reviewer-profile')).toBeDefined();
 
     // Messages queryable
     const messages = messageRepo.listByProject(projectId);
@@ -192,9 +194,11 @@ describe('createProject', () => {
     expect(orchProfile.name).toBe('统筹管理智能体');
     const knowProfile = profileRepo.getById('builtin-knowledge-profile');
     expect(knowProfile.name).toBe('知识管理智能体');
+    expect(profileRepo.getById('builtin-material-writer-profile').name).toBe('材料编写智能体');
+    expect(profileRepo.getById('builtin-acceptance-reviewer-profile').name).toBe('验收智能体');
   });
 
-  it('AC-HOME-05 orchestrator joins as leader, knowledge joins as teammate', async () => {
+  it('AC-HOME-05 creates the five-agent built-in collaboration team', async () => {
     const result = await createProject(db, {
       idempotencyKey: 'home-05-key',
       content: { text: '市场调研分析' },
@@ -210,17 +214,21 @@ describe('createProject', () => {
     expect(leader!.agentProfileId).toBe('builtin-orchestrator-profile');
 
     const teammates = instances.filter((i) => i.role === 'teammate');
-    expect(teammates.length).toBe(2);
+    expect(teammates.length).toBe(4);
     const knowTeammate = teammates.find((t) => t.agentProfileId === 'builtin-knowledge-profile');
     expect(knowTeammate).toBeDefined();
     const resTeammate = teammates.find((t) => t.agentProfileId === 'builtin-researcher-profile');
     expect(resTeammate).toBeDefined();
+    expect(teammates.find((t) => t.agentProfileId === 'builtin-material-writer-profile')).toBeDefined();
+    expect(teammates.find((t) => t.agentProfileId === 'builtin-acceptance-reviewer-profile')).toBeDefined();
 
-    // Leader ordinal is 0, teammates ordinal are 1,2
+    // Leader ordinal is 0, built-in teammates are 1-4.
     const sorted = [...instances].sort((a, b) => a.ordinal - b.ordinal);
     expect(sorted[0]!.role).toBe('leader');
     expect(sorted[1]!.role).toBe('teammate');
     expect(sorted[2]!.role).toBe('teammate');
+    expect(sorted[3]!.role).toBe('teammate');
+    expect(sorted[4]!.role).toBe('teammate');
   });
 
   it('AC-HOME-06 creates identity files and memory directories for both agents', async () => {
@@ -268,6 +276,7 @@ describe('createProject', () => {
     expect(existsSync(join(projectRoot, '.runtime', 'versions'))).toBe(true);
     expect(existsSync(join(projectRoot, '.runtime', 'run-temp'))).toBe(true);
     expect(existsSync(join(projectRoot, '.runtime', 'sandboxes'))).toBe(true);
+    expect(existsSync(join(projectRoot, '.runtime', 'review-drafts'))).toBe(true);
 
     // group.yaml exists
     const groupYaml = readFileSync(join(projectRoot, 'group.yaml'), 'utf8');
@@ -330,7 +339,7 @@ describe('createProject', () => {
     if (!created.ok) return;
 
     const agents = await addProjectAgents(db, created.data.id, [profileId]);
-    expect(agents).toHaveLength(4);
+    expect(agents).toHaveLength(6);
     const added = agents.find((agent) => agent.agentName === '测试 CLI 智能体');
     expect(added?.role).toBe('teammate');
     expect(added?.runtimeMode).toBe('external-cli');
@@ -349,7 +358,7 @@ describe('createProject', () => {
     expect(runtimeIdentity.identity).toContain('群聊适应性补充');
 
     const duplicate = await addProjectAgents(db, created.data.id, [profileId]);
-    expect(duplicate).toHaveLength(4);
+    expect(duplicate).toHaveLength(6);
   });
 
   it('archives a dissolved group without deleting its workspace', async () => {

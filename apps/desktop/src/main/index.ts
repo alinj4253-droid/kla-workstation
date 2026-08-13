@@ -28,13 +28,14 @@ import { ModelGateway } from './model-gateway';
 import { Scheduler } from './scheduler';
 import { createAgentExecutor } from './agent-executor';
 import { ingestKnowledgeFile, prepareKnowledgeIngestion } from './knowledge-ingestion';
-import { refreshKnowledgeBeforeSearch } from './knowledge-sync';
+import { recoverInterruptedKnowledgeIngestions, refreshKnowledgeBeforeSearch } from './knowledge-sync';
 import { registerAppFileProtocol } from './app-file-protocol';
 import { TeamMcpServer } from './team-mcp-server';
 import { ToolRegistry } from './tool-registry';
 import { registerProjectTools } from './agent-tools';
 import { searchHybridKnowledge } from './hybrid-knowledge-search';
 import { listBuiltinTools, setBuiltinToolEnabled } from './builtin-tool-catalog';
+import { ensureBochaApiKey } from './bocha-web-search';
 import {
   DraftRepository,
   FileRepository,
@@ -180,9 +181,10 @@ definitionVersion: 1.0.0
 
 # 身份
 
-你是统筹管理智能体。你只负责理解目标、拆解任务、安排成员、跟踪依赖、验收结果和汇总交付。
-除简单问候、澄清问题和最终汇总外，不得亲自完成编码、写作、检索、制图或文件生产任务。
-根据任务目标、成员能力与实际依赖动态安排协作，不得按角色名称或关键词套用固定分工。主体工作完成后，判断是否需要安排知识管理智能体归集可复用知识和经验。
+你是统筹管理智能体。你只负责从多轮对话中还原完整目标、拆解任务、安排成员、跟踪依赖、验收结果和汇总交付。
+优先委派编码、写作、检索、制图和文件生产；如果当前群聊没有合适成员完成某个必要步骤，你必须使用可用工具亲自补齐该缺口，尤其是依据已返回证据整理并发布最终 HTML 文件。
+根据任务目标、成员能力与实际依赖动态安排协作，不得按角色名称或关键词套用固定分工，不得把用户最后一句原样作为委派。主体工作完成后，判断是否需要安排知识管理智能体归集可复用知识和经验。
+材料、报告或文档文件是否需要证据整理、写作和独立验收，要根据用户目标、成员能力和实际风险动态判断；存在依赖时按依赖推进，失败后换方案或亲自补齐，不能套用固定链路。
 需要用户决策或补充信息时使用 @用户；禁止发送无实际动作的确认消息，禁止让智能体互相 @ 形成循环。
 `;
 
@@ -263,9 +265,11 @@ modelRequirements:
 skills:
   - information-retrieval
   - source-analysis
+  - web-search
 tools:
   - knowledge.search
   - workspace.search
+  - web:search
   - memory.writeOwn
 memoryPolicy:
   shortTermTtlHours: 72
@@ -281,7 +285,7 @@ definitionVersion: 1.0.0
 
 # 身份
 
-你是资料调研智能体，负责信息检索、资料分析、来源评估和事实核查。明确区分事实、推断与未知信息，保留可核验来源，不得用猜测填补资料缺口。
+你是资料调研智能体，负责信息检索、资料分析、来源评估和事实核查。明确区分事实、推断与未知信息，保留可核验来源，不得用猜测填补资料缺口。你直接完成负责人交给你的调研工作，不把任务转给知识管理智能体；只有被具体资料依赖阻塞时才请求其他成员。
 `;
 
 const LEGACY_RESEARCHER_IDENTITY = `---
@@ -296,9 +300,87 @@ role: teammate
 你是当前群聊的资料调研智能体，负责信息检索、资料分析和事实核查。
 `;
 
-const ORCHESTRATOR_DEFINITION_PROMPT = `你是统筹管理智能体。核心职责是把用户目标转化为可验收的工作包，根据群聊成员的真实能力和依赖关系完成委派、等待、验收与汇总。
+const MATERIAL_WRITER_DEF = `schemaVersion: 1
+id: builtin.material-writer
+version: 1.0.0
+displayName: 材料编写智能体
+runtime: native-model
+framework: loop-engine
+entry: nativeAgentLoop
+defaultModelSlot: reasoning
+modelRequirements:
+  - streaming
+  - toolCalling
+  - structuredOutput
+skills:
+  - document-authoring
+tools:
+  - skill.search
+  - skill.load
+  - workspace.read
+  - review.writeDraft
+  - memory.writeOwn
+memoryPolicy:
+  shortTermTtlHours: 72
+  longTermWrite: candidate-then-commit
+`;
 
-你不得把用户原始需求不加拆解地转发给成员，也不得虚构未发生的委派、进度或成员结果。正式群聊消息应使用自然的同事口吻，只在需要协作、关键节点、用户决策或最终交付时发送。`;
+const MATERIAL_WRITER_IDENTITY = `---
+schemaVersion: 2
+scope: definition
+definitionId: builtin.material-writer
+definitionVersion: 1.0.0
+---
+
+# 身份
+
+你是材料编写智能体，负责把已经取得的知识证据、调研结果和写作要求整理为完整材料。先列文档框架，再逐章节补充并统一校对；有模板说明时必须遵循，没有模板时再根据用途自行设计。你只提交待审稿，不得在验收通过前发布最终成果。
+`;
+
+const ACCEPTANCE_REVIEWER_DEF = `schemaVersion: 1
+id: builtin.acceptance-reviewer
+version: 1.0.0
+displayName: 验收智能体
+runtime: native-model
+framework: loop-engine
+entry: nativeAgentLoop
+defaultModelSlot: reasoning
+modelRequirements:
+  - streaming
+  - toolCalling
+  - structuredOutput
+skills:
+  - retrieve-knowledge
+  - provenance-validation
+  - deliverable-acceptance
+tools:
+  - skill.search
+  - skill.load
+  - knowledge.search
+  - workspace.read
+  - memory.writeOwn
+memoryPolicy:
+  shortTermTtlHours: 72
+  longTermWrite: candidate-then-commit
+`;
+
+const ACCEPTANCE_REVIEWER_IDENTITY = `---
+schemaVersion: 2
+scope: definition
+definitionId: builtin.acceptance-reviewer
+definitionVersion: 1.0.0
+---
+
+# 身份
+
+你是验收智能体，负责独立阅读材料待审稿，并使用当前群聊知识库证据核验需求覆盖、模板符合性、事实与数据真实性、来源可追溯性及文件完整性。存在变造、遗漏或无依据内容时必须判定不通过并提出明确返修项；全部关键项通过后才能允许统筹智能体发布成果。
+`;
+
+const ORCHESTRATOR_DEFINITION_PROMPT = `你是统筹管理智能体。核心职责是先从多轮对话中还原用户的完整目标，再转化为面向具体成员的可验收工作包，根据群聊成员的真实能力和依赖关系完成委派、等待、验收与汇总。
+
+遇到“上面、这个、继续、修改、发出文件”等表达时必须继承此前的主题、范围、修订要求和已有结果，不得把最后一句孤立处理或直接作为知识检索 query。用户要求整理或梳理成文件但未指定格式时，默认交付一个 HTML 文件并在群聊发送；不粘贴源码，不发送临时文件。
+
+你不得把用户原始需求不加拆解地转发给成员，也不得虚构未发生的委派、进度或成员结果。默认每次只安排当前一个步骤；只有完全独立、互不依赖对方输入或结果的步骤才可以并行。存在依赖时必须等上游成功或失败后再决定下游；下游依赖多个上游时等全部返回；成员继续委派产生的分支也必须完整返回。知识检索、公开调研、材料编写和验收都是按任务选择的能力，不是固定链路；成员失败后要根据剩余缺口换人、换来源、降级或亲自补齐，直到形成真实交付。正式群聊消息应使用自然的同事口吻，只在需要协作、关键节点、用户决策或最终交付时发送。`;
 
 const LEGACY_ORCHESTRATOR_DEFINITION_PROMPT = '你是统筹智能体 (Orchestrator)，一个多智能体系统的协调者。\n\n## 职责\n- 分析用户指令，判断是否需要动用子智能体（如知识管理员）\n- 如果用户询问项目知识、文档内容、搜索信息，回复 "NEED_KM" 作为第一行\n- 如果用户询问日常对话、代码编写、一般问题，直接回复\n- 收集子智能体的结果并进行汇总\n\n## 回复格式\n使用 Markdown 格式输出。';
 
@@ -310,9 +392,13 @@ const KNOWLEDGE_DEFINITION_PROMPT = `你是知识管理智能体。你只处理�
 
 const LEGACY_KNOWLEDGE_DEFINITION_PROMPT = '你是知识管理员 (Knowledge Manager)。你负责管理项目知识库。\n\n## 可用工具\n- knowledge:search - 搜索知识库文档\n- workspace:readFile - 读取工作区文件\n- project:search - 跨项目搜索\n- knowledge:listGraph - 列出知识图谱\n- list_project_agents - 列出项目智能体\n- publish_artifact - 发布成果文件\n\n## 输出\n基于获取的信息，给出准确的回答。如果信息不足，明确告知用户。';
 
-const RESEARCHER_DEFINITION_PROMPT = `你是资料调研智能体。围绕负责人交给你的具体问题检索与分析资料，区分事实、推断和未知信息，并为重要结论提供可核验来源。资料不足时明确说明缺口，不得编造引用。`;
+const RESEARCHER_DEFINITION_PROMPT = `你是资料调研智能体。围绕负责人交给你的具体问题检索与分析资料，区分事实、推断和未知信息，并为重要结论提供可核验来源。资料不足时明确说明缺口，不得编造引用。需要公开网络资料时，先按需加载 web-search 技能并调用 web:search；网页资料必须保留 URL，不得把网页摘要伪装成本地知识。统筹负责人负责全局拆解和委派；你应先完成自己的调研，不要把任务转给知识管理智能体，只有被具体资料依赖阻塞时才正式 @ 请求对应成员。`;
 
 const LEGACY_RESEARCHER_DEFINITION_PROMPT = '你是资料调研智能体，负责根据指令搜索知识库、分析信息并输出结构化调研报告。\n\n## 输出格式\n1. **调研摘要** — 关键发现概述\n2. **信息来源** — 引用来源 ID 和内容摘要\n3. **详细分析** — 按主题组织的信息\n4. **置信度评估** — 每个结论的可靠性标注\n\n## 限制\n- 不确定时明确告知而不是猜测';
+
+const MATERIAL_WRITER_DEFINITION_PROMPT = `你是材料编写智能体。依据统筹提供的完整任务、知识证据、调研结果和模板说明，先设计章节框架，再逐章完成内容并统一校对。模板存在时必须遵循；没有模板时才自行设计。事实和数字不得超出证据。完整 HTML 待审稿只能通过 review.writeDraft 写入指定的 .runtime/review-drafts/ 路径，不得写入 outputs/ 或提前发布。返修时逐项处理验收意见。`;
+
+const ACCEPTANCE_REVIEWER_DEFINITION_PROMPT = `你是验收智能体。读取指定待审稿，使用知识检索和来源溯源技能核对完整需求、模板、关键事实、数字、制度条款、引用、内部一致性与 HTML 完整性。证据不足、存在变造或遗漏时明确判定不通过并列出可执行返修项；全部关键项通过时才判定通过。回复最后必须单独写“验收结论：通过”或“验收结论：不通过”。你不能修改或发布文件。`;
 
 const installAgentDefinitions = async (root: string): Promise<void> => {
   const bundledDefinitionRoots = [
@@ -348,9 +434,13 @@ const installAgentDefinitions = async (root: string): Promise<void> => {
   const orchestratorDir = join(root, 'agent-definitions', 'built-in', 'builtin.orchestrator', '1.0.0');
   const knowledgeDir = join(root, 'agent-definitions', 'built-in', 'builtin.knowledge-manager', '1.0.0');
   const researcherDir = join(root, 'agent-definitions', 'built-in', 'builtin.researcher', '1.0.0');
+  const materialWriterDir = join(root, 'agent-definitions', 'built-in', 'builtin.material-writer', '1.0.0');
+  const acceptanceReviewerDir = join(root, 'agent-definitions', 'built-in', 'builtin.acceptance-reviewer', '1.0.0');
   await mkdir(orchestratorDir, { recursive: true });
   await mkdir(knowledgeDir, { recursive: true });
   await mkdir(researcherDir, { recursive: true });
+  await mkdir(materialWriterDir, { recursive: true });
+  await mkdir(acceptanceReviewerDir, { recursive: true });
 
   // agent.yaml + IDENTITY
   await writeIfMissing(join(orchestratorDir, 'agent.yaml'), ORCHESTRATOR_DEF);
@@ -359,17 +449,27 @@ const installAgentDefinitions = async (root: string): Promise<void> => {
   await writeManagedDefinitionFile(join(knowledgeDir, 'IDENTITY.template.md'), KNOWLEDGE_IDENTITY, LEGACY_KNOWLEDGE_IDENTITY);
   await writeIfMissing(join(researcherDir, 'agent.yaml'), RESEARCHER_DEF);
   await writeManagedDefinitionFile(join(researcherDir, 'IDENTITY.template.md'), RESEARCHER_IDENTITY, LEGACY_RESEARCHER_IDENTITY);
+  await writeIfMissing(join(materialWriterDir, 'agent.yaml'), MATERIAL_WRITER_DEF);
+  await writeIfMissing(join(materialWriterDir, 'IDENTITY.template.md'), MATERIAL_WRITER_IDENTITY);
+  await writeIfMissing(join(acceptanceReviewerDir, 'agent.yaml'), ACCEPTANCE_REVIEWER_DEF);
+  await writeIfMissing(join(acceptanceReviewerDir, 'IDENTITY.template.md'), ACCEPTANCE_REVIEWER_IDENTITY);
 
   // prompts/system.md
   const orchPromptDir = join(orchestratorDir, 'prompts');
   const kmPromptDir = join(knowledgeDir, 'prompts');
   const resPromptDir = join(researcherDir, 'prompts');
+  const writerPromptDir = join(materialWriterDir, 'prompts');
+  const reviewerPromptDir = join(acceptanceReviewerDir, 'prompts');
   await mkdir(orchPromptDir, { recursive: true });
   await mkdir(kmPromptDir, { recursive: true });
   await mkdir(resPromptDir, { recursive: true });
+  await mkdir(writerPromptDir, { recursive: true });
+  await mkdir(reviewerPromptDir, { recursive: true });
   await writeManagedDefinitionFile(join(orchPromptDir, 'system.md'), ORCHESTRATOR_DEFINITION_PROMPT, LEGACY_ORCHESTRATOR_DEFINITION_PROMPT);
   await writeManagedDefinitionFile(join(kmPromptDir, 'system.md'), KNOWLEDGE_DEFINITION_PROMPT, LEGACY_KNOWLEDGE_DEFINITION_PROMPT);
   await writeManagedDefinitionFile(join(resPromptDir, 'system.md'), RESEARCHER_DEFINITION_PROMPT, LEGACY_RESEARCHER_DEFINITION_PROMPT);
+  await writeIfMissing(join(writerPromptDir, 'system.md'), MATERIAL_WRITER_DEFINITION_PROMPT);
+  await writeIfMissing(join(reviewerPromptDir, 'system.md'), ACCEPTANCE_REVIEWER_DEFINITION_PROMPT);
 
   // orchestrator skills
   const orchSkillsDir = join(orchestratorDir, 'skills');
@@ -377,8 +477,8 @@ const installAgentDefinitions = async (root: string): Promise<void> => {
   const resultSkillDir = join(orchSkillsDir, 'result-synthesis');
   await mkdir(teamSkillDir, { recursive: true });
   await mkdir(resultSkillDir, { recursive: true });
-  await writeIfMissing(join(teamSkillDir, 'SKILL.md'), '---\nname: team-planning\ndescription: 从业务目标拆出可验收工作包并选择合适成员；用于统筹智能体规划复杂协作任务。\n---\n\n# 团队规划\n\n1. 澄清目标、交付物和验收标准。\n2. 按能力拆分工作包，不要原样转发用户需求。\n3. 选择合适成员并通过正式群聊消息委派。\n4. 等待结果、检查缺口并继续调度。');
-  await writeIfMissing(join(resultSkillDir, 'SKILL.md'), '---\nname: result-synthesis\ndescription: 核对并汇总多个成员的结果形成统一交付；用于统筹智能体收口复杂任务。\n---\n\n# 结果汇总\n\n1. 核对各工作包的验收条件。\n2. 消除冲突和重复，明确剩余风险。\n3. 优先直接发送成果文件，再给出简洁结论。');
+  await writeIfMissing(join(teamSkillDir, 'SKILL.md'), '---\nname: team-planning\ndescription: 从完整的多轮业务目标拆出可验收工作包并选择合适成员；用于统筹智能体规划复杂协作任务。\n---\n\n# 团队规划\n\n1. 先还原多轮对话中的完整目标、交付物和约束，不把最后一句孤立处理。\n2. 默认一次只安排一个当前可执行步骤；只有完全独立的步骤才并行，并为同批步骤标记同一个 parallelGroup。\n3. 为每个步骤标记 stepId 和 dependsOn；有前置依赖时等上游成功或失败后再决定下游，成员自行转交的协作分支也算上游。\n4. 按能力拆分面向具体成员的工作包，不原样转发用户需求。\n5. 选择合适成员并通过正式群聊消息委派。\n6. 等待结果、检查缺口并继续调度。\n7. 整理或梳理成文件且未指定格式时，默认生成并发送正式 HTML 成果文件，不发送源码或临时文件。\n8. 当前成员没有能力完成必要步骤时，由统筹智能体使用可用工具亲自补齐并真实发布成果。');
+  await writeIfMissing(join(resultSkillDir, 'SKILL.md'), '---\nname: result-synthesis\ndescription: 核对并汇总多个成员的结果形成统一交付；用于统筹智能体收口复杂任务。\n---\n\n# 结果汇总\n\n1. 按用户的完整多轮需求核对各工作包。\n2. 消除冲突和重复，缺失内容返回调度补齐。\n3. 优先把正式成果文件作为群聊附件发送，再给出简洁结论。\n4. 不发送 HTML 源码、临时文件或内部提示词。');
 
   // knowledge-manager skills
   const kmSkillsDir = join(knowledgeDir, 'skills');
@@ -434,10 +534,42 @@ Read references/retrieval-policy.md when tuning channel choice or interpreting s
 
   // researcher resources
   const resSkillsDir = join(researcherDir, 'skills');
+  const webSearchSkillDir = join(resSkillsDir, 'web-search');
   await mkdir(join(resSkillsDir, 'information-retrieval'), { recursive: true });
   await mkdir(join(resSkillsDir, 'source-analysis'), { recursive: true });
+  await mkdir(join(webSearchSkillDir, 'agents'), { recursive: true });
   await writeIfMissing(join(resSkillsDir, 'information-retrieval', 'SKILL.md'), '---\nname: information-retrieval\ndescription: 检索、筛选和排序与任务相关的资料；用于资料调研和事实查找。\n---\n\n# 信息检索\n\n根据问题检索资料，保留出处并按相关性和可靠性排序。');
   await writeIfMissing(join(resSkillsDir, 'source-analysis', 'SKILL.md'), '---\nname: source-analysis\ndescription: 评估资料来源可靠性并进行交叉验证；用于事实核查和研究结论校验。\n---\n\n# 来源分析\n\n比较多个来源的一致性、时效性和利益关系，明确结论置信度。');
+  await writeIfMissing(join(webSearchSkillDir, 'SKILL.md'), `---
+name: web-search
+description: Search current public web information through the built-in Bocha search tool, verify sources, and synthesize cited research. Use for current events, companies, markets, competitors, policies, products, statistics, or other questions that require external public sources rather than local group knowledge.
+---
+
+# Web Search
+
+1. Turn the assigned research question into the smallest useful set of search queries.
+2. Call \`web:search\` and refine the query when the first result set is insufficient.
+3. Assess relevance, publication time, source authority, primary versus secondary status, and conflicts between sources.
+4. Keep the URL, site name, and publication date for material claims. Separate verified facts, inference, and unknown information.
+5. Synthesize the smallest sufficient evidence set instead of pasting raw result lists.
+
+Never send group messages, role cards, memories, local file contents, credentials, personal data, or other private workspace information to the search API.`);
+  await writeIfMissing(join(webSearchSkillDir, 'agents', 'openai.yaml'), 'interface:\n  display_name: "网页搜索"\n  short_description: "搜索公开网页资料并保留来源链接，帮助调研智能体核验事实"\n  default_prompt: "Use $web-search to find current public sources for this research question."\npolicy:\n  allow_implicit_invocation: true\n');
+
+  // material writer + acceptance reviewer resources
+  const writerSkillDir = join(materialWriterDir, 'skills', 'document-authoring');
+  const reviewerSkillsDir = join(acceptanceReviewerDir, 'skills');
+  const reviewerRetrieveDir = join(reviewerSkillsDir, 'retrieve-knowledge');
+  const reviewerProvenanceDir = join(reviewerSkillsDir, 'provenance-validation');
+  const reviewerAcceptanceDir = join(reviewerSkillsDir, 'deliverable-acceptance');
+  await mkdir(writerSkillDir, { recursive: true });
+  await mkdir(reviewerRetrieveDir, { recursive: true });
+  await mkdir(reviewerProvenanceDir, { recursive: true });
+  await mkdir(reviewerAcceptanceDir, { recursive: true });
+  await writeIfMissing(join(writerSkillDir, 'SKILL.md'), '---\nname: document-authoring\ndescription: 基于证据和模板先搭建框架，再逐章写作并生成完整 HTML 待审稿。\n---\n\n# 材料编写\n\n识别读者与约束，先列章节框架和证据对应关系，再逐章写作、统一校对，并通过 review.writeDraft 提交待审稿。');
+  await writeIfMissing(join(reviewerRetrieveDir, 'SKILL.md'), '---\nname: retrieve-knowledge\ndescription: 融合本地全文、向量、图谱和 Wiki 检索，返回带来源的精炼证据。\n---\n\n# 知识检索\n\n围绕待核验主张检索本地证据，综合来源、冲突和缺口，不原样堆砌切片。');
+  await writeIfMissing(join(reviewerProvenanceDir, 'SKILL.md'), '---\nname: provenance-validation\ndescription: 核验材料主张与原始知识证据的一致性，识别变造、冲突和来源缺口。\n---\n\n# 来源溯源\n\n建立材料主张、知识证据和原始位置的对应关系；无法定位来源或限定条件被改变时判定不通过。');
+  await writeIfMissing(join(reviewerAcceptanceDir, 'SKILL.md'), '---\nname: deliverable-acceptance\ndescription: 按需求、模板、证据和文件完整性验收待审稿，给出明确通过或不通过结论。\n---\n\n# 成果验收\n\n读取待审稿，逐项检查需求覆盖、模板、证据、口径与 HTML 完整性；不通过时输出可执行返修清单。');
 
   const packageMetadata = [
     [teamSkillDir, 'team-planning', ['list_project_agents', 'delegate_tasks']],
@@ -451,6 +583,11 @@ Read references/retrieval-policy.md when tuning channel choice or interpreting s
     [retrieveKnowledgeSkillDir, 'retrieve-knowledge', ['knowledge:search', 'knowledge:listGraph']],
     [join(resSkillsDir, 'information-retrieval'), 'information-retrieval', ['knowledge:search']],
     [join(resSkillsDir, 'source-analysis'), 'source-analysis', ['knowledge:search']],
+    [webSearchSkillDir, 'web-search', ['web:search']],
+    [writerSkillDir, 'document-authoring', ['skill:search', 'skill:load', 'workspace:readFile', 'review:writeDraft']],
+    [reviewerRetrieveDir, 'retrieve-knowledge', ['knowledge:search', 'knowledge:listGraph']],
+    [reviewerProvenanceDir, 'provenance-validation', ['workspace:readFile', 'knowledge:search']],
+    [reviewerAcceptanceDir, 'deliverable-acceptance', ['workspace:readFile', 'knowledge:search', 'skill:load']],
   ] as const;
   for (const [directory, id, requiredTools] of packageMetadata) {
     const executionMode = id === 'process-knowledge-files' || id === 'retrieve-knowledge'
@@ -472,8 +609,12 @@ Read references/retrieval-policy.md when tuning channel choice or interpreting s
   // evals
   await mkdir(join(orchestratorDir, 'evals'), { recursive: true });
   await mkdir(join(knowledgeDir, 'evals'), { recursive: true });
+  await mkdir(join(materialWriterDir, 'evals'), { recursive: true });
+  await mkdir(join(acceptanceReviewerDir, 'evals'), { recursive: true });
   await writeIfMissing(join(orchestratorDir, 'evals', 'cases.yaml'), 'cases:\n  - name: direct-answer\n    input: "你好，今天天气怎么样？"\n    expected:\n      intent: "answer"\n      needsKM: false\n  - name: delegate-to-km\n    input: "帮我查一下项目文档中关于数据库设计的内容"\n    expected:\n      intent: "delegate"\n      needsKM: true');
   await writeIfMissing(join(knowledgeDir, 'evals', 'cases.yaml'), 'cases:\n  - name: document-ingestion\n    input: "上传一份 PDF 文档到知识库"\n    expected:\n      action: "ingest"\n  - name: graph-query\n    input: "列出项目中的知识图谱"\n    expected:\n      action: "query"');
+  await writeIfMissing(join(materialWriterDir, 'evals', 'cases.yaml'), 'cases:\n  - name: outline-before-writing\n    input: "依据模板和证据编写报告"\n    expected:\n      outlineFirst: true\n      writesReviewDraft: true');
+  await writeIfMissing(join(acceptanceReviewerDir, 'evals', 'cases.yaml'), 'cases:\n  - name: reject-unsupported-claim\n    input: "待审稿含无证据关键数据"\n    expected:\n      result: "不通过"\n      searchesKnowledge: true');
 };
 
 const tryAcquireLock = async (root: string): Promise<boolean> => {
@@ -1573,7 +1714,10 @@ const registerModelIpc = (db: ReturnType<typeof getDatabase>): void => {
   registerIpc('models:listProfiles', async () => {
     const data = db.prepare(
       `SELECT mp.id, mp.name, mp.provider_id as providerId, mp.model_id as modelId, mp.model_slot as modelSlot, mp.enabled,
-              prv.name as providerName, prv.type as providerType
+              prv.name as providerName, prv.type as providerType,
+              (SELECT GROUP_CONCAT(msb.slot, ',')
+                 FROM model_slot_bindings msb
+                WHERE msb.model_profile_id = mp.id) as boundSlots
        FROM model_profiles mp
        JOIN model_providers prv ON prv.id = mp.provider_id
        ORDER BY mp.name`,
@@ -2314,9 +2458,15 @@ app.whenReady().then(async () => {
     return { ok: true, data: { success: true } };
   });
 
-  const delayedRegisters = (): void => {
+  const delayedRegisters = async (): Promise<void> => {
     const db = ensureDb();
-    seedDefaultProfiles(db);
+    if (ensureBochaApiKey(db)) {
+      getLogger().info({ configured: true }, 'Bocha web search is configured');
+    }
+    await seedDefaultProfiles(db);
+    const activeProjectIds = db.prepare("SELECT id FROM projects WHERE status != 'archived'").all() as Array<{ id: string }>;
+    await Promise.all(activeProjectIds.map((project) => ensureProjectAgentFiles(db, project.id)));
+    getLogger().info({ projectCount: activeProjectIds.length }, 'AgentIdentity: 群聊公开协作职责已同步');
     void ensureProfileAgentDefinitions(db).then(
       (count) => getLogger().info({ count }, 'AgentIdentity: Profile Definition 已同步'),
       (err) => getLogger().warn({ err }, 'AgentIdentity: Profile Definition 同步失败'),
@@ -2348,7 +2498,7 @@ app.whenReady().then(async () => {
     if (!existsSync(markerPath)) throw new DatabaseError('STUDIO_WORKSPACE_INVALID', 'K_Studio 尚未初始化');
     if (!_dbInitialized) {
       getLogger().info({}, 'Initializing delayed registers');
-      delayedRegisters();
+      await delayedRegisters();
       _dbInitialized = true;
       const db = ensureDb();
       const win = BrowserWindow.getAllWindows()[0];
@@ -2399,6 +2549,10 @@ app.whenReady().then(async () => {
         const recoveredCount = _scheduler.recoverInterruptedRuns();
         if (recoveredCount > 0) {
           logger?.info({ recoveredCount }, '应用启动: 已完成未完成 Run 恢复');
+        }
+        const recoveredIngestionCount = recoverInterruptedKnowledgeIngestions(db);
+        if (recoveredIngestionCount > 0) {
+          logger?.info({ recoveredIngestionCount }, '应用启动：已中断失去执行进程的知识入库任务');
         }
       }
       const memoryCleanup = startMemoryCleanup(db);

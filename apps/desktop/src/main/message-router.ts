@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import { AgentRunRepository } from '@kunqing/database';
 import type { Scheduler } from './scheduler';
 import { buildModelProfileSnapshot } from './project-creator';
+import { isAllowedAgentHandoff } from './agent-collaboration';
 
 /**
  * 处理消息中的 @mention，为目标智能体创建 Run 并调度执行。
@@ -66,17 +67,33 @@ export function processMessageMentions(
     ).get(targetId, projectId) as { id: string } | undefined;
     if (!instance) continue;
 
+    // 只有统筹负责人可以发起全局委派；专业智能体的 @ 必须是当前工作确实需要的具体依赖。
+    // 这里再做一次服务端校验，避免模型输出了 @ 后绕过正文规范直接创建子任务。
+    const isParentDelivery = requestedByType === 'agent' && senderRunId
+      ? (() => {
+        try {
+          const senderRun = runRepo.getById(senderRunId);
+          return senderRun.parentRunId === targetId
+            || (senderRun.parentRunId ? runRepo.getById(senderRun.parentRunId).agentInstanceId === targetId : false);
+        } catch {
+          return false;
+        }
+      })()
+      : false;
+    if (requestedByType === 'agent' && !isParentDelivery && !isAllowedAgentHandoff(db, projectId, senderId, targetId, messageText)) continue;
+
     if (requestedByType === 'agent') {
       // 不允许把同一根任务重新发回祖先智能体，防止“确认收到”式乒乓循环。
       if (senderRunId && runRepo.getAncestorChain(senderRunId).some((run) => run.agentInstanceId === targetId)) continue;
-      // 同一根用户任务内，同一“发送者 → 接收者”协作边只自动路由一次。
-      // 不同成员仍可在后续阶段把新结果交给该接收者，支持真实的多人接力协作。
-      const routedBefore = db.prepare(
-        `SELECT COUNT(*) as count FROM agent_runs
+      // 同一个成员可以在一条根任务中承担多个连续阶段，例如初稿、返修和复审。
+      // 这里只拦截内容等价的重复委派，避免模型重复发出同一消息时创建重复 Run。
+      const previousRoutes = db.prepare(
+        `SELECT instruction, status FROM agent_runs
          WHERE trigger_message_id = ? AND agent_instance_id = ?
-           AND requested_by_type = 'agent' AND requested_by_id = ?`,
-      ).get(triggerMessageId, targetId, senderId) as { count: number } | undefined;
-      if ((routedBefore?.count ?? 0) > 0) continue;
+           AND requested_by_type = 'agent' AND requested_by_id = ?
+         ORDER BY created_at DESC`,
+      ).all(triggerMessageId, targetId, senderId) as Array<{ instruction: string | null; status: string }>;
+      if (hasEquivalentRoutedInstruction(previousRoutes, messageText)) continue;
     }
     routedTargets.add(targetId);
 
@@ -116,6 +133,32 @@ export function processMessageMentions(
 
 function extractText(content: Record<string, unknown> | null): string {
   return typeof content?.text === 'string' ? content.text : '';
+}
+
+function hasEquivalentRoutedInstruction(
+  previousRoutes: Array<{ instruction: string | null; status: string }>,
+  nextInstruction: string,
+): boolean {
+  const normalizedNext = normalizeRoutedInstruction(nextInstruction);
+  if (!normalizedNext) return false;
+
+  return previousRoutes.some((route) => {
+    const normalizedPrevious = normalizeRoutedInstruction(route.instruction ?? '');
+    if (!normalizedPrevious || normalizedPrevious !== normalizedNext) return false;
+
+    // An equivalent active request is already queued/running. Exact repeats of a
+    // terminal request are also ignored; materially different follow-up work is allowed.
+    return ['queued', 'starting', 'running', 'cancelling', 'completed', 'failed', 'cancelled', 'interrupted']
+      .includes(route.status);
+  });
+}
+
+function normalizeRoutedInstruction(text: string): string {
+  return text
+    .normalize('NFKC')
+    .toLocaleLowerCase('zh-CN')
+    .replace(/@[\p{L}\p{N}_-]+/gu, ' ')
+    .replace(/[\s\p{P}\p{S}]+/gu, '');
 }
 
 function isActionableAgentHandoff(text: string): boolean {

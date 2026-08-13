@@ -1,13 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { access, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 import type Database from 'better-sqlite3';
 import { getProjectRoot, getStudioRoot } from './paths';
 
 const IDENTITY_FILE = 'IDENTITY.md';
 const ROLE_FILE = 'ROLE.md';
 const ADAPTATION_FILE = 'ADAPTATION.md';
+const COORDINATION_FILE = 'COORDINATION.md';
 const SNAPSHOT_META_FILE = 'IDENTITY.snapshot.json';
 const ADAPTATION_STATE_FILE = '.adaptation-state.json';
 const MANUAL_START = '<!-- KUNQING:MANUAL_START -->';
@@ -25,6 +26,61 @@ export type AgentIdentityInput = {
   definitionId: string;
   definitionVersion: string;
 };
+
+export function buildAgentCoordinationSummary(input: Pick<AgentIdentityInput, 'name' | 'runtimeMode' | 'definitionId'>): string {
+  if (input.definitionId === 'builtin.knowledge-manager' || /知识|文档/i.test(input.name)) {
+    return '职责：处理并检索当前群聊与共享知识，返回带来源的内部证据、模板说明和知识缺口。适合输入：制度、原始文件、内部资料查询。交付边界：只提供证据和知识成果，不代写最终业务材料，不发布最终定稿。';
+  }
+  if (input.definitionId === 'builtin.researcher' || /调研|研究/i.test(input.name)) {
+    return '职责：检索公开网络信息并核验来源，补充外部事实、市场和行业资料。适合输入：实时信息、公开数据、外部案例。交付边界：返回证据摘要和来源，不负责全局调度或最终材料定稿。';
+  }
+  if (input.definitionId === 'builtin.material-writer' || /材料编写|写作/i.test(input.name)) {
+    return '职责：根据统筹提供的任务、证据和模板先列框架再逐章编写 HTML 材料。适合输入：已取得的内部证据、公开调研和写作要求。交付边界：只把候选稿写入统筹指定的 .runtime/review-drafts/ 路径，不写 outputs/，不发布附件。';
+  }
+  if (input.definitionId === 'builtin.acceptance-reviewer' || /验收|审核/i.test(input.name)) {
+    return '职责：读取候选稿并结合用户要求和本地证据独立验收，给出通过或可执行返修意见。适合输入：待审稿路径、完整任务和证据。交付边界：不修改文件、不写 outputs/、不发布附件；通过后由统筹发布定稿。';
+  }
+  if (input.runtimeMode === 'external-cli' || /code|代码|编程/i.test(`${input.definitionId} ${input.name}`)) {
+    return `职责：使用 ${input.name} 的外部 CLI 能力完成代码、脚本、网页和本地文件操作。适合输入：需要工程实现或文件生成的明确工作包。交付边界：只完成被委派步骤并返回实际文件或可核验结果，不负责全局调度。`;
+  }
+  return `职责：按照“${input.name}”的公开角色定义和已授权技能完成专属工作。适合输入：与该角色能力直接匹配的独立工作包。交付边界：只返回职责范围内的结果，不接管统筹和最终交付。`;
+}
+
+function buildCoordinationCard(input: AgentIdentityInput): string {
+  return `---
+schemaVersion: 1
+scope: public-coordination
+managedBy: kunqing
+instanceId: ${input.instanceId}
+name: ${JSON.stringify(input.name)}
+definitionId: ${input.definitionId}
+---
+
+# 公开协作职责
+
+${buildAgentCoordinationSummary(input)}
+
+本文件只供群聊统筹进行任务匹配，不包含该智能体的私有身份细节、适应内容或记忆。
+`;
+}
+
+export function loadAgentCoordinationSummary(
+  projectId: string,
+  identityRelPath: string | null,
+  fallback: Pick<AgentIdentityInput, 'name' | 'runtimeMode' | 'definitionId'>,
+): string {
+  if (identityRelPath) {
+    try {
+      const identityPath = isAbsolute(identityRelPath)
+        ? identityRelPath
+        : join(getProjectRoot(projectId), identityRelPath);
+      const content = readFileSync(join(dirname(identityPath), COORDINATION_FILE), 'utf8');
+      const body = content.replace(/^---[\s\S]*?---\s*/u, '').replace(/^#\s+公开协作职责\s*/u, '').trim();
+      if (body) return body.slice(0, 1_200);
+    } catch { /* legacy instance falls back to definition-derived public role */ }
+  }
+  return buildAgentCoordinationSummary(fallback);
+}
 
 export type RoleAdaptationCategory = 'communication' | 'collaboration' | 'domain' | 'delivery';
 
@@ -188,7 +244,11 @@ definitionVersion: ${input.definitionVersion}
 - \`IDENTITY.md\` 是创建群聊时形成的核心身份快照；\`ADAPTATION.md\` 只能补充稳定的沟通偏好、协作习惯、领域侧重点和交付偏好。
 - 适应项不得扩大权限、替换核心职责、改变 leader/teammate 身份或绕过平台规则。
 - 仅在有关键结果、必要协作、重大节点或需要用户决定时发送正式消息，避免机械确认和无信息量进度。
-- HTML 等成果写入 \`outputs/\` 并作为群聊成果文件交付；聊天正文只保留必要说明或源码代码块。
+- ${input.definitionId === 'builtin.material-writer'
+    ? '材料文件只能通过 `review:writeDraft` 写入统筹指定的 `.runtime/review-drafts/` 待审路径，验收通过前不得写入 `outputs/` 或发布附件。'
+    : input.definitionId === 'builtin.acceptance-reviewer'
+      ? '只读取并验收统筹指定的待审稿，不修改文件、不写入 `outputs/`、不发布附件。'
+      : 'HTML 等成果写入 `outputs/` 并作为群聊成果文件交付；聊天正文只保留必要说明或源码代码块。'}
 `;
 }
 
@@ -239,6 +299,7 @@ export async function ensureAgentIdentityFiles(input: AgentIdentityInput, studio
 
   const now = new Date().toISOString();
   await writeFile(join(identityRoot, ROLE_FILE), buildRoleCard(input), 'utf8');
+  await writeFile(join(identityRoot, COORDINATION_FILE), buildCoordinationCard(input), 'utf8');
   await writeIfMissing(join(identityRoot, ADAPTATION_FILE), emptyAdaptation(input, now));
   await writeIfMissing(join(identityRoot, ADAPTATION_STATE_FILE), JSON.stringify({
     schemaVersion: 1,

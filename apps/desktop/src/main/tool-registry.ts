@@ -5,7 +5,7 @@ import { ManagedCopyService } from './managed-copy';
 import { resolve as resolvePath } from 'node:path';
 
 // ─── Agent Roles ─────────────────────────────────────────────────────────────
-export type AgentRole = 'orchestrator' | 'knowledge-manager' | 'researcher' | 'external-cli';
+export type AgentRole = 'orchestrator' | 'knowledge-manager' | 'researcher' | 'material-writer' | 'acceptance-reviewer' | 'external-cli';
 
 // ─── Capabilities ────────────────────────────────────────────────────────────
 export type ToolCapability =
@@ -18,7 +18,10 @@ export type ToolCapability =
   | 'write:memory'       // 写自身记忆
   | 'write:knowledge'    // 写群聊知识/图谱
   | 'write:output'       // 写 outputs
+  | 'write:review-draft' // 写本次材料验收暂存稿
+  | 'promote:reviewed-output' // 将验收通过的暂存稿提升为正式成果
   | 'delete:file'        // 删除原始文件
+  | 'network:search'     // 访问受控网页搜索服务
   | 'shell:execute';     // 任意 shell
 
 // ─── Permission Level ────────────────────────────────────────────────────────
@@ -36,7 +39,10 @@ const PERMISSION_MATRIX: Record<AgentRole, Record<ToolCapability, PermissionLeve
     'write:memory': 'allow',
     'write:knowledge': 'deny',
     'write:output': 'allow',
+    'write:review-draft': 'deny',
+    'promote:reviewed-output': 'allow',
     'delete:file': 'deny',
+    'network:search': 'deny',
     'shell:execute': 'deny',
   },
   'knowledge-manager': {
@@ -49,7 +55,10 @@ const PERMISSION_MATRIX: Record<AgentRole, Record<ToolCapability, PermissionLeve
     'write:memory': 'allow',
     'write:knowledge': 'allow',
     'write:output': 'report-only',
+    'write:review-draft': 'deny',
+    'promote:reviewed-output': 'deny',
     'delete:file': 'deny',
+    'network:search': 'deny',
     'shell:execute': 'deny',
   },
   researcher: {
@@ -62,7 +71,42 @@ const PERMISSION_MATRIX: Record<AgentRole, Record<ToolCapability, PermissionLeve
     'write:memory': 'allow',
     'write:knowledge': 'deny',
     'write:output': 'allow',
+    'write:review-draft': 'deny',
+    'promote:reviewed-output': 'deny',
     'delete:file': 'deny',
+    'network:search': 'allow',
+    'shell:execute': 'deny',
+  },
+  'material-writer': {
+    'read:message': 'task-only',
+    'read:file': 'allow',
+    'read:knowledge': 'task-only',
+    'read:shared-knowledge': 'task-only',
+    'read:skill': 'allow',
+    'read:workflow': 'deny',
+    'write:memory': 'allow',
+    'write:knowledge': 'deny',
+    'write:output': 'deny',
+    'write:review-draft': 'allow',
+    'promote:reviewed-output': 'deny',
+    'delete:file': 'deny',
+    'network:search': 'deny',
+    'shell:execute': 'deny',
+  },
+  'acceptance-reviewer': {
+    'read:message': 'task-only',
+    'read:file': 'allow',
+    'read:knowledge': 'allow',
+    'read:shared-knowledge': 'allow',
+    'read:skill': 'allow',
+    'read:workflow': 'deny',
+    'write:memory': 'allow',
+    'write:knowledge': 'deny',
+    'write:output': 'deny',
+    'write:review-draft': 'deny',
+    'promote:reviewed-output': 'deny',
+    'delete:file': 'deny',
+    'network:search': 'deny',
     'shell:execute': 'deny',
   },
   'external-cli': {
@@ -75,7 +119,10 @@ const PERMISSION_MATRIX: Record<AgentRole, Record<ToolCapability, PermissionLeve
     'write:memory': 'mcp-only',
     'write:knowledge': 'deny',
     'write:output': 'managed-copy',
+    'write:review-draft': 'deny',
+    'promote:reviewed-output': 'deny',
     'delete:file': 'deny',
+    'network:search': 'deny',
     'shell:execute': 'allow',
   },
 };
