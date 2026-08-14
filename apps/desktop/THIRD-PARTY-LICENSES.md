@@ -41,6 +41,7 @@
 
 ## Apache-2.0
 
+- **@agentclientprotocol/sdk** — The Agent Client Protocol (ACP) is a protocol that standardizes communication between *code editors* (interactive programs for viewing and editing source code) and *coding agents* (programs that use generative AI to autonomously modify code).
 - **@ai-sdk/anthropic** — (no description)
 - **@ai-sdk/gateway** — (no description)
 - **@ai-sdk/google** — (no description)
@@ -879,5 +880,5 @@
 - **truncate-utf8-bytes** — Truncate string to given length in bytes
 
 ---
-生成时间: 2026-08-12T09:23:29.952Z
-总包数: 797
+生成时间: 2026-08-14T03:49:51.012Z
+总包数: 798
