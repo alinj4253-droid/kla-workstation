@@ -60,6 +60,30 @@ describe('agent identity definition and instance layers', () => {
     expect(readFileSync(identityPath, 'utf8')).not.toContain('负责测试身份复制');
   });
 
+  it('upgrades an untouched instance snapshot when the definition template evolves', async () => {
+    const definitionRoot = join(studioRoot, 'agent-definitions', 'custom', input.definitionId, input.definitionVersion);
+    await mkdir(join(definitionRoot, 'prompts'), { recursive: true });
+    await writeFile(join(definitionRoot, 'IDENTITY.template.md'), '# 全局身份 v1\n\n负责测试身份复制。\n', 'utf8');
+    await writeFile(join(definitionRoot, 'prompts', 'system.md'), '全局系统规则', 'utf8');
+
+    await ensureAgentIdentityFiles(input);
+    const identityRoot = join(getProjectRoot(input.projectId), 'agent-identities', input.instanceId);
+    const identityPath = join(identityRoot, 'IDENTITY.md');
+    expect(readFileSync(identityPath, 'utf8')).toContain('负责测试身份复制');
+
+    await writeFile(join(definitionRoot, 'IDENTITY.template.md'), '# 全局身份 v2\n\n升级后的身份描述。\n', 'utf8');
+    await ensureAgentIdentityFiles(input);
+    const upgraded = readFileSync(identityPath, 'utf8');
+    expect(upgraded).toContain('升级后的身份描述');
+    expect(upgraded).not.toContain('负责测试身份复制');
+    const meta = JSON.parse(readFileSync(join(identityRoot, 'IDENTITY.snapshot.json'), 'utf8')) as { sourceChecksum?: string };
+    expect(meta.sourceChecksum).toBeTruthy();
+    // 升级后再次调用应幂等，不重复改写快照。
+    const afterUpgrade = readFileSync(identityPath, 'utf8');
+    await ensureAgentIdentityFiles(input);
+    expect(readFileSync(identityPath, 'utf8')).toBe(afterUpgrade);
+  });
+
   it('versions stable adaptations while rejecting one-off and privilege-changing candidates', async () => {
     await ensureAgentIdentityFiles(input);
     const identityRoot = join(getProjectRoot(input.projectId), 'agent-identities', input.instanceId);

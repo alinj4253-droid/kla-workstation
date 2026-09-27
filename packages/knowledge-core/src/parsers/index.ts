@@ -54,7 +54,12 @@ function parseHtml(buf: Uint8Array, fileName: string): ParsedDocument {
   const title = $('title').first().text().trim();
   $('script,style,noscript,template').remove();
   $('br').replaceWith('\n');
-  $('p,h1,h2,h3,h4,h5,h6,li,tr,section,article').each((_index, element) => { $(element).append('\n'); });
+  $('h1,h2,h3,h4,h5,h6').each((_index, element) => {
+    const level = Number(element.tagName.slice(1));
+    $(element).prepend(`${'#'.repeat(level)} `).append('\n\n');
+  });
+  $('p,section,article').each((_index, element) => { $(element).append('\n\n'); });
+  $('li,tr').each((_index, element) => { $(element).append('\n'); });
   const text = $.root().text().replace(/[ \t]+/g, ' ').replace(/\n\s*\n\s*\n+/g, '\n\n').trim();
 
   return {
@@ -65,18 +70,51 @@ function parseHtml(buf: Uint8Array, fileName: string): ParsedDocument {
 }
 
 async function parsePdf(buf: Uint8Array, fileName: string): Promise<ParsedDocument> {
-  const result = await pdfParse(Buffer.from(buf));
+  const pageTexts: string[] = [];
+  const result = await pdfParse(Buffer.from(buf), {
+    async pagerender(page) {
+      const content = await page.getTextContent({
+        normalizeWhitespace: false,
+        disableCombineTextItems: false,
+      });
+      let lastY: number | undefined;
+      let text = '';
+      for (const item of content.items) {
+        const value = typeof item.str === 'string' ? item.str : '';
+        const y = item.transform?.[5];
+        text += lastY === undefined || y === lastY ? value : `\n${value}`;
+        lastY = y;
+      }
+      const normalized = text.trim();
+      pageTexts.push(normalized);
+      return normalized;
+    },
+  });
+  let text = '';
+  const pageOffsets: number[] = [];
+  for (const pageText of pageTexts) {
+    if (pageOffsets.length > 0) text += '\n\n';
+    pageOffsets.push(text.length);
+    text += pageText;
+  }
   return {
-    text: result.text.trim(),
+    text,
     mimeType: 'application/pdf',
-    metadata: { fileName, pageCount: result.numpages, parserId: 'pdf-parse', requiresOcr: result.text.trim().length < 20 },
+    metadata: {
+      fileName,
+      pageCount: result.numpages,
+      pageOffsets,
+      parserId: 'pdf-parse',
+      requiresOcr: text.trim().length < 20,
+    },
   };
 }
 
 async function parseDocx(buf: Uint8Array, fileName: string): Promise<ParsedDocument> {
-  const result = await mammoth.extractRawText({ buffer: Buffer.from(buf) });
+  const result = await mammoth.convertToHtml({ buffer: Buffer.from(buf) });
+  const parsed = parseHtml(new TextEncoder().encode(result.value), fileName);
   return {
-    text: result.value.trim(),
+    text: parsed.text,
     mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     metadata: { fileName, parserId: 'mammoth', warnings: result.messages.map((item) => item.message) },
   };

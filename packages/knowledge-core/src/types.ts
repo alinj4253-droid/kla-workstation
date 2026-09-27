@@ -8,6 +8,8 @@ export interface ParsedDocument {
   /** Metadata about the parsed document */
   metadata: {
     pageCount?: number;
+    /** Character offsets at which source pages begin, when the parser can recover them. */
+    pageOffsets?: number[];
     title?: string;
     author?: string;
     parserId?: string;
@@ -34,6 +36,13 @@ export interface Chunk {
   text: string;
   /** Location info (e.g., page number, line range) */
   locationJson?: string;
+  /** Exact range in the normalized document text. End offset is exclusive. */
+  startOffset?: number;
+  endOffset?: number;
+  /** Source page when known, otherwise a deterministic logical page. */
+  pageNumber?: number;
+  /** Nearest section heading in the normalized document. */
+  sectionPath?: string;
   /** Content hash for deduplication */
   contentHash: string;
 }
@@ -89,6 +98,9 @@ export interface PipelineContext {
 
   /** Persist file-level summary, keywords and tags. */
   saveDocumentProfile?(profile: KnowledgeDocumentProfile, metadata: ParsedDocument['metadata']): Promise<void>;
+
+  /** Persist normalized full text and its chunk files outside the retrieval index. */
+  saveStandardizedDocument?(document: ParsedDocument, chunks: Chunk[]): Promise<void>;
 
   /** Allow the configured model to refine the local document profile. */
   analyzeDocument?(text: string, fallback: KnowledgeDocumentProfile): Promise<KnowledgeDocumentProfile>;

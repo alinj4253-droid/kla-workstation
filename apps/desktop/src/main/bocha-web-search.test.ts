@@ -44,11 +44,19 @@ describe('Bocha web search', () => {
     expect(JSON.parse(String(request.body))).toMatchObject({ include: 'example.com,www.example.com' });
   });
 
-  it('reports a missing key without making a network request', async () => {
+  it('throws a clear error when no API key has been configured', async () => {
     const db = createDb();
-    const fetchMock = vi.spyOn(globalThis, 'fetch');
-    await expect(searchBochaWeb(db, { query: 'anything' })).rejects.toThrow('API Key');
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(ensureBochaApiKey(db)).toBe(false);
+    await expect(searchBochaWeb(db, { query: 'anything' })).rejects.toThrow(/未配置 API Key/);
+  });
+
+  it('keeps an existing saved key ahead of environment and built-in defaults', () => {
+    const db = createDb();
+    process.env.BOCHA_API_KEY = 'first-key';
+    expect(ensureBochaApiKey(db)).toBe(true);
+    process.env.BOCHA_API_KEY = 'replacement-key';
+    expect(ensureBochaApiKey(db)).toBe(true);
+    expect((db.prepare('SELECT ciphertext FROM secrets').get() as { ciphertext: Buffer }).ciphertext.toString()).toBe('first-key');
   });
 
   it('only returns researcher access through ToolRegistry permissions', async () => {

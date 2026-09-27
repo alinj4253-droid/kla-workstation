@@ -10,6 +10,9 @@ describe('MemoryManager access gate', () => {
   beforeEach(() => {
     listMemories.mockClear();
     (window as unknown as { kunqing: unknown }).kunqing = {
+      app: {
+        verifyOperationsAccess: (input: { key?: string }) => Promise.resolve({ ok: true, data: { granted: input?.key === '123456' } }),
+      },
       memory: {
         list: listMemories,
         create: vi.fn(),

@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "knowledge-provenance-validation",
+  "version": "1.0.0",
+  "entry": "SKILL.md",
+  "agentDefinitions": ["builtin.knowledge-manager"],
+  "executionMode": "instructions",
+  "requiredTools": ["workspace:readFile"],
+  "permissions": ["read:file", "write:knowledge"]
+}

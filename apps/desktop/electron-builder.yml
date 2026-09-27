@@ -1,5 +1,5 @@
 appId: com.kunqing.workstation
-productName: 鲲擎智能体集成工作站
+productName: KLA Workstation
 directories:
   output: D:/temp/kunqing-release
 files:
@@ -19,9 +19,10 @@ asarUnpack:
   - node_modules/sonic-boom/**
   - node_modules/real-require/**
 win:
+  icon: resources/branding/kla-app-icon-256.png
   target:
     - nsis
-  artifactName: ${productName}-${version}-${arch}.${ext}
+  artifactName: ${productName}-0.1.0.081905-${arch}.${ext}
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true

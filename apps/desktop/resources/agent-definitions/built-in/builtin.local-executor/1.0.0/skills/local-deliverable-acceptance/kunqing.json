@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "local-deliverable-acceptance",
+  "version": "1.0.0",
+  "entry": "SKILL.md",
+  "agentDefinitions": ["builtin.local-executor"],
+  "executionMode": "instructions",
+  "requiredTools": ["temp:list", "temp:read", "knowledge:search", "knowledge:readDocument", "template:list", "template:read", "temp:save", "temp:promote"],
+  "permissions": ["read:knowledge", "read:document", "read:template", "read:temp", "write:temp", "promote:reviewed-output"]
+}

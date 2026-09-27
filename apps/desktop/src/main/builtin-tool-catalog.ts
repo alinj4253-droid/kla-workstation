@@ -35,7 +35,7 @@ export async function listBuiltinTools(db: Database.Database): Promise<BuiltinTo
     { id: 'tool.local-embedding', name: '本地向量化引擎', description: '生成 384 维多语言离线向量；可无缝替换为 BGE-small-zh ONNX 模型包。', category: '向量', status: 'ready', statusText: '内置基础模型已就绪', isBuiltin: true, config: { model: 'kunqing-feature-hash-multilingual-v1', dimensions: '384' } },
     { id: 'tool.sqlite-vector-index', name: 'SQLite 本地向量索引', description: '在 K_Studio 数据库中保存切片向量并执行余弦相似度排序。', category: '向量', status: 'ready', statusText: '已就绪', isBuiltin: true, config: { storage: 'SQLite', metric: 'cosine' } },
     { id: 'tool.fts5-search', name: 'FTS5 全文检索', description: '对知识切片执行精确词语与原文检索。', category: '检索', status: 'ready', statusText: '已就绪', isBuiltin: true, config: { engine: 'SQLite FTS5' } },
-    { id: 'tool.hybrid-retriever', name: '混合检索与融合排序', description: '根据问题动态融合全文、向量、图谱和 Wiki，并返回来源证据。', category: '检索', status: 'ready', statusText: '已就绪', isBuiltin: true, config: { fusion: 'Weighted RRF', scopes: '当前群聊 + 共享知识' } },
+    { id: 'tool.hybrid-retriever', name: '混合检索与融合排序', description: '根据问题动态融合全文、向量、图谱和 Wiki，并返回来源证据。', category: '检索', status: 'ready', statusText: '已就绪', isBuiltin: true, config: { fusion: 'Weighted RRF', scopes: '个人 + 关联项目 + 企业工作区' } },
     { id: 'tool.knowledge-assets', name: '图谱与 Wiki 生成器', description: '生成本地图谱、Wiki、JSON 索引及无需外部 CDN 的 HTML 可视化。', category: '知识资产', status: 'ready', statusText: '已就绪', isBuiltin: true, config: { graph: 'JSON + HTML', wiki: 'Markdown + HTML' } },
   ];
   return definitions.map((tool) => ({ ...tool, enabled: isBuiltinToolEnabled(db, tool.id, tool.status === 'ready') }));

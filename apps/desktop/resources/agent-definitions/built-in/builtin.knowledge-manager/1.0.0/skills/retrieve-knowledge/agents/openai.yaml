@@ -1,6 +1,0 @@
-interface:
-  display_name: "混合知识检索"
-  short_description: "融合全文、向量、图谱与 Wiki 返回本地证据"
-  default_prompt: "Use $retrieve-knowledge to find cited evidence in local group and shared knowledge."
-policy:
-  allow_implicit_invocation: true

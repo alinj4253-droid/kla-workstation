@@ -9,14 +9,18 @@ defaultModelSlot: reasoning
 modelRequirements:
   - structuredOutput
 skills:
+  - process-knowledge-files
   - document-ingestion
   - entity-relation-extraction
-  - provenance-validation
+  - knowledge-provenance-validation
   - wiki-materialization
   - graph-projection
 tools:
-  - knowledge.search
   - knowledge.ingest
+  - workspace.read
+  - temp.save
+  - temp.read
+  - temp.list
   - memory.writeOwn
 memoryPolicy:
   shortTermTtlHours: 72

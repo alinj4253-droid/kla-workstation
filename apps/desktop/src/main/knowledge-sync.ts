@@ -3,18 +3,130 @@ import { join, relative } from 'node:path';
 import type Database from 'better-sqlite3';
 import { FileRepository, KnowledgeRepository } from '@kunqing/database';
 import type { ModelGateway } from './model-gateway';
-import { getProjectRoot, getStudioRoot } from './paths';
+import { resolveAssociatedEnterpriseProjectId } from './enterprise-project-workspace';
+import { getEnterpriseProjectRoot, getEnterpriseWorkspaceRoot, getProjectRoot } from './paths';
 import { contentFingerprints, ingestKnowledgeFile } from './knowledge-ingestion';
 
-export type KnowledgeSyncScope = { scopeType: 'project' | 'shared'; scopeId: string };
+export type KnowledgeWorkspaceType = 'group' | 'enterprise-project' | 'enterprise';
+export type KnowledgeSyncScope = {
+  scopeType: 'project' | 'shared';
+  scopeId: string;
+  workspaceType?: KnowledgeWorkspaceType;
+};
 export type KnowledgeSyncResult = { changedFileIds: string[]; deletedFileIds: string[]; failedFileIds: string[] };
 export type KnowledgeSyncOptions = {
   retryIncompleteSources?: boolean;
+  retrySourceStatuses?: Array<'pending' | 'error'>;
   maxConcurrency?: number;
 };
 export type KnowledgeSyncObserver = {
   onChangesDetected?: (scope: KnowledgeSyncScope, change: KnowledgeSyncResult) => void | Promise<void>;
 };
+
+export type BackgroundKnowledgeSyncStatus = {
+  scopeType: KnowledgeSyncScope['scopeType'];
+  scopeId: string;
+  status: 'idle' | 'running' | 'completed' | 'failed';
+  startedAt?: string;
+  finishedAt?: string;
+  totalFiles: number;
+  completedFiles: number;
+  failedFiles: number;
+  error?: string;
+};
+
+const backgroundKnowledgeSyncs = new Map<string, BackgroundKnowledgeSyncStatus>();
+
+function backgroundSyncKey(scope: KnowledgeSyncScope): string {
+  return `${scope.workspaceType ?? scope.scopeType}:${scope.scopeId}`;
+}
+
+function emptySyncResult(): KnowledgeSyncResult {
+  return { changedFileIds: [], deletedFileIds: [], failedFileIds: [] };
+}
+
+export function getBackgroundKnowledgeSyncStatus(scope: KnowledgeSyncScope): BackgroundKnowledgeSyncStatus {
+  return backgroundKnowledgeSyncs.get(backgroundSyncKey(scope)) ?? {
+    scopeType: scope.scopeType,
+    scopeId: scope.scopeId,
+    status: 'idle',
+    totalFiles: 0,
+    completedFiles: 0,
+    failedFiles: 0,
+  };
+}
+
+export function isBackgroundKnowledgeSyncRunning(scope: KnowledgeSyncScope): boolean {
+  return getBackgroundKnowledgeSyncStatus(scope).status === 'running';
+}
+
+export function startBackgroundKnowledgeSync(
+  db: Database.Database,
+  gateway: ModelGateway | null,
+  scope: KnowledgeSyncScope,
+): BackgroundKnowledgeSyncStatus {
+  const key = backgroundSyncKey(scope);
+  const current = backgroundKnowledgeSyncs.get(key);
+  if (current?.status === 'running') return current;
+
+  const state: BackgroundKnowledgeSyncStatus = {
+    scopeType: scope.scopeType,
+    scopeId: scope.scopeId,
+    status: gateway ? 'running' : 'failed',
+    startedAt: new Date().toISOString(),
+    ...(!gateway ? { finishedAt: new Date().toISOString(), error: '尚未配置可用于知识处理的模型' } : {}),
+    totalFiles: 0,
+    completedFiles: 0,
+    failedFiles: 0,
+  };
+  backgroundKnowledgeSyncs.set(key, state);
+  if (!gateway) return state;
+
+  void syncKnowledgeSources(db, scope, gateway, {
+    onChangesDetected: (_changedScope, change) => {
+      state.totalFiles = change.changedFileIds.length + change.deletedFileIds.length;
+    },
+  }, { retryIncompleteSources: true, retrySourceStatuses: ['pending', 'error'], maxConcurrency: 2 }).then((result) => {
+    state.status = result.failedFileIds.length > 0 ? 'failed' : 'completed';
+    state.finishedAt = new Date().toISOString();
+    state.totalFiles = Math.max(state.totalFiles, result.changedFileIds.length + result.deletedFileIds.length);
+    state.failedFiles = result.failedFileIds.length;
+    state.completedFiles = Math.max(0, result.changedFileIds.length - result.failedFileIds.length) + result.deletedFileIds.length;
+    if (result.failedFileIds.length > 0) state.error = `${result.failedFileIds.length} 个文件知识化失败`;
+  }).catch((error: unknown) => {
+    state.status = 'failed';
+    state.finishedAt = new Date().toISOString();
+    state.error = error instanceof Error ? error.message : String(error);
+  });
+  return state;
+}
+
+export function getKnowledgeProcessingCoverage(db: Database.Database, projectId: string): {
+  processingFileCount: number;
+  backgroundRunning: boolean;
+} {
+  const scopes = resolveKnowledgeScopesForGroup(db, projectId);
+  const runningStates = scopes.map((scope) => getBackgroundKnowledgeSyncStatus(scope))
+    .filter((state) => state.status === 'running');
+  let databaseCount = 0;
+  try {
+    const where = scopes.map(() => '(scope_type = ? AND scope_id = ?)').join(' OR ');
+    const params = scopes.flatMap((scope) => [scope.scopeType, scope.scopeId]);
+    databaseCount = (db.prepare(
+      `SELECT COUNT(DISTINCT file_id) AS count
+       FROM knowledge_sources
+       WHERE status IN ('pending', 'ingesting')
+         AND (${where})`,
+    ).get(...params) as { count: number }).count;
+  } catch {
+    databaseCount = 0;
+  }
+  const mapCount = runningStates.reduce((total, state) => total + Math.max(0, state.totalFiles - state.completedFiles), 0);
+  return {
+    processingFileCount: Math.max(databaseCount, mapCount),
+    backgroundRunning: runningStates.length > 0,
+  };
+}
 
 export function recoverInterruptedKnowledgeIngestions(db: Database.Database): number {
   try {
@@ -78,10 +190,33 @@ async function listFiles(root: string): Promise<string[]> {
   return result;
 }
 
-function originalRoot(scope: KnowledgeSyncScope): string {
-  return scope.scopeType === 'shared'
-    ? join(getStudioRoot(), 'shared-knowledge', 'original-files')
-    : join(getProjectRoot(scope.scopeId), 'original-files');
+function workspaceTypeFor(db: Database.Database, scope: KnowledgeSyncScope): KnowledgeWorkspaceType {
+  if (scope.workspaceType) return scope.workspaceType;
+  if (scope.scopeType === 'shared') return 'enterprise';
+  try {
+    const project = db.prepare('SELECT 1 FROM enterprise_projects WHERE id = ?').get(scope.scopeId);
+    if (project) return 'enterprise-project';
+  } catch { /* databases created before project workspaces */ }
+  return 'group';
+}
+
+function originalRoot(db: Database.Database, scope: KnowledgeSyncScope): string {
+  const workspaceType = workspaceTypeFor(db, scope);
+  if (workspaceType === 'enterprise') return join(getEnterpriseWorkspaceRoot(), 'original-files');
+  if (workspaceType === 'enterprise-project') return join(getEnterpriseProjectRoot(scope.scopeId), 'original-files');
+  return join(getProjectRoot(scope.scopeId), 'original-files');
+}
+
+export function resolveKnowledgeScopesForGroup(db: Database.Database, groupId: string): KnowledgeSyncScope[] {
+  const scopes: KnowledgeSyncScope[] = [
+    { scopeType: 'project', scopeId: groupId, workspaceType: 'group' },
+  ];
+  const enterpriseProjectId = resolveAssociatedEnterpriseProjectId(db, 'group', groupId);
+  if (enterpriseProjectId) {
+    scopes.push({ scopeType: 'project', scopeId: enterpriseProjectId, workspaceType: 'enterprise-project' });
+  }
+  scopes.push({ scopeType: 'shared', scopeId: 'shared-knowledge', workspaceType: 'enterprise' });
+  return scopes;
 }
 
 /**
@@ -102,7 +237,7 @@ export async function syncKnowledgeSources(
 
   const fileRepo = new FileRepository(db);
   const knowledgeRepo = new KnowledgeRepository(db);
-  const root = originalRoot(scope);
+  const root = originalRoot(db, scope);
   const physicalPaths = await listFiles(root);
   const physicalRelPaths = new Set(physicalPaths.map((path) => relative(root, path).replaceAll('\\', '/')));
   const changedFileIds: string[] = [];
@@ -158,11 +293,13 @@ export async function syncKnowledgeSources(
 
     const source = knowledgeRepo.getSourceByFileAndVersion(file.id, current.id);
     const retryIncompleteSource = options?.retryIncompleteSources ?? true;
+    const retrySourceStatuses = options?.retrySourceStatuses
+      ?? (retryIncompleteSource ? ['pending', 'error'] : ['pending']);
     // A file can already be registered by the upload path before its first
     // knowledge_source is created. Missing sources are always a real ingest
     // gap; retryIncompleteSources only controls retries of an existing
     // non-ready source during a retrieval refresh.
-    if (!source || (retryIncompleteSource && source.status !== 'ready')) changedFileIds.push(file.id);
+    if (!source || retrySourceStatuses.includes(source.status as 'pending' | 'error')) changedFileIds.push(file.id);
     if (source && source.contentMd5 !== fingerprints.md5) knowledgeRepo.updateSourceMetadata(source.id, { contentMd5: fingerprints.md5 });
   }
 
@@ -208,13 +345,21 @@ export async function refreshKnowledgeBeforeSearch(
 ): Promise<KnowledgeSyncResult> {
   const retrievalOptions: KnowledgeSyncOptions = {
     retryIncompleteSources: false,
+    retrySourceStatuses: ['pending'],
     maxConcurrency: 2,
   };
-  const project = await syncKnowledgeSources(db, { scopeType: 'project', scopeId: projectId }, gateway, observer, retrievalOptions);
-  const shared = await syncKnowledgeSources(db, { scopeType: 'shared', scopeId: 'shared-knowledge' }, gateway, observer, retrievalOptions);
+  const scopes = resolveKnowledgeScopesForGroup(db, projectId);
+  // A user-triggered background sync deliberately does not block chat retrieval.
+  // The search path reads only ready sources and leaves the running scope alone.
+  const results: KnowledgeSyncResult[] = [];
+  for (const scope of scopes) {
+    results.push(isBackgroundKnowledgeSyncRunning(scope)
+      ? emptySyncResult()
+      : await syncKnowledgeSources(db, scope, gateway, observer, retrievalOptions));
+  }
   return {
-    changedFileIds: [...new Set([...project.changedFileIds, ...shared.changedFileIds])],
-    deletedFileIds: [...new Set([...project.deletedFileIds, ...shared.deletedFileIds])],
-    failedFileIds: [...new Set([...project.failedFileIds, ...shared.failedFileIds])],
+    changedFileIds: [...new Set(results.flatMap((result) => result.changedFileIds))],
+    deletedFileIds: [...new Set(results.flatMap((result) => result.deletedFileIds))],
+    failedFileIds: [...new Set(results.flatMap((result) => result.failedFileIds))],
   };
 }

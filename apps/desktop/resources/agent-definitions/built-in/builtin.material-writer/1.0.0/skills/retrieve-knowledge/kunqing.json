@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "retrieve-knowledge",
+  "version": "1.0.0",
+  "entry": "SKILL.md",
+  "executionMode": "hybrid",
+  "agentDefinitions": ["builtin.material-writer", "builtin.acceptance-reviewer"],
+  "requiredTools": ["knowledge:search", "knowledge:readDocument", "knowledge:listGraph"],
+  "permissions": ["read:knowledge", "read:document", "read:shared-knowledge"],
+  "compatibility": { "codexSkill": true, "kunqing": ">=0.1.0" }
+}

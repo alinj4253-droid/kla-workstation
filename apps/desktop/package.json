@@ -1,6 +1,6 @@
 {
   "name": "@kunqing/desktop",
-  "version": "0.1.0",
+  "version": "0.1.819005",
   "private": true,
   "type": "module",
   "main": "./out/main/index.cjs",
@@ -55,6 +55,7 @@
     "openai": "^6.48.0",
     "pdf-parse": "1.1.1",
     "pino": "^10.3.1",
+    "pptx-preview": "1.0.7",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-markdown": "^10.0.0",

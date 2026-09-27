@@ -166,7 +166,7 @@ describe('createProject', () => {
 
     // Agent instances queryable
     const instances = instanceRepo.listByProject(projectId);
-    expect(instances.length).toBe(5);
+    expect(instances.length).toBe(2);
     expect(new Set(instances.map((instance) => instance.id)).size).toBe(instances.length);
     expect(instances.every((instance) => instance.id.startsWith(`${projectId}-`))).toBe(true);
 
@@ -175,13 +175,7 @@ describe('createProject', () => {
     expect(leader!.agentProfileId).toBe('builtin-orchestrator-profile');
 
     const teammates = instances.filter((i) => i.role === 'teammate');
-    expect(teammates.length).toBe(4);
-    const knowledgeTeammate = teammates.find((t) => t.agentProfileId === 'builtin-knowledge-profile');
-    expect(knowledgeTeammate).toBeDefined();
-    const researcherTeammate = teammates.find((t) => t.agentProfileId === 'builtin-researcher-profile');
-    expect(researcherTeammate).toBeDefined();
-    expect(teammates.find((t) => t.agentProfileId === 'builtin-material-writer-profile')).toBeDefined();
-    expect(teammates.find((t) => t.agentProfileId === 'builtin-acceptance-reviewer-profile')).toBeDefined();
+    expect(teammates.map((teammate) => teammate.agentProfileId)).toEqual(['builtin-local-executor-profile']);
 
     // Messages queryable
     const messages = messageRepo.listByProject(projectId);
@@ -194,11 +188,77 @@ describe('createProject', () => {
     expect(orchProfile.name).toBe('统筹管理智能体');
     const knowProfile = profileRepo.getById('builtin-knowledge-profile');
     expect(knowProfile.name).toBe('知识管理智能体');
+    expect(knowProfile.enabled).toBeFalsy();
     expect(profileRepo.getById('builtin-material-writer-profile').name).toBe('材料编写智能体');
     expect(profileRepo.getById('builtin-acceptance-reviewer-profile').name).toBe('验收智能体');
+    expect(profileRepo.getById('builtin-local-executor-profile').name).toBe('本地执行智能体');
+    expect(profileRepo.getById('builtin-gm-profile').name).toBe('GM智能体');
   });
 
-  it('AC-HOME-05 creates the five-agent built-in collaboration team', async () => {
+  it('creates only the GM-selected team and keeps GM outside the group', async () => {
+    const result = await createProject(db, {
+      idempotencyKey: 'gm-selected-team-key',
+      content: { text: '查询公司来访制度' },
+      customName: '来访制度查询',
+      requestedAgentProfileIds: ['builtin-knowledge-profile'],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const project = new ProjectRepository(db).getById(result.data.id);
+    expect(project.name).toBe('来访制度查询');
+    const instances = new AgentInstanceRepository(db).listByProject(result.data.id);
+    expect(instances.map((instance) => instance.agentProfileId)).toEqual([
+      'builtin-orchestrator-profile',
+      'builtin-local-executor-profile',
+    ]);
+    expect(instances.some((instance) => instance.agentProfileId === 'builtin-gm-profile')).toBe(false);
+    expect(readFileSync(join(getProjectRoot(result.data.id), 'group.yaml'), 'utf8')).toContain('membershipPolicy: selected');
+
+    await seedDefaultProfiles(db);
+    expect(new AgentInstanceRepository(db).listByProject(result.data.id)).toHaveLength(2);
+  });
+
+  it('migrates a legacy specialist group to one visible local executor without deleting history', async () => {
+    const created = await createProject(db, {
+      idempotencyKey: 'legacy-specialist-migration',
+      content: { text: '' },
+      customName: '历史群聊迁移',
+      requestedAgentProfileIds: [],
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const repo = new AgentInstanceRepository(db);
+    const oldInstanceId = `${created.data.id}-legacy-knowledge`;
+    repo.create({
+      id: oldInstanceId,
+      projectId: created.data.id,
+      agentProfileId: 'builtin-knowledge-profile',
+      definitionId: 'builtin.knowledge-manager',
+      definitionVersion: '1.0.0',
+      role: 'teammate',
+      runtimeMode: 'native-model',
+      identityRelPath: `agent-identities/${oldInstanceId}/IDENTITY.md`,
+      memoryRelPath: `agent-memories/${oldInstanceId}`,
+      ordinal: 1,
+    });
+
+    await seedDefaultProfiles(db);
+
+    const storedProfiles = repo.listByProject(created.data.id).map((instance) => instance.agentProfileId);
+    expect(storedProfiles).toEqual(expect.arrayContaining([
+      'builtin-orchestrator-profile',
+      'builtin-knowledge-profile',
+      'builtin-local-executor-profile',
+    ]));
+    const visibleMembers = (new ContextBuilder(db) as unknown as {
+      buildMembers(projectId: string): ContextSnapshot['members'];
+    }).buildMembers(created.data.id);
+    expect(visibleMembers.map((member) => member.name)).toEqual(['统筹管理智能体', '本地执行智能体']);
+  });
+
+  it('AC-HOME-05 creates the orchestrator and local-executor collaboration team', async () => {
     const result = await createProject(db, {
       idempotencyKey: 'home-05-key',
       content: { text: '市场调研分析' },
@@ -214,21 +274,12 @@ describe('createProject', () => {
     expect(leader!.agentProfileId).toBe('builtin-orchestrator-profile');
 
     const teammates = instances.filter((i) => i.role === 'teammate');
-    expect(teammates.length).toBe(4);
-    const knowTeammate = teammates.find((t) => t.agentProfileId === 'builtin-knowledge-profile');
-    expect(knowTeammate).toBeDefined();
-    const resTeammate = teammates.find((t) => t.agentProfileId === 'builtin-researcher-profile');
-    expect(resTeammate).toBeDefined();
-    expect(teammates.find((t) => t.agentProfileId === 'builtin-material-writer-profile')).toBeDefined();
-    expect(teammates.find((t) => t.agentProfileId === 'builtin-acceptance-reviewer-profile')).toBeDefined();
+    expect(teammates.map((teammate) => teammate.agentProfileId)).toEqual(['builtin-local-executor-profile']);
 
-    // Leader ordinal is 0, built-in teammates are 1-4.
+    // Leader ordinal is 0 and the unified local executor is ordinal 1.
     const sorted = [...instances].sort((a, b) => a.ordinal - b.ordinal);
     expect(sorted[0]!.role).toBe('leader');
     expect(sorted[1]!.role).toBe('teammate');
-    expect(sorted[2]!.role).toBe('teammate');
-    expect(sorted[3]!.role).toBe('teammate');
-    expect(sorted[4]!.role).toBe('teammate');
   });
 
   it('AC-HOME-06 creates identity files and memory directories for both agents', async () => {
@@ -276,7 +327,7 @@ describe('createProject', () => {
     expect(existsSync(join(projectRoot, '.runtime', 'versions'))).toBe(true);
     expect(existsSync(join(projectRoot, '.runtime', 'run-temp'))).toBe(true);
     expect(existsSync(join(projectRoot, '.runtime', 'sandboxes'))).toBe(true);
-    expect(existsSync(join(projectRoot, '.runtime', 'review-drafts'))).toBe(true);
+    expect(existsSync(join(projectRoot, 'temp'))).toBe(true);
 
     // group.yaml exists
     const groupYaml = readFileSync(join(projectRoot, 'group.yaml'), 'utf8');
@@ -339,7 +390,7 @@ describe('createProject', () => {
     if (!created.ok) return;
 
     const agents = await addProjectAgents(db, created.data.id, [profileId]);
-    expect(agents).toHaveLength(6);
+    expect(agents).toHaveLength(3);
     const added = agents.find((agent) => agent.agentName === '测试 CLI 智能体');
     expect(added?.role).toBe('teammate');
     expect(added?.runtimeMode).toBe('external-cli');
@@ -358,7 +409,7 @@ describe('createProject', () => {
     expect(runtimeIdentity.identity).toContain('群聊适应性补充');
 
     const duplicate = await addProjectAgents(db, created.data.id, [profileId]);
-    expect(duplicate).toHaveLength(6);
+    expect(duplicate).toHaveLength(3);
   });
 
   it('archives a dissolved group without deleting its workspace', async () => {

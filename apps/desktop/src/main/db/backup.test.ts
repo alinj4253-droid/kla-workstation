@@ -104,7 +104,7 @@ describe('DB backup/restore', () => {
     const backupPath = backupDatabase(migDbPath, backupDir);
     const backupDb = new Database(backupPath);
     const mRows = backupDb.prepare('SELECT name FROM _migrations ORDER BY id').all() as Array<{ name: string }>;
-    expect(mRows.length).toBe(17);
+    expect(mRows.length).toBe(28);
     expect(mRows[0]!.name).toBe('001_initial');
     backupDb.close();
     closeDatabase();

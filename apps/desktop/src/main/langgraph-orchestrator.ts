@@ -1,7 +1,7 @@
 import { BrowserWindow } from 'electron';
 import type Database from 'better-sqlite3';
 import { runOrchestrator as coreRunOrchestrator } from '@kunqing/native-agent-core';
-import type { IGraphContext, ExecContextSnapshot, SubRunParams, CreateSubRunInput, AgentRole } from '@kunqing/native-agent-core';
+import type { IGraphContext, ExecContextSnapshot, SubRunParams, CreateSubRunInput, AgentRole, CollaborationMode } from '@kunqing/native-agent-core';
 import type { ModelSlot, ModelMessage, GenerateOptions, GenerateResult } from '@kunqing/model-core';
 import { ModelGateway } from './model-gateway';
 import { MemoryManager } from './memory-manager';
@@ -12,33 +12,24 @@ import { AgentRunRepository } from '@kunqing/database';
 import { getLogger } from './logger';
 import { getProjectRoot } from './paths';
 import { Scheduler } from './scheduler';
-import { processMessageMentions } from './message-router';
-import { randomUUID } from 'node:crypto';
-import { normalizeAgentMessageContent } from './agent-collaboration';
+import { broadcastEvent } from './event-broadcast';
+import { getAcceptanceReviewBudget, normalizeRoutedInstruction, processMessageMentions } from './message-router';
+import { createHash, randomUUID } from 'node:crypto';
+import {
+  findEquivalentAgentTaskMessage,
+  findDuplicateAwaitingUserMessage,
+  messageRequestsUserResponse,
+  normalizeAgentMessageContent,
+} from './agent-collaboration';
 import { AgentArtifactPublisher } from './agent-artifact-publisher';
 import { getSkillDisplayName } from './skill-display';
-import { loadAgentCoordinationSummary } from './agent-identity';
+import { streamAgentMessage } from './message-stream';
+import { buildModelProfileSnapshot } from './project-creator';
+import { reserveRetrievalBudget } from './retrieval-budget';
+import { listProjectCoordinationRegistry } from './coordination-registry';
+import { TaskPlanStore } from './task-plan-store';
 
 export type ExecContext = IGraphContext;
-
-function agentCapabilities(definitionId: string, runtimeMode: string, name: string): string {
-  if (definitionId === 'builtin.knowledge-manager' || /知识|文档/i.test(name)) {
-    return '本地制度和群聊知识检索；读取原始文件；切片、摘要、标签、向量、图谱、Wiki；归集可复用知识';
-  }
-  if (definitionId === 'builtin.researcher' || /调研|研究/i.test(name)) {
-    return '公开网络资料、行业/市场/竞品调研、来源核验和外部事实补充';
-  }
-  if (definitionId === 'builtin.material-writer' || /材料编写|写作/i.test(name)) {
-    return '依据证据和模板先列框架、逐章编写、统一校对并生成 HTML 待审稿';
-  }
-  if (definitionId === 'builtin.acceptance-reviewer' || /验收|审核/i.test(name)) {
-    return '读取材料待审稿，检索本地知识证据，核验事实与来源并给出通过或返修结论';
-  }
-  if (runtimeMode === 'external-cli' || /code|代码|编程/i.test(`${definitionId} ${name}`)) {
-    return '代码、脚本、HTML 和文件成果生成；可在本地工作区执行外部 CLI';
-  }
-  return '根据自身角色卡和可用技能完成专属工作，并返回可验收结果';
-}
 
 export async function runOrchestrator(
   db: Database.Database,
@@ -54,13 +45,28 @@ export async function runOrchestrator(
   toolRegistry: ToolRegistry,
   contextBuilder: ContextBuilder,
   scheduler: Scheduler | undefined,
+  collaborationMode: CollaborationMode = 'expert',
 ): Promise<void> {
   const runRepo = new AgentRunRepository(db);
   const logger = getLogger();
   const artifactPublisher = new AgentArtifactPublisher(db, (event) => {
-    if (!window.isDestroyed()) window.webContents.send('event:dispatch', event);
+    broadcastEvent(window, event);
   });
-  const fullSnapshot = contextBuilder.build(projectId, agentInstanceId, triggerMessageId);
+  const taskPlanStore = new TaskPlanStore(db);
+  // 子任务 Run 通过 parent_run_id 注入父任务结果，避免委派后丢失上游产出。
+  let parentRunId: string | undefined;
+  try {
+    parentRunId = (runRepo.getById(runId) as { parentRunId: string | null }).parentRunId ?? undefined;
+  } catch {
+    parentRunId = undefined;
+  }
+  const fullSnapshot = collaborationMode === 'fast'
+    ? new ContextBuilder(db, { recentMessageLimit: 4, knowledgeChunkLimit: 2, sharedKnowledgeChunkLimit: 1 })
+      .build(projectId, agentInstanceId, triggerMessageId, parentRunId)
+    : collaborationMode === 'balanced'
+      ? new ContextBuilder(db, { recentMessageLimit: 6, knowledgeChunkLimit: 4, sharedKnowledgeChunkLimit: 2 })
+        .build(projectId, agentInstanceId, triggerMessageId, parentRunId)
+      : contextBuilder.build(projectId, agentInstanceId, triggerMessageId, parentRunId);
 
   const ctx: IGraphContext = {
     projectId,
@@ -70,14 +76,16 @@ export async function runOrchestrator(
     triggerMessageId,
     signal,
     workspaceRoot: getProjectRoot(projectId),
+    collaborationMode,
 
     services: {
       generateText(slot: ModelSlot, messages: ModelMessage[], options?: GenerateOptions): Promise<GenerateResult> {
         const systemMsg = messages.find((m) => m.role === 'system')?.content;
         const chatMessages = messages.filter((m) => m.role !== 'system') as Array<{ role: 'user' | 'assistant'; content: string }>;
-        const genOptions: { system?: string; tools?: Record<string, { description: string; parameters: Record<string, unknown> }> } = options ?? {};
+        const genOptions: GenerateOptions & { system?: string } = { ...(options ?? {}) };
         if (systemMsg) genOptions.system = systemMsg;
-        return gateway.generateText(slot, chatMessages, genOptions);
+        const effectiveSlot: ModelSlot = collaborationMode === 'fast' && slot === 'reasoning' ? 'fast' : slot;
+        return gateway.generateText(effectiveSlot, chatMessages, genOptions);
       },
 
       getToolDefinitions(role: AgentRole) {
@@ -89,17 +97,38 @@ export async function runOrchestrator(
         const skillName = getSkillDisplayName(name);
         const started = { id: traceId, kind: name === 'delegate_tasks' ? 'handoff' : 'tool', title: name === 'delegate_tasks' ? '正在调用智能体任务委派技能创建子任务' : `正在调用${skillName}技能`, status: 'running', detail: `技能标识：${name}\n${JSON.stringify(args).slice(0, 420)}`, at: new Date().toISOString() };
         runRepo.addEvent(runId, 'run.trace', started);
-        if (!window.isDestroyed()) window.webContents.send('event:dispatch', { type: 'run.trace', projectId, runId, agentId: agentInstanceId, trace: started });
+        if (!window.isDestroyed()) broadcastEvent(window, { type: 'run.trace', projectId, runId, agentId: agentInstanceId, trace: started });
         try {
-          const result = await toolRegistry.execute(name, args, { role: role as LocalAgentRole, ...context });
+          let result: string;
+          if ((name === 'web:search' || name === 'knowledge:search') && (context.runId || runId)) {
+            const kind = name === 'web:search' ? 'web' : 'knowledge';
+            const query = typeof args.query === 'string' ? args.query.trim() : '';
+            const reservation = reserveRetrievalBudget(
+              db,
+              runRepo,
+              context.runId ?? runId,
+              collaborationMode,
+              kind,
+              query,
+            );
+            if (reservation.status === 'duplicate') {
+              result = `已跳过当前任务节点中重复或高度相似的${kind === 'web' ? '网页搜索' : '知识检索'}，请使用已经取得的证据。`;
+            } else if (reservation.status === 'exhausted') {
+              result = `当前任务节点已达到 ${reservation.budget} 次检索预算，请基于已经取得的内部和外部证据继续处理。`;
+            } else {
+              result = await toolRegistry.execute(name, args, { role: role as LocalAgentRole, ...context });
+            }
+          } else {
+            result = await toolRegistry.execute(name, args, { role: role as LocalAgentRole, ...context });
+          }
           const completed = { ...started, status: 'completed', detail: result.slice(0, 500), at: new Date().toISOString() };
           runRepo.addEvent(runId, 'run.trace', completed);
-          if (!window.isDestroyed()) window.webContents.send('event:dispatch', { type: 'run.trace', projectId, runId, agentId: agentInstanceId, trace: completed });
+          if (!window.isDestroyed()) broadcastEvent(window, { type: 'run.trace', projectId, runId, agentId: agentInstanceId, trace: completed });
           return result;
         } catch (error) {
           const failed = { ...started, status: 'failed', detail: error instanceof Error ? error.message : String(error), at: new Date().toISOString() };
           runRepo.addEvent(runId, 'run.trace', failed);
-          if (!window.isDestroyed()) window.webContents.send('event:dispatch', { type: 'run.trace', projectId, runId, agentId: agentInstanceId, trace: failed });
+          if (!window.isDestroyed()) broadcastEvent(window, { type: 'run.trace', projectId, runId, agentId: agentInstanceId, trace: failed });
           throw error;
         }
       },
@@ -116,31 +145,80 @@ export async function runOrchestrator(
       },
 
       async insertMessage(projectId: string, senderId: string, kind: string, contentJson: string): Promise<string> {
-        const id = randomUUID().toLowerCase().replace(/-/g, '').slice(0, 24);
+        const existingResult = runRepo.getById(runId).resultMessageId;
+        if (existingResult) return existingResult;
+        const id = createHash('sha256').update(`agent-message:${runId}:final`).digest('hex').slice(0, 24);
         const now = new Date().toISOString();
         const normalizedContent = kind === 'text'
           ? normalizeAgentMessageContent(db, projectId, contentJson, [], senderId)
           : contentJson;
-        db.prepare(
-          'INSERT INTO messages (id, project_id, sender_type, sender_id, kind, content_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        const equivalentMessageId = findEquivalentAgentTaskMessage(db, {
+          projectId,
+          triggerMessageId,
+          senderId,
+          kind,
+          contentJson: normalizedContent,
+          excludeRunId: runId,
+        });
+        if (equivalentMessageId) {
+          runRepo.setResultMessage(runId, equivalentMessageId);
+          runRepo.addEvent(runId, 'run.final-message-reused', {
+            messageId: equivalentMessageId,
+            reason: 'equivalent-root-task-message',
+          });
+          return equivalentMessageId;
+        }
+        if (kind === 'text' && messageRequestsUserResponse(normalizedContent)) {
+          const duplicateMessageId = findDuplicateAwaitingUserMessage(db, projectId, triggerMessageId, normalizedContent, runId);
+          if (duplicateMessageId) {
+            runRepo.setResultMessage(runId, duplicateMessageId);
+            runRepo.setStatus(runId, 'awaiting_user');
+            runRepo.addEvent(runId, 'run.user-question-deduplicated', { duplicateMessageId });
+            return duplicateMessageId;
+          }
+        }
+        const inserted = db.prepare(
+          'INSERT OR IGNORE INTO messages (id, project_id, sender_type, sender_id, kind, content_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
         ).run(id, projectId, 'agent', senderId, kind, normalizedContent, 'sent', now, now);
+        if (inserted.changes === 0) return id;
         runRepo.addEvent(runId, 'run.anchor', { messageId: id });
+
+        if (kind === 'text' && !window.isDestroyed()) {
+          let streamText = normalizedContent;
+          try { streamText = (JSON.parse(normalizedContent) as { text?: string }).text ?? normalizedContent; } catch { /* use raw */ }
+          await streamAgentMessage(window, { projectId, messageId: id, senderId, text: streamText }, signal);
+        }
 
         // 整条智能体协作链沿用最初的 triggerMessageId。
         // 这样每条用户消息最多 20 个 Run 的限制不会因智能体回复产生新消息而被重置。
         if (scheduler) {
-          processMessageMentions(db, runRepo, scheduler, projectId, normalizedContent, triggerMessageId, senderId, runId, 'agent', id);
+          processMessageMentions(
+            db, runRepo, scheduler, projectId, normalizedContent, triggerMessageId, senderId, runId, 'agent', id,
+            (notice) => {
+              broadcastEvent(window, {
+                type: 'message.committed', projectId, messageId: notice.messageId, senderId: 'system', content: notice.contentJson,
+              });
+            },
+          );
         }
-        if (!window.isDestroyed()) {
-          window.webContents.send('event:dispatch', {
-            type: 'message.committed', projectId, messageId: id, senderId, content: normalizedContent,
-          });
-        }
+        broadcastEvent(window, {
+          type: 'message.committed', projectId, messageId: id, senderId, content: normalizedContent,
+        });
 
         return id;
       },
 
       async sendDelegationMessage(input) {
+        const target = db.prepare(
+          `SELECT ap.definition_id as definitionId
+           FROM project_agent_instances pai
+           JOIN agent_profiles ap ON ap.id = pai.agent_profile_id
+           WHERE pai.id = ? AND pai.project_id = ?`,
+        ).get(input.targetAgentInstanceId, input.projectId) as { definitionId: string } | undefined;
+        if (target?.definitionId === 'builtin.acceptance-reviewer'
+          && !getAcceptanceReviewBudget(db, input.rootTriggerMessageId).allowed) {
+          return { messageId: '', childRunIds: [] };
+        }
         const text = `@${input.targetAgentName} ${input.visibleInstruction?.trim() || input.instruction}`;
         const requestedMention = {
           target: { scope: 'instance' as const, id: input.targetAgentInstanceId },
@@ -154,11 +232,18 @@ export async function runOrchestrator(
           mentions: [requestedMention],
           stagedUploadIds: [],
           messageType: 'delegation',
+          audience: { scope: 'instance', id: input.targetAgentInstanceId },
         }), [requestedMention], input.senderId);
-        const messageId = randomUUID().toLowerCase().replace(/-/g, '').slice(0, 24);
+        const dispatchKey = [
+          input.rootTriggerMessageId,
+          input.parentRunId,
+          input.targetAgentInstanceId,
+          normalizeRoutedInstruction(input.instruction),
+        ].join(':');
+        const messageId = createHash('sha256').update(`agent-delegation:${dispatchKey}`).digest('hex').slice(0, 24);
         const now = new Date().toISOString();
-        db.prepare(
-          'INSERT INTO messages (id, project_id, sender_type, sender_id, kind, content_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        const inserted = db.prepare(
+          'INSERT OR IGNORE INTO messages (id, project_id, sender_type, sender_id, kind, content_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
         ).run(messageId, input.projectId, 'agent', input.senderId, 'text', contentJson, 'sent', now, now);
         const routingText = `@${input.targetAgentName} ${input.instruction}`;
         const routingContentJson = normalizeAgentMessageContent(db, input.projectId, JSON.stringify({
@@ -167,19 +252,49 @@ export async function runOrchestrator(
           mentions: [requestedMention],
           stagedUploadIds: [],
           messageType: 'delegation',
+          audience: { scope: 'instance', id: input.targetAgentInstanceId },
         }), [requestedMention], input.senderId);
         const childRunIds = scheduler
           ? processMessageMentions(
             db, runRepo, scheduler, input.projectId, routingContentJson, input.rootTriggerMessageId,
             input.senderId, input.parentRunId, 'agent', messageId,
+            (notice) => {
+              broadcastEvent(window, {
+                type: 'message.committed', projectId: input.projectId, messageId: notice.messageId, senderId: 'system', content: notice.contentJson,
+              });
+            },
           )
           : [];
-        if (!window.isDestroyed()) {
-          window.webContents.send('event:dispatch', {
+        if (inserted.changes > 0) {
+          broadcastEvent(window, {
             type: 'message.committed', projectId: input.projectId, messageId, senderId: input.senderId, content: contentJson,
           });
         }
         return { messageId, childRunIds };
+      },
+
+      async sendOrchestratorNote(input) {
+        // 协调说明（例如子需求清单）只做群聊展示，不触发成员 Run。
+        const messageId = createHash('sha256')
+          .update(`orchestrator-note:${input.runId}:${input.text}`)
+          .digest('hex')
+          .slice(0, 24);
+        const contentJson = normalizeAgentMessageContent(db, input.projectId, JSON.stringify({
+          schemaVersion: 1,
+          text: input.text,
+          mentions: [],
+          stagedUploadIds: [],
+        }), [], input.senderId);
+        const now = new Date().toISOString();
+        const inserted = db.prepare(
+          'INSERT OR IGNORE INTO messages (id, project_id, sender_type, sender_id, kind, content_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        ).run(messageId, input.projectId, 'agent', input.senderId, 'text', contentJson, 'sent', now, now);
+        if (inserted.changes > 0 && !window.isDestroyed()) {
+          broadcastEvent(window, {
+            type: 'message.committed', projectId: input.projectId, messageId, senderId: input.senderId, content: contentJson,
+          });
+        }
+        return messageId;
       },
 
       setRunStatus(runId: string, status: string, error?: { errorCode?: string; errorMessage?: string }) {
@@ -195,6 +310,18 @@ export async function runOrchestrator(
 
       addRunEvent(runId: string, type: string, payload: Record<string, unknown>) {
         runRepo.addEvent(runId, type, payload);
+      },
+
+      getRunEvents(runId: string) {
+        return runRepo.listEvents(runId).flatMap((event) => {
+          if (!event.payloadJson) return [{ type: event.type }];
+          try {
+            const payload = JSON.parse(event.payloadJson) as Record<string, unknown>;
+            return [{ type: event.type, payload }];
+          } catch {
+            return [{ type: event.type }];
+          }
+        });
       },
 
       getRunStatus(runId: string) {
@@ -227,6 +354,33 @@ export async function runOrchestrator(
           resultMessageId?: string;
           errorMessage?: string;
         }>;
+      },
+
+      getRunArtifacts(rootRunId: string, recursive = false) {
+        const runIds = [
+          rootRunId,
+          ...(recursive ? (this.getRunDescendants?.(rootRunId) ?? []).map((run) => run.runId) : []),
+        ];
+        const artifacts: Array<{
+          relativePath: string; fileId?: string; versionId?: string; messageId?: string; sha256?: string;
+        }> = [];
+        for (const artifactRunId of runIds) {
+          for (const event of runRepo.listEvents(artifactRunId)) {
+            if (event.type !== 'run.artifact-published' || !event.payloadJson) continue;
+            try {
+              const payload = JSON.parse(event.payloadJson) as Record<string, unknown>;
+              if (typeof payload.relativePath !== 'string' || !payload.relativePath) continue;
+              artifacts.push({
+                relativePath: payload.relativePath,
+                ...(typeof payload.fileId === 'string' ? { fileId: payload.fileId } : {}),
+                ...(typeof payload.versionId === 'string' ? { versionId: payload.versionId } : {}),
+                ...(typeof payload.messageId === 'string' ? { messageId: payload.messageId } : {}),
+                ...(typeof payload.sha256 === 'string' ? { sha256: payload.sha256 } : {}),
+              });
+            } catch { /* ignore malformed legacy event */ }
+          }
+        }
+        return [...new Map(artifacts.map((artifact) => [artifact.sha256 || artifact.relativePath, artifact])).values()];
       },
 
       getParentRunId(runId: string): string | null {
@@ -265,7 +419,8 @@ export async function runOrchestrator(
         };
         if (input.instruction) opts.instruction = input.instruction;
         if (input.parentRunId) opts.parentRunId = input.parentRunId;
-        if (input.modelProfileSnapshotJson !== null) opts.modelProfileSnapshotJson = input.modelProfileSnapshotJson;
+        const modelSnapshot = input.modelProfileSnapshotJson ?? buildModelProfileSnapshot(db, input.agentInstanceId);
+        if (modelSnapshot !== null) opts.modelProfileSnapshotJson = modelSnapshot;
         const run = runRepo.create(opts as any);
         return run.id;
       },
@@ -305,7 +460,7 @@ export async function runOrchestrator(
               if (typeof parsed.messageId === 'string') anchorMessageId = parsed.messageId;
             } catch { /* omit invalid anchor */ }
           }
-          window.webContents.send('event:dispatch', eventRun
+          broadcastEvent(window, eventRun
             ? { ...event, ...chainMetadata, run: { ...eventRun, ...chainMetadata, ...(anchorMessageId ? { anchorMessageId } : {}) } }
             : { ...event, ...chainMetadata, ...(anchorMessageId ? { anchorMessageId } : {}) });
         }
@@ -325,44 +480,29 @@ export async function runOrchestrator(
 
       buildMemoryContext(projectId: string, agentInstanceId: string, query = ''): string {
         if (query.trim()) {
-          return memory.recallRelevant(query, projectId, agentInstanceId, 6).join('\n');
+          const recalled = memory.recallRelevant(
+            query,
+            projectId,
+            agentInstanceId,
+            collaborationMode === 'fast' ? 2 : collaborationMode === 'balanced' ? 3 : 4,
+          ).join('\n');
+          return recalled.slice(0, collaborationMode === 'fast' ? 800 : collaborationMode === 'balanced' ? 1_200 : 1_800);
         }
-        return memory.buildMemoryContext(projectId, agentInstanceId).slice(0, 2_000);
+        return memory.buildMemoryContext(projectId, agentInstanceId).slice(
+          0,
+          collaborationMode === 'fast' ? 1_000 : collaborationMode === 'balanced' ? 1_500 : 2_000,
+        );
       },
 
       async buildContextSnapshot(projectId: string, agentInstanceId: string, triggerMessageId: string): Promise<ExecContextSnapshot> {
-        const rows = db.prepare(
-          `SELECT id, sender_type as senderType, sender_id as senderId, content_json as contentJson, created_at as createdAt
-           FROM messages
-           WHERE project_id = ? AND kind IN ('text', 'artifact')
-           ORDER BY created_at DESC
-           LIMIT 80`,
-        ).all(projectId) as Array<{ id: string; senderType: string; senderId: string; contentJson: string; createdAt: string }>;
         const memberNames = new Map(fullSnapshot.members.map((member) => [member.instanceId, member.name]));
-        const chronological = rows.reverse();
-        const selectedIndexes = new Set<number>();
-        const takeLatest = (senderType: string, limit: number): void => {
-          let remaining = limit;
-          for (let index = chronological.length - 1; index >= 0 && remaining > 0; index -= 1) {
-            if (chronological[index]?.senderType !== senderType) continue;
-            selectedIndexes.add(index);
-            remaining -= 1;
-          }
-        };
-        // 用户多轮需求优先；只保留少量智能体正式结果作为“已有成果”上下文。
-        takeLatest('user', 12);
-        takeLatest('agent', 6);
-        const messages = chronological
-          .filter((row, index) => selectedIndexes.has(index) || row.id === triggerMessageId)
-          .map((row) => {
-            let content = row.contentJson;
-            try { content = (JSON.parse(content) as { text?: string }).text ?? content; } catch { /* use raw */ }
-            return {
-              role: (row.senderType === 'user' ? 'user' : 'assistant') as 'user' | 'assistant',
-              content: content.slice(0, 1_200),
-              ...(row.senderType === 'agent' ? { senderName: memberNames.get(row.senderId) ?? '群聊成员' } : {}),
-            };
-          });
+        const messages = fullSnapshot.messages.map((row) => ({
+          id: row.id,
+          role: (row.senderType === 'user' ? 'user' : 'assistant') as 'user' | 'assistant',
+          content: row.content.slice(0, collaborationMode === 'fast' ? 700 : collaborationMode === 'balanced' ? 900 : 1_200),
+          ...(row.taskRelation ? { taskRelation: row.taskRelation } : {}),
+          ...(row.senderType === 'agent' ? { senderName: memberNames.get(row.senderId) ?? '群聊成员' } : {}),
+        }));
         return {
           snapshotChecksum: fullSnapshot.snapshotChecksum,
           messages,
@@ -377,8 +517,26 @@ export async function runOrchestrator(
         return getProjectRoot(projectId);
       },
 
-      renderSnapshotToText(_snapshot: ExecContextSnapshot): string {
-        return contextBuilder.renderToText(fullSnapshot, { includeMemory: false });
+      renderSnapshotToText(snapshot: ExecContextSnapshot): string {
+        const parts = [
+          `## 当前群聊\n- 名称: ${fullSnapshot.project.name}\n- 摘要: ${fullSnapshot.project.summary || '(无)'}`,
+        ];
+        const taskMessages = snapshot.messages.filter((message) => message.taskRelation !== 'history');
+        if (taskMessages.length > 0) {
+          parts.push(`## 当前任务消息\n${taskMessages.map((message) => (
+            `${message.role === 'user' ? '用户' : message.senderName ?? '群聊成员'}：${message.content}`
+          )).join('\n')}`);
+        }
+        if (fullSnapshot.rollingSummary) {
+          parts.push(`## 历史摘要\n${fullSnapshot.rollingSummary.slice(0, collaborationMode === 'expert' ? 1_200 : 800)}`);
+        }
+        if (fullSnapshot.referencedFiles.length > 0) {
+          parts.push(`## 本轮引用文件\n${fullSnapshot.referencedFiles.map((file) => `- ${file.name}`).join('\n')}`);
+        }
+        if (fullSnapshot.parentRunResult) {
+          parts.push(`## 已有上游结果\n${fullSnapshot.parentRunResult.slice(0, 1_000)}`);
+        }
+        return parts.join('\n\n');
       },
 
       getKmInstance(projectId: string) {
@@ -392,27 +550,19 @@ export async function runOrchestrator(
       },
 
       getProjectDelegatableAgents(projectId: string) {
-        const rows = db.prepare(
-          `SELECT pai.id, ap.name, pai.role, ap.definition_id as definitionId, pai.runtime_mode as runtimeMode,
-                  pai.identity_rel_path as identityRelPath
-           FROM project_agent_instances pai
-           JOIN agent_profiles ap ON ap.id = pai.agent_profile_id
-           WHERE pai.project_id = ? AND ap.enabled = 1
-           ORDER BY pai.ordinal`,
-        ).all(projectId) as Array<{ id: string; name: string; role: string; definitionId: string; runtimeMode: string; identityRelPath: string | null }>;
-        return rows.map((r) => ({
-          id: r.id,
-          name: r.name,
-          role: r.role,
-          definitionId: r.definitionId,
-          runtimeMode: r.runtimeMode,
-          capabilities: agentCapabilities(r.definitionId, r.runtimeMode, r.name),
-          coordinationProfile: loadAgentCoordinationSummary(projectId, r.identityRelPath, {
-            name: r.name,
-            runtimeMode: r.runtimeMode,
-            definitionId: r.definitionId,
-          }),
-        }));
+        return listProjectCoordinationRegistry(db, projectId);
+      },
+
+      saveTaskPlan(input) {
+        return taskPlanStore.save(input);
+      },
+
+      updateTaskNode(rootRunId, nodeId, patch) {
+        taskPlanStore.updateNode(rootRunId, nodeId, patch);
+      },
+
+      setTaskPlanStatus(rootRunId, status) {
+        taskPlanStore.setStatus(rootRunId, status);
       },
 
       getMessageContent(messageId: string): string | null {

@@ -10,7 +10,9 @@ export type {
   BusinessProcessStage,
   BusinessProcess,
   KmInstanceInfo,
+  DelegatableAgentInfo,
   IGraphContext,
+  CollaborationMode,
   OrchestratorGraphState,
   KMGraphState,
 } from './types.js';
@@ -27,6 +29,14 @@ export {
 export {
   isConversationStatusQuestion,
   isSimpleDirectTask,
+  isIndependentDeliveryInstruction,
+  deriveTaskDeliveryPolicy,
+  formatStructuredPlannerValue,
+  resolveLocalDateTimeAnswer,
+  requiresArtifactDeliverable,
+  collaborationRecoveryPassLimit,
+  collaborationReviewLimit,
+  sanitizeUserFacingResponse,
   runOrchestrator,
 } from './orchestrator.js';
 

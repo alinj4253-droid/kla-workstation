@@ -20,7 +20,7 @@ import type {
 import { createPipelineContext } from './knowledge-pipeline-adapter';
 import { ModelGateway } from './model-gateway';
 import { getLogger } from './logger';
-import { getProjectRoot, getStudioRoot } from './paths';
+import { getEnterpriseProjectRoot, getEnterpriseWorkspaceRoot, getProjectRoot } from './paths';
 
 // ─── State ───────────────────────────────────────────────────────────────────
 
@@ -116,10 +116,16 @@ export type KMExecContext = {
 
 const LOW_CONFIDENCE_THRESHOLD = 0.65;
 
-function resolveSourceFilePath(scopeType: string, scopeId: string, normalizedPath: string): string {
+function resolveSourceFilePath(db: any, scopeType: string, scopeId: string, normalizedPath: string): string {
+  let enterpriseProject = false;
+  if (scopeType === 'project') {
+    try { enterpriseProject = !!db.prepare('SELECT 1 FROM enterprise_projects WHERE id = ?').get(scopeId); } catch { /* legacy database */ }
+  }
   const root = scopeType === 'shared'
-    ? join(getStudioRoot(), 'shared-knowledge', 'original-files')
-    : join(getProjectRoot(scopeId), 'original-files');
+    ? join(getEnterpriseWorkspaceRoot(), 'original-files')
+    : enterpriseProject
+      ? join(getEnterpriseProjectRoot(scopeId), 'original-files')
+      : join(getProjectRoot(scopeId), 'original-files');
   const resolvedRoot = resolve(root);
   const target = resolve(resolvedRoot, normalizedPath);
   if (target !== resolvedRoot && !target.startsWith(`${resolvedRoot}${sep}`)) {
@@ -167,7 +173,7 @@ async function discoverSource(state: KMState, config: any): Promise<Partial<KMSt
         scopeType = file.scopeType;
         scopeId = file.scopeId;
         sourceVersionId = file.currentVersionId;
-        sourceFilePath = resolveSourceFilePath(scopeType, scopeId, file.normalizedPath);
+        sourceFilePath = resolveSourceFilePath(ctx.db, scopeType, scopeId, file.normalizedPath);
         logger?.info({ sourceFileId, sourceFilePath }, 'KM: 通过 fileId 发现源文件');
       }
     } catch {
@@ -201,7 +207,7 @@ async function discoverSource(state: KMState, config: any): Promise<Partial<KMSt
       scopeType = attachment.scopeType;
       scopeId = attachment.scopeId;
       sourceVersionId = attachment.currentVersionId;
-      sourceFilePath = resolveSourceFilePath(scopeType, scopeId, attachment.filePath);
+      sourceFilePath = resolveSourceFilePath(ctx.db, scopeType, scopeId, attachment.filePath);
       logger?.info({ sourceFileId, sourceFilePath }, 'KM: 通过最近消息附件发现源文件');
     }
   }
@@ -301,6 +307,7 @@ async function normalizeAndChunk(state: KMState, config: any): Promise<Partial<K
       metadata: {},
     };
     const chunks = chunkDocument(doc);
+    await pipelineCtx.saveStandardizedDocument?.(doc, chunks);
     logger?.info({ total: chunks.length }, 'KM: 分块完成');
 
     // 去重保存

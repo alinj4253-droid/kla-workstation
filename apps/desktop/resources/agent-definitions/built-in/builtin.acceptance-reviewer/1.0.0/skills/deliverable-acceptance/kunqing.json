@@ -5,7 +5,6 @@
   "entry": "SKILL.md",
   "agentDefinitions": ["builtin.acceptance-reviewer"],
   "executionMode": "instructions",
-  "requiredTools": ["workspace:readFile", "knowledge:search", "skill:load"],
+  "requiredTools": ["temp:list", "temp:read", "workspace:readFile", "knowledge:search", "knowledge:readDocument", "template:list", "template:read", "skill:load"],
   "permissions": ["read:file", "read:knowledge", "read:skill"]
 }
-

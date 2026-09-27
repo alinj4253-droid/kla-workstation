@@ -3,7 +3,7 @@ import type Database from 'better-sqlite3';
 import { BaseRepository } from './base.js';
 import { notFound } from '../errors.js';
 
-export type RunStatus = 'queued' | 'starting' | 'running' | 'completed' | 'failed' | 'cancelling' | 'cancelled' | 'interrupted';
+export type RunStatus = 'queued' | 'starting' | 'running' | 'awaiting_user' | 'completed' | 'failed' | 'cancelling' | 'cancelled' | 'interrupted';
 
 export interface AgentRunRow {
   id: string;
@@ -93,6 +93,18 @@ export class AgentRunRepository extends BaseRepository {
     return this.db.prepare(
       `SELECT ${RUN_COLS} FROM agent_runs WHERE status IN ('queued', 'starting', 'running') ORDER BY created_at ASC`,
     ).all() as AgentRunRow[];
+  }
+
+  findAwaitingUserByMessage(projectId: string, messageId: string): AgentRunRow | null {
+    return this.listAwaitingUserByMessage(projectId, messageId)[0] ?? null;
+  }
+
+  listAwaitingUserByMessage(projectId: string, messageId: string): AgentRunRow[] {
+    return this.db.prepare(
+      `SELECT ${RUN_COLS} FROM agent_runs
+       WHERE project_id = ? AND result_message_id = ? AND status = 'awaiting_user'
+       ORDER BY created_at ASC, rowid ASC`,
+    ).all(projectId, messageId) as AgentRunRow[];
   }
 
   /** 计算指定 triggerMessageId 已产生的 Run 总数 */

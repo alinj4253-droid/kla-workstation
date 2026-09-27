@@ -1,0 +1,40 @@
+schemaVersion: 1
+id: builtin.local-executor
+version: 1.0.0
+displayName: 本地执行智能体
+runtime: native-model
+framework: loop-engine
+entry: nativeAgentLoop
+defaultModelSlot: reasoning
+modelRequirements:
+  - streaming
+  - toolCalling
+  - structuredOutput
+skills:
+  - local-knowledge-management
+  - local-research
+  - local-material-authoring
+  - local-deliverable-acceptance
+  - parallel-agent
+tools:
+  - skill.search
+  - skill.load
+  - knowledge.process
+  - knowledge.search
+  - knowledge.readDocument
+  - knowledge.listGraph
+  - web.search
+  - template.list
+  - template.read
+  - template.materialize
+  - workspace.read
+  - temp.save
+  - temp.read
+  - temp.list
+  - temp.promote
+  - publish.artifact
+  - agent.spawnParallel
+  - memory.writeOwn
+memoryPolicy:
+  shortTermTtlHours: 72
+  longTermWrite: candidate-then-commit

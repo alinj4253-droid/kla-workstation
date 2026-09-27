@@ -1,4 +1,4 @@
-export type AgentRuntimeMode = 'native-model' | 'external-cli';
+export type AgentRuntimeMode = 'native-model' | 'external-cli' | 'external-mcp';
 
 // ─── New spec-compliant types ────────────────────────────────────────────────
 export type {
@@ -63,6 +63,9 @@ export {
 export type { AcpCliRegistryEntry } from './adapters/index.js';
 export type { AcpSessionRunOptions, AcpSessionResult } from './adapters/index.js';
 export type { AcpTransportOptions, AcpTransport } from './adapters/index.js';
+export { WorkBuddyMcpAdapter } from './adapters/workbuddy/index.js';
+export { StreamableHttpMcpClient } from './mcp/client.js';
+export type { McpConnectionConfig, McpServerInfo, McpTool, McpToolResult, McpTransport } from './mcp/types.js';
 
 // 向后兼容别名（通过旧路径重导出）
 export { CodexCliAdapter as CodexCliAdapterLegacy, CodexAutoStrategy as CodexAutoStrategyLegacy } from './codex-adapter.js';

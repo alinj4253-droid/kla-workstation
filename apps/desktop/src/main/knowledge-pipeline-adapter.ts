@@ -22,6 +22,7 @@ import { getLogger } from './logger';
 import { LocalOcrService } from './local-ocr';
 import { materializeKnowledgeArtifacts } from './knowledge-artifacts';
 import { isBuiltinToolEnabled } from './builtin-tool-catalog';
+import { materializeStandardizedDocument } from './knowledge-standardized';
 
 /**
  * 基础文本提取：不依赖 LLM，从文件名和文本块中提取实体和关系。
@@ -203,6 +204,10 @@ export function createPipelineContext(
         parserId: typeof metadata.parserId === 'string' ? metadata.parserId : 'unknown',
         metadataJson: JSON.stringify(metadata),
       });
+    },
+
+    async saveStandardizedDocument(document, chunks): Promise<void> {
+      await materializeStandardizedDocument({ db, sourceId, scopeType: scopeType as 'project' | 'shared', scopeId, document, chunks });
     },
 
     async analyzeDocument(text: string, fallback: KnowledgeDocumentProfile): Promise<KnowledgeDocumentProfile> {

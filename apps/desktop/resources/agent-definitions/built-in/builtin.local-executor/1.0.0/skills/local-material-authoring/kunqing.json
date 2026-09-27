@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "local-material-authoring",
+  "version": "1.0.0",
+  "entry": "SKILL.md",
+  "agentDefinitions": ["builtin.local-executor"],
+  "executionMode": "instructions",
+  "requiredTools": ["knowledge:search", "knowledge:readDocument", "template:list", "template:read", "template:materialize", "temp:save", "temp:read", "temp:list", "temp:promote"],
+  "permissions": ["read:knowledge", "read:document", "read:template", "write:temp", "promote:reviewed-output"]
+}

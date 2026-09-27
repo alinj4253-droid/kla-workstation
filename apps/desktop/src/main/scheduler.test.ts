@@ -206,6 +206,58 @@ describe('Scheduler', () => {
     expect(row.error_message).toContain('executor failed');
   });
 
+  it('ignores duplicate enqueue calls for the same run', async () => {
+    createRunInDb(db, { id: 'run-1', projectId: 'proj-1', agentInstanceId: 'agent-1' });
+    executor.mockImplementation(() => new Promise((resolve) => setTimeout(resolve, 30)));
+    scheduler.enqueue(makeRun());
+    scheduler.enqueue(makeRun());
+    scheduler.enqueue(makeRun());
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(executor).toHaveBeenCalledTimes(1);
+  });
+
+  it('completes the original waiting run only after its user continuation returns', async () => {
+    createRunInDb(db, { id: 'waiting-run', projectId: 'proj-1', agentInstanceId: 'agent-1' });
+    createRunInDb(db, { id: 'continuation-run', projectId: 'proj-1', agentInstanceId: 'agent-1' });
+    db.prepare("UPDATE agent_runs SET status = 'running', result_message_id = 'question-message' WHERE id = 'waiting-run'").run();
+    db.prepare("UPDATE agent_runs SET parent_run_id = 'waiting-run' WHERE id = 'continuation-run'").run();
+    db.prepare("INSERT INTO agent_run_events VALUES ('resume-event', 'continuation-run', 1, 'run.resumed-from-user', '{}', ?)").run(new Date().toISOString());
+    executor.mockImplementation(async (run: { runId: string }) => {
+      db.prepare('UPDATE agent_runs SET result_message_id = ? WHERE id = ?').run('final-answer-message', run.runId);
+    });
+
+    scheduler.enqueue(makeRun({ runId: 'continuation-run', agentInstanceId: 'agent-1' }));
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    const waiting = db.prepare('SELECT status, result_message_id as resultMessageId FROM agent_runs WHERE id = ?').get('waiting-run') as { status: string; resultMessageId: string | null };
+    expect(waiting).toEqual({ status: 'completed', resultMessageId: 'final-answer-message' });
+  });
+
+  it('enqueue 时把链路元数据快照透传给 executor（chainMeta）', async () => {
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO agent_runs (id, project_id, agent_instance_id, requested_by_type, requested_by_id, instruction, parent_run_id, trigger_message_id, status, attempt, created_at)
+       VALUES ('run-delegated', 'proj-1', 'agent-2', 'agent', 'agent-parent', '子任务', 'run-parent', 'msg-9', 'queued', 1, ?)`,
+    ).run(now);
+    createRunInDb(db, { id: 'run-user', projectId: 'proj-1', agentInstanceId: 'agent-1' });
+
+    scheduler.enqueue(makeRun({ runId: 'run-user', agentInstanceId: 'agent-1' }));
+    scheduler.enqueue(makeRun({ runId: 'run-delegated', agentInstanceId: 'agent-2', triggerMessageId: 'msg-9' }));
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    const userRun = (executor.mock.calls[0]?.[0] as { chainMeta?: Record<string, unknown> }).chainMeta;
+    expect(userRun).toMatchObject({ requestedByType: 'user', requestedById: 'local-user' });
+    expect(userRun).not.toHaveProperty('parentRunId');
+
+    const delegatedRun = (executor.mock.calls[1]?.[0] as { chainMeta?: Record<string, unknown> }).chainMeta;
+    expect(delegatedRun).toEqual({
+      requestedByType: 'agent',
+      requestedById: 'agent-parent',
+      parentRunId: 'run-parent',
+      createdAt: now,
+    });
+  });
+
   it('allows a task to run for four hours before timing it out', async () => {
     vi.useFakeTimers();
     try {

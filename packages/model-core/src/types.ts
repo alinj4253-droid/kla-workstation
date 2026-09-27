@@ -25,6 +25,11 @@ export interface CapabilityTestResults {
 
 export interface GenerateOptions {
   tools?: Record<string, { description: string; parameters: Record<string, unknown> }>;
+  /** Per-call reasoning override for lightweight routing/planning calls. */
+  thinking?: boolean;
+  thinkingLevel?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+  /** Bounds coordination JSON and summaries without changing the mounted model. */
+  maxOutputTokens?: number;
 }
 
 export interface GenerateResult {

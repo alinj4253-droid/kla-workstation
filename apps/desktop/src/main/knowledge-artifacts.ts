@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { basename, extname, join } from 'node:path';
 import { app } from 'electron';
-import { getProjectRoot, getStudioRoot } from './paths';
+import { getEnterpriseProjectRoot, getEnterpriseWorkspaceRoot, getProjectRoot, getStudioRoot } from './paths';
 
 const GRAPH_DATA_PLACEHOLDER = '__KUNQING_GRAPH_DATA__';
 const GRAPH_RUNTIME_PLACEHOLDER = '__KUNQING_ECHARTS_RUNTIME__';
@@ -224,7 +224,15 @@ const pages=${safeJson(pages)};const list=document.getElementById('list'),q=docu
 }
 
 export async function materializeKnowledgeArtifacts(db: Database.Database, scopeType: string, scopeId: string): Promise<void> {
-  const root = scopeType === 'shared' ? join(getStudioRoot(), 'shared-knowledge') : getProjectRoot(scopeId);
+  let enterpriseProject = false;
+  if (scopeType === 'project') {
+    try { enterpriseProject = !!db.prepare('SELECT 1 FROM enterprise_projects WHERE id = ?').get(scopeId); } catch { /* legacy database */ }
+  }
+  const root = scopeType === 'shared'
+    ? getEnterpriseWorkspaceRoot()
+    : enterpriseProject
+      ? getEnterpriseProjectRoot(scopeId)
+      : getProjectRoot(scopeId);
   const nodes = db.prepare(
     'SELECT id, node_type as nodeType, canonical_name as canonicalName, summary, confidence FROM knowledge_nodes WHERE scope_type = ? AND scope_id = ?',
   ).all(scopeType, scopeId) as GraphNodeRow[];

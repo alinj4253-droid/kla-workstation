@@ -16,6 +16,8 @@ pnpm dev          # Electron 开发模式
 pnpm dev:web      # 仅浏览器中调试 Renderer UI
 ```
 
+Windows 用户也可以直接双击仓库根目录的 `启动桌面预览.bat`；脚本会从自身所在目录启动当前源码的最新桌面预览，并在窗口中保留启动日志。
+
 ## 验证
 
 ```bash
@@ -48,18 +50,26 @@ K_Studio/
 │   ├── logs/             # pino 运行日志
 │   ├── cache/            # 缓存
 │   └── temp/staged-uploads/  # 临时上传暂存区
-├── group-chats/
-│   └── {projectId}-workspace/  # 每个群聊项目的工作区
-│       ├── identity/     # Agent Identity
-│       ├── memory/       # 持久化记忆
-│       ├── original/     # 源文件
-│       ├── knowledge/    # 知识图谱
-│       └── visualization/# 可视化
-└── shared-knowledge/
-    └── original-files/   # 共享知识原文件
+├── group-chats/<id>-workspace/ # 个人作用域（按群聊隔离）
+│   ├── original-files/   # 源文件
+│   ├── standardized-files/ # 标准化全文
+│   ├── knowledge/        # 知识化切片与索引
+│   ├── temp/<rootRunId>/ # 单次任务中间文件
+│   ├── templates/        # 材料模板
+│   └── outputs/          # 正式成果
+├── projects/<projectId>/ # 项目作用域（关联资源共享）
+│   ├── original-files/   # 项目共享源文件
+│   ├── standardized-files/ # 项目标准化全文
+│   ├── knowledge/        # 项目知识
+│   ├── templates/        # 项目模板
+│   └── outputs/          # 项目成果
+├── shared-knowledge/     # 企业共享文件与知识
+└── meetings/<id>-workspace/ # 会议工作区
 ```
 
 > 应用业务数据仅写入上述声明的目录结构，不会散落到未声明位置。
+> UI 中的个人、项目、企业是逻辑作用域：分别对应 `group-chats/`、`projects/`、`shared-knowledge/`。
+> 旧版本的 `project-shared/` 内容仍由兼容迁移逻辑识别，详见 [当前架构](docs/ARCHITECTURE.md)。
 
 ## 技术栈
 
@@ -71,10 +81,18 @@ K_Studio/
 - **渠道**: Telegram / 飞书 / 钉钉 / 企业微信 Webhook 适配器
 - **测试**: Vitest + Testing Library
 
-## 已知限制（MVP）
+## 当前实现说明
 
-- **会议**和**任务中心**在导航中明确禁用（不在 MVP 范围）。
+- 页面与能力以当前代码和功能开关为准；历史 MVP 规格中的“会议/任务中心禁用”不再代表当前完整实现状态。
 - **渠道适配器**使用 mock 适配器进行 schema 验证；真实消息收发需通过对应外部服务验证。
 - **安装包**仅支持 Windows NSIS；卸载默认保留用户工作区数据。
 - **Crash Recovery**：Runtime 崩溃后重启会将未完成 Run 标记为 `interrupted`。
 - **原生模块** `better-sqlite3` 需 `node-gyp` 编译，`electron-rebuild` 在 `dev`/`build` 时自动处理。
+
+## 文档索引
+
+- [当前架构](docs/ARCHITECTURE.md)
+- [MVP 基线（历史规格）](docs/MVP_IMPLEMENTATION_SPEC.md)
+- [ACP 适配器计划](docs/ACP_ADAPTER_PLAN.md)
+- [渠道手动绑定设计](docs/DESIGN_CHANNEL_MANUAL_BINDING.md)
+- [WorkBuddy MCP](docs/workbuddy-mcp.md)

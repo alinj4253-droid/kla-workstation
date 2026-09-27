@@ -1,5 +1,15 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
+type WorkspaceBridgeRequest = {
+  projectId: string;
+  relativePath?: string;
+  scopeType?: 'project' | 'shared' | 'project-shared';
+  scopeId?: string;
+  systemDir?: string;
+  resourceType?: 'group' | 'meeting' | 'operation';
+  resourceId?: string;
+};
+
 function generateRequestId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
@@ -12,9 +22,20 @@ const api = {
   app: {
     bootstrap: (): Promise<unknown> => rpc('app:bootstrap'),
     getVersion: (): Promise<string> => rpc('app:getVersion') as Promise<string>,
+    setFullscreen: (input: { enabled: boolean; presentationType?: 'html' | 'pptx' }): Promise<unknown> => rpc('app:setFullscreen', input),
+    onFullscreenExit: (handler: () => void): (() => void) => {
+      ipcRenderer.on('app:fullscreenExit', handler);
+      return () => ipcRenderer.removeListener('app:fullscreenExit', handler);
+    },
+    onPresentationKey: (handler: (key: 'ArrowUp' | 'ArrowDown') => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { key: 'ArrowUp' | 'ArrowDown' }): void => handler(data.key);
+      ipcRenderer.on('app:presentationKey', listener);
+      return () => ipcRenderer.removeListener('app:presentationKey', listener);
+    },
     ensureStudio: (): Promise<unknown> => rpc('app:ensureStudio'),
     search: (input: { query: string; scope?: string }): Promise<unknown> => rpc('app:search', input),
     openExternal: (input: { url: string }): Promise<unknown> => rpc('app:openExternal', input),
+    verifyOperationsAccess: (input: { key: string }): Promise<unknown> => rpc('app:verifyOperationsAccess', input),
   },
   studio: {
     getStatus: (): Promise<unknown> => rpc('studio:getStatus'),
@@ -35,7 +56,8 @@ const api = {
   },
   projects: {
     list: (input: { status?: string; limit?: number; offset?: number }): Promise<unknown> => rpc('projects:list', input),
-    create: (input: { idempotencyKey: string; content: unknown; templateId?: string; requestedAgentProfileIds: string[] }): Promise<unknown> => rpc('projects:create', input),
+    planHomeRequest: (input: { text: string }): Promise<unknown> => rpc('projects:planHomeRequest', input),
+    create: (input: { idempotencyKey: string; content: unknown; templateId?: string; requestedAgentProfileIds: string[]; customName?: string; autoStart?: boolean }): Promise<unknown> => rpc('projects:create', input),
     get: (input: { projectId: string }): Promise<unknown> => rpc('projects:get', input),
     rename: (input: { projectId: string; name: string }): Promise<unknown> => rpc('projects:rename', input),
     archive: (input: { projectId: string }): Promise<unknown> => rpc('projects:archive', input),
@@ -45,26 +67,37 @@ const api = {
   messages: {
     list: (input: { projectId: string; before?: string; limit?: number }): Promise<unknown> => rpc('messages:list', input),
     listRunActivity: (input: { projectId: string; limit?: number }): Promise<unknown> => rpc('messages:listRunActivity', input),
-    send: (input: { idempotencyKey: string; projectId: string; content: unknown }): Promise<unknown> => rpc('messages:send', input),
+    send: (input: { idempotencyKey: string; projectId: string; content: unknown; replyToId?: string }): Promise<unknown> => rpc('messages:send', input),
     cancelRun: (input: { runId: string }): Promise<unknown> => rpc('messages:cancelRun', input),
     cancelProjectRuns: (input: { projectId: string }): Promise<unknown> => rpc('messages:cancelProjectRuns', input),
     retryRun: (input: { runId: string; idempotencyKey: string }): Promise<unknown> => rpc('messages:retryRun', input),
   },
   workspace: {
-    list: (input: { projectId: string; relativePath?: string; filter?: string; scopeType?: 'project' | 'shared' }): Promise<unknown> => rpc('workspace:list', input),
-    listFiles: (input: { projectId: string; relativePath?: string; scopeType?: 'project' | 'shared' }): Promise<unknown> => rpc('workspace:listFiles', input),
+    list: (input: WorkspaceBridgeRequest & { filter?: string }): Promise<unknown> => rpc('workspace:list', input),
+    listFiles: (input: WorkspaceBridgeRequest): Promise<unknown> => rpc('workspace:listFiles', input),
     ensureProject: (input: { projectId: string; name: string }): Promise<{ ok: true }> => rpc('workspace:ensureProject', input) as Promise<{ ok: true }>,
-    uploadFiles: (input: { projectId: string; relativePath?: string; scopeType?: 'project' | 'shared' }): Promise<{ cancelled: boolean; importedCount: number }> => rpc('workspace:uploadFiles', input) as Promise<{ cancelled: boolean; importedCount: number }>,
-    openItem: (input: { projectId: string; relativePath: string; scopeType?: 'project' | 'shared' }): Promise<{ ok: true }> => rpc('workspace:openItem', input),
-    createFolder: (input: { projectId: string; name: string; relativePath?: string; scopeType?: 'project' | 'shared' }): Promise<unknown> => rpc('workspace:createFolder', input),
-    rename: (input: { projectId: string; relativePath: string; name: string; scopeType?: 'project' | 'shared' }): Promise<unknown> => rpc('workspace:rename', input),
-    move: (input: { projectId: string; sourcePaths: string[]; targetDir: string; scopeType?: 'project' | 'shared' }): Promise<unknown> => rpc('workspace:move', input),
-    softDelete: (input: { projectId: string; paths: string[]; scopeType?: 'project' | 'shared' }): Promise<unknown> => rpc('workspace:softDelete', input),
-    getPreview: (input: { projectId: string; relativePath: string; scopeType?: 'project' | 'shared' }): Promise<unknown> => rpc('workspace:getPreview', input),
+    ensureEnterpriseProject: (input: { projectId: string; name: string }): Promise<{ ok: true }> => rpc('workspace:ensureEnterpriseProject', input) as Promise<{ ok: true }>,
+    uploadFiles: (input: WorkspaceBridgeRequest): Promise<{ cancelled: boolean; importedCount: number }> => rpc('workspace:uploadFiles', input) as Promise<{ cancelled: boolean; importedCount: number }>,
+    openItem: (input: WorkspaceBridgeRequest & { relativePath: string }): Promise<{ ok: true }> => rpc('workspace:openItem', input),
+    createFolder: (input: WorkspaceBridgeRequest & { name: string }): Promise<unknown> => rpc('workspace:createFolder', input),
+    rename: (input: WorkspaceBridgeRequest & { relativePath: string; name: string }): Promise<unknown> => rpc('workspace:rename', input),
+    move: (input: WorkspaceBridgeRequest & { sourcePaths: string[]; targetDir: string }): Promise<unknown> => rpc('workspace:move', input),
+    softDelete: (input: WorkspaceBridgeRequest & { paths: string[] }): Promise<unknown> => rpc('workspace:softDelete', input),
+    getPreview: (input: WorkspaceBridgeRequest & { relativePath: string }): Promise<unknown> => rpc('workspace:getPreview', input),
     listVersions: (input: { fileId: string }): Promise<unknown> => rpc('workspace:listVersions', input),
-    openWithSystem: (input: { projectId: string; relativePath: string; scopeType?: 'project' | 'shared' }): Promise<unknown> => rpc('workspace:openWithSystem', input),
-    listSystemDirs: (input: { projectId: string }): Promise<unknown> => rpc('workspace:listSystemDirs', input),
-    listProjectDir: (input: { projectId: string; relativePath: string }): Promise<unknown> => rpc('workspace:listProjectDir', input),
+    openWithSystem: (input: WorkspaceBridgeRequest & { relativePath: string }): Promise<unknown> => rpc('workspace:openWithSystem', input),
+    listSystemDirs: (input: WorkspaceBridgeRequest): Promise<unknown> => rpc('workspace:listSystemDirs', input),
+    listProjectDir: (input: WorkspaceBridgeRequest & { relativePath: string }): Promise<unknown> => rpc('workspace:listProjectDir', input),
+    publishToProject: (input: { projectId: string; enterpriseProjectId: string; relativePath: string; sourceArea?: 'original-files' | 'outputs' }): Promise<unknown> => rpc('workspace:publishToProject', input),
+  },
+  meetings: {
+    saveRecording: (input: { projectId: string; meetingId: string; fileName: string; bytes: Uint8Array }): Promise<unknown> => rpc('meetings:saveRecording', input),
+    saveSharedKnowledge: (input: { projectId: string; meetingId: string; title: string; content: string }): Promise<unknown> => rpc('meetings:saveSharedKnowledge', input),
+    getRealtimeRecognitionUrl: (input?: { speakerContextId?: string }): Promise<unknown> => rpc('meetings:getRealtimeRecognitionUrl', input),
+    analyzeSpeakers: (input: { meetingName: string; projectName: string; knownPeople: string[]; transcript: unknown[]; speakers: unknown[] }): Promise<unknown> => rpc('meetings:analyzeSpeakers', input),
+    refineSpeakers: (input: { meetingName: string; projectName: string; knownPeople: string[]; transcript: unknown[]; speakers: unknown[]; identities: unknown[]; message: string }): Promise<unknown> => rpc('meetings:refineSpeakers', input),
+    generateMinutes: (input: { meetingName: string; projectName: string; transcript: unknown[]; speakers: unknown[]; confirmations: string[] }): Promise<unknown> => rpc('meetings:generateMinutes', input),
+    exportFiles: (input: { projectId: string; meetingId: string; meetingName: string; audioRelativePath: string; audioFileName: string; transcriptText: string }): Promise<unknown> => rpc('meetings:exportFiles', input),
   },
   agents: {
     listDefinitions: (): Promise<unknown> => rpc('agents:listDefinitions'),
@@ -74,13 +107,24 @@ const api = {
     detectCli: (): Promise<unknown> => rpc('agents:detectCli'),
     listAdapterTypes: (): Promise<unknown> => rpc('agents:listAdapterTypes'),
     listCliConnections: (): Promise<unknown> => rpc('agents:listCliConnections'),
+    importWorkBuddyConfig: (): Promise<unknown> => rpc('agents:importWorkBuddyConfig'),
+    getWorkBuddyStatus: (): Promise<unknown> => rpc('agents:getWorkBuddyStatus'),
+    connectWorkBuddy: (input: { name: string; transport?: string; url: string; timeoutMs?: number; headers?: Record<string, string>; toolName?: string }): Promise<unknown> => rpc('agents:connectWorkBuddy', input),
+    testWorkBuddy: (input?: { connectionId?: string }): Promise<unknown> => rpc('agents:testWorkBuddy', input),
+    disconnectWorkBuddy: (): Promise<unknown> => rpc('agents:disconnectWorkBuddy'),
+    startNeutralRelay: (): Promise<unknown> => rpc('agents:startNeutralRelay'),
+    stopNeutralRelay: (): Promise<unknown> => rpc('agents:stopNeutralRelay'),
+    getNeutralRelayStatus: (): Promise<unknown> => rpc('agents:getNeutralRelayStatus'),
+    enqueueNeutralRelayTask: (input: { instruction: string; projectId?: string; metadata?: Record<string, unknown> }): Promise<unknown> => rpc('agents:enqueueNeutralRelayTask', input),
+    getNeutralRelayTask: (input: { taskId: string }): Promise<unknown> => rpc('agents:getNeutralRelayTask', input),
+    listNeutralRelayTasks: (): Promise<unknown> => rpc('agents:listNeutralRelayTasks'),
     saveCliConnection: (input: { name: string; adapterType: string; executablePath: string }): Promise<unknown> => rpc('agents:saveCliConnection', input),
     testCliConnection: (input: { connectionId: string }): Promise<unknown> => rpc('agents:testCliConnection', input),
     deleteCliConnection: (input: { connectionId: string }): Promise<unknown> => rpc('agents:deleteCliConnection', input),
     saveProfile: (input: { id?: string; name: string; definitionId: string; runtimeMode: string }): Promise<unknown> => rpc('agents:saveProfile', input),
     setDefaultLeader: (input: { profileId: string }): Promise<unknown> => rpc('agents:setDefaultLeader', input),
     setProfileEnabled: (input: { profileId: string; enabled: boolean }): Promise<unknown> => rpc('agents:setProfileEnabled', input),
-    updateProfileModel: (input: { profileId: string; modelProfileId: string }): Promise<unknown> => rpc('agents:updateProfileModel', input),
+    updateProfileModel: (input: { profileId: string; modelProfileId: string; temperature?: number; thinking?: boolean; thinkingLevel?: string }): Promise<unknown> => rpc('agents:updateProfileModel', input),
     updateProfileSkills: (input: { profileId: string; enabledSkills: string[] }): Promise<unknown> => rpc('agents:updateProfileSkills', input),
     updateProfilePermissions: (input: { profileId: string; effectivePermissions: string[] }): Promise<unknown> => rpc('agents:updateProfilePermissions', input),
     cloneProfile: (input: { profileId: string; name: string }): Promise<unknown> => rpc('agents:cloneProfile', input),
@@ -101,6 +145,10 @@ const api = {
     wizardRetry: (): Promise<unknown> => rpc('agents:wizardRetry'),
   },
   models: {
+    listUnified: (): Promise<unknown> => rpc('models:listUnified'),
+    saveUnified: (input: { id?: string; name: string; modelId: string; type: string; baseUrl: string; apiKey?: string }): Promise<unknown> => rpc('models:saveUnified', input),
+    testUnified: (input: { id: string }): Promise<unknown> => rpc('models:testUnified', input),
+    deleteUnified: (input: { id: string }): Promise<unknown> => rpc('models:deleteUnified', input),
     listProviders: (): Promise<unknown> => rpc('models:listProviders'),
     listProfiles: (): Promise<unknown> => rpc('models:listProfiles'),
     saveProvider: (input: { name: string; type: string; baseUrl: string; authType: string; apiKey?: string }): Promise<unknown> => rpc('models:saveProvider', input),
@@ -122,6 +170,8 @@ const api = {
     search: (input: { query: string; scopeType?: string; scopeId?: string; limit?: number }): Promise<unknown> => rpc('knowledge:search', input),
     listJobs: (input: { scopeType?: string; scopeId?: string; status?: string; projectId?: string }): Promise<unknown> => rpc('knowledge:listJobs', input),
     ingest: (input: { fileId: string }): Promise<unknown> => rpc('knowledge:ingest', input),
+    startWorkspaceIngestion: (input: WorkspaceBridgeRequest): Promise<unknown> => rpc('knowledge:startWorkspaceIngestion', input),
+    getWorkspaceIngestionStatus: (input: WorkspaceBridgeRequest): Promise<unknown> => rpc('knowledge:getWorkspaceIngestionStatus', input),
     retryJob: (input: { jobId: string }): Promise<unknown> => rpc('knowledge:retryJob', input),
     getGraph: (input: { scopeType: string; scopeId: string; projectId?: string }): Promise<unknown> => rpc('knowledge:getGraph', input),
     getSourceDetail: (input: { fileId: string }): Promise<unknown> => rpc('knowledge:getSourceDetail', input),
@@ -129,6 +179,40 @@ const api = {
     getNodeProvenance: (input: { targetType: string; targetId: string }): Promise<unknown> => rpc('knowledge:getNodeProvenance', input),
     wikiList: (input: { scopeType: string; scopeId: string; projectId: string }): Promise<unknown> => rpc('wiki:list', input),
     wikiGet: (input: { scopeType: string; scopeId: string; slug: string; projectId?: string }): Promise<unknown> => rpc('wiki:get', input),
+  },
+  operations: {
+    syncPlatform: (input: { id: string; name: string; url: string; description?: string; agentName?: string; modelProfileId?: string; temperature?: number }): Promise<unknown> => rpc('operations:syncPlatform', input),
+    ensureWorkspace: (input: { platformId: string; projectId?: string }): Promise<unknown> => rpc('operations:ensureWorkspace', input),
+    showView: (input: { platformId: string; bounds: { x: number; y: number; width: number; height: number } }): Promise<unknown> => rpc('operations:showView', input),
+    getBrowserNavigation: (input: { platformId: string }): Promise<unknown> => rpc('operations:getBrowserNavigation', input),
+    goBack: (input: { platformId: string }): Promise<unknown> => rpc('operations:goBack', input),
+    goForward: (input: { platformId: string }): Promise<unknown> => rpc('operations:goForward', input),
+    hideView: (input?: { platformId?: string }): Promise<unknown> => rpc('operations:hideView', input),
+    getCaptureSourceId: (): Promise<unknown> => rpc('operations:getCaptureSourceId'),
+    beginRecording: (input: { platformId: string }): Promise<unknown> => rpc('operations:beginRecording', input),
+    pauseRecording: (input: { recordingId: string; paused: boolean }): Promise<unknown> => rpc('operations:pauseRecording', input),
+    stopRecording: (input: { recordingId: string }): Promise<unknown> => rpc('operations:stopRecording', input),
+    saveRecordingVideo: (input: { recordingId: string; bytes?: Uint8Array }): Promise<unknown> => rpc('operations:saveRecordingVideo', input),
+    learnSkill: (input: { platformId: string; recordingId: string; name: string; description: string }): Promise<unknown> => rpc('operations:learnSkill', input),
+    replyLearning: (input: { skillId: string; content: string }): Promise<unknown> => rpc('operations:replyLearning', input),
+    getLearningStatus: (input: { skillId: string }): Promise<unknown> => rpc('operations:getLearningStatus', input),
+    getSkillRecording: (input: { skillId: string }): Promise<unknown> => rpc('operations:getSkillRecording', input),
+    activateSkill: (input: { skillId: string }): Promise<unknown> => rpc('operations:activateSkill', input),
+    setSkillEnabled: (input: { skillId: string; enabled: boolean }): Promise<unknown> => rpc('operations:setSkillEnabled', input),
+    deleteSkill: (input: { skillId: string }): Promise<unknown> => rpc('operations:deleteSkill', input),
+    abandonSkill: (input: { skillId: string }): Promise<unknown> => rpc('operations:abandonSkill', input),
+    listSkills: (input: { platformId: string; includeRevoked?: boolean }): Promise<unknown> => rpc('operations:listSkills', input),
+    executeSkill: (input: { skillId: string; ownerAgentId: string; parameters?: Record<string, unknown> }): Promise<unknown> => rpc('operations:executeSkill', input),
+    runInstruction: (input: { platformId: string; instruction: string; projectId?: string }): Promise<unknown> => rpc('operations:runInstruction', input),
+    listConversation: (input: { platformId: string; limit?: number }): Promise<unknown> => rpc('operations:listConversation', input),
+    getRun: (input: { runId: string }): Promise<unknown> => rpc('operations:getRun', input),
+    listRuns: (input: { platformId: string; limit?: number }): Promise<unknown> => rpc('operations:listRuns', input),
+    cancelRun: (input: { runId: string }): Promise<unknown> => rpc('operations:cancelRun', input),
+    revokePlatform: (input: { platformId: string }): Promise<unknown> => rpc('operations:revokePlatform', input),
+  },
+  demo: {
+    labelSaved: (input: { projectId: string }): Promise<unknown> => rpc('asset-demo:labelSaved', input),
+    reset: (input: { projectId: string }): Promise<unknown> => rpc('asset-demo:reset', input),
   },
   settings: {
     getAll: (): Promise<unknown> => rpc('settings:getAll'),
@@ -147,7 +231,7 @@ const api = {
   },
   channels: {
     list: (): Promise<unknown> => rpc('channels:list'),
-    save: (input: { id?: string; type: string; name: string; config: Record<string, unknown> }): Promise<unknown> => rpc('channels:save', input),
+    save: (input: { id?: string; type: string; name: string; config: Record<string, unknown>; secret?: string }): Promise<unknown> => rpc('channels:save', input),
     test: (input: { channelId: string }): Promise<unknown> => rpc('channels:test', input),
     setEnabled: (input: { channelId: string; enabled: boolean }): Promise<unknown> => rpc('channels:setEnabled', input),
     delete: (input: { channelId: string }): Promise<unknown> => rpc('channels:delete', input),

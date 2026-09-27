@@ -2,6 +2,8 @@ node_modules/
 dist/
 out/
 release/
+**/release-latest/
+**/win-unpacked/
 coverage/
 .vite/
 *.log
@@ -14,6 +16,8 @@ K_Studio/
 *.tsbuildinfo
 dist-types/
 build/
+**/dist-web/
+**/dist-types/
 .workbuddy/
 
 # Generated PaddleOCR private-deployment bundle (assembled before packaging)
@@ -22,9 +26,22 @@ apps/desktop/resources/tools/paddleocr/runtime/
 apps/desktop/resources/tools/paddleocr/models/
 apps/desktop/resources/tools/paddleocr/.model-cache/
 
+# Packaged PaddleOCR/runtime bundles and embedded Python environments
+**/paddleocr/runtime/
+**/paddleocr/models/
+**/paddleocr/.model-cache/
+
+# Python bytecode and local interpreter caches
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyo
+
 # Local runtime state
 .runtime/
 **/.runtime/
+**/.kstudio/
+.codex-runtime/
 
 # Test and visual verification artifacts
 test-results/
@@ -37,3 +54,9 @@ blob-report/
 *.tmp
 *.bak
 *.pid
+
+# Local inspection/check scripts created during development
+apps/desktop/.tmp-*
+
+# Local-only demonstration assets (product source and docs are tracked separately)
+演示材料/

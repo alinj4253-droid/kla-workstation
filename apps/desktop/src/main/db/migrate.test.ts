@@ -22,13 +22,13 @@ describe('DB migration — clean install', () => {
     await rm(tmpDir, { recursive: true, force: true });
   });
 
-  it('runs all 17 migrations on empty database', () => {
+  it('runs every migration on an empty database', () => {
     runMigrations(dbPath);
     const db = new Database(dbPath);
     const rows = db.prepare('SELECT name FROM _migrations ORDER BY id').all() as Array<{ id: number; name: string }>;
-    expect(rows.length).toBe(17);
+    expect(rows.length).toBe(29);
     expect(rows[0]!.name).toBe('001_initial');
-    expect(rows[16]!.name).toBe('019_channel_bindings_unique');
+    expect(rows[28]!.name).toBe('031_coordination_registry_and_task_plans');
     db.close();
   });
 
@@ -53,6 +53,19 @@ describe('DB migration — clean install', () => {
     expect(tableNames).toContain('knowledge_chunk_embeddings');
     expect(tableNames).toContain('channels');
     expect(tableNames).toContain('wiki_pages');
+    expect(tableNames).toContain('operation_platforms');
+    expect(tableNames).toContain('operation_recording_sessions');
+    expect(tableNames).toContain('operation_skills');
+    expect(tableNames).toContain('operation_skill_runs');
+    expect(tableNames).toContain('operation_skill_run_events');
+    expect(tableNames).toContain('operation_conversation_messages');
+    expect(tableNames).toContain('operation_learning_resolutions');
+    expect(tableNames).toContain('memory_reflection_jobs');
+    expect(tableNames).toContain('project_agent_coordination');
+    expect(tableNames).toContain('task_plans');
+    expect(tableNames).toContain('task_nodes');
+    const taskNodeColumns = db.prepare("PRAGMA table_info('task_nodes')").all() as Array<{ name: string }>;
+    expect(taskNodeColumns.map((column) => column.name)).toContain('node_key');
     db.close();
   });
 
@@ -61,7 +74,7 @@ describe('DB migration — clean install', () => {
     runMigrations(dbPath);
     const db = new Database(dbPath);
     const rows = db.prepare('SELECT name FROM _migrations ORDER BY id').all() as Array<{ name: string }>;
-    expect(rows.length).toBe(17);
+    expect(rows.length).toBe(29);
     db.close();
   });
 
@@ -146,7 +159,7 @@ describe('DB migration — schema upgrade', () => {
 
     const checkDb = new Database(dbPath);
     const rows = checkDb.prepare('SELECT name FROM _migrations ORDER BY id').all() as Array<{ name: string }>;
-    expect(rows.length).toBe(17);
+    expect(rows.length).toBe(29);
     const names = rows.map((r) => r.name);
     expect(names.filter((n) => n === '009_create_skills_tables').length).toBe(1);
     checkDb.close();

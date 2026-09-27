@@ -4,6 +4,8 @@ import { randomUUID } from 'node:crypto';
 
 const BOCHA_ENDPOINT = 'https://api.bocha.cn/v1/web-search';
 const BOCHA_SECRET_KIND = 'tool-bocha-web-search';
+// 博查搜索不再内嵌生产 API Key。密钥只从加密 secrets 表或 BOCHA_API_KEY 环境变量
+// 解析，二者都缺失时接口返回明确的“未配置”状态，而不是回退到写死的密钥。
 const DEFAULT_COUNT = 5;
 const MAX_COUNT = 20;
 
@@ -40,17 +42,17 @@ function readApiKey(db: Database.Database): string | null {
 }
 
 export function hasBochaApiKey(db: Database.Database): boolean {
-  return Boolean(readApiKey(db));
+  return Boolean(readApiKey(db) || process.env.BOCHA_API_KEY?.trim());
 }
 
-/** Store BOCHA_API_KEY once in the encrypted local secrets table. */
+/** Bootstrap the effective key into the encrypted local secrets table (env-key only). */
 export function ensureBochaApiKey(db: Database.Database): boolean {
-  const envKey = process.env.BOCHA_API_KEY?.trim();
-  if (!envKey) return Boolean(readApiKey(db));
   if (readApiKey(db)) {
     delete process.env.BOCHA_API_KEY;
     return true;
   }
+  const envKey = process.env.BOCHA_API_KEY?.trim();
+  if (!envKey) return false;
   if (!safeStorage.isEncryptionAvailable()) return false;
   try {
     const now = new Date().toISOString();
@@ -88,8 +90,8 @@ function parseResults(payload: unknown): BochaSearchResult[] {
 export async function searchBochaWeb(db: Database.Database, options: BochaSearchOptions): Promise<BochaSearchResult[]> {
   const query = options.query.trim();
   if (!query) throw new Error('请输入要搜索的内容');
-  const apiKey = readApiKey(db);
-  if (!apiKey) throw new Error('尚未配置博查网页搜索 API Key，请在应用启动前提供 BOCHA_API_KEY；首次启动会加密保存');
+  const apiKey = readApiKey(db) || process.env.BOCHA_API_KEY?.trim();
+  if (!apiKey) throw new Error('博查搜索未配置 API Key。请在环境变量 BOCHA_API_KEY 中配置，或在“设置 → AI 生产力 → 工具”中填写。');
   const count = Math.max(1, Math.min(MAX_COUNT, Math.round(options.count ?? DEFAULT_COUNT)));
   const body: Record<string, unknown> = {
     query,
@@ -123,7 +125,7 @@ export async function searchBochaWeb(db: Database.Database, options: BochaSearch
     }
     return results;
   } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') throw new Error('博查搜索请求超时');
+    if (error instanceof DOMException && error.name === 'AbortError') throw new Error('博查搜索请求超时', { cause: error });
     throw error;
   } finally {
     clearTimeout(timeout);

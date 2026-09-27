@@ -72,12 +72,18 @@ export function MemoryManager({ projectId, agents, initialAgentInstanceId, onClo
   }, [authorized, projectId, selectedAgentId]);
 
   const verifyAccess = (): void => {
-    if (accessKey === '123456') {
-      setAccessError('');
-      setAuthorized(true);
-      return;
-    }
-    setAccessError('运维权限密钥不正确');
+    const check = window.kunqing?.app
+      ? window.kunqing.app.verifyOperationsAccess({ key: accessKey }).then((res) => {
+        const data = res as { ok?: boolean; data?: { granted?: boolean } } | undefined;
+        if (data?.data?.granted) {
+          setAccessError('');
+          setAuthorized(true);
+        } else {
+          setAccessError('运维权限密钥不正确');
+        }
+      })
+      : Promise.resolve();
+    void check;
   };
 
   const removeMemory = async (recordId: string): Promise<void> => {

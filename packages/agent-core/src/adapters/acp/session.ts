@@ -10,6 +10,7 @@ import type {
   SessionUpdate,
   RequestPermissionRequest,
   RequestPermissionResponse,
+  PermissionOption,
 } from '@agentclientprotocol/sdk';
 import type { AgentEventSink, ExternalRunResult } from '../../external-agent-adapter.js';
 import type { AcpTransport } from './transport.js';
@@ -108,6 +109,9 @@ function mapSessionUpdate(
       }));
       break;
     case 'tool_call_update':
+      // pending/in_progress are progress notifications, not failures. Emitting
+      // them as failed caused one ACP tool call to appear as many failures.
+      if (update.status !== 'completed' && update.status !== 'failed') break;
       emit(jsonLine({
         type: 'tool.completed',
         callId: update.toolCallId,
@@ -125,6 +129,15 @@ function mapSessionUpdate(
     default:
       break;
   }
+}
+
+/** Select the least persistent allow option offered by the ACP agent. */
+export function allowAcpToolOnce(options: PermissionOption[]): RequestPermissionResponse {
+  const allowed = options.find((option) => option.kind === 'allow_once')
+    ?? options.find((option) => option.kind === 'allow_always');
+  return allowed
+    ? { outcome: { outcome: 'selected', optionId: allowed.optionId } }
+    : { outcome: { outcome: 'cancelled' } };
 }
 
 /** 取消当前 prompt turn：先发 session/cancel 优雅取消，2 秒后终止进程树 */

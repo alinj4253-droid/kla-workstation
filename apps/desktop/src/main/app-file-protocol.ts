@@ -18,7 +18,7 @@ import { protocol } from 'electron';
 import { lstat, readFile } from 'node:fs/promises';
 import { basename, extname, join, posix, resolve, sep } from 'node:path';
 import { FileRepository } from '@kunqing/database';
-import { getStudioRoot, getProjectRoot } from './paths';
+import { getEnterpriseProjectRoot, getEnterpriseWorkspaceRoot, getProjectRoot } from './paths';
 import { getLogger } from './logger';
 import type Database from 'better-sqlite3';
 
@@ -62,6 +62,7 @@ const MIME_TYPES: Record<string, string> = {
   '.ogg': 'audio/ogg',
   '.mp4': 'video/mp4',
   '.webm': 'video/webm',
+  '.glb': 'model/gltf-binary',
   '.py': 'text/x-python',
   '.sh': 'text/x-shellscript',
   '.bat': 'text/x-bat',
@@ -105,7 +106,7 @@ const assertNoSymlink = async (path: string): Promise<void> => {
 
 function resolveFileScopeRoot(scopeType: 'project' | 'shared', scopeId: string): string {
   if (scopeType === 'shared') {
-    return join(getStudioRoot(), 'shared-knowledge', 'original-files');
+    return join(getEnterpriseWorkspaceRoot(), 'original-files');
   }
   return join(getProjectRoot(scopeId), 'original-files');
 }
@@ -164,7 +165,7 @@ export function registerAppFileProtocol(getDb: () => Database.Database | null): 
           return new Response('File version not found', { status: 404 });
         }
 
-        const scopeRoot = resolveStoredFileRoot(file.scopeType, file.scopeId, file.normalizedPath);
+        const scopeRoot = resolveStoredFileRoot(db, file.scopeType, file.scopeId, file.normalizedPath);
         if (resourceType === 'preview' && assetPath && assetPath !== file.name && assetPath !== basename(file.normalizedPath)) {
           const normalizedAsset = normalizeRelativePath(assetPath).replaceAll('\\', '/');
           fileName = basename(normalizedAsset);
@@ -186,7 +187,7 @@ export function registerAppFileProtocol(getDb: () => Database.Database | null): 
         }
 
         fileName = file.name;
-        const scopeRoot = resolveStoredFileRoot(file.scopeType, file.scopeId, file.normalizedPath);
+        const scopeRoot = resolveStoredFileRoot(db, file.scopeType, file.scopeId, file.normalizedPath);
         filePath = resolveInside(scopeRoot, file.normalizedPath);
       } else {
         return new Response('Unknown resource type', { status: 400 });
@@ -214,7 +215,9 @@ export function registerAppFileProtocol(getDb: () => Database.Database | null): 
           "style-src app-file: https: http: 'unsafe-inline'",
           "font-src app-file: data: https: http:",
           "script-src app-file: https: http: 'unsafe-inline' 'unsafe-eval' blob:",
-          "connect-src https: http: wss: ws:",
+          // GLTFLoader fetches bufferView textures from short-lived blob: URLs.
+          // Permit those in previews while preserving the existing network policy.
+          "connect-src blob: https: http: wss: ws:",
           "media-src app-file: data: blob: https: http:",
           "frame-src app-file: https: http:",
           "worker-src blob:",
@@ -244,7 +247,15 @@ export function registerAppFileProtocol(getDb: () => Database.Database | null): 
   });
 }
 
-function resolveStoredFileRoot(scopeType: 'project' | 'shared', scopeId: string, normalizedPath: string): string {
+function resolveStoredFileRoot(db: Database.Database, scopeType: 'project' | 'shared', scopeId: string, normalizedPath: string): string {
+  let enterpriseProject = false;
+  if (scopeType === 'project') {
+    try { enterpriseProject = !!db.prepare('SELECT 1 FROM enterprise_projects WHERE id = ?').get(scopeId); } catch { /* legacy database */ }
+  }
+  if (enterpriseProject) {
+    const root = getEnterpriseProjectRoot(scopeId);
+    return normalizedPath === 'outputs' || normalizedPath.startsWith('outputs/') ? root : join(root, 'original-files');
+  }
   if (scopeType === 'project' && (normalizedPath === 'outputs' || normalizedPath.startsWith('outputs/'))) {
     return getProjectRoot(scopeId);
   }

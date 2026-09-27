@@ -85,4 +85,33 @@ describe('chunkDocument', () => {
     const hasLocation = chunks.some((c) => c.locationJson !== undefined);
     expect(hasLocation).toBe(true);
   });
+
+  it('records exact normalized offsets, logical page and nearest section', () => {
+    const text = `# 总则\n\n${'内容'.repeat(5_000)}\n\n# 附则\n\n结束`;
+    const chunks = chunkDocument(makeDoc(text), { targetSize: 2_000, overlap: 100, minSize: 100 });
+    const first = chunks[0]!;
+    const later = chunks[chunks.length - 1]!;
+    expect(first.startOffset).toBe(0);
+    expect(first.endOffset).toBeGreaterThan(first.startOffset!);
+    expect(text.slice(first.startOffset, first.endOffset)).toBe(first.text);
+    expect(first.pageNumber).toBe(1);
+    expect(first.sectionPath).toBe('总则');
+    expect(later.sectionPath).toBe('附则');
+    expect(JSON.parse(later.locationJson!)).toEqual(expect.objectContaining({
+      startOffset: later.startOffset,
+      endOffset: later.endOffset,
+      pageNumber: later.pageNumber,
+      sectionPath: '附则',
+    }));
+  });
+
+  it('splits a long paragraph without losing normalized source locations', () => {
+    const text = `# 长段落\n\n${'甲'.repeat(7_500)}`;
+    const chunks = chunkDocument(makeDoc(text), { targetSize: 2_000, overlap: 200, minSize: 100 });
+    expect(chunks.length).toBeGreaterThan(2);
+    expect(Math.max(...chunks.map((chunk) => chunk.text.length))).toBeLessThanOrEqual(2_200);
+    for (const chunk of chunks) {
+      expect(text.slice(chunk.startOffset, chunk.endOffset)).toBe(chunk.text);
+    }
+  });
 });

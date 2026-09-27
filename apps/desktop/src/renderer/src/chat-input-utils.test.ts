@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { displayAgentText, extractMentions, findMentionContext, insertComposerNewline, replaceMention } from './chat-input-utils';
+import { displayAgentText, extractMentions, findMentionContext, formatReplyPreview, insertComposerNewline, replaceMention } from './chat-input-utils';
 
 const agents = [
   { id: 'group-orch', agentName: '统筹管理智能体' },
@@ -37,5 +37,12 @@ describe('chat input utils', () => {
   it('supports ctrl-enter newline insertion and display-name sanitization', () => {
     expect(insertComposerNewline('前后', 1, 1)).toEqual({ value: '前\n后', caret: 2 });
     expect(displayAgentText('等待 group-knowledge 回复', agents)).toBe('等待 知识管理智能体 回复');
+  });
+
+  it('compacts and truncates long quoted message previews', () => {
+    const preview = formatReplyPreview(`第一行\n\n${'很长的引用内容'.repeat(50)}`, 40);
+    expect(preview).toHaveLength(40);
+    expect(preview).not.toContain('\n');
+    expect(preview.endsWith('…')).toBe(true);
   });
 });

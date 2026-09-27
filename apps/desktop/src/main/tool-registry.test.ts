@@ -43,9 +43,11 @@ function createDb(): Database.Database {
 describe('ToolRegistry', () => {
   let registry: ToolRegistry;
   let db: Database.Database;
+  let capturedReviewArgs: Record<string, unknown> | undefined;
 
   beforeEach(() => {
     db = createDb();
+    capturedReviewArgs = undefined;
     registry = new ToolRegistry(db);
     registry.registerAll([
       {
@@ -110,7 +112,7 @@ describe('ToolRegistry', () => {
         description: '写待审稿',
         parameters: { type: 'object', properties: {}, required: [] },
         requiredCapabilities: ['write:review-draft'],
-        async execute() { return '待审稿已保存'; },
+        async execute(args) { capturedReviewArgs = { ...args }; return '待审稿已保存'; },
       },
       {
         name: 'review:promoteArtifact',
@@ -118,6 +120,20 @@ describe('ToolRegistry', () => {
         parameters: { type: 'object', properties: {}, required: [] },
         requiredCapabilities: ['promote:reviewed-output'],
         async execute() { return '正式成果已发布'; },
+      },
+      {
+        name: 'temp:save',
+        description: '保存当前任务临时文件',
+        parameters: { type: 'object', properties: {}, required: [] },
+        requiredCapabilities: ['write:temp'],
+        async execute() { return 'TEMP_SAVED: draft.html'; },
+      },
+      {
+        name: 'temp:promote',
+        description: '将当前任务临时文件提升为正式成果',
+        parameters: { type: 'object', properties: {}, required: [] },
+        requiredCapabilities: ['promote:reviewed-output'],
+        async execute() { return 'TEMP_PROMOTED: draft.html -> outputs/final.html'; },
       },
     ]);
   });
@@ -134,6 +150,20 @@ describe('ToolRegistry', () => {
     it('orchestrator 看不到 delete:file（deny）', () => {
       const defs = registry.getDefinitionsForRole('orchestrator');
       const names = defs.map((d) => d.name);
+      expect(names).not.toContain('delete:file');
+    });
+
+    it('local executor receives the combined read, draft, publish and promote permissions', () => {
+      const names = registry.getDefinitionsForRole('local-executor').map((item) => item.name);
+      expect(names).toEqual(expect.arrayContaining([
+        'knowledge:search',
+        'workspace:readFile',
+        'review:writeDraft',
+        'review:promoteArtifact',
+        'temp:save',
+        'temp:promote',
+        'publish_artifact',
+      ]));
       expect(names).not.toContain('delete:file');
     });
 
@@ -190,6 +220,35 @@ describe('ToolRegistry', () => {
     });
   });
 
+  it('always binds project/run and review paths to the execution context', async () => {
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO agent_runs
+       (id, project_id, agent_instance_id, requested_by_type, requested_by_id, parent_run_id, status, created_at)
+       VALUES ('root-context-1', 'project-context-1', 'orchestrator-1', 'user', 'local-user', NULL, 'running', ?)`,
+    ).run(now);
+    db.prepare(
+      `INSERT INTO agent_runs
+       (id, project_id, agent_instance_id, requested_by_type, requested_by_id, parent_run_id, status, created_at)
+       VALUES ('writer-context-1', 'project-context-1', 'writer-1', 'agent', 'orchestrator-1', 'root-context-1', 'running', ?)`,
+    ).run(now);
+    const result = await registry.execute('review:writeDraft', {
+      projectId: '群聊名称而非ID',
+      relativePath: '.runtime/review-drafts/model-made-up.html',
+      content: '<!doctype html><html></html>',
+    }, {
+      role: 'material-writer',
+      runId: 'writer-context-1',
+      projectId: 'project-context-1',
+    });
+
+    expect(result).toBe('待审稿已保存');
+    expect(capturedReviewArgs).toEqual(expect.objectContaining({
+      projectId: 'project-context-1',
+      relativePath: '.runtime/review-drafts/root-context-1/material-draft.html',
+    }));
+  });
+
   describe('execute — 路径检查', () => {
     it('允许在白名单路径内读取文件', async () => {
       const result = await registry.execute('workspace:readFile', { relativePath: 'original-files/doc.txt', projectId: 'p1' }, {
@@ -231,8 +290,13 @@ describe('ToolRegistry', () => {
       expect(registry.canRoleUseTool('knowledge-manager', 'publish_artifact')).toBe(true);
     });
 
-    it('only orchestrator can promote an accepted draft', () => {
+    it('researcher 不能越过统筹直接发布 outputs 成果', () => {
+      expect(registry.canRoleUseTool('researcher', 'publish_artifact')).toBe(false);
+    });
+
+    it('orchestrator and the closed-loop local executor can promote an accepted draft', () => {
       expect(registry.canRoleUseTool('orchestrator', 'review:promoteArtifact')).toBe(true);
+      expect(registry.canRoleUseTool('local-executor', 'review:promoteArtifact')).toBe(true);
       expect(registry.canRoleUseTool('material-writer', 'review:promoteArtifact')).toBe(false);
       expect(registry.canRoleUseTool('acceptance-reviewer', 'review:promoteArtifact')).toBe(false);
     });

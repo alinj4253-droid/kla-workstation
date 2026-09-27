@@ -2,7 +2,7 @@ import type Database from 'better-sqlite3';
 import { createHash } from 'node:crypto';
 import { lstat, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, isAbsolute, resolve, sep } from 'node:path';
-import { FileRepository, MessageRepository } from '@kunqing/database';
+import { AgentRunRepository, FileRepository, MessageRepository } from '@kunqing/database';
 import { getProjectRoot } from './paths';
 
 const MAX_ARTIFACT_BYTES = 50 * 1024 * 1024;
@@ -50,20 +50,6 @@ export function prepareAgentOutput(text: string): PreparedAgentOutput {
     return `已生成成果文件：${relativePath}`;
   });
 
-  // 兼容未遵循 artifact 协议、直接输出完整 HTML 的智能体：自动落盘，只在群聊中保留文件说明。
-  if (inlineHtml.length === 0) {
-    const rawHtml = cleanText.match(/<!doctype\s+html[\s\S]*?<\/html>/i)?.[0]
-      ?? cleanText.match(/<html\b[\s\S]*?<\/html>/i)?.[0];
-    if (rawHtml) {
-      const hash = createHash('sha256').update(rawHtml).digest('hex').slice(0, 10);
-      const relativePath = `outputs/generated-${hash}.html`;
-      inlineHtml.push({ relativePath, content: rawHtml });
-      referencedPaths.push(relativePath);
-      seen.add(relativePath);
-      cleanText = cleanText.replace(rawHtml, `已生成成果文件：${relativePath}`);
-    }
-  }
-
   for (const match of cleanText.matchAll(/^\s*ARTIFACT:\s*(.+?)\s*$/gim)) {
     const relativePath = cleanReferencedPath(match[1] ?? '');
     if (relativePath && !seen.has(relativePath)) {
@@ -99,6 +85,20 @@ export function prepareAgentOutput(text: string): PreparedAgentOutput {
   cleanText = cleanText.replace(/^\s*ARTIFACT:\s*.+?\s*$/gim, '').replace(/\n{3,}/g, '\n\n').trim();
 
   return { text: cleanText, inlineHtml, referencedPaths };
+}
+
+/**
+ * A model response is descriptive text, not filesystem authority.  Keep the
+ * useful prose but remove inline HTML and path-only artifact claims.  Actual
+ * files are accepted exclusively through `additionalPaths`, populated by a
+ * successful system tool call and verified by `publishExisting`.
+ */
+function sanitizeUntrustedArtifactClaims(text: string): string {
+  let clean = text.replace(INLINE_HTML_RE, '（HTML 内容未通过系统文件工具保存，未作为成果交付）');
+  clean = clean.replace(/<!doctype\s+html[\s\S]*?<\/html>|<html\b[\s\S]*?<\/html>/giu, '（HTML 内容未通过系统文件工具保存，未作为成果交付）');
+  clean = clean.replace(/^\s*ARTIFACT:\s*.+$/gimu, '');
+  clean = clean.replace(/(?:^|[\s`'"（(])(?:\.\/)?outputs[\\/][^\s`'"<>|:*?]+?\.(?:html?|pdf|md|txt|json|csv|png|jpe?g|webp|gif|docx?|xlsx?|pptx?|zip)(?![\p{L}\p{N}_.-])(?:[，,。；;]\s*(?:可直接查看|请查看|可在此查看))?/gimu, (_match) => '（文本路径声明未作为交付依据）');
+  return clean.replace(/\n{3,}/g, '\n\n').trim();
 }
 
 function normalizeOutputPath(relativePath: string): string {
@@ -204,35 +204,82 @@ export class AgentArtifactPublisher {
         changeNote: input.note ?? '智能体发送到群聊',
       });
 
-    const existingMessage = this.db.prepare(
-      `SELECT m.id, m.status, m.created_at AS createdAt, m.content_json AS contentJson
+    const artifactRows = this.db.prepare(
+      `SELECT m.id, m.status, m.created_at AS createdAt, m.content_json AS contentJson,
+              ma.file_id as fileId, ma.version_id as versionId
        FROM messages m
        JOIN message_attachments ma ON ma.message_id = m.id
-       WHERE m.project_id = ? AND m.sender_id = ? AND m.kind = 'artifact'
-         AND ma.file_id = ? AND ma.version_id = ?
-       ORDER BY m.created_at DESC LIMIT 1`,
-    ).get(input.projectId, input.agentInstanceId, file.id, version.id) as { id: string; status: string; createdAt: string; contentJson: string } | undefined;
+       WHERE m.project_id = ? AND m.kind = 'artifact'
+       ORDER BY m.created_at DESC LIMIT 250`,
+    ).all(input.projectId) as Array<{
+      id: string; status: string; createdAt: string; contentJson: string; fileId: string; versionId: string;
+    }>;
+    const existingMessage = artifactRows.find((row) => {
+      if (input.triggerMessageId) {
+        try {
+          const content = JSON.parse(row.contentJson) as { triggerMessageId?: unknown; sha256?: unknown };
+          return content.triggerMessageId === input.triggerMessageId && content.sha256 === sha256;
+        } catch {
+          return false;
+        }
+      }
+      return row.fileId === file.id && row.versionId === version.id;
+    });
     if (existingMessage) {
-      this.emit?.({
-        type: 'message.created',
-        projectId: input.projectId,
-        runId: input.runId,
-        ...(input.triggerMessageId ? { triggerMessageId: input.triggerMessageId } : {}),
-        message: {
-          id: existingMessage.id,
-          senderType: 'agent',
-          senderId: input.agentInstanceId,
-          kind: 'artifact',
-          contentJson: existingMessage.contentJson,
-          status: existingMessage.status,
-          createdAt: existingMessage.createdAt,
-        },
-      });
-      return { messageId: existingMessage.id, fileId: file.id, versionId: version.id, relativePath: normalized };
+      let existingPath = normalized;
+      try {
+        const content = JSON.parse(existingMessage.contentJson) as { text?: unknown };
+        if (typeof content.text === 'string' && content.text) existingPath = content.text;
+      } catch { /* keep normalized path */ }
+      this.recordArtifactEvent(input, {
+        messageId: existingMessage.id,
+        fileId: existingMessage.fileId,
+        versionId: existingMessage.versionId,
+        relativePath: existingPath,
+      }, sha256, true);
+      return {
+        messageId: existingMessage.id,
+        fileId: existingMessage.fileId,
+        versionId: existingMessage.versionId,
+        relativePath: existingPath,
+      };
     }
 
-    const message = this.messageRepo.createArtifactMessage(input.projectId, normalized, file.id, version.id, input.agentInstanceId);
-    const contentJson = JSON.stringify({ schemaVersion: 1, text: normalized, fileId: file.id, versionId: version.id });
+    const contentJson = JSON.stringify({
+      schemaVersion: 1,
+      text: normalized,
+      fileId: file.id,
+      versionId: version.id,
+      runId: input.runId,
+      ...(input.triggerMessageId ? { triggerMessageId: input.triggerMessageId } : {}),
+      sha256,
+    });
+    const message = input.triggerMessageId
+      ? (() => {
+        const id = createHash('sha256')
+          .update(`artifact-message:${input.projectId}:${input.triggerMessageId}:${sha256}`)
+          .digest('hex').slice(0, 24);
+        const createdAt = new Date().toISOString();
+        this.db.prepare(
+          `INSERT OR IGNORE INTO messages
+             (id, project_id, sender_type, sender_id, kind, content_json, status, created_at, updated_at)
+           VALUES (?, ?, 'agent', ?, 'artifact', ?, 'sent', ?, ?)`,
+        ).run(id, input.projectId, input.agentInstanceId, contentJson, createdAt, createdAt);
+        this.db.prepare(
+          'INSERT OR IGNORE INTO message_attachments (message_id, file_id, version_id, ordinal) VALUES (?, ?, ?, 0)',
+        ).run(id, file.id, version.id);
+        return { id, status: 'sent', createdAt };
+      })()
+      : this.messageRepo.createArtifactMessage(input.projectId, normalized, file.id, version.id, input.agentInstanceId);
+    if (!input.triggerMessageId) {
+      this.db.prepare('UPDATE messages SET content_json = ? WHERE id = ?').run(contentJson, message.id);
+    }
+    this.recordArtifactEvent(input, {
+      messageId: message.id,
+      fileId: file.id,
+      versionId: version.id,
+      relativePath: normalized,
+    }, sha256, false);
     this.emit?.({
       type: 'message.created',
       projectId: input.projectId,
@@ -252,6 +299,24 @@ export class AgentArtifactPublisher {
     return { messageId: message.id, fileId: file.id, versionId: version.id, relativePath: normalized };
   }
 
+  private recordArtifactEvent(
+    input: { projectId: string; agentInstanceId: string; runId: string; triggerMessageId?: string },
+    artifact: { messageId: string; fileId: string; versionId: string; relativePath: string },
+    sha256: string,
+    reused: boolean,
+  ): void {
+    try {
+      new AgentRunRepository(this.db).addEvent(input.runId, 'run.artifact-published', {
+        ...artifact,
+        sha256,
+        reused,
+        ...(input.triggerMessageId ? { triggerMessageId: input.triggerMessageId } : {}),
+      });
+    } catch {
+      // Isolated publisher tests and legacy databases may not contain Run tables.
+    }
+  }
+
   async publishFromOutput(input: {
     projectId: string;
     agentInstanceId: string;
@@ -259,28 +324,44 @@ export class AgentArtifactPublisher {
     triggerMessageId?: string;
     text: string;
     additionalPaths?: string[];
-  }): Promise<{ text: string; publishedPaths: string[] }> {
+  }): Promise<{ text: string; publishedPaths: string[]; failedPaths: string[] }> {
     const prepared = prepareAgentOutput(input.text);
     const publishedPaths: string[] = [];
+    const failedPaths: string[] = [];
 
-    for (const artifact of prepared.inlineHtml) {
-      try {
-        await this.writeInlineHtml(input.projectId, artifact.relativePath, artifact.content);
-      } catch { /* 无效成果不会阻断智能体文本回复 */ }
-    }
-
-    const paths = [...new Set([...prepared.referencedPaths, ...(input.additionalPaths ?? [])])];
+    // Only paths supplied by the host after a successful file-writing tool
+    // call are authoritative.  Never infer a file from ordinary model text.
+    const paths = [...new Set(input.additionalPaths ?? [])];
+    const trustedPathSet = new Set(paths.map((path) => cleanReferencedPath(path)));
+    // Keep an explicit diagnostic for a path mentioned by the model, while
+    // ensuring it never reaches publishExisting unless the host supplied it
+    // as a trusted path too.
+    const untrustedPaths = prepared.referencedPaths
+      .map(cleanReferencedPath)
+      .filter((path) => path && !trustedPathSet.has(path));
     for (const relativePath of paths) {
+      const normalizedPath = cleanReferencedPath(relativePath);
       try {
         const result = await this.publishExisting({ ...input, relativePath });
         publishedPaths.push(result.relativePath);
-      } catch { /* 文件不存在或越界时忽略，文本回复仍正常提交 */ }
+      } catch {
+        if (!failedPaths.includes(normalizedPath)) failedPaths.push(normalizedPath);
+      }
     }
 
+    const publishedSet = new Set(publishedPaths);
+    const failedSet = new Set(failedPaths);
+    // Never leave a model-generated success claim for a path that could not be
+    // written and verified. Keep the path visible only as an explicit failure
+    // so the coordinator can retry or choose another delivery route.
+    const sanitizedLines = sanitizeUntrustedArtifactClaims(input.text).split(/\r?\n/);
     const missingPathNotes = publishedPaths.filter((filePath) => !prepared.text.includes(filePath));
-    const text = missingPathNotes.length > 0
-      ? [prepared.text, `已生成成果文件：${missingPathNotes.join('、')}`].filter(Boolean).join('\n\n')
-      : prepared.text;
-    return { text, publishedPaths };
+    const failureNotes = [...new Set([...untrustedPaths, ...failedSet])].filter((filePath) => !publishedSet.has(filePath));
+    const text = [
+      sanitizedLines.join('\n').trim(),
+      missingPathNotes.length > 0 ? `已生成成果文件：${missingPathNotes.join('、')}` : '',
+      failureNotes.length > 0 ? `成果文件写入或发布失败，未交付：${failureNotes.join('、')}` : '',
+    ].filter(Boolean).join('\n\n');
+    return { text, publishedPaths, failedPaths: [...new Set([...untrustedPaths, ...failedSet])] };
   }
 }

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { access, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import type Database from 'better-sqlite3';
 import { getProjectRoot, getStudioRoot } from './paths';
@@ -25,20 +25,43 @@ export type AgentIdentityInput = {
   runtimeMode: string;
   definitionId: string;
   definitionVersion: string;
+  /** 群聊挂载的操作平台上下文。仅写入该群聊实例的角色卡，不进入通用身份模板。 */
+  operationPlatform?: {
+    id: string;
+    name: string;
+    url: string;
+    description?: string;
+    skills?: Array<{ name: string; description?: string }>;
+  };
 };
 
 export function buildAgentCoordinationSummary(input: Pick<AgentIdentityInput, 'name' | 'runtimeMode' | 'definitionId'>): string {
+  if (/邮箱秘书/u.test(input.name)) {
+    return '职责：接收统筹智能体委派的邮件读取任务，并通过后端演示流程返回稳定的邮件信息。适合输入：查找邮件、读取邮件正文和附件摘要。交付边界：只回传固定演示结果给统筹，不直接面向用户执行网页操作，不索要账号密码，不再委派其他智能体。';
+  }
+  if (input.definitionId.startsWith('operation-agent-') || /操作智能体/i.test(input.name)) {
+    return '职责：在绑定的操作平台内理解用户业务目标，选择并执行已生效的专属操作技能，通过 DOM 与视觉完成网页操作、读取页面并自行归纳可直接使用的业务答案。适合输入：登录、查询、录入、流程处理等平台内操作。交付边界：平台领域内的查询、统计、比较和判断由自己闭环完成，不把原始页面或未分析数据转给统筹；只有确实缺少其他领域能力时才请求协作，并将完整证据写入当前任务临时目录。';
+  }
+  if (input.definitionId === 'builtin.local-executor' || /本地执行智能体/i.test(input.name)) {
+    return '职责：接收统筹转达的用户原始需求或完整业务工作包，在自身 loop 内按需完成原始文件增量知识化、三层内部知识检索与整文读取、公开资料调研、模板发现、材料编写、内部核验、返修和真实成果文件生成。适合输入：需要本地证据、外部资料、分析、材料或文件交付的任务（用户原话或完整工作包均可）。交付边界：内部技能步骤不需要统筹拆分，也不转派给旧专业角色；只在缺少不可推断的关键输入时请求补充，最终返回综合结论和真实成果。';
+  }
   if (input.definitionId === 'builtin.knowledge-manager' || /知识|文档/i.test(input.name)) {
-    return '职责：处理并检索当前群聊与共享知识，返回带来源的内部证据、模板说明和知识缺口。适合输入：制度、原始文件、内部资料查询。交付边界：只提供证据和知识成果，不代写最终业务材料，不发布最终定稿。';
+    return '职责：对当前群聊个人、关联项目和企业工作区中的原始文件进行增量知识化，包括 OCR、标准化、切片、摘要、标签、向量、图谱、Wiki、入库与来源状态维护。适合输入：新增或变更文件处理、知识库建设、图谱和 Wiki 更新。交付边界：只返回知识化状态与失败项，不执行知识检索、整文读取、模板查找或材料编写。';
   }
   if (input.definitionId === 'builtin.researcher' || /调研|研究/i.test(input.name)) {
     return '职责：检索公开网络信息并核验来源，补充外部事实、市场和行业资料。适合输入：实时信息、公开数据、外部案例。交付边界：返回证据摘要和来源，不负责全局调度或最终材料定稿。';
   }
   if (input.definitionId === 'builtin.material-writer' || /材料编写|写作/i.test(input.name)) {
-    return '职责：根据统筹提供的任务、证据和模板先列框架再逐章编写 HTML 材料。适合输入：已取得的内部证据、公开调研和写作要求。交付边界：只把候选稿写入统筹指定的 .runtime/review-drafts/ 路径，不写 outputs/，不发布附件。';
+    return '职责：自行检索当前群聊个人、关联项目和企业知识，按需完整读取明确文件；材料任务再发现模板、列框架并逐章编写 HTML。适合输入：内部知识查询、明确文件读取、模板套用、报告与材料编写。交付边界：查询任务返回精炼证据答案；材料任务只把候选稿通过 temp:save 写入当前任务个人工作区的临时目录，不写 outputs/，不发布附件。';
   }
   if (input.definitionId === 'builtin.acceptance-reviewer' || /验收|审核/i.test(input.name)) {
-    return '职责：读取候选稿并结合用户要求和本地证据独立验收，给出通过或可执行返修意见。适合输入：待审稿路径、完整任务和证据。交付边界：不修改文件、不写 outputs/、不发布附件；通过后由统筹发布定稿。';
+    return '职责：读取候选稿、实际模板和明确来源文件，并从当前群聊个人知识、关联项目知识和企业知识中独立检索证据，给出通过或可执行返修意见。适合输入：待审稿路径、完整任务、模板要求和核验范围。交付边界：不读取其他群聊或未关联项目知识，不修改文件、不写 outputs/、不发布附件；通过后由统筹发布定稿。';
+  }
+  if (input.definitionId === 'custom.codebuddy' || input.definitionId === 'external.codebuddy' || /codebuddy/i.test(`${input.definitionId} ${input.name}`)) {
+    return '职责：验收本地执行智能体或其他成员交付的代码、文档和成果文件。先读取真实文件与任务要求，再检查功能、事实、完整性、格式和可复现性，给出明确通过或可执行的返修清单。适合输入：成果文件验收、代码审查、回归核对。交付边界：只做独立验收和反馈，不接管统筹、不重新规划任务、不伪造文件，不把验收意见写成代码块；除非用户明确要求，不修改或发布成果。';
+  }
+  if (input.definitionId === 'custom.kimi' || input.definitionId === 'custom.kimi-code' || /kimi(?:\s|-)?code/i.test(`${input.definitionId} ${input.name}`)) {
+    return '职责：使用 Kimi Code CLI 作为代码编写智能体，分析需求、设计实现、修改代码、运行必要检查并交付真实变更。适合输入：功能开发、缺陷修复、重构、测试和脚本任务。交付边界：围绕被委派的代码工作包闭环执行，返回实际改动和验证结果；不负责全局调度、业务材料验收或替代统筹。';
   }
   if (input.runtimeMode === 'external-cli' || /code|代码|编程/i.test(`${input.definitionId} ${input.name}`)) {
     return `职责：使用 ${input.name} 的外部 CLI 能力完成代码、脚本、网页和本地文件操作。适合输入：需要工程实现或文件生成的明确工作包。交付边界：只完成被委派步骤并返回实际文件或可核验结果，不负责全局调度。`;
@@ -47,6 +70,12 @@ export function buildAgentCoordinationSummary(input: Pick<AgentIdentityInput, 'n
 }
 
 function buildCoordinationCard(input: AgentIdentityInput): string {
+  const platform = input.operationPlatform;
+  const platformSection = platform
+    ? `\n\n## 绑定操作平台\n\n- 平台：${platform.name}\n- 地址：${platform.url}\n- 平台说明：${platform.description?.trim() || '未提供'}\n- 已生效技能：${platform.skills?.length
+      ? platform.skills.map((skill) => `${skill.name}${skill.description?.trim() ? `（${skill.description.trim()}）` : ''}`).join('、')
+      : '当前没有已生效技能'}\n`
+    : '';
   return `---
 schemaVersion: 1
 scope: public-coordination
@@ -58,7 +87,7 @@ definitionId: ${input.definitionId}
 
 # 公开协作职责
 
-${buildAgentCoordinationSummary(input)}
+${buildAgentCoordinationSummary(input)}${platformSection}
 
 本文件只供群聊统筹进行任务匹配，不包含该智能体的私有身份细节、适应内容或记忆。
 `;
@@ -203,6 +232,23 @@ export async function ensureProfileAgentDefinitions(db: Database.Database, studi
   return unique.size;
 }
 
+/** 定义文件内容缓存：以 mtimeMs 判失效，避免每次构建上下文都重复读盘。 */
+const definitionTextCache = new Map<string, { mtimeMs: number; text: string }>();
+
+function readDefinitionCached(path: string): string | null {
+  let stat: { mtimeMs: number };
+  try {
+    stat = statSync(path);
+  } catch {
+    return null;
+  }
+  const cached = definitionTextCache.get(path);
+  if (cached && cached.mtimeMs === stat.mtimeMs) return cached.text;
+  const text = readFileSync(path, 'utf8');
+  definitionTextCache.set(path, { mtimeMs: stat.mtimeMs, text });
+  return text;
+}
+
 export function loadAgentDefinitionText(
   definitionId: string,
   definitionVersion: string,
@@ -212,16 +258,41 @@ export function loadAgentDefinitionText(
     const identityPath = join(candidate.root, 'IDENTITY.template.md');
     const promptPath = join(candidate.root, 'prompts', 'system.md');
     if (!existsSync(candidate.root)) continue;
-    let identityTemplate: string | null = null;
-    let systemPrompt: string | null = null;
-    try { identityTemplate = readFileSync(identityPath, 'utf8'); } catch { /* optional */ }
-    try { systemPrompt = readFileSync(promptPath, 'utf8'); } catch { /* optional */ }
+    const identityTemplate = readDefinitionCached(identityPath);
+    const systemPrompt = readDefinitionCached(promptPath);
     return { root: candidate.root, source: candidate.source, identityTemplate, systemPrompt };
   }
   return { root: null, source: 'generated', identityTemplate: null, systemPrompt: null };
 }
 
 export function buildRoleCard(input: AgentIdentityInput): string {
+  const isOperationAgent = input.definitionId.startsWith('operation-agent-') || /操作智能体/i.test(input.name);
+  const isCodeBuddyReviewer = input.definitionId === 'custom.codebuddy' || input.definitionId === 'external.codebuddy' || /codebuddy/i.test(`${input.definitionId} ${input.name}`);
+  const isKimiCode = input.definitionId === 'custom.kimi' || input.definitionId === 'custom.kimi-code' || /kimi(?:\s|-)?code/i.test(`${input.definitionId} ${input.name}`);
+  const readsKnowledge = [
+    'builtin.orchestrator',
+    'builtin.local-executor',
+    'builtin.material-writer',
+    'builtin.acceptance-reviewer',
+  ].includes(input.definitionId);
+  const canReadWholeDocument = [
+    'builtin.local-executor',
+    'builtin.material-writer',
+    'builtin.acceptance-reviewer',
+  ].includes(input.definitionId);
+  const knowledgeScopeRule = isCodeBuddyReviewer
+    ? '- 这是外接 CodeBuddy 验收角色。优先读取本地执行智能体交付的真实临时稿或 outputs 成果，并对照用户要求、模板、来源和可复现性逐项核验；不要把“文件路径”文字当成文件已存在，必须以实际读取结果为准。'
+    : isKimiCode
+    ? '- 这是外接 Kimi Code 编写角色。只在当前授权工作区内读取和修改代码，先理解现有结构再实施最小必要变更，运行与本次变更相关的检查，并返回真实改动和验证结果。'
+    : isOperationAgent
+    ? '- 你只可调用绑定操作平台的已生效技能。先理解用户真正需要的结果，再选择最小必要的业务节点；录制 DOM 只是动作证据，不是固定宏。遇到动态列表、页面分支或视觉不确定时，根据当前页面实时判断，不能照搬录制示例。动作完成后必须自己读取页面、整理答案；只有确实需要跨领域成员时才写入当前任务临时目录并请求协作。'
+    : input.definitionId === 'builtin.knowledge-manager'
+    ? '- 你只处理授权范围内的原始文件并维护知识化产物与来源状态；不得调用知识检索、整文读取或模板读取，也不得回答制度和业务知识问题。收到错误委派时完成必要的增量知识化后，把检索或编写需求交回统筹。'
+    : !readsKnowledge
+    ? ''
+    : canReadWholeDocument
+      ? '- 需要内部证据时，授权范围自动解析为“群聊个人知识、已关联项目知识、企业知识”；明确指向某份文件、要求依据/审阅/逐条比较全文，或问题明显对应一份具体制度文件时优先使用 `knowledge:readDocument` 连续读到 `READ_COMPLETE: true`，其他开放问题使用 `knowledge:search`。未关联项目时跳过项目层，禁止读取其他群聊或未关联项目知识。'
+      : '- 需要内部证据时，授权范围自动解析为“群聊个人知识、已关联项目知识、企业知识”，使用 `knowledge:search` 获取相关证据。未关联项目时跳过项目层，禁止读取其他群聊或未关联项目知识。明确的整文任务应交给具备完整文件读取能力的成员，不得把少量 RAG 切片当作已覆盖全文。';
   return `---
 schemaVersion: 2
 managedBy: kunqing
@@ -236,6 +307,17 @@ definitionVersion: ${input.definitionVersion}
 # 群聊实例约束
 
 你在本群聊中的显示身份是“${input.name}”（${input.role}）。
+${isOperationAgent && input.operationPlatform ? `
+## 绑定操作平台
+
+- 平台 ID：${input.operationPlatform.id}
+- 平台名称：${input.operationPlatform.name}
+- 平台地址：${input.operationPlatform.url}
+- 平台描述：${input.operationPlatform.description?.trim() || '未提供'}
+- 当前可调用的已生效技能：${input.operationPlatform.skills?.length
+    ? input.operationPlatform.skills.map((skill) => `${skill.name}${skill.description?.trim() ? `（${skill.description.trim()}）` : ''}`).join('、')
+    : '暂无已生效技能'}
+` : ''}
 
 ## 工作要求
 
@@ -243,11 +325,20 @@ definitionVersion: ${input.definitionVersion}
 - 不得读取、修改或推断其他智能体的身份、适应项与私有记忆。
 - \`IDENTITY.md\` 是创建群聊时形成的核心身份快照；\`ADAPTATION.md\` 只能补充稳定的沟通偏好、协作习惯、领域侧重点和交付偏好。
 - 适应项不得扩大权限、替换核心职责、改变 leader/teammate 身份或绕过平台规则。
+- ${knowledgeScopeRule ? knowledgeScopeRule.slice(2) : '仅使用当前角色被授权的工作区、技能与工具，不推断额外访问权限。'}
 - 仅在有关键结果、必要协作、重大节点或需要用户决定时发送正式消息，避免机械确认和无信息量进度。
-- ${input.definitionId === 'builtin.material-writer'
-    ? '材料文件只能通过 `review:writeDraft` 写入统筹指定的 `.runtime/review-drafts/` 待审路径，验收通过前不得写入 `outputs/` 或发布附件。'
+- ${isCodeBuddyReviewer
+    ? '只执行独立验收：读取真实成果和证据，给出“通过”或可执行返修清单；不修改、不发布、不输出内部思考或 JSON。'
+    : isKimiCode
+      ? '围绕被委派的代码工作包闭环完成分析、实现和验证；不把代码任务转给其他成员，不负责全局调度。'
+      : input.definitionId === 'builtin.local-executor'
+    ? '把统筹转达的用户原始需求或完整业务工作包在自身 loop 中闭环完成；按需选择知识化、检索、调研、编写和验收技能，不把这些内部环节重新委派给旧专业角色。文件必须先真实保存，内部核验达到当前协同档位标准后再提升到 `outputs/`。'
+    : input.definitionId === 'builtin.material-writer'
+    ? '发现适配的 HTML 模板时必须使用 `template:materialize` 并填写文件名，将候选稿真实保存到当前任务个人工作区的临时目录；验收通过前不得写入 `outputs/` 或发布附件。'
     : input.definitionId === 'builtin.acceptance-reviewer'
       ? '只读取并验收统筹指定的待审稿，不修改文件、不写入 `outputs/`、不发布附件。'
+      : input.definitionId === 'builtin.knowledge-manager'
+        ? '只维护知识化产物、图谱、Wiki 和来源状态，不编写或发布业务成果文件。'
       : 'HTML 等成果写入 `outputs/` 并作为群聊成果文件交付；聊天正文只保留必要说明或源码代码块。'}
 `;
 }
@@ -308,8 +399,22 @@ export async function ensureAgentIdentityFiles(input: AgentIdentityInput, studio
     items: [],
   } satisfies AdaptationState, null, 2));
 
-  const identityText = await readFile(identityPath, 'utf8');
-  await writeIfMissing(join(identityRoot, SNAPSHOT_META_FILE), JSON.stringify({
+  let identityText = await readFile(identityPath, 'utf8');
+  let identityUpgraded = createdIdentity;
+  if (!createdIdentity && definition.identityTemplate) {
+    // 身份快照默认保留人工修改；但若实例内容仍与创建时记录的源模板校验和
+    // 一致，说明从未被人工编辑，允许跟随最新定义模板升级，避免旧群聊的
+    // 统筹身份永远停留在建群时的历史版本。
+    try {
+      const meta = JSON.parse(await readFile(join(identityRoot, SNAPSHOT_META_FILE), 'utf8')) as { sourceChecksum?: string };
+      if (meta.sourceChecksum === sha256(identityText) && sha256(definition.identityTemplate) !== meta.sourceChecksum) {
+        identityText = definition.identityTemplate;
+        await writeFile(identityPath, identityText, 'utf8');
+        identityUpgraded = true;
+      }
+    } catch { /* 缺少元数据的旧实例保守保留现快照 */ }
+  }
+  const identityMeta = JSON.stringify({
     schemaVersion: 1,
     instanceId: input.instanceId,
     definitionId: input.definitionId,
@@ -319,7 +424,12 @@ export async function ensureAgentIdentityFiles(input: AgentIdentityInput, studio
     sourceChecksum: sha256(definition.identityTemplate ?? identityText),
     instanceChecksum: sha256(identityText),
     createdAt: now,
-  }, null, 2));
+  }, null, 2);
+  if (identityUpgraded) {
+    await writeFile(join(identityRoot, SNAPSHOT_META_FILE), identityMeta, 'utf8');
+  } else {
+    await writeIfMissing(join(identityRoot, SNAPSHOT_META_FILE), identityMeta);
+  }
 }
 
 function normalizeAdaptation(value: string): string {

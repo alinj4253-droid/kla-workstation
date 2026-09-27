@@ -5,6 +5,7 @@ import { cliAgentRegistry } from './cli-agent-registry';
 import { getProjectRoot } from './paths';
 import { sanitizeEnv } from './env-sanitizer';
 import { normalizeChunk, isStructuredEvent } from './event-normalizer';
+import { broadcastEvent } from './event-broadcast';
 import { getLogger } from './logger';
 import type { CliConnectionConfig, ExternalAgentAdapter, ExternalRunResult } from '@kunqing/agent-core';
 
@@ -58,7 +59,7 @@ export class CliExecutor {
     logger?.info({ runId, adapterType: connection.adapterType, adapter: adapter.type }, 'CliExecutor: 走 ACP 长连接路径（executeAcp）');
 
     const dispatch = (event: Record<string, unknown>): void => {
-      if (!window.isDestroyed()) window.webContents.send('event:dispatch', event);
+      broadcastEvent(window, event);
     };
     const onStdout = (data: string): void => {
       stdout += data;
@@ -149,7 +150,7 @@ export class CliExecutor {
     let output = '';
 
     const dispatch = (event: Record<string, unknown>): void => {
-      if (!window.isDestroyed()) window.webContents.send('event:dispatch', event);
+      broadcastEvent(window, event);
     };
 
     return new Promise((resolve) => {
@@ -186,18 +187,25 @@ export class CliExecutor {
         }
       });
 
+      let timedOut = false;
+      const unsubTimeout = this.supervisor.on(runId, 'timeout', () => {
+        timedOut = true;
+        output += '\n[TIMEOUT] 子进程未在超时时限内完成，已被强制终止';
+      });
       const unsubExit = this.supervisor.on(runId, 'exit', (evt) => {
         unsubStdout();
         unsubStderr();
+        unsubTimeout();
         unsubExit();
         unsubError();
         this.runMap.delete(runId);
-        resolve({ exitCode: evt.code, output, durationMs: Date.now() - start, cancelled: evt.code === null });
+        resolve({ exitCode: evt.code, output, durationMs: Date.now() - start, cancelled: evt.code === null || timedOut });
       });
 
       const unsubError = this.supervisor.on(runId, 'error', (evt) => {
         unsubStdout();
         unsubStderr();
+        unsubTimeout();
         unsubExit();
         unsubError();
         this.runMap.delete(runId);

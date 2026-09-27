@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import { generateObject } from 'ai';
 import { ModelGateway } from './model-gateway';
 
 vi.mock('electron', () => ({
@@ -60,6 +61,18 @@ vi.mock('@ai-sdk/openai', () => ({
         rawResponse: { headers: {} },
         warnings: null,
       }),
+    });
+    modelFn.chat = modelFn;
+    return modelFn;
+  }),
+}));
+
+vi.mock('@ai-sdk/anthropic', () => ({
+  createAnthropic: vi.fn(() => {
+    const modelFn = (_modelId: string) => ({
+      specifier: 'anthropic:claude-sonnet-4',
+      provider: 'anthropic',
+      modelId: 'claude-sonnet-4',
     });
     return modelFn;
   }),
@@ -167,6 +180,146 @@ describe('ModelGateway', () => {
     const profile = (gateway as any).getSlotProfile('reasoning') as { baseUrl?: string } | null;
     expect(profile).not.toBeNull();
     expect(profile!.baseUrl).toBe('https://api.example.com');
+  });
+
+  it('uses a mounted profile snapshot before the requested fallback slot', async () => {
+    seedData(db);
+    const profile = await gateway.runWithModelProfileSnapshot(
+      JSON.stringify({ profileId: 'prof-1', parameters: { temperature: 0.2, thinking: false } }),
+      async () => (gateway as any).getSlotProfile('embedding') as { modelId: string; parameters: Record<string, unknown> } | null,
+    );
+    expect(profile).not.toBeNull();
+    expect(profile!.modelId).toBe('gpt-4o-mini');
+    expect(profile!.parameters).toMatchObject({ temperature: 0.2, thinking: false });
+  });
+
+  it('缓存槽位 profile：失效前命中缓存，失效后读到新绑定', () => {
+    seedData(db);
+    const before = (gateway as any).getSlotProfile('reasoning') as { modelId: string } | null;
+    expect(before?.modelId).toBe('gpt-4o-mini');
+
+    const now = new Date().toISOString();
+    db.prepare("INSERT INTO model_providers (id, name, type, status, created_at, updated_at) VALUES ('prov-4', 'P4', 'openai', 'unknown', ?, ?)").run(now, now);
+    db.prepare("INSERT INTO model_profiles (id, name, provider_id, model_id, enabled, created_at, updated_at) VALUES ('prof-4', 'P4Model', 'prov-4', 'gpt-4.1', 1, ?, ?)").run(now, now);
+    db.prepare("UPDATE model_slot_bindings SET model_profile_id = 'prof-4' WHERE slot = 'reasoning'").run();
+
+    const cached = (gateway as any).getSlotProfile('reasoning') as { modelId: string } | null;
+    expect(cached?.modelId).toBe('gpt-4o-mini');
+
+    gateway.invalidateSlotProfiles();
+    const fresh = (gateway as any).getSlotProfile('reasoning') as { modelId: string } | null;
+    expect(fresh?.modelId).toBe('gpt-4.1');
+  });
+
+  it('缓存挂载 profile：失效后才反映 profile 被禁用', async () => {
+    seedData(db);
+    const read = () => gateway.runWithModelProfileSnapshot(
+      JSON.stringify({ profileId: 'prof-1' }),
+      async () => (gateway as any).getSlotProfile('embedding') as { modelId: string } | null,
+    );
+    await expect(read()).resolves.toMatchObject({ modelId: 'gpt-4o-mini' });
+
+    db.prepare("UPDATE model_profiles SET enabled = 0 WHERE id = 'prof-1'").run();
+    await expect(read()).resolves.toMatchObject({ modelId: 'gpt-4o-mini' });
+
+    gateway.invalidateSlotProfiles();
+    await expect(read()).resolves.toBeNull();
+  });
+
+  it('recovers structured JSON returned only in a model reasoning field', async () => {
+    seedData(db);
+    vi.mocked(generateObject).mockRejectedValueOnce({
+      response: {
+        body: {
+          choices: [{ message: { content: '', reasoning_content: '```json\n{"intent":"execute","skillId":"operation-query"}\n```' } }],
+          usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 },
+        },
+      },
+    });
+
+    await expect(gateway.generateObject<{ intent: string; skillId: string }>(
+      'reasoning',
+      [{ role: 'user', content: '返回 JSON' }],
+    )).resolves.toEqual({ intent: 'execute', skillId: 'operation-query' });
+  });
+
+  it('applies group collaboration thinking without changing expert model settings', async () => {
+    seedData(db);
+    const snapshot = JSON.stringify({
+      profileId: 'prof-1',
+      parameters: { temperature: 0.2, thinking: true, thinkingLevel: 'high' },
+    });
+    const readParameters = async (mode: 'fast' | 'balanced' | 'expert') => gateway.runWithModelProfileSnapshot(
+      snapshot,
+      () => gateway.runWithCollaborationMode(
+        mode,
+        async () => ((gateway as any).getSlotProfile('reasoning') as { parameters: Record<string, unknown> }).parameters,
+      ),
+    );
+
+    await expect(readParameters('fast')).resolves.toMatchObject({ thinking: false, thinkingLevel: 'none' });
+    await expect(readParameters('balanced')).resolves.toMatchObject({ thinking: true, thinkingLevel: 'minimal' });
+    await expect(readParameters('expert')).resolves.toMatchObject({ thinking: true, thinkingLevel: 'high' });
+  });
+
+  it('allows coordination calls to override deep thinking without changing the mounted profile', () => {
+    const options = (gateway as any).getGenerationOptions({
+      providerType: 'openai',
+      modelId: 'gpt-5',
+      parameters: { thinking: true, thinkingLevel: 'high' },
+    }, {
+      thinking: false,
+      thinkingLevel: 'none',
+    });
+    expect(options.providerOptions).toEqual({ openai: { reasoningEffort: 'none' } });
+  });
+
+  it('compensates anthropic thinking budget into max_tokens so visible output is not truncated', () => {
+    const resolve = (generationOptions: { providerOptions?: Record<string, unknown> }, requested?: number) =>
+      (gateway as any).resolveMaxOutputTokens(generationOptions, requested);
+    const anthropicThinking = (gateway as any).getGenerationOptions({
+      providerType: 'anthropic',
+      modelId: 'claude-sonnet-4',
+      parameters: { thinking: true, thinkingLevel: 'minimal' },
+    }) as { providerOptions?: Record<string, unknown> };
+    expect(anthropicThinking.providerOptions).toEqual({
+      anthropic: { thinking: { type: 'enabled', budgetTokens: 1024 } },
+    });
+    // Anthropic 的 max_tokens 同时覆盖思考与正文：2200 的可见输出上限
+    // 需叠加 1024 思考预算，否则结构化规划 JSON 会在中途被截断。
+    expect(resolve(anthropicThinking, 2200)).toBe(3224);
+    // 未请求输出上限时不额外设置 max_tokens
+    expect(resolve(anthropicThinking, undefined)).toBeUndefined();
+    expect(resolve(anthropicThinking, Number.NaN)).toBeUndefined();
+    // 非法请求值有下限保护
+    expect(resolve(anthropicThinking, 10)).toBe(1024 + 64);
+    // 非 anthropic 或未开启思考时不叠加
+    expect(resolve({ providerOptions: { openai: { reasoningEffort: 'high' } } }, 2200)).toBe(2200);
+    expect(resolve({}, 2200)).toBe(2200);
+    // 非法思考预算不叠加
+    expect(resolve({ providerOptions: { anthropic: { thinking: { budgetTokens: 0 } } } }, 2200)).toBe(2200);
+    expect(resolve({ providerOptions: { anthropic: { thinking: { budgetTokens: Number.NaN } } } }, 2200)).toBe(2200);
+    expect(resolve({ providerOptions: { anthropic: { thinking: { budgetTokens: Number.POSITIVE_INFINITY } } } }, 2200)).toBe(2200);
+  });
+
+  it('generateText passes the compensated max_tokens to the model call', async () => {
+    seedData(db);
+    const now = new Date().toISOString();
+    db.prepare("INSERT INTO model_providers (id, name, type, base_url, secret_ref, status, created_at, updated_at) VALUES ('prov-claude', 'ClaudeProvider', 'anthropic', 'https://api.anthropic.com', 'sk-test', 'available', ?, ?)").run(now, now);
+    db.prepare("INSERT INTO model_profiles (id, name, provider_id, model_id, enabled, created_at, updated_at) VALUES ('prof-claude', 'Claude Sonnet', 'prov-claude', 'claude-sonnet-4', 1, ?, ?)").run(now, now);
+    db.prepare("UPDATE model_slot_bindings SET model_profile_id = 'prof-claude' WHERE slot = 'reasoning'").run();
+
+    const { generateText: aiGenerateText } = await import('ai');
+    vi.mocked(aiGenerateText).mockClear();
+    await gateway.generateText('reasoning', [{ role: 'user', content: '规划下一步' }], {
+      maxOutputTokens: 2200,
+      thinking: true,
+      thinkingLevel: 'minimal',
+    });
+
+    const lastCall = vi.mocked(aiGenerateText).mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(lastCall?.providerOptions).toEqual({ anthropic: { thinking: { type: 'enabled', budgetTokens: 1024 } } });
+    expect(lastCall?.maxOutputTokens).toBe(3224);
   });
 
   it('testCapabilities throws for nonexistent provider', async () => {

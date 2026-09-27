@@ -23,6 +23,9 @@ export class CliAgentRegistry {
     this.register(new AcpCliAdapter('qoder'));
     // qoder-cn 走 ACP 路径（qoderclicn --acp 原生支持，独立产品线，官方 docs.qoder.cn/cli/acp）
     this.register(new AcpCliAdapter('qoder-cn'));
+    // WorkBuddy MCP is intentionally paused. Keep its adapter in agent-core so
+    // existing database records remain readable, but do not expose it as a new
+    // connection type until the external task consumer is implemented.
   }
 
   register(adapter: ExternalAgentAdapter): void {

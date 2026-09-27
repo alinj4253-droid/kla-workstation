@@ -1,5 +1,6 @@
 import { writeFile, mkdir } from 'node:fs/promises';
 import { isAbsolute, join, dirname } from 'node:path';
+import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { ProjectRepository, SearchRepository, AgentRunRepository, FileRepository } from '@kunqing/database';
 import type { ProjectRow } from '@kunqing/database';
@@ -9,6 +10,9 @@ import { getProjectRoot } from './paths';
 import { SkillRegistry } from './skill-registry';
 import { WorkflowRegistry } from './workflow-registry';
 import { loadAgentDefinitionText } from './agent-identity';
+import { getEnterpriseProject } from './enterprise-project-workspace';
+import { resolveKnowledgeScopesForGroup } from './knowledge-sync';
+import { selectTaskContext, type TaskContextMessageRow, type TaskMessageRelation } from './task-context';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -24,6 +28,13 @@ export type ContextSnapshot = {
     name: string;
     summary: string;
     sharedKnowledgeEnabled: boolean;
+  };
+
+  /** 当前群聊经过项目关联权限计算后实际可读取的知识范围。 */
+  knowledgeAccess: {
+    personal: { scopeType: 'project'; scopeId: string; label: string };
+    project: { scopeType: 'project'; scopeId: string; label: string; name: string } | null;
+    enterprise: { scopeType: 'shared'; scopeId: string; label: string };
   };
 
   // ── 当前智能体信息 ─────────────────────────────────────────────────────────
@@ -70,6 +81,7 @@ export type ContextSnapshot = {
     content: string;
     replyToId: string | null;
     createdAt: string;
+    taskRelation?: TaskMessageRelation;
   }>;
   /** 如果消息超过预算，更早的消息以滚动摘要替代 */
   rollingSummary: string | null;
@@ -114,6 +126,14 @@ export type ContextBuilderOptions = {
   sharedKnowledgeChunkLimit?: number;
 };
 
+/**
+ * 快照构建范围：
+ * - all：完整快照（含知识检索、引用文件、成员等全部段落）；
+ * - core：仅构建直接执行模式实际使用的段落（agent / messages / memory / workspace），
+ *   跳过知识 LIKE 检索等重查询，避免快路径上的无谓成本。
+ */
+export type ContextBuildSections = 'all' | 'core';
+
 // ─── Manifest 条目类型 ───────────────────────────────────────────────────────
 
 export type ManifestEntry = {
@@ -157,10 +177,14 @@ export class ContextBuilder {
 
   /**
    * 为指定 Run 构建不可变 ContextSnapshot
+   * @param options.sections 构建范围，默认 all；core 供直接模式等只消费
+   *   agent/messages/memory/workspace 的调用方跳过重查询。
    */
-  build(projectId: string, agentInstanceId: string, triggerMessageId?: string, parentRunId?: string): ContextSnapshot {
+  build(projectId: string, agentInstanceId: string, triggerMessageId?: string, parentRunId?: string, options?: { sections?: ContextBuildSections }): ContextSnapshot {
     const logger = getLogger();
-    logger?.info({ projectId, agentInstanceId }, 'ContextBuilder: 开始构建上下文快照');
+    const sections = options?.sections ?? 'all';
+    const coreOnly = sections === 'core';
+    logger?.info({ projectId, agentInstanceId, sections }, 'ContextBuilder: 开始构建上下文快照');
 
     // ── 项目信息 ─────────────────────────────────────────────────────────
     let project: ProjectRow;
@@ -177,34 +201,43 @@ export class ContextBuilder {
       sharedKnowledgeEnabled: true,
     };
 
+    // ── 知识访问范围 ─────────────────────────────────────────────────────
+    const knowledgeAccess = coreOnly
+      ? {
+          personal: { scopeType: 'project' as const, scopeId: projectId, label: '当前群聊个人知识' },
+          project: null,
+          enterprise: { scopeType: 'shared' as const, scopeId: 'shared-knowledge', label: '企业知识' },
+        }
+      : this.buildKnowledgeAccess(projectId);
+
     // ── 当前智能体信息 ───────────────────────────────────────────────────
     const agent = this.buildAgentInfo(agentInstanceId);
 
-    const skills = new SkillRegistry(this.db).resolveForDefinition(agent.definitionId, agent.definitionVersion)
+    const skills = coreOnly ? [] : new SkillRegistry(this.db).resolveForDefinition(agent.definitionId, agent.definitionVersion)
       .map(({ id, version, name, description, requiredTools }) => ({ id, version, name, description, requiredTools }));
-    const workflows = new WorkflowRegistry(this.db).listForDefinition(agent.definitionId, agent.definitionVersion)
+    const workflows = coreOnly ? [] : new WorkflowRegistry(this.db).listForDefinition(agent.definitionId, agent.definitionVersion)
       .map(({ id, version, name, description }) => ({ id, version, name, description }));
 
     // ── 群聊成员 ─────────────────────────────────────────────────────────
-    const members = this.buildMembers(projectId);
+    const members = coreOnly ? [] : this.buildMembers(projectId);
 
     // ── 最近消息 + 滚动摘要 ──────────────────────────────────────────────
     const { messages, rollingSummary } = this.buildMessages(projectId, triggerMessageId);
 
-    // ── 记忆 ─────────────────────────────────────────────────────────────
+    // ── 记忆（纯查询；访问回写统一在快照构建完成后执行）─────────────────
     const recallQuery = messages.find((message) => message.id === triggerMessageId)?.content
       ?? [...messages].reverse().find((message) => message.senderType === 'user')?.content
       ?? '';
-    const memory = this.buildMemory(projectId, agentInstanceId, agent.role, recallQuery);
+    const { memory, touchedMemoryIds } = this.buildMemory(projectId, agentInstanceId, agent.role, recallQuery);
 
     // ── 引用文件 ─────────────────────────────────────────────────────────
-    const referencedFiles = this.buildReferencedFiles(projectId, messages);
+    const referencedFiles = coreOnly ? [] : this.buildReferencedFiles(projectId, messages);
 
     // ── 父 Run 结果 ──────────────────────────────────────────────────────
-    const parentRunResult = parentRunId ? this.buildParentRunResult(parentRunId) : null;
+    const parentRunResult = !coreOnly && parentRunId ? this.buildParentRunResult(parentRunId) : null;
 
-    // ── 知识片段 ─────────────────────────────────────────────────────────
-    const knowledgeChunks = this.buildKnowledgeChunks(projectId, true);
+    // ── 知识片段（按当前任务召回词检索，命中为空时降级为最新片段）────────
+    const knowledgeChunks = coreOnly ? [] : this.buildKnowledgeChunks(projectId, recallQuery);
 
     // ── 工作区规则 ───────────────────────────────────────────────────────
     const workspace = this.buildWorkspaceInfo(projectId);
@@ -212,6 +245,7 @@ export class ContextBuilder {
     const snapshot: ContextSnapshot = {
       builtAt: new Date().toISOString(),
       project: projectInfo,
+      knowledgeAccess,
       agent,
       skills,
       workflows,
@@ -229,6 +263,9 @@ export class ContextBuilder {
     // 生成快照校验和
     snapshot.snapshotChecksum = this.calcChecksum(snapshot);
 
+    // 记忆访问回写：与查询分离的单次写操作，保持 buildMemory 可重放。
+    this.markMemoryAccessed(touchedMemoryIds);
+
     logger?.info({ projectId, agentInstanceId }, 'ContextBuilder: 上下文快照构建完成');
     return snapshot;
   }
@@ -242,8 +279,21 @@ export class ContextBuilder {
     // Definition 系统规则与群聊实例身份必须先于普通上下文出现。
     parts.push(this.renderAgentDirective(snapshot));
 
-    // 项目信息
-    parts.push(`## 项目信息\n- 项目名称: ${snapshot.project.name}\n- 项目摘要: ${snapshot.project.summary || '(无)'}\n- 共享知识: ${snapshot.project.sharedKnowledgeEnabled ? '已开启' : '已关闭'}`);
+    // 群聊与知识权限。项目知识只在存在有效关联时出现。
+    const knowledgeScopes = [
+      snapshot.knowledgeAccess.personal.label,
+      snapshot.knowledgeAccess.project?.label,
+      snapshot.knowledgeAccess.enterprise.label,
+    ].filter(Boolean).join(' -> ');
+    parts.push([
+      '## 群聊与知识范围',
+      `- 群聊名称: ${snapshot.project.name}`,
+      `- 群聊摘要: ${snapshot.project.summary || '(无)'}`,
+      `- 关联项目: ${snapshot.knowledgeAccess.project?.name ?? '未关联项目'}`,
+      `- 当前可检索范围: ${knowledgeScopes}`,
+      '- 权限边界: 只可读取上述范围；不得读取其他群聊的个人知识或未关联项目的知识。',
+      '- 检索约定: knowledge:search 会自动覆盖上述全部范围并标注证据所属层级，无需分别重复查询。',
+    ].join('\n'));
 
     if (snapshot.skills.length > 0) {
       parts.push(`## 自身技能目录\n先用 skill:search 按任务筛选，确定需要后再用 skill:load 读取正文；不要加载或复述无关技能。\n${snapshot.skills.map((skill) => `- ${skill.id}@${skill.version}：${skill.description}`).join('\n')}`);
@@ -313,6 +363,19 @@ export class ContextBuilder {
 
   // ── 私有方法 ─────────────────────────────────────────────────────────────
 
+  /** 身份文件内容缓存：以 mtimeMs 判失效，避免每次响应重复读盘。 */
+  private static identityFileCache = new Map<string, { mtimeMs: number; text: string }>();
+
+  private readIdentityFileSync(path: string): string {
+    const fs = require('node:fs');
+    const stat = fs.statSync(path);
+    const cached = ContextBuilder.identityFileCache.get(path);
+    if (cached && cached.mtimeMs === stat.mtimeMs) return cached.text;
+    const text = fs.readFileSync(path, 'utf-8');
+    ContextBuilder.identityFileCache.set(path, { mtimeMs: stat.mtimeMs, text });
+    return text;
+  }
+
   private buildAgentInfo(agentInstanceId: string): ContextSnapshot['agent'] {
     const row = this.db.prepare(`
       SELECT pai.id as instanceId, pai.project_id as projectId, ap.name as profileName, pai.role,
@@ -333,17 +396,16 @@ export class ContextBuilder {
     let identity: string | null = null;
     if (row.identityRelPath) {
       try {
-        const fs = require('node:fs');
         const identityPath = isAbsolute(row.identityRelPath)
           ? row.identityRelPath
           : join(getProjectRoot(row.projectId), row.identityRelPath);
         const rolePath = join(dirname(identityPath), 'ROLE.md');
         const adaptationPath = join(dirname(identityPath), 'ADAPTATION.md');
-        const identityText = fs.readFileSync(identityPath, 'utf-8');
+        const identityText = this.readIdentityFileSync(identityPath);
         let roleText = '';
         let adaptationText = '';
-        try { roleText = fs.readFileSync(rolePath, 'utf-8'); } catch { /* legacy project without role card */ }
-        try { adaptationText = fs.readFileSync(adaptationPath, 'utf-8'); } catch { /* legacy project without adaptation layer */ }
+        try { roleText = this.readIdentityFileSync(rolePath); } catch { /* legacy project without role card */ }
+        try { adaptationText = this.readIdentityFileSync(adaptationPath); } catch { /* legacy project without adaptation layer */ }
         identity = [
           `### 核心身份快照\n${identityText}`,
           roleText ? `### 群聊实例约束\n${roleText}` : '',
@@ -385,7 +447,7 @@ export class ContextBuilder {
       SELECT pai.id as instanceId, ap.name as name, pai.role
       FROM project_agent_instances pai
       JOIN agent_profiles ap ON ap.id = pai.agent_profile_id
-      WHERE pai.project_id = ?
+      WHERE pai.project_id = ? AND ap.enabled = 1
       ORDER BY pai.ordinal
     `).all(projectId) as Array<{ instanceId: string; name: string; role: string }>;
 
@@ -394,45 +456,11 @@ export class ContextBuilder {
 
   private buildMessages(projectId: string, triggerMessageId?: string): { messages: ContextSnapshot['messages']; rollingSummary: string | null } {
     const limit = this.options.recentMessageLimit;
+    const context = triggerMessageId
+      ? selectTaskContext(this.db, projectId, triggerMessageId, { limit })
+      : { messages: [] as TaskContextMessageRow[], overflow: [] as TaskContextMessageRow[] };
 
-    const rows = this.db.prepare(`
-      SELECT id, sender_type as senderType, sender_id as senderId, content_json as contentJson, reply_to_id as replyToId, created_at as createdAt
-      FROM messages
-      WHERE project_id = ?
-      ORDER BY created_at DESC
-      LIMIT ?
-    `).all(projectId, limit + 10) as Array<{
-      id: string; senderType: string; senderId: string;
-      contentJson: string; replyToId: string | null; createdAt: string;
-    }>;
-
-    // 如果有 triggerMessageId，确保它在消息列表中
-    let allMessages = rows.reverse();
-    if (triggerMessageId && !allMessages.some((m) => m.id === triggerMessageId)) {
-      const trigger = this.db.prepare(`
-        SELECT id, sender_type as senderType, sender_id as senderId, content_json as contentJson, reply_to_id as replyToId, created_at as createdAt
-        FROM messages WHERE id = ?
-      `).get(triggerMessageId) as typeof rows[0] | undefined;
-      if (trigger) allMessages.push(trigger);
-    }
-
-    // 如果超过预算，截断并生成滚动摘要
-    let rollingSummary: string | null = null;
-    if (allMessages.length > limit) {
-      const olderMessages = allMessages.slice(0, allMessages.length - limit);
-      allMessages = allMessages.slice(allMessages.length - limit);
-
-      const olderText = olderMessages
-        .map((m) => {
-          let content = m.contentJson;
-          try { content = JSON.parse(content).text ?? content; } catch { /* use raw */ }
-          return `[${m.senderType}] ${content.slice(0, 200)}`;
-        })
-        .join('\n');
-      rollingSummary = `更早消息摘要（${olderMessages.length} 条）：\n${olderText.slice(0, 1200)}`;
-    }
-
-    const messages = allMessages.map((m) => {
+    const messages = context.messages.map((m) => {
       let content = m.contentJson;
       try { content = JSON.parse(content).text ?? content; } catch { /* use raw */ }
       return {
@@ -442,14 +470,30 @@ export class ContextBuilder {
         content: content.slice(0, 1200),
         replyToId: m.replyToId,
         createdAt: m.createdAt,
+        taskRelation: m.taskRelation,
       };
     });
 
-    return { messages, rollingSummary };
+    return { messages, rollingSummary: this.buildRollingSummary(context.overflow) };
   }
 
-  private buildMemory(projectId: string, agentInstanceId: string, _role: string, query: string): ContextSnapshot['memory'] {
-    const rows = this.db.prepare(`
+  /** 将被消息预算截断的任务链前情压缩为一条滚动摘要，避免静默丢失。 */
+  private buildRollingSummary(overflow: TaskContextMessageRow[]): string | null {
+    if (overflow.length === 0) return null;
+    const shown = overflow.slice(-10);
+    const hidden = overflow.length - shown.length;
+    const lines = shown.map((row) => {
+      let content = row.contentJson;
+      try { content = JSON.parse(content).text ?? content; } catch { /* use raw */ }
+      const who = row.senderType === 'user' ? '用户' : row.senderId;
+      return `- ${who}: ${content.slice(0, 200).replace(/\s+/g, ' ').trim()}`;
+    });
+    const headline = `以下是本次任务链中更早的 ${overflow.length} 条消息${hidden > 0 ? `（仅展示最近 10 条，另有 ${hidden} 条省略）` : ''}：`;
+    return [headline, ...lines].join('\n');
+  }
+
+  private buildMemory(projectId: string, agentInstanceId: string, _role: string, query: string): { memory: ContextSnapshot['memory']; touchedMemoryIds: string[] } {
+    const memoryColumns = `
       SELECT mr.id, mr.project_id as projectId, mr.agent_instance_id as agentInstanceId,
              mr.scope, mr.type, mr.content, mr.confidence, mr.importance, mr.pinned,
              mr.topic_key as topicKey, mr.source_refs_json as sourceRefsJson,
@@ -457,7 +501,9 @@ export class ContextBuilder {
              mr.last_reinforced_at as lastReinforcedAt, mr.last_accessed_at as lastAccessedAt,
              mr.access_count as accessCount, mr.consolidated_into_id as consolidatedIntoId,
              mr.supersedes_id as supersedesId, mr.created_at as createdAt, mr.updated_at as updatedAt
-      FROM memory_records mr
+      FROM memory_records mr`;
+    const rows = this.db.prepare(`
+      ${memoryColumns}
       WHERE mr.project_id = ? AND mr.status = 'active'
         AND mr.agent_instance_id = ?
       ORDER BY mr.last_reinforced_at DESC
@@ -470,20 +516,48 @@ export class ContextBuilder {
       shortTermHalfLifeHours: 72,
       longTermHalfLifeHours: 30 * 24,
     });
-    const selectedIds = ranked.map(({ record }) => record.id);
-    if (selectedIds.length > 0) {
-      const placeholders = selectedIds.map(() => '?').join(',');
-      this.db.prepare(
-        `UPDATE memory_records SET last_accessed_at = ?, access_count = access_count + 1 WHERE id IN (${placeholders})`,
-      ).run(new Date().toISOString(), ...selectedIds);
-    }
+    const touchedMemoryIds = ranked.map(({ record }) => record.id);
 
     const shortTerm = ranked.filter(({ record }) => record.scope === 'short-term').slice(0, 3);
     const longTerm = ranked.filter(({ record }) => record.scope === 'long-term').slice(0, 3);
+
+    // 群聊级共享记忆：其他成员沉淀的固定规则/项目约束（pinned 长期记忆）对
+    // 当前智能体可见。避免统筹记录的群聊约束与交付偏好（如"报告一律先出
+    // Markdown 定稿"）对被委派成员完全不可见，导致协作行为割裂。
+    const sharedRows = this.db.prepare(`
+      ${memoryColumns}
+      WHERE mr.project_id = ? AND mr.status = 'active'
+        AND mr.agent_instance_id != ?
+        AND mr.scope = 'long-term'
+        AND (mr.pinned = 1 OR mr.type = 'project-constraint')
+      ORDER BY mr.last_reinforced_at DESC
+      LIMIT 20
+    `).all(projectId, agentInstanceId) as MemoryRecord[];
+    const sharedRanked = rankMemories(query, sharedRows, {
+      limit: 2,
+      minimumScore: query.trim() ? 0.42 : 0.52,
+      shortTermHalfLifeHours: 72,
+      longTermHalfLifeHours: 30 * 24,
+    }).filter(({ record }) => record.scope === 'long-term');
+    const sharedMemory = sharedRanked.map(({ record }) => `[团队共享·${record.pinned ? '固定规则' : record.topicKey ?? record.type}] ${record.content.slice(0, 400)}`);
+    touchedMemoryIds.push(...sharedRanked.map(({ record }) => record.id));
+
     return {
-      shortTerm: shortTerm.map(({ record }) => `[${record.topicKey ?? record.type}] ${record.content.slice(0, 400)}`),
-      longTerm: longTerm.map(({ record }) => `[${record.pinned ? '固定规则' : record.topicKey ?? record.type}] ${record.content.slice(0, 550)}`),
+      memory: {
+        shortTerm: shortTerm.map(({ record }) => `[${record.topicKey ?? record.type}] ${record.content.slice(0, 400)}`),
+        longTerm: [...longTerm.map(({ record }) => `[${record.pinned ? '固定规则' : record.topicKey ?? record.type}] ${record.content.slice(0, 550)}`), ...sharedMemory],
+      },
+      touchedMemoryIds,
     };
+  }
+
+  /** 记忆访问回写（唯一的写操作，与 buildMemory 查询分离）。 */
+  private markMemoryAccessed(memoryIds: string[]): void {
+    if (memoryIds.length === 0) return;
+    const placeholders = memoryIds.map(() => '?').join(',');
+    this.db.prepare(
+      `UPDATE memory_records SET last_accessed_at = ?, access_count = access_count + 1 WHERE id IN (${placeholders})`,
+    ).run(new Date().toISOString(), ...memoryIds);
   }
 
   private buildReferencedFiles(projectId: string, messages: ContextSnapshot['messages']): ContextSnapshot['referencedFiles'] {
@@ -520,66 +594,114 @@ export class ContextBuilder {
     }
   }
 
-  private buildKnowledgeChunks(projectId: string, sharedKnowledgeEnabled: boolean): ContextSnapshot['knowledgeChunks'] {
-    const chunks: ContextSnapshot['knowledgeChunks'] = [];
-    const projectChunks = this.db.prepare(`
-      SELECT c.id, c.text, ks.scope_type as scopeType, ks.scope_id as scopeId
-      FROM knowledge_chunks c
-      JOIN knowledge_sources ks ON ks.id = c.source_id
-      WHERE ks.scope_type = 'project' AND ks.scope_id = ? AND ks.status = 'ready'
-      ORDER BY c.created_at DESC
-      LIMIT ?
-    `).all(projectId, this.options.knowledgeChunkLimit) as Array<{
-      id: string; text: string; scopeType: string; scopeId: string;
-    }>;
-
-    for (const c of projectChunks) {
-      chunks.push({ sourceId: c.id, text: c.text.slice(0, 500), sourceLabel: '群聊知识' });
-    }
-
-    // 共享知识
-    if (sharedKnowledgeEnabled && chunks.length < this.options.knowledgeChunkLimit + this.options.sharedKnowledgeChunkLimit) {
-      const sharedLimit = Math.min(this.options.sharedKnowledgeChunkLimit, this.options.knowledgeChunkLimit + this.options.sharedKnowledgeChunkLimit - chunks.length);
-      const shared = this.db.prepare(`
-        SELECT c.id, c.text
-        FROM knowledge_chunks c
-        JOIN knowledge_sources ks ON ks.id = c.source_id
-        WHERE ks.scope_type = 'shared' AND ks.status = 'ready'
-        ORDER BY c.created_at DESC
-        LIMIT ?
-      `).all(sharedLimit) as Array<{ id: string; text: string }>;
-
-      for (const c of shared) {
-        chunks.push({ sourceId: c.id, text: c.text.slice(0, 500), sourceLabel: '共享知识' });
-      }
-    }
-
-    return chunks;
+  private buildKnowledgeAccess(groupId: string): ContextSnapshot['knowledgeAccess'] {
+    const scopes = resolveKnowledgeScopesForGroup(this.db, groupId);
+    const projectScope = scopes.find((scope) => scope.workspaceType === 'enterprise-project');
+    const linkedProject = projectScope ? getEnterpriseProject(this.db, projectScope.scopeId) : null;
+    return {
+      personal: { scopeType: 'project', scopeId: groupId, label: '当前群聊个人知识' },
+      project: projectScope
+        ? {
+            scopeType: 'project',
+            scopeId: projectScope.scopeId,
+            label: `关联项目知识（${linkedProject?.name ?? projectScope.scopeId}）`,
+            name: linkedProject?.name ?? projectScope.scopeId,
+          }
+        : null,
+      enterprise: { scopeType: 'shared', scopeId: 'shared-knowledge', label: '企业知识' },
+    };
   }
 
-  private buildWorkspaceInfo(_projectId: string): ContextSnapshot['workspace'] {
-    // 从 workspace_registry 获取工作区信息
-    const row = this.db.prepare(`
-      SELECT root_path_hash as rootPathHash FROM workspace_registry LIMIT 1
-    `).get() as { rootPathHash: string } | undefined;
+  private buildKnowledgeChunks(projectId: string, recallQuery: string): ContextSnapshot['knowledgeChunks'] {
+    const access = this.buildKnowledgeAccess(projectId);
+    const scopes = [
+      { ...access.personal, quota: access.project ? 3 : this.options.knowledgeChunkLimit },
+      ...(access.project ? [{ ...access.project, quota: 2 }] : []),
+      { ...access.enterprise, quota: this.options.sharedKnowledgeChunkLimit },
+    ];
+    const maxChunks = this.options.knowledgeChunkLimit + this.options.sharedKnowledgeChunkLimit;
+    const keywords = this.extractRecallKeywords(recallQuery);
+    const selected: ContextSnapshot['knowledgeChunks'] = [];
+    const overflow: ContextSnapshot['knowledgeChunks'] = [];
 
+    for (const scope of scopes) {
+      const rows = keywords.length > 0
+        ? this.searchKnowledgeChunksByKeywords(scope, keywords, maxChunks)
+        : [];
+      // 无相关命中时降级为最新片段，保证知识注入不因检索空转而完全消失。
+      const effective = rows.length > 0 ? rows : this.latestKnowledgeChunks(scope, maxChunks);
+      const mapped = effective.map((row) => ({
+        sourceId: row.id,
+        text: row.text.slice(0, 500),
+        sourceLabel: scope.label,
+      }));
+      selected.push(...mapped.slice(0, scope.quota));
+      overflow.push(...mapped.slice(scope.quota));
+    }
+
+    return [...selected, ...overflow].slice(0, maxChunks);
+  }
+
+  /** 按标点与空白切分召回语句，提取可用于 LIKE 匹配的关键词。 */
+  private extractRecallKeywords(query: string): string[] {
+    const segments = query
+      .replace(/[，。！？；：、,.!?;:()\[\]{}（）【】“”‘’"'`\n\r\t]+/g, ' ')
+      .split(' ')
+      .map((segment) => segment.trim())
+      .filter((segment) => segment.length >= 2 && segment.length <= 12 && !/[%_]/.test(segment));
+    return [...new Set(segments)].slice(0, 6);
+  }
+
+  /** 依据任务召回词检索知识片段，按命中关键词数与创建时间排序。 */
+  private searchKnowledgeChunksByKeywords(
+    scope: { scopeType: string; scopeId: string },
+    keywords: string[],
+    limit: number,
+  ): Array<{ id: string; text: string }> {
+    const likePatterns = keywords.map((keyword) => `%${keyword}%`);
+    const likeClause = likePatterns.map(() => 'c.text LIKE ?').join(' OR ');
+    const rows = this.db.prepare(`
+      SELECT c.id, c.text, c.created_at as createdAt
+      FROM knowledge_chunks c
+      JOIN knowledge_sources ks ON ks.id = c.source_id
+      WHERE ks.scope_type = ? AND ks.scope_id = ? AND ks.status = 'ready'
+        AND (${likeClause})
+      ORDER BY c.created_at DESC
+      LIMIT ?
+    `).all(scope.scopeType, scope.scopeId, ...likePatterns, limit * 3) as Array<{ id: string; text: string; createdAt: string }>;
+    const keywordHits = (text: string) => keywords.reduce((count, keyword) => count + (text.includes(keyword) ? 1 : 0), 0);
+    return rows
+      .map((row) => ({ row, hits: keywordHits(row.text) }))
+      .sort((a, b) => b.hits - a.hits || (a.row.createdAt < b.row.createdAt ? 1 : -1))
+      .slice(0, limit)
+      .map(({ row }) => ({ id: row.id, text: row.text }));
+  }
+
+  /** 降级路径：无召回词命中时按创建时间取最新片段。 */
+  private latestKnowledgeChunks(scope: { scopeType: string; scopeId: string }, limit: number): Array<{ id: string; text: string }> {
+    return this.db.prepare(`
+      SELECT c.id, c.text
+      FROM knowledge_chunks c
+      JOIN knowledge_sources ks ON ks.id = c.source_id
+      WHERE ks.scope_type = ? AND ks.scope_id = ? AND ks.status = 'ready'
+      ORDER BY c.created_at DESC
+      LIMIT ?
+    `).all(scope.scopeType, scope.scopeId, limit) as Array<{ id: string; text: string }>;
+  }
+
+  private buildWorkspaceInfo(projectId: string): ContextSnapshot['workspace'] {
+    // 与 agent-tools.ts 的 resolveWorkspaceReadPath 保持同一份白名单，避免误导模型访问被拒路径。
     return {
-      rootPath: row?.rootPathHash ?? '(未配置)',
-      allowedRoots: ['workspace', 'artifacts'],
-      publishMethod: 'publish_artifact 工具',
+      rootPath: getProjectRoot(projectId),
+      allowedRoots: ['original-files/', 'outputs/', 'wiki/', 'knowledge/', 'temp/', 'agent-memories/', 'agent-identities/'],
+      publishMethod: '中间产物使用 temp:save，正式成果由统筹使用 temp:promote',
     };
   }
 
   private calcChecksum(snapshot: ContextSnapshot): string {
     const { snapshotChecksum: _, ...rest } = snapshot;
-    let hash = 0;
-    const str = JSON.stringify(rest);
-    for (let i = 0; i < str.length; i++) {
-      const chr = str.charCodeAt(i);
-      hash = ((hash << 5) - hash) + chr;
-      hash |= 0; // Convert to 32bit integer
-    }
-    return Math.abs(hash).toString(16).padStart(8, '0');
+    // sha256 截取 16 位十六进制（64bit），替代原 32 位字符串 hash 的碰撞风险。
+    return createHash('sha256').update(JSON.stringify(rest)).digest('hex').slice(0, 16);
   }
 
   /**
@@ -687,12 +809,6 @@ export class ContextBuilder {
   }
 
   private calcEntryChecksum(content: string): string {
-    let hash = 0;
-    for (let i = 0; i < content.length; i++) {
-      const chr = content.charCodeAt(i);
-      hash = ((hash << 5) - hash) + chr;
-      hash |= 0;
-    }
-    return Math.abs(hash).toString(16).padStart(8, '0');
+    return createHash('sha256').update(content).digest('hex').slice(0, 16);
   }
 }

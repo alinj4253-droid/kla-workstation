@@ -2,6 +2,7 @@ import { BrowserWindow, ipcMain, dialog } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { MessageRepository } from '@kunqing/database';
 import { cliExecutor } from './cli-executor';
+import { broadcastEvent } from './event-broadcast';
 import { cliAgentRegistry } from './cli-agent-registry';
 import { ContextBuilder } from './context-builder';
 import { getProjectRoot } from './paths';
@@ -47,7 +48,7 @@ const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
   });
 
 const dispatch = (window: BrowserWindow, event: Record<string, unknown>): void => {
-  try { window.webContents.send('event:dispatch', event); } catch { /* window unavailable */ }
+  broadcastEvent(window, event);
 };
 
 const _runControllers = new Map<string, AbortController>();

@@ -11,7 +11,7 @@ export const agentRuns = sqliteTable('agent_runs', {
   requestedById: text('requested_by_id').notNull(),
   instruction: text('instruction'),
   status: text('status', {
-    enum: ['queued', 'starting', 'running', 'completed', 'failed', 'cancelling', 'cancelled', 'interrupted'],
+    enum: ['queued', 'starting', 'running', 'awaiting_user', 'completed', 'failed', 'cancelling', 'cancelled', 'interrupted'],
   }).notNull().default('queued'),
   attempt: integer('attempt').notNull().default(1),
   modelProfileSnapshotJson: text('model_profile_snapshot_json'),

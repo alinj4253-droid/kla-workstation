@@ -855,4 +855,302 @@ const migrations: Array<{ name: string; sql: string }> = [
         ON agent_runs(project_id, created_at DESC);
     `,
   },
+  {
+    name: '022_agent_runs_awaiting_user',
+    sql: `
+      CREATE TABLE agent_runs_v2 (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id),
+        trigger_message_id TEXT,
+        parent_run_id TEXT,
+        agent_instance_id TEXT NOT NULL,
+        requested_by_type TEXT NOT NULL CHECK(requested_by_type IN ('user','agent','system')),
+        requested_by_id TEXT NOT NULL,
+        instruction TEXT,
+        status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','starting','running','awaiting_user','completed','failed','cancelling','cancelled','interrupted')),
+        attempt INTEGER NOT NULL DEFAULT 1,
+        model_profile_snapshot_json TEXT,
+        started_at TEXT,
+        finished_at TEXT,
+        result_message_id TEXT,
+        error_code TEXT,
+        error_message TEXT,
+        created_at TEXT NOT NULL
+      );
+      INSERT INTO agent_runs_v2 SELECT * FROM agent_runs;
+      DROP TABLE agent_runs;
+      ALTER TABLE agent_runs_v2 RENAME TO agent_runs;
+      CREATE INDEX idx_agent_runs_instance ON agent_runs(agent_instance_id, status);
+      CREATE INDEX idx_agent_runs_created ON agent_runs(created_at);
+      CREATE INDEX idx_agent_runs_project ON agent_runs(project_id, created_at DESC);
+    `,
+  },
+  {
+    name: '023_operation_skill_learning',
+    sql: `
+      CREATE TABLE operation_platforms (
+        id TEXT PRIMARY KEY,
+        owner_agent_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        url TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        model_profile_id TEXT,
+        temperature REAL NOT NULL DEFAULT 0.7,
+        status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','revoked')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        revoked_at TEXT
+      );
+      CREATE INDEX idx_operation_platforms_status ON operation_platforms(status, updated_at DESC);
+
+      CREATE TABLE operation_recording_sessions (
+        id TEXT PRIMARY KEY,
+        platform_id TEXT NOT NULL REFERENCES operation_platforms(id),
+        status TEXT NOT NULL DEFAULT 'recording' CHECK(status IN ('recording','paused','stopped','saved','abandoned')),
+        trace_rel_path TEXT NOT NULL,
+        recording_rel_path TEXT,
+        event_count INTEGER NOT NULL DEFAULT 0,
+        started_at TEXT NOT NULL,
+        stopped_at TEXT,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX idx_operation_recordings_platform ON operation_recording_sessions(platform_id, updated_at DESC);
+
+      CREATE TABLE operation_skills (
+        id TEXT PRIMARY KEY,
+        platform_id TEXT NOT NULL REFERENCES operation_platforms(id),
+        owner_agent_id TEXT NOT NULL,
+        recording_session_id TEXT REFERENCES operation_recording_sessions(id),
+        name TEXT NOT NULL,
+        description TEXT NOT NULL,
+        version TEXT NOT NULL DEFAULT '1.0.0',
+        status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','learning','validating','active','failed','abandoned','revoked')),
+        package_rel_path TEXT,
+        workflow_json TEXT,
+        model_profile_id TEXT,
+        learning_error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        activated_at TEXT,
+        revoked_at TEXT
+      );
+      CREATE INDEX idx_operation_skills_platform ON operation_skills(platform_id, status, updated_at DESC);
+
+      CREATE TABLE operation_learning_messages (
+        id TEXT PRIMARY KEY,
+        skill_id TEXT NOT NULL REFERENCES operation_skills(id),
+        role TEXT NOT NULL CHECK(role IN ('user','agent','system')),
+        content TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX idx_operation_learning_messages_skill ON operation_learning_messages(skill_id, created_at, id);
+
+      CREATE TABLE operation_skill_runs (
+        id TEXT PRIMARY KEY,
+        skill_id TEXT NOT NULL REFERENCES operation_skills(id),
+        platform_id TEXT NOT NULL REFERENCES operation_platforms(id),
+        owner_agent_id TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','running','completed','failed','cancelling','cancelled')),
+        current_step_index INTEGER NOT NULL DEFAULT -1,
+        input_json TEXT NOT NULL DEFAULT '{}',
+        output_json TEXT,
+        error_message TEXT,
+        browser_session_id TEXT,
+        started_at TEXT,
+        completed_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX idx_operation_skill_runs_platform ON operation_skill_runs(platform_id, created_at DESC);
+      CREATE INDEX idx_operation_skill_runs_skill ON operation_skill_runs(skill_id, created_at DESC);
+
+      CREATE TABLE operation_skill_run_events (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL REFERENCES operation_skill_runs(id),
+        sequence INTEGER NOT NULL,
+        type TEXT NOT NULL,
+        step_id TEXT,
+        detail_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        UNIQUE(run_id, sequence)
+      );
+      CREATE INDEX idx_operation_run_events_run ON operation_skill_run_events(run_id, sequence);
+    `,
+  },
+  {
+    name: '024_operation_skill_learning_phase',
+    sql: `
+      ALTER TABLE operation_skills ADD COLUMN learning_phase TEXT NOT NULL DEFAULT 'processing'
+        CHECK(learning_phase IN ('processing','awaiting-user','ready','failed'));
+    `,
+  },
+  {
+    name: '025_operation_agent_conversation',
+    sql: `
+      CREATE TABLE operation_conversation_messages (
+        id TEXT PRIMARY KEY,
+        platform_id TEXT NOT NULL REFERENCES operation_platforms(id),
+        role TEXT NOT NULL CHECK(role IN ('user','agent','system')),
+        content TEXT NOT NULL,
+        related_run_id TEXT REFERENCES operation_skill_runs(id),
+        metadata_json TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX idx_operation_conversation_platform
+        ON operation_conversation_messages(platform_id, created_at, id);
+    `,
+  },
+  {
+    name: '026_memory_reflection_jobs',
+    sql: `
+      CREATE TABLE memory_reflection_jobs (
+        run_id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        agent_instance_id TEXT NOT NULL,
+        trigger_message_id TEXT NOT NULL,
+        result_message_id TEXT,
+        request_text TEXT NOT NULL,
+        result_text TEXT,
+        artifacts_json TEXT NOT NULL DEFAULT '[]',
+        runtime_workspace_root TEXT,
+        status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','running','completed','failed')),
+        attempts INTEGER NOT NULL DEFAULT 0,
+        available_at TEXT NOT NULL,
+        error_message TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT
+      );
+      CREATE INDEX idx_memory_reflection_jobs_status
+        ON memory_reflection_jobs(status, available_at);
+    `,
+  },
+  {
+    name: '027_operation_skill_enabled',
+    sql: `
+      ALTER TABLE operation_skills ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;
+      CREATE INDEX idx_operation_skills_enabled ON operation_skills(platform_id, status, enabled, updated_at DESC);
+    `,
+  },
+  {
+    name: '028_operation_skill_pending_revision',
+    sql: `
+      ALTER TABLE operation_skills ADD COLUMN pending_workflow_json TEXT;
+      ALTER TABLE operation_skills ADD COLUMN pending_summary TEXT;
+    `,
+  },
+  {
+    name: '029_enterprise_project_workspaces',
+    sql: `
+      CREATE TABLE enterprise_projects (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        token_used INTEGER NOT NULL DEFAULT 0,
+        completed_nodes INTEGER NOT NULL DEFAULT 0,
+        total_nodes INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE project_resource_links (
+        project_id TEXT NOT NULL REFERENCES enterprise_projects(id) ON DELETE CASCADE,
+        resource_type TEXT NOT NULL CHECK(resource_type IN ('group','meeting','operation')),
+        resource_id TEXT NOT NULL,
+        permission TEXT NOT NULL DEFAULT 'read-write' CHECK(permission IN ('read','read-write')),
+        status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','revoked')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(resource_type, resource_id)
+      );
+      CREATE INDEX idx_project_resource_links_project ON project_resource_links(project_id, resource_type, status);
+    `,
+  },
+  {
+    name: '030_operation_learning_resolutions',
+    sql: `
+      CREATE TABLE operation_learning_resolutions (
+        skill_id TEXT NOT NULL REFERENCES operation_skills(id) ON DELETE CASCADE,
+        issue_id TEXT NOT NULL,
+        question TEXT NOT NULL,
+        mismatch TEXT,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','resolved','superseded')),
+        answer TEXT,
+        source_priority TEXT CHECK(source_priority IN ('user-description','recording-evidence','user-answer')),
+        created_at TEXT NOT NULL,
+        resolved_at TEXT,
+        PRIMARY KEY(skill_id, issue_id)
+      );
+      CREATE INDEX idx_operation_learning_resolutions_status
+        ON operation_learning_resolutions(skill_id, status, created_at);
+    `,
+  },
+  {
+    name: '031_coordination_registry_and_task_plans',
+    sql: `
+      CREATE TABLE project_agent_coordination (
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        agent_instance_id TEXT NOT NULL REFERENCES project_agent_instances(id) ON DELETE CASCADE,
+        display_name TEXT NOT NULL,
+        role TEXT NOT NULL,
+        definition_id TEXT NOT NULL,
+        runtime_mode TEXT NOT NULL,
+        responsibility_summary TEXT NOT NULL DEFAULT '',
+        domain_tags_json TEXT NOT NULL DEFAULT '[]',
+        accepted_task_types_json TEXT NOT NULL DEFAULT '[]',
+        deliverable_types_json TEXT NOT NULL DEFAULT '[]',
+        capability_boundaries_json TEXT NOT NULL DEFAULT '[]',
+        skill_summary_json TEXT NOT NULL DEFAULT '[]',
+        can_self_deliver INTEGER NOT NULL DEFAULT 0,
+        can_spawn_parallel INTEGER NOT NULL DEFAULT 0,
+        availability TEXT NOT NULL DEFAULT 'available' CHECK(availability IN ('available','busy','disabled','unavailable')),
+        priority INTEGER NOT NULL DEFAULT 100,
+        source_hash TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(project_id, agent_instance_id)
+      );
+      CREATE INDEX idx_project_agent_coordination_available
+        ON project_agent_coordination(project_id, availability, priority, agent_instance_id);
+
+      CREATE TABLE task_plans (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        root_run_id TEXT NOT NULL,
+        trigger_message_id TEXT NOT NULL,
+        resolved_goal TEXT NOT NULL,
+        complexity TEXT NOT NULL CHECK(complexity IN ('simple','complex','missing-input')),
+        status TEXT NOT NULL DEFAULT 'planned' CHECK(status IN ('planned','running','waiting-user','completed','failed','cancelled')),
+        revision INTEGER NOT NULL DEFAULT 1,
+        completion_criteria_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(root_run_id)
+      );
+      CREATE INDEX idx_task_plans_project ON task_plans(project_id, updated_at DESC);
+
+      CREATE TABLE task_nodes (
+        id TEXT PRIMARY KEY,
+        plan_id TEXT NOT NULL REFERENCES task_plans(id) ON DELETE CASCADE,
+        node_key TEXT NOT NULL,
+        ordinal INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        objective TEXT NOT NULL,
+        inputs_json TEXT NOT NULL DEFAULT '[]',
+        expected_result TEXT NOT NULL DEFAULT '',
+        completion_criteria_json TEXT NOT NULL DEFAULT '[]',
+        depends_on_json TEXT NOT NULL DEFAULT '[]',
+        execution_mode TEXT NOT NULL DEFAULT 'serial' CHECK(execution_mode IN ('serial','parallel','wait-user')),
+        assigned_agent_id TEXT,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','ready','assigned','running','waiting-user','completed','failed','blocked','cancelled')),
+        attempt INTEGER NOT NULL DEFAULT 0,
+        result_message_id TEXT,
+        artifact_refs_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(plan_id, ordinal),
+        UNIQUE(plan_id, node_key)
+      );
+      CREATE INDEX idx_task_nodes_plan_status ON task_nodes(plan_id, status, ordinal);
+    `,
+  },
 ];

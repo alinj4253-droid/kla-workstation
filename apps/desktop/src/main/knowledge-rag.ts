@@ -48,7 +48,7 @@ function sourceAppendix(hits: HybridKnowledgeHit[]): string {
 
 export function fallbackRagAnswer(query: string, hits: HybridKnowledgeHit[]): string {
   if (hits.length === 0) {
-    return `当前群聊知识库和共享知识中没有找到能够回答“${compact(query, 120)}”的可靠证据。`;
+    return `当前群聊个人知识、已关联项目知识和企业知识中没有找到能够回答“${compact(query, 120)}”的可靠证据。`;
   }
   const conclusions = hits.slice(0, 4).map((hit, index) => (
     `- ${compact(hit.excerpt, 240)} [${index + 1}]`

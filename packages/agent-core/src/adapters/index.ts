@@ -35,3 +35,4 @@ export { runAcpSession } from './acp/session.js';
 export { createAcpTransport } from './acp/transport.js';
 export type { AcpSessionRunOptions, AcpSessionResult } from './acp/session.js';
 export type { AcpTransportOptions, AcpTransport } from './acp/transport.js';
+export { WorkBuddyMcpAdapter } from './workbuddy/index.js';

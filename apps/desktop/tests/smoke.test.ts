@@ -15,7 +15,7 @@ describe('Web build smoke test', () => {
 
   it('produces index.html with correct title', () => {
     const html = readFileSync(resolve(WEB_DIST, 'index.html'), 'utf-8');
-    expect(html).toContain('鲲擎');
+    expect(html).toContain('KLA Workstation');
     expect(html).toContain('id="root"');
   });
 

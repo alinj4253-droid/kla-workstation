@@ -353,27 +353,37 @@ export class SkillRegistry {
         ['team-planning', '团队规划与任务拆分：从业务目标拆出可验收工作包，并选择合适成员。', ['list_project_agents', 'delegate_tasks']],
         ['result-synthesis', '结果汇总与交付：核对成员结果、处理缺口并形成统一交付。', []],
       ]],
-      ['builtin.knowledge-manager', [
-        ['process-knowledge-files', '增量处理群聊原始文件，生成切片、摘要、标签、向量、图谱、Wiki 与离线可视化。', ['workspace:readFile', 'knowledge:ingest', 'local:ocr', 'local:embed']],
-        ['retrieve-knowledge', '按问题自适应融合全文、向量、图谱与 Wiki 检索，并返回可溯源证据。', ['knowledge:search', 'knowledge:listGraph']],
+      ['builtin.local-executor', [
+        ['local-knowledge-management', '按需对授权范围内新增、变化和移除的原始文件做增量知识化，维护标准化正文、切片、向量、图谱、Wiki 和来源状态。', ['knowledge:process', 'workspace:readFile', 'knowledge:listGraph']],
+        ['local-research', '检索三层内部知识、完整读取明确文件并按需搜索公开网页，形成精炼可溯源的证据与结论。', ['knowledge:search', 'knowledge:readDocument', 'knowledge:listGraph', 'web:search']],
+        ['local-material-authoring', '基于真实证据和实际模板规划、编写、修改并保存完整成果文件。', ['knowledge:search', 'knowledge:readDocument', 'template:list', 'template:read', 'template:materialize', 'temp:save', 'temp:read', 'temp:list', 'temp:promote']],
+        ['local-deliverable-acceptance', '在本地执行循环内依据需求、模板和证据核验成果，不通过时返修，通过后形成真实交付。', ['temp:list', 'temp:read', 'knowledge:search', 'knowledge:readDocument', 'template:list', 'template:read', 'temp:save', 'temp:promote']],
+        ['parallel-agent', '仅在本地执行智能体范围内对真正独立的子问题并行处理，并由本地执行智能体统一汇总。', ['agent:spawn_parallel']],
+      ]],
+      // The former specialist skill bundles are now mounted on the local
+      // executor. Keep their package IDs stable so existing workspaces and
+      // historical skill references remain readable.
+      ['builtin.local-executor', [
+        ['process-knowledge-files', '增量处理当前群聊个人、关联项目与企业原始文件，生成切片、摘要、标签、向量、图谱、Wiki 与离线可视化。', ['workspace:readFile', 'knowledge:ingest', 'local:ocr', 'local:embed']],
         ['document-ingestion', '文档导入与语义切片：解析文件、分块并保留来源位置。', ['workspace:readFile']],
-        ['entity-relation-extraction', '实体关系抽取：形成带置信度和来源的知识图谱。', ['knowledge:search']],
-        ['provenance-validation', '来源溯源与验证：逐项建立“材料主张 -> 知识证据 -> 原始来源位置”的对应关系，核验知识与原始资料的一致性，识别变造、夸大、冲突和来源缺口。', ['workspace:readFile', 'knowledge:search']],
+        ['entity-relation-extraction', '实体关系抽取：形成带置信度和来源的知识图谱。', ['workspace:readFile']],
+        ['knowledge-provenance-validation', '知识入库溯源：核验标准化内容、切片、知识结论与原始资料的一致性并保留来源位置。', ['workspace:readFile']],
         ['wiki-materialization', 'Wiki 生成：将知识图谱整理为可读知识文档。', ['publish_artifact']],
         ['graph-projection', '图谱投影：生成前端可视化所需的节点和边数据。', ['knowledge:listGraph', 'publish_artifact']],
       ]],
-      ['builtin.researcher', [
+      ['builtin.local-executor', [
         ['information-retrieval', '信息检索：搜索、筛选并排序与任务相关的资料。', ['knowledge:search']],
         ['source-analysis', '来源分析：评估可靠性并交叉验证不同来源。', ['knowledge:search']],
         ['web-search', '网页搜索：通过博查检索公开网页，核验来源并综合形成带引用的调研结论。', ['web:search']],
       ]],
-      ['builtin.material-writer', [
-        ['document-authoring', '材料编写：依据证据和模板先列框架，再逐章写作并生成完整 HTML 待审稿。', ['skill:search', 'skill:load', 'workspace:readFile', 'review:writeDraft']],
+      ['builtin.local-executor', [
+        ['retrieve-knowledge', '在三层知识中检索精炼证据；明确文件任务完整读取标准化正文。', ['knowledge:search', 'knowledge:readDocument', 'knowledge:listGraph']],
+        ['document-authoring', '材料编写：自行检索知识、发现并读取模板；明确文件任务完整读取正文，再将正文嵌入实际模板并通过 temp:save 保存完整 HTML 候选稿。', ['skill:search', 'skill:load', 'knowledge:search', 'knowledge:readDocument', 'template:list', 'template:read', 'temp:save', 'temp:read', 'temp:list']],
       ]],
-      ['builtin.acceptance-reviewer', [
-        ['retrieve-knowledge', '按问题自适应融合全文、向量、图谱与 Wiki 检索，并返回可溯源证据。', ['knowledge:search', 'knowledge:listGraph']],
+      ['builtin.local-executor', [
+        ['retrieve-knowledge', '在三层知识中检索精炼证据；明确文件任务完整读取标准化正文，并可读取当前任务临时成果。', ['knowledge:search', 'knowledge:readDocument', 'knowledge:listGraph', 'temp:list', 'temp:read']],
         ['provenance-validation', '来源溯源与验证：核验材料主张与原始知识的一致性。', ['workspace:readFile', 'knowledge:search']],
-        ['deliverable-acceptance', '成果验收：按需求、模板、证据和文件完整性给出明确通过或不通过结论。', ['workspace:readFile', 'knowledge:search', 'skill:load']],
+        ['deliverable-acceptance', '成果验收：读取临时候选稿，按需求、实际模板、证据和文件完整性给出明确通过或不通过结论。', ['temp:list', 'temp:read', 'workspace:readFile', 'knowledge:search', 'knowledge:readDocument', 'template:list', 'template:read', 'skill:load']],
       ]],
     ] as const;
     const legacyInsert = this.db.prepare(
@@ -392,6 +402,22 @@ export class SkillRegistry {
        VALUES (?, '1.0.0', ?, '1.0.0', ?, NULL)`,
     );
     this.db.transaction(() => {
+      this.db.prepare(
+        `DELETE FROM agent_definition_skills
+         WHERE agent_definition_id = 'builtin.knowledge-manager' AND skill_id = 'retrieve-knowledge'`,
+      ).run();
+      this.db.prepare(
+        `DELETE FROM agent_skills
+         WHERE agent_definition_id = 'builtin.knowledge-manager' AND skill_id = 'skill.retrieve-knowledge'`,
+      ).run();
+      this.db.prepare(
+        `DELETE FROM agent_definition_skills
+         WHERE agent_definition_id = 'builtin.knowledge-manager' AND skill_id = 'provenance-validation'`,
+      ).run();
+      this.db.prepare(
+        `DELETE FROM agent_skills
+         WHERE agent_definition_id = 'builtin.knowledge-manager' AND skill_id = 'skill.provenance-validation'`,
+      ).run();
       for (const [definitionId, skills] of definitions) {
         skills.forEach(([name, description, requiredTools], ordinal) => {
           const instructions = `# ${name}\n\n${description}`;

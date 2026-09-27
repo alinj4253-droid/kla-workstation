@@ -11,14 +11,21 @@ modelRequirements:
   - toolCalling
   - structuredOutput
 skills:
+  - retrieve-knowledge
   - document-authoring
 tools:
   - skill.search
   - skill.load
+  - knowledge.search
+  - knowledge.readDocument
+  - template.list
+  - template.read
+  - template.materialize
   - workspace.read
-  - review.writeDraft
+  - temp.save
+  - temp.read
+  - temp.list
   - memory.writeOwn
 memoryPolicy:
   shortTermTtlHours: 72
   longTermWrite: candidate-then-commit
-

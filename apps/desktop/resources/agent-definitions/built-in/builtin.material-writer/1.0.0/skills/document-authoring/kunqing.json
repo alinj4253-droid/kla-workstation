@@ -5,7 +5,6 @@
   "entry": "SKILL.md",
   "agentDefinitions": ["builtin.material-writer"],
   "executionMode": "instructions",
-  "requiredTools": ["skill:search", "skill:load", "workspace:readFile", "review:writeDraft"],
-  "permissions": ["read:file", "read:skill", "write:review-draft"]
+  "requiredTools": ["skill:search", "skill:load", "knowledge:search", "knowledge:readDocument", "template:list", "template:read", "temp:save", "temp:read", "temp:list", "workspace:readFile"],
+  "permissions": ["read:file", "read:skill", "write:temp"]
 }
-

@@ -198,6 +198,7 @@
 - **nopt** — Option parsing for Node, supporting types, shorthands, etc. Used by npm.
 - **once** — Run a function exactly one time
 - **picocolors** — The tiniest and the fastest library for terminal output formatting with ANSI colors
+- **pptx-preview** — 纯前端实现的pptx文件的预览库
 - **proc-log** — just emit 'log' events on the process object
 - **rimraf** — A deep deletion module for node (like `rm -rf`)
 - **saxes** — An evented streaming XML parser in JavaScript
@@ -817,7 +818,7 @@
 - **use-callback-ref** — The same useRef, but with callback
 - **use-sidecar** — Sidecar code splitting utils
 - **util-deprecate** — The Node.js `util.deprecate()` function with browser support
-- **uuid** — RFC4122 (v1, v4, and v5) UUIDs
+- **uuid** — RFC9562 UUIDs
 - **vfile** — Virtual file format for text processing
 - **vfile-location** — vfile utility to convert between positional (line and column-based) and offset (range-based) locations
 - **vfile-message** — vfile utility to create a virtual message
@@ -880,5 +881,5 @@
 - **truncate-utf8-bytes** — Truncate string to given length in bytes
 
 ---
-生成时间: 2026-08-14T03:49:51.012Z
-总包数: 798
+生成时间: 2026-09-02T09:41:00.930Z
+总包数: 799

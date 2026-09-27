@@ -34,6 +34,7 @@ import {
   Settings2,
   ShieldCheck,
   ShieldOff,
+  Sparkles,
   Sun,
   TerminalSquare,
   TestTube2,
@@ -46,39 +47,30 @@ import {
   Zap,
 } from 'lucide-react';
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
-import { NavLink, Navigate, Route, Routes, useNavigate } from 'react-router-dom';
+import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { AgentManagementSettings } from '../components/AgentManagementSettings';
+import { ModelManagementSettings } from '../components/ModelManagementSettings';
+import { OperationsAccessDialog } from '../components/OperationsAccessDialog';
 
 const secondaryNavClass = ({ isActive }: { isActive: boolean }): string => `settings-nav-link${isActive ? ' settings-nav-link--active' : ''}`;
 const OPERATIONS_SESSION_KEY = 'kunqing.operationsAccess';
-const OPERATIONS_ACCESS_KEY = '123456';
 
 export function SettingsPage(): React.JSX.Element {
   const navigate = useNavigate();
+  const location = useLocation();
   const [operationsLoginOpen, setOperationsLoginOpen] = useState(false);
-  const [operationsKey, setOperationsKey] = useState('');
-  const [operationsLoginError, setOperationsLoginError] = useState('');
+
+  useEffect(() => {
+    if (location.pathname !== '/settings/operations') {
+      window.sessionStorage.removeItem(OPERATIONS_SESSION_KEY);
+    }
+  }, [location.pathname]);
 
   const openOperations = (): void => {
-    if (window.sessionStorage.getItem(OPERATIONS_SESSION_KEY) === 'granted') {
-      navigate('/settings/operations');
-      return;
-    }
-    setOperationsKey('');
-    setOperationsLoginError('');
+    window.sessionStorage.removeItem(OPERATIONS_SESSION_KEY);
     setOperationsLoginOpen(true);
-  };
-
-  const verifyOperationsAccess = (event: FormEvent): void => {
-    event.preventDefault();
-    if (operationsKey !== OPERATIONS_ACCESS_KEY) {
-      setOperationsLoginError('运维权限密钥错误');
-      return;
-    }
-    window.sessionStorage.setItem(OPERATIONS_SESSION_KEY, 'granted');
-    setOperationsLoginOpen(false);
-    navigate('/settings/operations');
   };
 
   return (
@@ -87,7 +79,7 @@ export function SettingsPage(): React.JSX.Element {
       <aside className="settings-sidebar">
         <p>AI 核心</p>
         <nav aria-label="设置菜单">
-          <NavLink to="/settings/agents" className={secondaryNavClass}><Bot size={17} /><span>智能体接入</span></NavLink>
+          <NavLink to="/settings/agents" className={secondaryNavClass}><Bot size={17} /><span>智能体管理</span></NavLink>
           <NavLink to="/settings/models" className={secondaryNavClass}><BrainCircuit size={17} /><span>模型管理</span></NavLink>
           <NavLink to="/settings/channels" className={secondaryNavClass}><Cable size={17} /><span>渠道</span></NavLink>
           <button className="settings-nav-link settings-nav-link--disabled" type="button" disabled title="即将上线"><Cpu size={17} /><span>算力</span><em>即将上线</em></button>
@@ -101,22 +93,24 @@ export function SettingsPage(): React.JSX.Element {
         <hr className="settings-sidebar-divider" />
         <p>扩展设置</p>
         <nav aria-label="扩展设置">
-          <NavLink to="/settings/operations" className={secondaryNavClass} onClick={(event) => { event.preventDefault(); openOperations(); }}><ShieldCheck size={17} /><span>运维管理</span></NavLink>
+          <NavLink to="/settings/profile" className={secondaryNavClass}><UserCheck size={17} /><span>个人</span></NavLink>
           <button className="settings-nav-link settings-nav-link--disabled" type="button" disabled title="延后"><Settings2 size={17} /><span>K_Studio</span><em>延后</em></button>
-          <button className="settings-nav-link settings-nav-link--disabled" type="button" disabled title="延后"><Sun size={17} /><span>外观</span><em>延后</em></button>
+          <NavLink to="/settings/appearance" className={secondaryNavClass}><Sun size={17} /><span>外观</span></NavLink>
           <button className="settings-nav-link settings-nav-link--disabled" type="button" disabled title="延后"><Server size={17} /><span>系统</span><em>延后</em></button>
+          <NavLink to="/settings/operations" className={secondaryNavClass} onClick={(event) => { event.preventDefault(); openOperations(); }}><ShieldCheck size={17} /><span>运维管理</span></NavLink>
           <button className="settings-nav-link settings-nav-link--disabled" type="button" disabled title="延后"><Info size={17} /><span>关于</span><em>延后</em></button>
         </nav>
         <div className="settings-sidebar-note"><ShieldCheck size={16} /><div><strong>本地优先</strong><span>配置与运行记录保存在当前 K_Studio。</span></div></div>
       </aside>
       <section className="settings-content">
         <Routes>
-          <Route path="agents" element={<AgentsSettings />} />
-          <Route path="models" element={<ModelsSettings />} />
+          <Route path="agents" element={<AgentManagementSettings ConnectionWizard={ConnectionWizardDialog} />} />
+          <Route path="models" element={<ModelManagementSettings />} />
           <Route path="channels" element={<ChannelsSettings />} />
           <Route path="skills" element={<CapabilitiesSettings view="skills" />} />
           <Route path="tools" element={<CapabilitiesSettings view="tools" />} />
           <Route path="operations" element={<OperationsProtectedRoute />} />
+          <Route path="profile" element={<PersonalSettings />} />
           <Route path="kstudio" element={<KStudioSettings />} />
           <Route path="appearance" element={<AppearanceSettings />} />
           <Route path="system" element={<SystemSettings />} />
@@ -125,22 +119,15 @@ export function SettingsPage(): React.JSX.Element {
         </Routes>
       </section>
     </div>
-    {operationsLoginOpen && (
-      <div className="modal-backdrop modal-backdrop--nested" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setOperationsLoginOpen(false)}>
-        <form className="operations-login-dialog" role="dialog" aria-modal="true" aria-labelledby="operations-login-title" onSubmit={verifyOperationsAccess}>
-          <button type="button" className="icon-button operations-login-dialog__close" aria-label="关闭" onClick={() => setOperationsLoginOpen(false)}><X size={18} /></button>
-          <span className="operations-login-dialog__icon"><Key size={22} /></span>
-          <h2 id="operations-login-title">运维权限验证</h2>
-          <p>请输入运维权限密钥后进入部署与授权配置。</p>
-          <label>
-            <span>运维权限密钥</span>
-            <input autoFocus type="password" value={operationsKey} onChange={(event) => { setOperationsKey(event.target.value); setOperationsLoginError(''); }} placeholder="请输入密钥" />
-            {operationsLoginError && <small>{operationsLoginError}</small>}
-          </label>
-          <button type="submit" className="primary-button">验证并进入</button>
-        </form>
-      </div>
-    )}
+    {operationsLoginOpen && <OperationsAccessDialog
+      description="请输入运维权限密钥后进入部署与授权配置。"
+      onClose={() => setOperationsLoginOpen(false)}
+      onVerified={() => {
+        window.sessionStorage.setItem(OPERATIONS_SESSION_KEY, 'granted');
+        setOperationsLoginOpen(false);
+        navigate('/settings/operations');
+      }}
+    />}
     </>
   );
 }
@@ -202,6 +189,7 @@ function OperationsSettings(): React.JSX.Element {
       deploymentMode: mode,
       operationsAvailableTokens: tokenValue,
       operationsActivationExpiresAt: activationExpiresAt,
+      ...(mode === 'private' ? { operationsActivationStartedAt: new Date().toISOString().slice(0, 10) } : {}),
     }) as { ok: boolean } | undefined;
     setSaving(false);
     setNotice(result?.ok ? '运维配置已保存到当前 K_Studio' : '保存失败，请稍后重试');
@@ -247,7 +235,7 @@ function OperationsSettings(): React.JSX.Element {
             )}
             <footer>
               {notice && <span className={notice.includes('失败') || notice.includes('请选择') ? 'operations-notice operations-notice--error' : 'operations-notice'}>{notice}</span>}
-              <button type="button" className="primary-button" disabled={saving} onClick={() => void saveOperationsSettings()}>{saving ? '保存中...' : '保存运维配置'}</button>
+              <button type="button" className="primary-button" disabled={saving} onClick={() => void saveOperationsSettings()}>{saving ? '保存中...' : '确认并应用配置'}</button>
             </footer>
           </section>
         </>
@@ -287,17 +275,15 @@ interface AgentCardData {
 
 const MOCK_AGENT_CARDS: AgentCardData[] = [
   { id: 'builtin.orchestrator', name: '统筹管理智能体', definitionVersion: '1.0.0', framework: 'LangGraph.js', modelProfile: 'GPT-4o (默认)', skills: ['任务拆解', '结果汇总', '团队 MCP'], permissions: ['read', 'write', 'delegate'], testStatus: 'passed', referencedChats: 3, isBuiltin: true, enabled: true },
-  { id: 'builtin.knowledge-manager', name: '知识管理智能体', definitionVersion: '1.0.0', framework: 'LangGraph.js', modelProfile: 'GPT-4o-mini (默认)', skills: ['文档解析', '知识图谱', 'Wiki 生成'], permissions: ['read', 'write'], testStatus: 'passed', referencedChats: 2, isBuiltin: true, enabled: true },
-  { id: 'builtin.material-writer', name: '材料编写智能体', definitionVersion: '1.0.0', framework: 'Loop Engine', modelProfile: '推理模型', skills: ['材料编写', '模板应用', 'HTML 待审稿'], permissions: ['read', 'draft'], testStatus: 'passed', referencedChats: 0, isBuiltin: true, enabled: true },
-  { id: 'builtin.acceptance-reviewer', name: '验收智能体', definitionVersion: '1.0.0', framework: 'Loop Engine', modelProfile: '推理模型', skills: ['知识检索', '来源溯源', '成果验收'], permissions: ['read', 'review'], testStatus: 'passed', referencedChats: 0, isBuiltin: true, enabled: true },
+  { id: 'builtin.local-executor', name: '本地执行智能体', definitionVersion: '1.0.0', framework: 'Loop Engine', modelProfile: '推理模型', skills: ['本地知识化', '内外部资料调研', '材料编写', '成果验收'], permissions: ['read', 'write', 'review'], testStatus: 'passed', referencedChats: 2, isBuiltin: true, enabled: true },
   { id: 'codex', name: 'Codex CLI', definitionVersion: '0.1.0', framework: 'external-cli', modelProfile: '-', skills: ['代码生成', '文件读写', '终端执行'], permissions: ['read', 'write', 'execute'], testStatus: 'untested', referencedChats: 0, isBuiltin: false, enabled: false, adapterType: 'codex', executablePath: 'codex', detectedVersion: '0.1.0' },
   { id: 'claude-code', name: 'Claude Code', definitionVersion: '0.1.0', framework: 'external-cli', modelProfile: '-', skills: ['代码生成', '文件读写', '搜索', '推理'], permissions: ['read', 'write'], testStatus: 'untested', referencedChats: 0, isBuiltin: false, enabled: false, adapterType: 'claude-code', executablePath: 'claude', detectedVersion: '0.1.0' },
   { id: 'aion', name: 'Aion CLI', definitionVersion: '0.1.0', framework: 'external-cli', modelProfile: '-', skills: ['代码生成', '文件读写', '搜索'], permissions: ['read', 'write', 'delegate'], testStatus: 'untested', referencedChats: 0, isBuiltin: false, enabled: false, adapterType: 'aion', executablePath: 'aion', detectedVersion: '0.1.0' },
   { id: 'gemini', name: 'Gemini CLI', definitionVersion: '0.1.0', framework: 'external-cli', modelProfile: '-', skills: ['代码生成', '文件读写', '搜索', '推理'], permissions: ['read', 'write'], testStatus: 'untested', referencedChats: 0, isBuiltin: false, enabled: false, adapterType: 'gemini', executablePath: 'gemini', detectedVersion: '0.1.0' },
   { id: 'qwen-code', name: 'Qwen Code', definitionVersion: '0.1.0', framework: 'external-cli', modelProfile: '-', skills: ['代码生成', '文件读写', '搜索'], permissions: ['read', 'write'], testStatus: 'untested', referencedChats: 0, isBuiltin: false, enabled: false, adapterType: 'qwen-code', executablePath: 'qwen-code', detectedVersion: '0.1.0' },
   { id: 'opencode', name: 'Opencode', definitionVersion: '0.1.0', framework: 'external-cli', modelProfile: '-', skills: ['代码生成', '文件读写', '搜索', '网络访问'], permissions: ['read', 'write'], testStatus: 'untested', referencedChats: 0, isBuiltin: false, enabled: false, adapterType: 'opencode', executablePath: 'opencode', detectedVersion: '0.1.0' },
-  { id: 'kimi', name: 'Kimi', definitionVersion: '0.1.0', framework: 'external-cli', modelProfile: '-', skills: ['代码生成', '文件读写', '搜索', '推理'], permissions: ['read', 'write'], testStatus: 'untested', referencedChats: 0, isBuiltin: false, enabled: false, adapterType: 'kimi', executablePath: 'kimi', detectedVersion: '0.1.0' },
-  { id: 'codebuddy', name: 'CodeBuddy', definitionVersion: '0.1.0', framework: 'external-cli', modelProfile: '-', skills: ['代码生成', '文件读写', '搜索', '网络访问'], permissions: ['read', 'write'], testStatus: 'untested', referencedChats: 0, isBuiltin: false, enabled: false, adapterType: 'codebuddy', executablePath: 'codebuddy', detectedVersion: '0.1.0' },
+  { id: 'kimi', name: 'Kimi Code', definitionVersion: '0.1.0', framework: 'external-cli', modelProfile: '-', skills: ['代码编写', '文件读写', '搜索', '验证'], permissions: ['read', 'write'], testStatus: 'untested', referencedChats: 0, isBuiltin: false, enabled: false, adapterType: 'kimi', executablePath: 'kimi', detectedVersion: '0.1.0' },
+  { id: 'codebuddy', name: 'CodeBuddy', definitionVersion: '0.1.0', framework: 'external-cli', modelProfile: '-', skills: ['成果验收', '文件读取', '代码审查', '事实核对'], permissions: ['read'], testStatus: 'untested', referencedChats: 0, isBuiltin: false, enabled: false, adapterType: 'codebuddy', executablePath: 'codebuddy', detectedVersion: '0.1.0' },
 ];
 
 function AgentsSettings(): React.JSX.Element {
@@ -564,18 +550,18 @@ const ADAPTER_LABELS: Record<string, string> = {
   gemini: 'Gemini CLI',
   'qwen-code': 'Qwen Code',
   opencode: 'Opencode',
-  kimi: 'Kimi',
+  kimi: 'Kimi Code CLI',
   codebuddy: 'CodeBuddy',
   hermes: 'Hermes',
   qoder: 'Qoder',
   'qoder-cn': 'Qoder CN',
 };
 
-function ConnectionWizardDialog({ onClose, onAdded }: { onClose: () => void; onAdded: () => void }): React.JSX.Element {
+function ConnectionWizardDialog({ onClose, onAdded, initialAdapterType }: { onClose: () => void; onAdded: () => void; initialAdapterType?: string }): React.JSX.Element {
   const [snap, setSnap] = useState<WizardSnapshot | null>(null);
   const [name, setName] = useState('');
   const [adapterTypes, setAdapterTypes] = useState<Array<{ type: string; label: string }>>([]);
-  const [adapterType, setAdapterType] = useState('codex');
+  const [adapterType, setAdapterType] = useState(initialAdapterType ?? 'codex');
   const [executable, setExecutable] = useState('');
   const [mode, setMode] = useState<'auto' | 'manual'>('auto');
   const [working, setWorking] = useState(false);
@@ -589,9 +575,10 @@ function ConnectionWizardDialog({ onClose, onAdded }: { onClose: () => void; onA
       const types = res?.ok ? res.data : [];
       if (types.length === 0) return;
       setAdapterTypes(types.map((t) => ({ type: t, label: ADAPTER_LABELS[t] ?? t })));
-      if (!types.includes('codex')) setAdapterType(types[0]!);
+      if (initialAdapterType && types.includes(initialAdapterType)) setAdapterType(initialAdapterType);
+      else if (!types.includes('codex')) setAdapterType(types[0]!);
     })();
-  }, []);
+  }, [initialAdapterType]);
 
   const updateSnap = (res: { ok: boolean; data: WizardSnapshot } | undefined): void => {
     if (res?.data) setSnap(res.data);
@@ -1015,7 +1002,7 @@ function AgentActionDialog({ dialog, onClose, onRefresh }: { dialog: { type: str
         </header>
 
         {result && (
-          <div className="dialog-warning" style={{ margin: '0 0 12px', background: result.ok ? '#e6f7ec' : '#fde8e8', borderColor: result.ok ? '#b7ebc3' : '#f5b7b7' }}>
+          <div className={`dialog-warning dialog-warning--${result.ok ? 'success' : 'failure'}`} style={{ margin: '0 0 12px' }}>
             {result.ok ? <CheckCircle2 size={17} /> : <AlertTriangle size={17} />}
             <span>{result.message}</span>
           </div>
@@ -1026,7 +1013,7 @@ function AgentActionDialog({ dialog, onClose, onRefresh }: { dialog: { type: str
             <p style={{ fontSize: 10, color: 'var(--kq-text-secondary)', marginBottom: 10 }}>当前模型：<strong>{agent.modelProfile}</strong></p>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {BUILTIN_MODELS.map((m) => (
-                <label key={m} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 10, padding: '6px 8px', background: selectedModel === m ? '#eeedff' : '#f8f8fa', borderRadius: 6, cursor: 'pointer' }}>
+                <label key={m} className={`agent-dialog-choice${selectedModel === m ? ' agent-dialog-choice--selected' : ''}`}>
                   <input type="radio" name="model" checked={selectedModel === m} onChange={() => setSelectedModel(m)} disabled={working} />
                   {m}
                 </label>
@@ -1045,7 +1032,7 @@ function AgentActionDialog({ dialog, onClose, onRefresh }: { dialog: { type: str
             <p style={{ fontSize: 10, color: 'var(--kq-text-secondary)', marginBottom: 10 }}>关闭非必需技能可减少模型调用和上下文占用。</p>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {ALL_SKILLS.map((s) => (
-                <label key={s} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 10, padding: '6px 8px', background: enabledSkills.includes(s) ? '#eeedff' : '#f8f8fa', borderRadius: 6, cursor: 'pointer' }}>
+                <label key={s} className={`agent-dialog-choice${enabledSkills.includes(s) ? ' agent-dialog-choice--selected' : ''}`}>
                   <input type="checkbox" checked={enabledSkills.includes(s)} onChange={() => setEnabledSkills((prev) => prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s])} disabled={working} />
                   {s}
                 </label>
@@ -1064,7 +1051,7 @@ function AgentActionDialog({ dialog, onClose, onRefresh }: { dialog: { type: str
             <p style={{ fontSize: 10, color: 'var(--kq-text-secondary)', marginBottom: 10 }}>取消权限可收紧智能体的操作范围，但不能超出定义声明的最大权限。</p>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {ALL_PERMISSIONS.map((p) => (
-                <label key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 10, padding: '6px 8px', background: effectivePermissions.includes(p.id) ? '#eeedff' : '#f8f8fa', borderRadius: 6, cursor: 'pointer' }}>
+                <label key={p.id} className={`agent-dialog-choice${effectivePermissions.includes(p.id) ? ' agent-dialog-choice--selected' : ''}`}>
                   <input type="checkbox" checked={effectivePermissions.includes(p.id)} onChange={() => setEffectivePermissions((prev) => prev.includes(p.id) ? prev.filter((x) => x !== p.id) : [...prev, p.id])} disabled={working} />
                   {p.label}
                 </label>
@@ -1664,14 +1651,6 @@ interface SkillRow {
   requiredCapabilities: string[]; enabled: boolean; isBuiltin: boolean; agentDefinitionId: string | null;
 }
 
-const AGENT_REQUIREMENTS: Array<{ id: string; name: string; capabilities: string[] }> = [
-  { id: 'builtin.orchestrator', name: '统筹管理智能体', capabilities: ['streaming', 'toolCalling', 'structuredOutput'] },
-  { id: 'builtin.knowledge-manager', name: '知识管理智能体', capabilities: ['streaming', 'structuredOutput'] },
-  { id: 'builtin.researcher', name: '资料调研智能体', capabilities: ['streaming', 'structuredOutput'] },
-  { id: 'builtin.material-writer', name: '材料编写智能体', capabilities: ['streaming', 'toolCalling', 'structuredOutput'] },
-  { id: 'builtin.acceptance-reviewer', name: '验收智能体', capabilities: ['streaming', 'toolCalling', 'structuredOutput'] },
-];
-
 interface ToolConfig {
   id: string; name: string; description: string; enabled: boolean;
   category: string; status: 'ready' | 'optional' | 'disabled'; statusText: string;
@@ -1754,25 +1733,6 @@ function CapabilitiesSettings({ view }: { view: 'skills' | 'tools' }): React.JSX
         description={view === 'skills' ? '管理各智能体独有的内置技能包及其运行权限。' : '管理本地内置工具、模型包和外部 MCP 工具。'}
       />
       {view === 'skills' ? <>
-      {/* 模型能力要求 */}
-      <div className="system-info-card">
-        <h4><BrainCircuit size={16} /> 智能体模型能力要求</h4>
-        <table className="scan-findings-table">
-          <thead><tr><th>智能体</th><th>所需能力</th></tr></thead>
-          <tbody>
-            {AGENT_REQUIREMENTS.map((a) => (
-              <tr key={a.id}>
-                <td><code>{a.id}</code></td>
-                <td>{a.capabilities.map((c) => <code key={c} style={{ marginRight: 4 }}>{c}</code>)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        <p style={{ fontSize: 10, color: 'var(--kq-text-tertiary)', marginTop: 8 }}>
-          能力不足的模型将被阻止绑定到此智能体。非内置智能体无能力限制。
-        </p>
-      </div>
-
       {/* 内置技能 */}
       <div className="system-info-card">
         <h4><Puzzle size={16} /> 内置技能 {!loading && <span className="capability-count">{skills.filter((s) => s.isBuiltin).length}</span>}</h4>
@@ -1985,48 +1945,94 @@ function KStudioSettings(): React.JSX.Element {
   );
 }
 
-function AppearanceSettings(): React.JSX.Element {
-  const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('system');
+function PersonalSettings(): React.JSX.Element {
+  const [nickname, setNickname] = useState('项目负责人');
+  const [avatarDataUrl, setAvatarDataUrl] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState('');
 
-  const applyTheme = (t: 'light' | 'dark' | 'system'): void => {
-    if (t === 'system') {
-      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-      document.documentElement.setAttribute('data-theme', prefersDark ? 'dark' : 'light');
-    } else {
-      document.documentElement.setAttribute('data-theme', t);
-    }
+  useEffect(() => () => window.sessionStorage.removeItem(OPERATIONS_SESSION_KEY), []);
+
+  useEffect(() => {
+    void (async (): Promise<void> => {
+      const result = await window.kunqing?.settings.getAll() as { ok?: boolean; data?: Record<string, unknown> } | undefined;
+      if (!result?.ok) return;
+      setNickname(String(result.data?.personalNickname ?? '').trim() || '项目负责人');
+      setAvatarDataUrl(String(result.data?.personalAvatarDataUrl ?? ''));
+    })();
+  }, []);
+
+  const chooseAvatar = (file: File | undefined): void => {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { setNotice('请选择图片文件'); return; }
+    const reader = new FileReader();
+    reader.onload = () => { if (typeof reader.result === 'string') setAvatarDataUrl(reader.result); };
+    reader.readAsDataURL(file);
+  };
+
+  const save = async (): Promise<void> => {
+    const cleanName = nickname.trim().slice(0, 24);
+    if (!cleanName) { setNotice('昵称不能为空'); return; }
+    setSaving(true);
+    const result = await window.kunqing?.settings.update({ personalNickname: cleanName, personalAvatarDataUrl: avatarDataUrl }) as { ok?: boolean } | undefined;
+    setSaving(false);
+    setNotice(result?.ok ? '个人信息已保存，群聊中的名称与头像将同步更新' : '保存失败');
+  };
+
+  return <div className="settings-page personal-settings-page">
+    <SettingsHeading title="个人" description="设置你在本机群聊中的昵称与头像。" />
+    <section className="personal-profile-panel">
+      <div className="personal-avatar-editor">
+        <span>{avatarDataUrl ? <img src={avatarDataUrl} alt="头像预览" /> : nickname.slice(0, 1).toUpperCase()}</span>
+        <label className="secondary-button"><Pencil size={14} />更换头像<input type="file" accept="image/*" onChange={(event) => chooseAvatar(event.target.files?.[0])} /></label>
+        {avatarDataUrl && <button type="button" className="secondary-button secondary-button--small" onClick={() => setAvatarDataUrl('')}>恢复默认</button>}
+      </div>
+      <div className="personal-profile-fields">
+        <label><span>昵称</span><input maxLength={24} value={nickname} onChange={(event) => { setNickname(event.target.value); setNotice(''); }} placeholder="请输入昵称" /></label>
+        <p>智能体在群聊中需要你回复时会使用此昵称，用户消息和左下角个人入口也会同步展示。</p>
+        {notice && <small>{notice}</small>}
+        <button type="button" className="primary-button" disabled={saving} onClick={() => void save()}>{saving ? '保存中...' : '保存个人信息'}</button>
+      </div>
+    </section>
+  </div>;
+}
+
+function AppearanceSettings(): React.JSX.Element {
+  type ProductTheme = 'standard' | 'professional' | 'technology' | 'prestige';
+  const [theme, setTheme] = useState<ProductTheme>('professional');
+
+  const applyTheme = (value: ProductTheme): void => {
+    document.documentElement.setAttribute('data-theme', value);
   };
 
   useEffect(() => {
     (window.kunqing?.settings.getAll() as Promise<{ ok: boolean; data: Record<string, unknown> }> | undefined)
       ?.then((res) => {
-        const saved = res?.data?.theme as 'light' | 'dark' | 'system' | undefined;
-        if (saved) { setTheme(saved); applyTheme(saved); }
+        const raw = String(res?.data?.theme ?? 'professional');
+        const saved: ProductTheme = raw === 'standard' || raw === 'technology' || raw === 'prestige'
+          ? raw
+          : 'professional';
+        setTheme(saved); applyTheme(saved);
       })
       .catch(() => {});
+  }, []);
 
-    // 监听系统主题变化（当 theme === 'system' 时自动切换）
-    const mq = window.matchMedia('(prefers-color-scheme: dark)');
-    const handler = (): void => { if (theme === 'system') applyTheme('system'); };
-    mq.addEventListener('change', handler);
-    return () => mq.removeEventListener('change', handler);
-  }, [theme]);
-
-  const changeTheme = (t: 'light' | 'dark' | 'system'): void => {
+  const changeTheme = (t: ProductTheme): void => {
     setTheme(t);
     applyTheme(t);
     window.kunqing?.settings.update({ theme: t }).catch(() => {});
   };
 
   const themeOptions = [
-    { value: 'light' as const, icon: <Sun size={20} />, label: '亮色', desc: '浅色背景，适合白天使用' },
-    { value: 'dark' as const, icon: <Moon size={20} />, label: '暗色', desc: '深色背景，适合夜间使用' },
-    { value: 'system' as const, icon: <Monitor size={20} />, label: '跟随系统', desc: '根据系统主题自动切换' },
+    { value: 'standard' as const, icon: <Sun size={20} />, label: '经典', desc: '蓝色与白色，清晰专注' },
+    { value: 'professional' as const, icon: <Sparkles size={20} />, label: '专业', desc: '绿色与白色，专业高效' },
+    { value: 'technology' as const, icon: <Moon size={20} />, label: '科技', desc: '黑色与紫色，深色科技感' },
+    { value: 'prestige' as const, icon: <Monitor size={20} />, label: '尊贵', desc: '黑色与金黄，沉稳醒目' },
   ];
 
   return (
     <div className="settings-page">
-      <SettingsHeading title="外观" description="切换亮色 / 暗色 / 跟随系统主题。" />
+      <SettingsHeading title="外观" description="选择工作站的整体配色方案。" />
       <div className="theme-selector">
         {themeOptions.map((opt) => (
           <button

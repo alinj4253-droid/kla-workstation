@@ -6,6 +6,7 @@ const mockIpcHandle = vi.fn();
 
 class MockBrowserWindow {
   webContents = { send: mockSend };
+  isDestroyed = () => false;
   static fromWebContents: ReturnType<typeof vi.fn> = vi.fn();
 }
 
@@ -228,7 +229,7 @@ describe('fake agent simulator', () => {
     });
 
     const insertCalls = (db.prepare as ReturnType<typeof vi.fn>).mock.calls.filter(
-      (args: unknown[]) => typeof args[0] === 'string' && args[0].includes('INSERT INTO messages'),
+      (args: unknown[]) => typeof args[0] === 'string' && /INSERT(?: OR IGNORE)? INTO messages/.test(args[0]),
     );
     expect(insertCalls.length).toBeGreaterThanOrEqual(2);
   });

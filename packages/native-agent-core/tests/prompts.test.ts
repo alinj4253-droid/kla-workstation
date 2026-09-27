@@ -18,9 +18,17 @@ describe('ORCHESTRATOR_SYSTEM_PROMPT', () => {
     expect(ORCHESTRATOR_SYSTEM_PROMPT).not.toContain('1-4 个');
   });
 
-  it('mentions knowledge manager delegation', () => {
-    expect(ORCHESTRATOR_SYSTEM_PROMPT).toContain('知识管理智能体');
-    expect(ORCHESTRATOR_SYSTEM_PROMPT).toContain('知识和经验');
+  it('keeps discussion and brainstorming outside the file workflow by default', () => {
+    expect(ORCHESTRATOR_SYSTEM_PROMPT).toContain('头脑风暴默认交付观点与结论');
+    expect(ORCHESTRATOR_SYSTEM_PROMPT).toContain('不得自行附加文件生成');
+    expect(ORCHESTRATOR_SYSTEM_PROMPT).toContain('独立验收也不是固定环节');
+  });
+
+  it('delegates a complete business package to the unified local executor', () => {
+    expect(ORCHESTRATOR_SYSTEM_PROMPT).toContain('本地执行智能体');
+    expect(ORCHESTRATOR_SYSTEM_PROMPT).toContain('自身挂载技能');
+    expect(ORCHESTRATOR_SYSTEM_PROMPT).toContain('完整工作包');
+    expect(ORCHESTRATOR_SYSTEM_PROMPT).toContain('不要把这些内部技能拆成多个统筹阶段');
   });
 
   it('is a non-empty string', () => {
@@ -37,11 +45,12 @@ describe('KM_SYSTEM_PROMPT', () => {
     expect(KM_SYSTEM_PROMPT).toContain('知识图谱');
   });
 
-  it('owns post-task knowledge capture and business-process applicability decisions', () => {
+  it('owns ingestion but explicitly rejects retrieval, templates and writing', () => {
     expect(KM_SYSTEM_PROMPT).toContain('知识文档');
     expect(KM_SYSTEM_PROMPT).toContain('业务流程');
-    expect(KM_SYSTEM_PROMPT).toContain('不要硬凑流程');
-    expect(KM_SYSTEM_PROMPT).toContain('不是执行日志');
+    expect(KM_SYSTEM_PROMPT).toContain('不得执行知识检索');
+    expect(KM_SYSTEM_PROMPT).toContain('模板读取');
+    expect(KM_SYSTEM_PROMPT).toContain('材料编写智能体负责检索、读取和输出');
   });
 
   it('is a non-empty string', () => {

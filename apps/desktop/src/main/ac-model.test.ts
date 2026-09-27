@@ -214,6 +214,8 @@ describe('AC-MODEL-02: Provider 切换兼容性', () => {
 
     // 2. 切换绑定：reasoning slot → Profile B (Provider B)，不修改任何智能体定义
     db.prepare("INSERT OR REPLACE INTO model_slot_bindings (slot, model_profile_id, updated_at) VALUES (?, ?, ?)").run('reasoning', profileB, now);
+    // 生产中该写入经 models:setSlot IPC handler，会同步失效槽位 profile 缓存；测试直接写库需手动对齐。
+    gateway.invalidateSlotProfiles();
 
     // 验证 slot 解析到 Provider B 的模型，无需修改智能体定义
     const slotProfileB = (gateway as any).getSlotProfile('reasoning') as { providerType: string; modelId: string; baseUrl: string } | null;
@@ -257,6 +259,8 @@ describe('AC-MODEL-02: Provider 切换兼容性', () => {
 
     // 只切换 reasoning slot 到 Provider B，fast slot 保持不变
     db.prepare("INSERT OR REPLACE INTO model_slot_bindings (slot, model_profile_id, updated_at) VALUES (?, ?, ?)").run('reasoning', profileB, now);
+    // 生产中该写入经 models:setSlot IPC handler，会同步失效槽位 profile 缓存；测试直接写库需手动对齐。
+    gateway.invalidateSlotProfiles();
 
     // reasoning slot 已切换到 Provider B 的模型
     const reasoningProfileB = (gateway as any).getSlotProfile('reasoning') as { modelId: string; baseUrl: string } | null;
@@ -282,6 +286,8 @@ describe('AC-MODEL-02: Provider 切换兼容性', () => {
 
     // 禁用 Profile A
     db.prepare("UPDATE model_profiles SET enabled = 0 WHERE id = ?").run(profileA);
+    // 生产中该写入经模型设置 IPC handler，会同步失效槽位 profile 缓存；测试直接写库需手动对齐。
+    gateway.invalidateSlotProfiles();
 
     // 禁用后 slot 解析应返回 null
     expect((gateway as any).getSlotProfile('reasoning')).toBeNull();

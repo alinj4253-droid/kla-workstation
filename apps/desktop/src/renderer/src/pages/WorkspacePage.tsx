@@ -13,20 +13,23 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  Share2,
   PanelLeftClose,
   PanelLeftOpen,
   Trash2,
   Upload,
   X,
   Book,
+  Loader2,
 } from 'lucide-react';
-import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import { GraphViewer } from '../components/GraphViewer';
 import { KnowledgeJobDialog } from '../components/KnowledgeJobDialog';
 import { WikiViewer } from '../components/WikiViewer';
 import { ChannelBindingsDialog } from '../components/ChannelBindingsDialog';
+import { associationKey, normalizeEnterpriseProjects, normalizeProjectAssociations, type EnterpriseProject } from '../enterprise-projects';
 
 type FileEntry = {
   name: string;
@@ -48,6 +51,14 @@ type ProjectInfo = {
   name: string;
   status: string;
   createdAt: string;
+};
+
+type WorkspaceIngestionStatus = {
+  status: 'idle' | 'running' | 'completed' | 'failed';
+  totalFiles: number;
+  completedFiles: number;
+  failedFiles: number;
+  error?: string;
 };
 
 const formatSize = (size: number): string => {
@@ -77,9 +88,13 @@ const SYSTEM_DIR_LABELS: Record<string, string> = {
   'agent-identities': '智能体身份',
   'agent-memories': '智能体记忆',
   'original-files': '原始文件',
+  templates: '模板',
+  'standardized-files': '标准化文件',
   knowledge: '知识',
   'graph-visualization': '图谱可视化',
   outputs: '成果',
+  experience: '经验',
+  temp: '临时',
 };
 
 export function WorkspacePage(): React.JSX.Element {
@@ -87,9 +102,11 @@ export function WorkspacePage(): React.JSX.Element {
   const navigate = useNavigate();
   const [relativePath, setRelativePath] = useState('');
   const [systemDir, setSystemDir] = useState<string | null>(null);
-  const [scopeType, setScopeType] = useState<'project' | 'shared'>('project');
+  const [scopeType, setScopeType] = useState<'project' | 'shared' | 'project-shared'>('project');
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
+  const [enterpriseProjects, setEnterpriseProjects] = useState<EnterpriseProject[]>([]);
+  const [projectAssociations, setProjectAssociations] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState('');
   const [folderDialogOpen, setFolderDialogOpen] = useState(false);
@@ -107,34 +124,58 @@ export function WorkspacePage(): React.JSX.Element {
   const [wikiViewerOpen, setWikiViewerOpen] = useState(false);
   const [knowledgeDetail, setKnowledgeDetail] = useState<{ fileId: string; fileName: string } | null>(null);
   const [channelBindOpen, setChannelBindOpen] = useState(false);
+  const [ingestionStatus, setIngestionStatus] = useState<WorkspaceIngestionStatus>({ status: 'idle', totalFiles: 0, completedFiles: 0, failedFiles: 0 });
+  const [publishingPath, setPublishingPath] = useState('');
+  const lastIngestionStatus = useRef<WorkspaceIngestionStatus['status']>('idle');
 
   const activeProject = useMemo(() => projects.find((p) => p.id === projectId), [projectId, projects]);
+  const projectWorkspaceId = useMemo(
+    () => projectAssociations[associationKey('group', projectId)] ?? '',
+    [projectAssociations, projectId],
+  );
+  const projectWorkspace = useMemo(
+    () => enterpriseProjects.find((item) => item.id === projectWorkspaceId) ?? null,
+    [enterpriseProjects, projectWorkspaceId],
+  );
   const pathParts = relativePath ? relativePath.split('/') : [];
-  const scopeLabel = scopeType === 'shared' ? '共享知识' : (systemDir ? SYSTEM_DIR_LABELS[systemDir] ?? systemDir : '群聊根目录');
+  const scopeName = scopeType === 'shared' ? '企业工作区' : scopeType === 'project-shared' ? '项目工作区' : '个人工作区';
+  const scopeLabel = systemDir ? SYSTEM_DIR_LABELS[systemDir] ?? systemDir : scopeName;
 
   const loadProjects = useCallback(async (): Promise<void> => {
     try {
-      const result = await window.kunqing?.projects.list({}) as { ok: boolean; data?: ProjectInfo[] } | undefined;
+      const [result, settingsResult] = await Promise.all([
+        window.kunqing?.projects.list({}) as Promise<{ ok: boolean; data?: ProjectInfo[] }> | undefined,
+        window.kunqing?.settings.getAll() as Promise<{ ok?: boolean; data?: Record<string, unknown> }> | undefined,
+      ]);
       if (result?.data) setProjects(result.data);
+      setEnterpriseProjects(normalizeEnterpriseProjects(settingsResult?.data?.enterpriseProjects));
+      setProjectAssociations(normalizeProjectAssociations(settingsResult?.data?.enterpriseProjectAssociations));
     } catch { /* ignore */ }
   }, []);
 
   const loadFiles = useCallback(async (): Promise<void> => {
     if (!projectId) return;
+    if (scopeType === 'project-shared' && !projectWorkspaceId) {
+      setFiles([]);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
-      if (scopeType === 'shared') {
-        const result = await window.kunqing?.workspace.listFiles({ projectId, relativePath, scopeType: 'shared' }) as { ok: boolean; data?: FileEntry[] } | undefined;
-        setFiles(result?.data ?? []);
-      } else if (!systemDir) {
-        const result = await window.kunqing?.workspace.listSystemDirs({ projectId }) as { ok: boolean; data?: FileEntry[] } | undefined;
+      const scopeRequest = {
+        projectId,
+        ...(scopeType !== 'project' ? { scopeType } : {}),
+        ...(scopeType === 'project-shared' ? { scopeId: projectWorkspaceId } : {}),
+      };
+      if (!systemDir) {
+        const result = await window.kunqing?.workspace.listSystemDirs(scopeRequest) as { ok: boolean; data?: FileEntry[] } | undefined;
         setFiles(result?.data ?? []);
       } else if (systemDir === 'original-files') {
-        const result = await window.kunqing?.workspace.listFiles({ projectId, relativePath }) as { ok: boolean; data?: FileEntry[] } | undefined;
+        const result = await window.kunqing?.workspace.listFiles({ ...scopeRequest, relativePath, systemDir }) as { ok: boolean; data?: FileEntry[] } | undefined;
         setFiles(result?.data ?? []);
       } else {
         const dirPath = systemDir + (relativePath ? '/' + relativePath : '');
-        const result = await window.kunqing?.workspace.listProjectDir({ projectId, relativePath: dirPath }) as { ok: boolean; data?: FileEntry[] } | undefined;
+        const result = await window.kunqing?.workspace.listProjectDir({ ...scopeRequest, relativePath: dirPath, systemDir }) as { ok: boolean; data?: FileEntry[] } | undefined;
         setFiles(result?.data ?? []);
       }
       setNotice('');
@@ -143,10 +184,48 @@ export function WorkspacePage(): React.JSX.Element {
     } finally {
       setLoading(false);
     }
-  }, [projectId, relativePath, scopeType, systemDir]);
+  }, [projectId, projectWorkspaceId, relativePath, scopeType, systemDir]);
 
   useEffect(() => { void loadProjects(); }, [loadProjects]);
   useEffect(() => { void loadFiles(); }, [loadFiles]);
+  useEffect(() => {
+    if (scopeType !== 'project-shared' || projectWorkspaceId) return;
+    setScopeType('project');
+    setSystemDir(null);
+    setRelativePath('');
+    setNotice('当前群聊尚未关联项目，关联后即可访问项目工作区。');
+  }, [projectWorkspaceId, scopeType]);
+
+  useEffect(() => {
+    let disposed = false;
+    lastIngestionStatus.current = 'idle';
+    const poll = async (): Promise<void> => {
+      try {
+        const result = await window.kunqing?.knowledge.getWorkspaceIngestionStatus({
+          projectId,
+          scopeType,
+          ...(scopeType === 'project-shared' ? { scopeId: projectWorkspaceId } : {}),
+        }) as { ok: boolean; data?: WorkspaceIngestionStatus } | undefined;
+        if (disposed || !result?.data) return;
+        const previous = lastIngestionStatus.current;
+        const next = result.data;
+        lastIngestionStatus.current = next.status;
+        setIngestionStatus(next);
+        if (previous === 'running' && next.status !== 'running') {
+          await loadFiles();
+          if (disposed) return;
+          if (next.status === 'completed') {
+            setNotice(next.totalFiles > 0 ? `文件知识化完成，共处理 ${next.completedFiles} 个文件` : '当前文件均已完成知识化');
+          } else {
+            setNotice(next.error ?? '部分文件知识化失败，请查看文件知识状态');
+          }
+        }
+      } catch { /* desktop background status is best-effort */ }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 1_500);
+    return () => { disposed = true; window.clearInterval(timer); };
+  }, [loadFiles, projectId, projectWorkspaceId, scopeType]);
 
   const enterDirectory = (entry: FileEntry): void => {
     if (entry.kind !== 'directory') {
@@ -159,7 +238,8 @@ export function WorkspacePage(): React.JSX.Element {
       return;
     }
     if (systemDir) {
-      setRelativePath(entry.relativePath.replaceAll('\\', '/'));
+      const normalized = entry.relativePath.replaceAll('\\', '/');
+      setRelativePath(normalized.startsWith(`${systemDir}/`) ? normalized.slice(systemDir.length + 1) : normalized);
     } else {
       setRelativePath(entry.relativePath.replaceAll('\\', '/'));
     }
@@ -167,7 +247,8 @@ export function WorkspacePage(): React.JSX.Element {
 
   const uploadFiles = async (): Promise<void> => {
     try {
-      const result = await window.kunqing?.workspace.uploadFiles({ projectId, relativePath, ...(scopeType === 'shared' ? { scopeType: 'shared' as const } : {}) }) as { cancelled: boolean; importedCount: number } | undefined;
+      const uploadArea = systemDir === 'templates' ? 'templates' : 'original-files';
+      const result = await window.kunqing?.workspace.uploadFiles({ projectId, relativePath, systemDir: uploadArea, ...(scopeType !== 'project' ? { scopeType } : {}), ...(scopeType === 'project-shared' ? { scopeId: projectWorkspaceId } : {}) }) as { cancelled: boolean; importedCount: number } | undefined;
       if (!result) { setNotice('请在 Electron 桌面端体验真实文件上传。'); return; }
       if (!result.cancelled) setNotice(`已导入 ${result.importedCount} 个文件`);
       await loadFiles();
@@ -176,12 +257,60 @@ export function WorkspacePage(): React.JSX.Element {
     }
   };
 
+  const startWorkspaceKnowledgeIngestion = async (): Promise<void> => {
+    if (ingestionStatus.status === 'running') return;
+    try {
+      const result = await window.kunqing?.knowledge.startWorkspaceIngestion({
+        projectId,
+        scopeType,
+        ...(scopeType === 'project-shared' ? { scopeId: projectWorkspaceId } : {}),
+      }) as { ok: boolean; data?: WorkspaceIngestionStatus; error?: { message?: string } } | undefined;
+      if (!result?.ok || !result.data) {
+        setNotice(result?.error?.message ?? '无法启动文件知识化');
+        return;
+      }
+      setIngestionStatus(result.data);
+      lastIngestionStatus.current = result.data.status;
+      if (result.data.status === 'running') {
+        setNotice('文件知识化已在后台开始，处理期间仍可继续使用群聊和已完成的知识。');
+      } else if (result.data.status === 'failed') {
+        setNotice(result.data.error ?? '无法启动文件知识化');
+      }
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '无法启动文件知识化');
+    }
+  };
+
+  const publishToProject = async (entry: FileEntry): Promise<void> => {
+    if (!projectWorkspaceId || entry.kind !== 'file') {
+      setNotice('当前群聊尚未关联项目，无法发布文件。');
+      return;
+    }
+    if (systemDir !== 'original-files' && systemDir !== 'outputs') return;
+    setPublishingPath(entry.relativePath);
+    try {
+      const result = await window.kunqing?.workspace.publishToProject({
+        projectId,
+        enterpriseProjectId: projectWorkspaceId,
+        relativePath: entry.relativePath,
+        sourceArea: systemDir,
+      }) as { ok?: boolean; data?: { relativePath?: string } } | undefined;
+      if (!result?.ok) throw new Error('发布失败');
+      setNotice(`已发布到项目“${projectWorkspace?.name ?? projectWorkspaceId}”的工作区。相同内容会直接复用已有知识化结果。`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '文件发布失败');
+    } finally {
+      setPublishingPath('');
+    }
+  };
+
   const createFolder = async (event: FormEvent): Promise<void> => {
     event.preventDefault();
     const name = folderName.trim();
     if (!name) { setFolderError('请输入文件夹名称'); return; }
     try {
-      const result = await window.kunqing?.workspace.createFolder({ projectId, relativePath, name, ...(scopeType === 'shared' ? { scopeType: 'shared' as const } : {}) });
+      const folderArea = systemDir === 'templates' ? 'templates' : 'original-files';
+      const result = await window.kunqing?.workspace.createFolder({ projectId, relativePath, systemDir: folderArea, name, ...(scopeType !== 'project' ? { scopeType } : {}), ...(scopeType === 'project-shared' ? { scopeId: projectWorkspaceId } : {}) });
       if (!result) {
         setFiles((current) => [{ name, relativePath: [relativePath, name].filter(Boolean).join('/'), kind: 'directory', size: 0, modifiedAt: new Date().toISOString() }, ...current]);
       } else {
@@ -200,7 +329,7 @@ export function WorkspacePage(): React.JSX.Element {
     event.preventDefault();
     if (!renameTarget || !renameValue.trim()) return;
     try {
-      const result = await window.kunqing?.workspace.rename({ projectId, relativePath: renameTarget.relativePath, name: renameValue.trim(), ...(scopeType === 'shared' ? { scopeType: 'shared' as const } : {}) }) as { ok: boolean; error?: string } | undefined;
+      const result = await window.kunqing?.workspace.rename({ projectId, relativePath: renameTarget.relativePath, ...(systemDir ? { systemDir } : {}), name: renameValue.trim(), ...(scopeType !== 'project' ? { scopeType } : {}), ...(scopeType === 'project-shared' ? { scopeId: projectWorkspaceId } : {}) }) as { ok: boolean; error?: string } | undefined;
       if (!result?.ok) { setRenameError(result?.error ?? '重命名失败'); return; }
       setRenameTarget(null);
       setRenameValue('');
@@ -214,7 +343,7 @@ export function WorkspacePage(): React.JSX.Element {
   const handleDelete = async (): Promise<void> => {
     if (!deleteTarget) return;
     try {
-      await window.kunqing?.workspace.softDelete({ projectId, paths: [deleteTarget.relativePath], ...(scopeType === 'shared' ? { scopeType: 'shared' as const } : {}) });
+      await window.kunqing?.workspace.softDelete({ projectId, paths: [deleteTarget.relativePath], ...(systemDir ? { systemDir } : {}), ...(scopeType !== 'project' ? { scopeType } : {}), ...(scopeType === 'project-shared' ? { scopeId: projectWorkspaceId } : {}) });
       setDeleteTarget(null);
       await loadFiles();
     } catch (error) {
@@ -224,7 +353,7 @@ export function WorkspacePage(): React.JSX.Element {
 
   const handlePreview = async (entry: FileEntry): Promise<void> => {
     try {
-      const result = await window.kunqing?.workspace.getPreview({ projectId, relativePath: entry.relativePath, ...(scopeType === 'shared' ? { scopeType: 'shared' as const } : {}) }) as { ok: boolean; data?: { kind: string; content?: string; dataUri?: string; appFileUrl?: string; mimeType?: string; error?: string } } | undefined;
+      const result = await window.kunqing?.workspace.getPreview({ projectId, relativePath: entry.relativePath, ...(systemDir ? { systemDir } : {}), ...(scopeType !== 'project' ? { scopeType } : {}), ...(scopeType === 'project-shared' ? { scopeId: projectWorkspaceId } : {}) }) as { ok: boolean; data?: { kind: string; content?: string; dataUri?: string; appFileUrl?: string; mimeType?: string; error?: string } } | undefined;
       if (!result?.ok || !result.data) { setNotice('无法预览此文件'); return; }
       if ('error' in result.data) { setNotice(result.data.error ?? '预览出错'); return; }
       if (result.data.kind === 'image') {
@@ -248,7 +377,7 @@ export function WorkspacePage(): React.JSX.Element {
 
   const handleOpenWithSystem = async (entry: FileEntry): Promise<void> => {
     try {
-      await window.kunqing?.workspace.openWithSystem({ projectId, relativePath: entry.relativePath, ...(scopeType === 'shared' ? { scopeType: 'shared' as const } : {}) });
+      await window.kunqing?.workspace.openWithSystem({ projectId, relativePath: entry.relativePath, ...(systemDir ? { systemDir } : {}), ...(scopeType !== 'project' ? { scopeType } : {}), ...(scopeType === 'project-shared' ? { scopeId: projectWorkspaceId } : {}) });
     } catch { setNotice('无法使用系统应用打开'); }
   };
 
@@ -279,8 +408,15 @@ export function WorkspacePage(): React.JSX.Element {
             <span className="workspace-title-icon"><FolderOpen size={18} /></span>
             <div><h2>{activeProject?.name ?? '工作区'} · 工作区</h2>
               <div className="scope-toggle">
-                <button type="button" className={`scope-btn${scopeType === 'project' ? ' scope-btn--active' : ''}`} onClick={() => { setScopeType('project'); setSystemDir(null); setRelativePath(''); }}>当前群聊</button>
-                <button type="button" className={`scope-btn${scopeType === 'shared' ? ' scope-btn--active' : ''}`} onClick={() => { setScopeType('shared'); setSystemDir(null); setRelativePath(''); }}>共享知识</button>
+                <button type="button" className={`scope-btn${scopeType === 'project' ? ' scope-btn--active' : ''}`} onClick={() => { setScopeType('project'); setSystemDir(null); setRelativePath(''); }}>个人工作区</button>
+                <button
+                  type="button"
+                  className={`scope-btn${scopeType === 'project-shared' ? ' scope-btn--active' : ''}`}
+                  disabled={!projectWorkspaceId}
+                  title={projectWorkspaceId ? `进入 ${projectWorkspace?.name ?? '关联项目'} 工作区` : '当前群聊尚未关联项目'}
+                  onClick={() => { setScopeType('project-shared'); setSystemDir(null); setRelativePath(''); }}
+                >项目工作区</button>
+                <button type="button" className={`scope-btn${scopeType === 'shared' ? ' scope-btn--active' : ''}`} onClick={() => { setScopeType('shared'); setSystemDir(null); setRelativePath(''); }}>企业工作区</button>
               </div>
             </div>
           </div>
@@ -288,7 +424,13 @@ export function WorkspacePage(): React.JSX.Element {
             <button type="button" className="secondary-button" onClick={() => setGraphViewerOpen(true)}><GitBranch size={15} /> 图谱可视化</button>
             <button type="button" className="secondary-button" onClick={() => setWikiViewerOpen(true)}><FileText size={15} /> Wiki</button>
             <button type="button" className="secondary-button" onClick={() => setChannelBindOpen(true)}><Link size={15} /> 绑定渠道会话</button>
-            {(scopeType === 'shared' || systemDir === 'original-files') && (
+            {(!systemDir || systemDir === 'original-files') && (
+              <button type="button" className="secondary-button" disabled={ingestionStatus.status === 'running'} onClick={() => void startWorkspaceKnowledgeIngestion()}>
+                {ingestionStatus.status === 'running' ? <Loader2 size={15} className="spin" /> : <Book size={15} />}
+                {ingestionStatus.status === 'running' ? '知识化处理中' : '文件知识化'}
+              </button>
+            )}
+            {(systemDir === 'original-files' || systemDir === 'templates') && (
               <>
                 <button type="button" className="secondary-button" onClick={() => void uploadFiles()}><Upload size={15} /> 上传文件</button>
                 <button type="button" className="primary-button" onClick={() => setFolderDialogOpen(true)}><Plus size={15} /> 新建文件夹</button>
@@ -301,24 +443,15 @@ export function WorkspacePage(): React.JSX.Element {
           <nav aria-label="文件路径">
             <button type="button" onClick={() => { setSystemDir(null); setRelativePath(''); }}>K_Studio</button>
             <ChevronRight size={13} />
-            {scopeType === 'shared' ? (
-              <span>共享知识</span>
-            ) : (
-              <>
-                <span>群聊文件夹</span>
-                <ChevronRight size={13} />
-                {systemDir ? (
-                  <button type="button" onClick={() => { setSystemDir(null); setRelativePath(''); }}>{activeProject?.name ?? projectId}</button>
-                ) : (
-                  <span>{activeProject?.name ?? projectId}</span>
-                )}
-              </>
+            <button type="button" onClick={() => { setSystemDir(null); setRelativePath(''); }}>{scopeName}</button>
+            {scopeType === 'project-shared' && (
+              <><ChevronRight size={13} /><span>{projectWorkspace?.name ?? projectWorkspaceId}</span></>
             )}
-            <ChevronRight size={13} />
-            {systemDir ? (
-              <button type="button" onClick={() => { setSystemDir(systemDir); setRelativePath(''); }}>{scopeLabel}</button>
-            ) : (
-              <span>{scopeLabel}</span>
+            {scopeType === 'project' && (
+              <><ChevronRight size={13} /><span>{activeProject?.name ?? projectId}</span></>
+            )}
+            {systemDir && (
+              <><ChevronRight size={13} /><button type="button" onClick={() => setRelativePath('')}>{scopeLabel}</button></>
             )}
             {pathParts.map((part, index) => (
               <span className="breadcrumb-part" key={`${part}-${index}`}>
@@ -332,18 +465,18 @@ export function WorkspacePage(): React.JSX.Element {
 
         {notice && <div className="workspace-notice"><span>{notice}</span><button type="button" aria-label="关闭提示" onClick={() => setNotice('')}><X size={14} /></button></div>}
 
-        <div className="file-table" role="table" aria-label="用户原始文件">
+        <div className="file-table" role="table" aria-label={`${scopeName}文件`}>
           <div className="file-table-row file-table-head" role="row"><span>名称</span><span>来源</span><span>大小</span><span>最后修改</span><span>知识</span><span>操作</span></div>
           {loading ? (
             <div className="file-empty">正在读取本地工作区…</div>
           ) : files.length === 0 ? (
-            <div className="file-empty"><FolderOpen size={34} /><strong>这个文件夹还是空的</strong><span>{scopeType === 'project' && !systemDir ? '系统目录将在此列出' : '上传文件或新建文件夹，内容将只保存在本机 K_Studio 中。'}</span>{!systemDir && scopeType === 'shared' ? <button className="primary-button" type="button" onClick={() => void uploadFiles()}><Upload size={15} /> 上传第一个文件</button> : null}</div>
+            <div className="file-empty"><FolderOpen size={34} /><strong>这个文件夹还是空的</strong><span>{!systemDir ? '系统目录将在此列出' : systemDir === 'original-files' ? '上传文件或新建文件夹，内容将保存在当前工作区。' : systemDir === 'templates' ? '上传报告模板或新建分类文件夹；模板不会参与知识化。' : '当前目录暂无内容。'}</span>{systemDir === 'original-files' || systemDir === 'templates' ? <button className="primary-button" type="button" onClick={() => void uploadFiles()}><Upload size={15} /> 上传第一个文件</button> : null}</div>
           ) : files.map((entry) => (
             <div className="file-table-row" role="row" key={entry.relativePath}>
               <button className={`file-name file-name--${entry.kind}`} type="button" onClick={() => enterDirectory(entry)}>
                 {fileIcon(entry)}<span>{entry.name}</span>
               </button>
-              <span>{entry.system ? '系统目录' : (systemDir && systemDir !== 'original-files' ? '系统文件' : '用户上传')}</span>
+              <span>{entry.system ? '系统目录' : systemDir === 'templates' ? '模板文件' : (systemDir && systemDir !== 'original-files' ? '系统文件' : '用户上传')}</span>
               <span>{formatSize(entry.size)}</span>
               <time>{new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(entry.modifiedAt))}</time>
               <span style={{ position: 'relative' }}>
@@ -361,6 +494,11 @@ export function WorkspacePage(): React.JSX.Element {
                     {entry.kind === 'file' && <button type="button" onClick={() => { void handlePreview(entry); }}><FileText size={14} /> 预览</button>}
                     <button type="button" onClick={() => { setRenameTarget(entry); setRenameValue(entry.name); }}><Pencil size={14} /> 重命名</button>
                     {entry.kind === 'file' && <button type="button" onClick={() => { void handleOpenWithSystem(entry); }}><ExternalLink size={14} /> 系统打开</button>}
+                    {entry.kind === 'file' && scopeType === 'project' && (systemDir === 'original-files' || systemDir === 'outputs') && (
+                      <button type="button" disabled={!projectWorkspaceId || publishingPath === entry.relativePath} onClick={() => { void publishToProject(entry); }}>
+                        {publishingPath === entry.relativePath ? <Loader2 size={14} className="spin" /> : <Share2 size={14} />} 发布到项目
+                      </button>
+                    )}
                     <button type="button" className="action-danger" onClick={() => setDeleteTarget(entry)}><Trash2 size={14} /> 删除</button>
                   </div>
                 )}
@@ -395,7 +533,7 @@ export function WorkspacePage(): React.JSX.Element {
       {folderDialogOpen && (
         <div className="modal-backdrop modal-backdrop--nested" role="presentation" onClick={() => setFolderDialogOpen(false)}>
           <form className="folder-dialog" onClick={(e) => e.stopPropagation()} onSubmit={(event) => void createFolder(event)}>
-            <header><div><h3>新建文件夹</h3><p>文件夹将创建在当前用户原始文件路径内</p></div><button type="button" className="icon-button" aria-label="关闭" onClick={() => setFolderDialogOpen(false)}><X size={18} /></button></header>
+            <header><div><h3>新建文件夹</h3><p>文件夹将创建在当前工作区路径内</p></div><button type="button" className="icon-button" aria-label="关闭" onClick={() => setFolderDialogOpen(false)}><X size={18} /></button></header>
             <label><span>文件夹名称</span><input autoFocus className={folderError ? 'input-invalid' : ''} value={folderName} onChange={(event) => { setFolderName(event.target.value); setFolderError(''); }} placeholder="例如：合同与附件" />{folderError && <small>{folderError}</small>}</label>
             <footer><button type="button" className="secondary-button" onClick={() => setFolderDialogOpen(false)}>取消</button><button type="submit" className="primary-button">创建</button></footer>
           </form>
@@ -422,11 +560,11 @@ export function WorkspacePage(): React.JSX.Element {
       )}
 
       {graphViewerOpen && (
-        <GraphViewer scopeType={scopeType} projectId={projectId} onClose={() => setGraphViewerOpen(false)} />
+        <GraphViewer scopeType={scopeType} projectId={projectId} {...(scopeType === 'project-shared' ? { scopeId: projectWorkspaceId } : {})} onClose={() => setGraphViewerOpen(false)} />
       )}
 
       {wikiViewerOpen && (
-        <WikiViewer scopeType={scopeType} scopeId={projectId} projectId={projectId} onClose={() => setWikiViewerOpen(false)} />
+        <WikiViewer scopeType={scopeType === 'shared' ? 'shared' : 'project'} scopeId={scopeType === 'project-shared' ? projectWorkspaceId : projectId} projectId={projectId} onClose={() => setWikiViewerOpen(false)} />
       )}
 
       {knowledgeDetail && (

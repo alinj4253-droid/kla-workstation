@@ -5,20 +5,25 @@ import { ManagedCopyService } from './managed-copy';
 import { resolve as resolvePath } from 'node:path';
 
 // ─── Agent Roles ─────────────────────────────────────────────────────────────
-export type AgentRole = 'orchestrator' | 'knowledge-manager' | 'researcher' | 'material-writer' | 'acceptance-reviewer' | 'external-cli';
+export type AgentRole = 'orchestrator' | 'local-executor' | 'knowledge-manager' | 'researcher' | 'material-writer' | 'acceptance-reviewer' | 'external-cli';
 
 // ─── Capabilities ────────────────────────────────────────────────────────────
 export type ToolCapability =
+  | 'spawn:parallel'
   | 'read:message'       // 读本群聊消息
   | 'read:file'          // 读本群聊原始文件
   | 'read:knowledge'     // 读本群聊知识
-  | 'read:shared-knowledge' // 读共享知识
+  | 'read:document'      // 分段读取授权范围内的标准化完整正文
+  | 'read:template'      // 发现并读取个人、关联项目和企业模板
+  | 'read:shared-knowledge' // 读关联项目与企业知识（历史能力名保留兼容）
   | 'read:skill'         // 读当前 Agent Definition 绑定的技能
   | 'read:workflow'      // 读当前 Agent Definition 绑定的协同工作流
   | 'write:memory'       // 写自身记忆
   | 'write:knowledge'    // 写群聊知识/图谱
   | 'write:output'       // 写 outputs
   | 'write:review-draft' // 写本次材料验收暂存稿
+  | 'write:temp'         // 写当前根 Run 的个人工作区临时产物
+  | 'read:temp'          // 读取当前根 Run 的个人工作区临时产物
   | 'promote:reviewed-output' // 将验收通过的暂存稿提升为正式成果
   | 'delete:file'        // 删除原始文件
   | 'network:search'     // 访问受控网页搜索服务
@@ -30,9 +35,12 @@ export type PermissionLevel = 'allow' | 'deny' | 'task-only' | 'mcp-only' | 'rep
 // ─── Permission Matrix (10.9 规范) ────────────────────────────────────────────
 const PERMISSION_MATRIX: Record<AgentRole, Record<ToolCapability, PermissionLevel>> = {
   orchestrator: {
+    'spawn:parallel': 'deny',
     'read:message': 'allow',
     'read:file': 'allow',
     'read:knowledge': 'allow',
+    'read:document': 'deny',
+    'read:template': 'deny',
     'read:shared-knowledge': 'task-only',
     'read:skill': 'allow',
     'read:workflow': 'allow',
@@ -40,63 +48,104 @@ const PERMISSION_MATRIX: Record<AgentRole, Record<ToolCapability, PermissionLeve
     'write:knowledge': 'deny',
     'write:output': 'allow',
     'write:review-draft': 'deny',
+    'write:temp': 'allow',
+    'read:temp': 'allow',
     'promote:reviewed-output': 'allow',
     'delete:file': 'deny',
     'network:search': 'deny',
     'shell:execute': 'deny',
   },
   'knowledge-manager': {
+    'spawn:parallel': 'allow',
     'read:message': 'task-only',
     'read:file': 'allow',
-    'read:knowledge': 'allow',
-    'read:shared-knowledge': 'allow',
+    'read:knowledge': 'deny',
+    'read:document': 'deny',
+    'read:template': 'deny',
+    'read:shared-knowledge': 'deny',
     'read:skill': 'allow',
     'read:workflow': 'deny',
     'write:memory': 'allow',
     'write:knowledge': 'allow',
     'write:output': 'report-only',
     'write:review-draft': 'deny',
+    'write:temp': 'allow',
+    'read:temp': 'allow',
     'promote:reviewed-output': 'deny',
     'delete:file': 'deny',
     'network:search': 'deny',
     'shell:execute': 'deny',
   },
-  researcher: {
+  'local-executor': {
+    'spawn:parallel': 'allow',
     'read:message': 'task-only',
     'read:file': 'allow',
     'read:knowledge': 'allow',
-    'read:shared-knowledge': 'task-only',
+    'read:document': 'allow',
+    'read:template': 'allow',
+    'read:shared-knowledge': 'allow',
     'read:skill': 'allow',
     'read:workflow': 'deny',
     'write:memory': 'allow',
-    'write:knowledge': 'deny',
+    'write:knowledge': 'allow',
     'write:output': 'allow',
-    'write:review-draft': 'deny',
-    'promote:reviewed-output': 'deny',
+    'write:review-draft': 'allow',
+    'write:temp': 'allow',
+    'read:temp': 'allow',
+    'promote:reviewed-output': 'allow',
     'delete:file': 'deny',
     'network:search': 'allow',
     'shell:execute': 'deny',
   },
-  'material-writer': {
+  researcher: {
+    'spawn:parallel': 'allow',
     'read:message': 'task-only',
     'read:file': 'allow',
-    'read:knowledge': 'task-only',
+    'read:knowledge': 'allow',
+    'read:document': 'deny',
+    'read:template': 'deny',
     'read:shared-knowledge': 'task-only',
     'read:skill': 'allow',
     'read:workflow': 'deny',
     'write:memory': 'allow',
     'write:knowledge': 'deny',
     'write:output': 'deny',
+    'write:review-draft': 'deny',
+    'write:temp': 'allow',
+    'read:temp': 'allow',
+    'promote:reviewed-output': 'deny',
+    'delete:file': 'deny',
+    'network:search': 'allow',
+    'shell:execute': 'deny',
+  },
+  'material-writer': {
+    'spawn:parallel': 'allow',
+    'read:message': 'task-only',
+    'read:file': 'allow',
+    'read:knowledge': 'allow',
+    'read:document': 'allow',
+    'read:template': 'allow',
+    'read:shared-knowledge': 'allow',
+    'read:skill': 'allow',
+    'read:workflow': 'deny',
+    'write:memory': 'allow',
+    'write:knowledge': 'deny',
+    'write:output': 'deny',
     'write:review-draft': 'allow',
+    'write:temp': 'allow',
+    'read:temp': 'allow',
     'promote:reviewed-output': 'deny',
     'delete:file': 'deny',
     'network:search': 'deny',
     'shell:execute': 'deny',
   },
   'acceptance-reviewer': {
+    'spawn:parallel': 'allow',
     'read:message': 'task-only',
     'read:file': 'allow',
     'read:knowledge': 'allow',
+    'read:document': 'allow',
+    'read:template': 'allow',
     'read:shared-knowledge': 'allow',
     'read:skill': 'allow',
     'read:workflow': 'deny',
@@ -104,15 +153,20 @@ const PERMISSION_MATRIX: Record<AgentRole, Record<ToolCapability, PermissionLeve
     'write:knowledge': 'deny',
     'write:output': 'deny',
     'write:review-draft': 'deny',
+    'write:temp': 'deny',
+    'read:temp': 'allow',
     'promote:reviewed-output': 'deny',
     'delete:file': 'deny',
     'network:search': 'deny',
     'shell:execute': 'deny',
   },
   'external-cli': {
+    'spawn:parallel': 'deny',
     'read:message': 'managed-copy',
     'read:file': 'managed-copy',
     'read:knowledge': 'mcp-only',
+    'read:document': 'deny',
+    'read:template': 'deny',
     'read:shared-knowledge': 'mcp-only',
     'read:skill': 'mcp-only',
     'read:workflow': 'mcp-only',
@@ -120,12 +174,22 @@ const PERMISSION_MATRIX: Record<AgentRole, Record<ToolCapability, PermissionLeve
     'write:knowledge': 'deny',
     'write:output': 'managed-copy',
     'write:review-draft': 'deny',
+    'write:temp': 'deny',
+    'read:temp': 'deny',
     'promote:reviewed-output': 'deny',
     'delete:file': 'deny',
     'network:search': 'deny',
     'shell:execute': 'allow',
   },
 };
+
+function canRoleSpawnParallel(role: AgentRole): boolean {
+  return role === 'local-executor'
+    || role === 'knowledge-manager'
+    || role === 'researcher'
+    || role === 'material-writer'
+    || role === 'acceptance-reviewer';
+}
 
 // ─── Tool Registration ───────────────────────────────────────────────────────
 export interface ToolRegistration {
@@ -184,10 +248,12 @@ export class ToolRegistry {
     const result: Array<{ name: string; description: string; parameters: Record<string, unknown> }> = [];
     for (const [, tool] of this.tools) {
       // 检查角色是否有权限使用该工具（至少一个 capability 为 allow）
-      const hasAccess = tool.requiredCapabilities.some((cap) => {
+      const hasAccess = tool.name === 'agent:spawn_parallel'
+        ? canRoleSpawnParallel(role)
+        : tool.requiredCapabilities.some((cap) => {
         const level = PERMISSION_MATRIX[role]?.[cap];
         return level === 'allow' || level === 'task-only' || level === 'report-only';
-      });
+        });
       if (hasAccess) {
         result.push({
           name: tool.name,
@@ -207,22 +273,18 @@ export class ToolRegistry {
   ): Promise<string> {
     const logger = getLogger();
     const tool = this.tools.get(name);
+    if (name === 'agent:spawn_parallel' && !canRoleSpawnParallel(context.role)) {
+      const msg = `权限不足：${context.role} 不允许创建分身任务`;
+      this.audit(context.runId, name, args, msg, true);
+      return msg;
+    }
     if (!tool) {
       return `未知工具: ${name}`;
     }
 
-    // 0. Inject projectId from execution context if the schema requires it but args omit it
-    if (context.projectId && (args.projectId === undefined || args.projectId === null)) {
-      const schema = tool.parameters as Record<string, unknown>;
-      const required = (schema as any)?.required as string[] | undefined;
-      if (required?.includes('projectId')) {
-        args.projectId = context.projectId;
-      }
-    }
-    if (context.runId && (args.runId === undefined || args.runId === null)) {
-      const schema = tool.parameters as { required?: string[] };
-      if (schema.required?.includes('runId')) args.runId = context.runId;
-    }
+    // Context-bound identifiers and artifact locations are execution authority,
+    // not model input. Always replace model-provided values before validation.
+    args = this.bindExecutionContext(name, tool, args, context);
 
     // 1. Schema validation（基础参数校验）
     const schemaErrors = this.validateArgs(tool, args);
@@ -250,11 +312,11 @@ export class ToolRegistry {
       }
     }
 
-    // 3. Project/shared scope check
+    // 3. 关联项目/企业知识范围检查。实际项目关联权限由知识范围解析器校验。
     if (tool.requiredCapabilities.includes('read:shared-knowledge') && context.projectId) {
       const sharedEnabled = this.checkSharedKnowledgeEnabled(context.projectId);
       if (!sharedEnabled) {
-        const msg = '共享知识未开启，无法使用该工具';
+        const msg = '当前群聊没有可用的扩展知识范围，无法使用该工具';
         this.audit(context.runId, name, args, msg, true);
         return msg;
       }
@@ -277,7 +339,7 @@ export class ToolRegistry {
             return msg;
           }
         }
-        const allowed = tool.allowedPathPrefixes.some((prefix) => pathArg.startsWith(prefix));
+        const allowed = tool.allowedPathPrefixes.some((prefix) => normalizedPath.startsWith(prefix));
         if (!allowed) {
           const msg = `路径权限不足: ${pathArg} 不在允许路径白名单中`;
           this.audit(context.runId, name, args, msg, true);
@@ -320,10 +382,52 @@ export class ToolRegistry {
   canRoleUseTool(role: AgentRole, toolName: string): boolean {
     const tool = this.tools.get(toolName);
     if (!tool) return false;
+    if (toolName === 'agent:spawn_parallel') return canRoleSpawnParallel(role);
     return tool.requiredCapabilities.some((cap) => {
       const level = PERMISSION_MATRIX[role]?.[cap];
       return level === 'allow' || level === 'task-only' || level === 'report-only';
     });
+  }
+
+  private bindExecutionContext(
+    name: string,
+    tool: ToolRegistration,
+    input: Record<string, unknown>,
+    context: { role: AgentRole; runId?: string; projectId?: string },
+  ): Record<string, unknown> {
+    const args = { ...input };
+    const schema = tool.parameters as { properties?: Record<string, unknown>; required?: string[] };
+    const reviewTool = name === 'review:writeDraft' || name === 'review:promoteArtifact';
+    const tempTool = name === 'temp:save' || name === 'temp:read' || name === 'temp:list' || name === 'temp:promote';
+    const hasProjectBinding = reviewTool
+      || tempTool
+      || Boolean(schema.properties?.projectId || schema.required?.includes('projectId'));
+    const hasRunBinding = Boolean(schema.properties?.runId || schema.required?.includes('runId'));
+    if (context.projectId && hasProjectBinding) args.projectId = context.projectId;
+    if (context.runId && hasRunBinding) args.runId = context.runId;
+
+    // Temporary artifacts are always scoped to the root Run.  A child agent
+    // cannot select another task directory by passing a forged runId.
+    if (context.runId && tempTool) {
+      let rootRunId = context.runId;
+      try { rootRunId = this.runRepo.getAncestorChain(context.runId).at(-1)?.id ?? context.runId; } catch { /* use current Run */ }
+      args.runId = rootRunId;
+      if (name === 'temp:promote') args.runId = rootRunId;
+    }
+
+    if (context.runId && reviewTool) {
+      let rootRunId = context.runId;
+      try { rootRunId = this.runRepo.getAncestorChain(context.runId).at(-1)?.id ?? context.runId; } catch { /* use current Run */ }
+      const runSegment = rootRunId.replace(/[^a-zA-Z0-9-]/g, '').slice(-24) || context.runId.replace(/[^a-zA-Z0-9-]/g, '').slice(-24) || 'current-run';
+      const draftPath = `.runtime/review-drafts/${runSegment}/material-draft.html`;
+      if (name === 'review:writeDraft') {
+        args.relativePath = draftPath;
+      } else {
+        args.draftRelativePath = draftPath;
+        args.outputRelativePath = `outputs/task-delivery-${runSegment}.html`;
+      }
+    }
+    return args;
   }
 
   /**

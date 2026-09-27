@@ -138,6 +138,12 @@ export const createProjectInputSchema = z.object({
   }),
   templateId: z.string().optional(),
   requestedAgentProfileIds: z.array(z.string()).max(9),
+  customName: z.string().trim().min(1).max(40).optional(),
+  autoStart: z.boolean().optional(),
+});
+
+export const planHomeRequestInputSchema = z.object({
+  text: z.string().trim().min(1).max(20_000),
 });
 
 export const renameProjectInputSchema = z.object({

@@ -1,6 +1,6 @@
 import {
   ArrowDown, BarChart3, BookOpenText, Calculator, CheckCircle2, ChevronDown,
-  CircleDashed, Database, FileCheck2, FileText, Layers3, Loader2, PackageCheck,
+  CircleDashed, Clock3, Database, FileCheck2, FileText, Layers3, Loader2, PackageCheck,
   Search, ShieldCheck, UserRound, Workflow,
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
@@ -111,6 +111,8 @@ function FlowChain({
   forceExpanded: boolean;
 }): React.JSX.Element {
   const active = runs.some((run) => !TERMINAL_STATUSES.has(run.status));
+  const executing = runs.some((run) => !TERMINAL_STATUSES.has(run.status) && run.status !== 'awaiting_user');
+  const awaitingUser = !executing && runs.some((run) => run.status === 'awaiting_user');
   const failed = runs.some((run) => run.status === 'failed');
   const process = runs
     .map((run) => run.businessProcess)
@@ -120,7 +122,7 @@ function FlowChain({
   useEffect(() => setExpanded(forceExpanded), [forceExpanded]);
   const task = taskText(message);
   const subtitle = active && !process
-    ? '任务完成后由知识管理智能体梳理业务流程'
+    ? awaitingUser ? '等待用户补充关键信息后继续当前任务' : '任务完成后由知识管理智能体梳理业务流程'
     : process?.applicable
       ? `${process.stages.length} 个业务阶段 · ${process.generatedByAgentName}整理`
       : process
@@ -131,7 +133,7 @@ function FlowChain({
     <section className={`task-flow-chain${!active ? ' task-flow-chain--terminal' : ''}${failed ? ' task-flow-chain--failed' : ''}`} aria-label={`任务业务流程：${task}`}>
       <button type="button" className="task-flow-chain__summary" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
         <span className="task-flow-chain__state">
-          {failed ? <CircleDashed size={16} /> : active ? <Loader2 size={16} className="spin" /> : <CheckCircle2 size={16} />}
+          {failed ? <CircleDashed size={16} /> : awaitingUser ? <Clock3 size={16} /> : active ? <Loader2 size={16} className="spin" /> : <CheckCircle2 size={16} />}
         </span>
         <span className="task-flow-chain__title"><strong>{task}</strong><small>{subtitle}</small></span>
         <ChevronDown size={15} className={expanded ? 'task-flow-chain__chevron--open' : ''} />
@@ -149,7 +151,7 @@ function FlowChain({
           <div className="task-flow-route-label"><Workflow size={13} /><span>知识管理智能体梳理的业务流程</span></div>
           {process
             ? <BusinessProcessCanvas process={process} />
-            : <div className="business-flow-pending"><Loader2 size={18} className={active ? 'spin' : ''} /><strong>{active ? '业务流程将在任务完成后生成' : '尚未生成业务流程'}</strong><span>流程内容只来自知识管理智能体的任务成果归集，不使用运行轨迹代替。</span></div>}
+            : <div className="business-flow-pending">{awaitingUser ? <Clock3 size={18} /> : <Loader2 size={18} className={active ? 'spin' : ''} />}<strong>{awaitingUser ? '等待用户回复后继续' : active ? '业务流程将在任务完成后生成' : '尚未生成业务流程'}</strong><span>流程内容只来自知识管理智能体的任务成果归集，不使用运行轨迹代替。</span></div>}
         </div>
       )}
     </section>

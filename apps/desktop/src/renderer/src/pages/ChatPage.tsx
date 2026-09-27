@@ -1,6 +1,7 @@
 import {
-  AlertTriangle, Brain, ExternalLink, FileText, FolderOpen, Link, ListTree, Loader2, MoreVertical, Network,
-  PanelLeftClose, PanelLeftOpen, Paperclip, Pencil, Send, Sparkles, Square, Trash2, UserPlus, Workflow, X,
+  AlertTriangle, Brain, ExternalLink, FileText, FolderOpen, Globe2, Link, ListTree, Loader2, MoreVertical, Network,
+  PanelLeftClose, PanelLeftOpen, Paperclip, Pencil, Plus, Send, Sparkles, Square, Trash2, UserPlus, Workflow, X,
+  Zap,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
@@ -12,7 +13,10 @@ import { TaskWorkFlowPanel } from '../components/TaskWorkFlowPanel';
 import { MemoryManager } from '../components/MemoryManager';
 import { AddAgentsModal } from '../components/AddAgentsModal';
 import { ChannelBindingsDialog } from '../components/ChannelBindingsDialog';
-import { displayAgentText, extractMentions, findMentionContext, insertComposerNewline, replaceMention, type MentionContext } from '../chat-input-utils';
+import { AssociateProjectDialog } from '../components/AssociateProjectDialog';
+import { NameAvatar } from '../components/NameAvatar';
+import { displayAgentText, extractMentions, findMentionContext, formatReplyPreview, insertComposerNewline, replaceMention, type MentionContext } from '../chat-input-utils';
+import { normalizeEnterpriseProjects, normalizeProjectAssociations, projectAssociationLabel, type EnterpriseProject, type EnterpriseProjectAssociations } from '../enterprise-projects';
 import type { BusinessProcess } from '@kunqing/native-agent-core';
 
 type ProjectItem = {
@@ -37,6 +41,7 @@ type MessageItem = {
   kind: string;
   contentJson: string;
   status: string;
+  replyToId?: string | null;
   createdAt: string;
 };
 
@@ -67,6 +72,8 @@ type RunActivity = {
   updatedAt: string;
 };
 
+type CollaborationMode = 'fast' | 'balanced' | 'expert';
+
 interface PerProjectState {
   draft: string;
   previewOpen: boolean;
@@ -75,7 +82,7 @@ interface PerProjectState {
 }
 
 interface PreviewData {
-  kind: 'text' | 'image' | 'unknown' | 'html' | 'pdf';
+  kind: 'text' | 'image' | 'unknown' | 'html' | 'pdf' | 'web';
   content?: string;
   dataUri?: string;
   appFileUrl?: string;
@@ -83,7 +90,19 @@ interface PreviewData {
   fileName: string;
   fileId?: string;
   versionId?: string;
+  sourceUrl?: string;
   error?: string;
+}
+
+function formatSidebarTime(value: string): string {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return '';
+  const now = new Date();
+  const sameDay = date.toDateString() === now.toDateString();
+  if (sameDay) return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+  if (date.toDateString() === yesterday.toDateString()) return '昨天';
+  return date.toLocaleDateString('zh-CN', date.getFullYear() === now.getFullYear() ? { month: '2-digit', day: '2-digit' } : { year: 'numeric', month: '2-digit', day: '2-digit' }).replaceAll('/', '-');
 }
 
 const DEFAULT_PROJECT_STATE: PerProjectState = { draft: '', previewOpen: false, workTreeOpen: false, scrollOffset: 0 };
@@ -93,17 +112,21 @@ export function ChatPage(): React.JSX.Element {
   const navigate = useNavigate();
   const [projects, setProjects] = useState<ProjectItem[]>([]);
   const [messages, setMessages] = useState<MessageItem[]>([]);
+  const [lastSentMessageId, setLastSentMessageId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
+  const [collaborationMode, setCollaborationMode] = useState<CollaborationMode>('expert');
   const [previewOpen, setPreviewOpen] = useState(false);
   const [workTreeOpen, setWorkTreeOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
   const [hasMore, setHasMore] = useState(false);
   const [runStatuses, setRunStatuses] = useState<Record<string, RunActivity>>({});
   const [eventError, setEventError] = useState<string | null>(null);
   const [scrollOffset, setScrollOffset] = useState(0);
   const [previewFile, setPreviewFile] = useState<string | null>(null);
   const [previewData, setPreviewData] = useState<PreviewData | null>(null);
+  const [enlargedImage, setEnlargedImage] = useState<{ url: string; alt?: string } | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [pendingArtifact, setPendingArtifact] = useState<{ path: string; runId?: string; triggerMessageId?: string; createdAt: string } | null>(null);
   const [memoryManagerOpen, setMemoryManagerOpen] = useState(false);
@@ -114,6 +137,9 @@ export function ChatPage(): React.JSX.Element {
   const [renameError, setRenameError] = useState('');
   const [dissolveOpen, setDissolveOpen] = useState(false);
   const [channelBindOpen, setChannelBindOpen] = useState(false);
+  const [associateProjectOpen, setAssociateProjectOpen] = useState(false);
+  const [enterpriseProjects, setEnterpriseProjects] = useState<EnterpriseProject[]>([]);
+  const [projectAssociations, setProjectAssociations] = useState<EnterpriseProjectAssociations>({});
   const [projectActionBusy, setProjectActionBusy] = useState(false);
   const [stoppingAllRuns, setStoppingAllRuns] = useState(false);
   const [workTreeView, setWorkTreeView] = useState<'tree' | 'flow'>('tree');
@@ -124,6 +150,8 @@ export function ChatPage(): React.JSX.Element {
     return Number.isFinite(saved) && saved >= 320 ? saved : 520;
   });
   const [projectAgents, setProjectAgents] = useState<AgentInstance[]>([]);
+  const [replyingTo, setReplyingTo] = useState<MessageItem | null>(null);
+  const [userProfile, setUserProfile] = useState({ nickname: '项目负责人', avatarDataUrl: '' });
   const [showMentions, setShowMentions] = useState(false);
   const [mentionQuery, setMentionQuery] = useState('');
   const [mentionContext, setMentionContext] = useState<MentionContext | null>(null);
@@ -143,6 +171,20 @@ export function ChatPage(): React.JSX.Element {
     document.documentElement.style.setProperty('--kq-preview-panel-width', `${previewWidth}px`);
     window.localStorage.setItem('kunqing.previewWidth', String(previewWidth));
   }, [previewWidth]);
+
+  useEffect(() => {
+    if (!projectId) {
+      setCollaborationMode('expert');
+      return;
+    }
+    const saved = window.localStorage.getItem(`kunqing.collaborationMode.${projectId}`);
+    setCollaborationMode(saved === 'fast' || saved === 'balanced' ? saved : 'expert');
+  }, [projectId]);
+
+  const changeCollaborationMode = (mode: CollaborationMode): void => {
+    setCollaborationMode(mode);
+    if (projectId) window.localStorage.setItem(`kunqing.collaborationMode.${projectId}`, mode);
+  };
 
   const startResize = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -193,26 +235,60 @@ export function ChatPage(): React.JSX.Element {
     document.addEventListener('mouseup', onUp);
   }, [panelWidth, previewWidth, projectPanelOpen]);
 
-  const loadProjects = useCallback(async () => {
+  const loadProjects = useCallback(async (): Promise<ProjectItem[]> => {
     const result = await window.kunqing?.projects.list({} as Record<string, never>);
     if (result && typeof result === 'object' && 'ok' in result && result.ok) {
-      setProjects((result as Record<string, unknown>).data as ProjectItem[]);
+      const items = (result as Record<string, unknown>).data as ProjectItem[];
+      setProjects([...items].sort((left, right) => new Date(right.lastActiveAt).getTime() - new Date(left.lastActiveAt).getTime()));
+      return items;
     }
+    return [];
   }, []);
 
-  const loadMessages = useCallback(async (before?: string) => {
+  const touchProject = useCallback((targetProjectId: string, at: string): void => {
+    setProjects((current) => current
+      .map((project) => project.id === targetProjectId ? { ...project, lastActiveAt: at } : project)
+      .sort((left, right) => new Date(right.lastActiveAt).getTime() - new Date(left.lastActiveAt).getTime()));
+  }, []);
+
+  const loadMessages = useCallback(async (before?: string, knownProjectName?: string) => {
     if (!projectId) return;
+    // One-time UI-only cleanup for the fixed demo chat. This deliberately
+    // leaves messages, memories and run records in SQLite; it only advances
+    // the renderer's display boundary so the next user message starts clean.
+    const currentProject = projects.find((project) => project.id === projectId);
+    const projectName = knownProjectName ?? currentProject?.name ?? '';
+    const isFixedDemoChat = /鲲擎KLA助手/u.test(projectName);
+    const isAssetDemoChat = /标品资产设计与入库/u.test(projectName);
+    const clearKey = isAssetDemoChat
+      ? `kunqing.chat.displayClearedAt.asset-demo.v1.${projectId}`
+      : `kunqing.chat.displayClearedAt.v5.${projectId}`;
+    let displaySince = window.localStorage.getItem(clearKey);
     const result = before
       ? await window.kunqing?.messages.list({ projectId, before, limit: 50 })
       : await window.kunqing?.messages.list({ projectId, limit: 50 });
     if (result && typeof result === 'object' && 'ok' in result && result.ok) {
       const data = (result as Record<string, unknown>).data as { messages: MessageItem[]; hasMore: boolean };
-      if (before) {
-        setMessages((prev) => [...data.messages, ...prev]);
-      } else {
-        setMessages(data.messages);
+      // Establish the boundary from persisted history, rather than the local
+      // clock. This hides all existing demo bubbles even when stored timestamps
+      // come from a different clock or have been replayed by a test fixture.
+      if ((isFixedDemoChat || isAssetDemoChat) && !displaySince && !before) {
+        displaySince = data.messages[data.messages.length - 1]?.createdAt ?? new Date().toISOString();
+        window.localStorage.setItem(clearKey, displaySince);
       }
-      setHasMore(data.hasMore);
+      const displayBoundary = displaySince;
+      const visibleMessages = displayBoundary
+        ? data.messages.filter((message) => message.createdAt > displayBoundary)
+        : data.messages;
+      if (before) {
+        setMessages((prev) => {
+          const byId = new Map([...visibleMessages, ...prev].map((message) => [message.id, message]));
+          return [...byId.values()];
+        });
+      } else {
+        setMessages(visibleMessages);
+      }
+      setHasMore(displaySince ? visibleMessages.length === data.messages.length && data.hasMore : data.hasMore);
     }
     setLoading(false);
   }, [projectId]);
@@ -281,13 +357,17 @@ export function ChatPage(): React.JSX.Element {
       void openPreview(previewPath);
     }
     setProjectAgents([]);
+    setReplyingTo(null);
     setShowMentions(false);
     setMentionContext(null);
     setMentionSelectedIndex(0);
     setRunStatuses({});
     setLoading(true);
-    void loadProjects();
-    void loadMessages();
+    void (async (): Promise<void> => {
+      const items = await loadProjects();
+      const projectName = items.find((project) => project.id === projectId)?.name;
+      await loadMessages(undefined, projectName);
+    })();
     void loadRunActivities();
     window.kunqing?.agents.getProjectInstances({ projectId }).then((result) => {
       const r = result as { ok: boolean; data?: AgentInstance[] } | undefined;
@@ -296,22 +376,80 @@ export function ChatPage(): React.JSX.Element {
   }, [projectId]);
 
   useEffect(() => {
+    void (async (): Promise<void> => {
+      const result = await window.kunqing?.settings.getAll() as { ok?: boolean; data?: Record<string, unknown> } | undefined;
+      if (!result?.ok) return;
+      const nickname = String(result.data?.personalNickname ?? '').trim() || '项目负责人';
+      const avatarDataUrl = String(result.data?.personalAvatarDataUrl ?? '').trim();
+      setUserProfile({ nickname, avatarDataUrl });
+      setEnterpriseProjects(normalizeEnterpriseProjects(result.data?.enterpriseProjects));
+      setProjectAssociations(normalizeProjectAssociations(result.data?.enterpriseProjectAssociations));
+    })();
+  }, []);
+
+  useEffect(() => {
     if (!projectId) return;
     const unsubscribe = window.kunqing?.events.subscribe((raw) => {
       const event = raw as { type: string; projectId?: string; [key: string]: unknown };
       if (event.projectId && event.projectId !== projectId) return;
 
       switch (event.type) {
+        case 'project.agents.changed': {
+          void window.kunqing?.agents.getProjectInstances({ projectId }).then((result) => {
+            const r = result as { ok: boolean; data?: AgentInstance[] } | undefined;
+            if (r?.ok && r.data) setProjectAgents(r.data);
+          });
+          break;
+        }
         case 'message.delta': {
-          // 中间流式片段只属于右侧工作过程，提交前不进入正式消息流。
+          const { messageId, senderId, delta } = event as unknown as { messageId: string; senderId?: string; delta?: string };
+          if (!messageId || typeof delta !== 'string') break;
+          setMessages((prev) => {
+            const existing = prev.find((message) => message.id === messageId);
+            if (!existing) {
+              return [...prev, {
+                id: messageId,
+                senderType: 'agent',
+                senderId: senderId ?? '',
+                kind: 'text',
+                contentJson: JSON.stringify({ schemaVersion: 1, text: delta, mentions: [] }),
+                status: 'sending',
+                createdAt: new Date().toISOString(),
+              }];
+            }
+            if (existing.status !== 'sending') return prev;
+            let currentText = '';
+            try { currentText = (JSON.parse(existing.contentJson) as { text?: string }).text ?? ''; } catch { /* start empty */ }
+            return prev.map((message) => message.id === messageId
+              ? { ...message, senderId: senderId ?? message.senderId, contentJson: JSON.stringify({ schemaVersion: 1, text: currentText + delta, mentions: [] }) }
+              : message);
+          });
           break;
         }
         case 'message.committed': {
-          const { messageId, senderId, content } = event as { type: 'message.committed'; projectId: string; messageId: string; senderId: string; content: string };
+          const { messageId, senderType, senderId, kind, content } = event as {
+            type: 'message.committed'; projectId: string; messageId: string; senderType?: string; senderId: string; kind?: string; content: string;
+          };
           setMessages((prev) => {
-            if (prev.some((m) => m.id === messageId)) return prev;
-            return [...prev, { id: messageId, senderType: 'agent', senderId: senderId ?? '', kind: 'text', contentJson: content, status: 'sent', createdAt: new Date().toISOString() }];
+            if (prev.some((m) => m.id === messageId)) {
+              return prev.map((message) => message.id === messageId
+                ? { ...message, senderType: senderType ?? message.senderType, senderId: senderId ?? message.senderId, kind: kind ?? message.kind, contentJson: content, status: 'sent' }
+                : message);
+            }
+            // Older event producers omit senderType. Keep their prior agent/system
+            // behavior, but recognize the local user so a broadcast that wins the
+            // IPC race cannot turn a user reply into an agent bubble.
+            const inferredSenderType = senderType ?? (senderId === 'system' ? 'system' : senderId === 'local-user' ? 'user' : 'agent');
+            return [...prev, { id: messageId, senderType: inferredSenderType, senderId: senderId ?? '', kind: inferredSenderType === 'system' ? 'system' : (kind === 'artifact' ? 'artifact' : 'text'), contentJson: content, status: 'sent', createdAt: new Date().toISOString() }];
           });
+          if (event.projectId) touchProject(event.projectId, new Date().toISOString());
+          break;
+        }
+        case 'message.discarded': {
+          // 真流式占位被丢弃（去重复用、取消或失败）：仅移除仍处于 sending 状态的占位。
+          const { messageId } = event as { type: 'message.discarded'; projectId: string; messageId: string; reason?: string };
+          if (!messageId) break;
+          setMessages((prev) => prev.filter((message) => !(message.id === messageId && message.status === 'sending')));
           break;
         }
         case 'run.status': {
@@ -345,9 +483,10 @@ export function ChatPage(): React.JSX.Element {
             return { ...prev, [run.id]: next };
           });
           if (run.status === 'failed') {
-            // 添加错误消息到聊天
+            // 添加错误消息到聊天（P2-17：ID 与主进程 insertRunFailureNotice 派生规则一致，
+            // 持久化广播先到则此处去重跳过；落库失败时此内存消息是唯一兜底提示）。
             const errorMsg: MessageItem = {
-              id: `err-${run.id}`,
+              id: `run-fail-${run.id}`,
               senderType: 'system',
               senderId: 'system',
               kind: 'system',
@@ -458,6 +597,7 @@ export function ChatPage(): React.JSX.Element {
         case 'message.created': {
           const { message, runId, triggerMessageId } = event as { type: 'message.created'; projectId: string; runId?: string; triggerMessageId?: string; message: MessageItem };
           setMessages((prev) => (prev.some((m) => m.id === message.id) ? prev : [...prev, message]));
+          if (event.projectId) touchProject(event.projectId, message.createdAt);
           if (message.kind === 'artifact') {
             try {
               const content = JSON.parse(message.contentJson) as { text?: unknown };
@@ -476,7 +616,30 @@ export function ChatPage(): React.JSX.Element {
       }
     });
     return () => { unsubscribe?.(); };
-  }, [projectId, projectAgents]);
+  }, [projectId, projectAgents, touchProject]);
+
+  // The demo label-card is loaded in an app-file iframe. Its Save button
+  // notifies the host renderer so the main-process demo state can advance
+  // immediately; the filesystem mtime watcher remains a restart-safe fallback.
+  useEffect(() => {
+    if (!projectId) return;
+    const onMessage = (event: MessageEvent<unknown>): void => {
+      const data = event.data as { type?: unknown } | null;
+      if (data?.type !== 'asset-demo-label-saved') return;
+      void window.kunqing?.demo?.labelSaved({ projectId }).then((result) => {
+        const response = result as { ok?: boolean; data?: { accepted?: boolean } } | undefined;
+        // The save completes this user interaction; hide the card before the
+        // next scripted asset-management message arrives.
+        if (response?.ok && response.data?.accepted) {
+          setPreviewOpen(false);
+          setPreviewFile(null);
+          setPreviewData(null);
+        }
+      });
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [projectId]);
 
   // auto-scroll handled by VirtualMessageList
 
@@ -484,6 +647,10 @@ export function ChatPage(): React.JSX.Element {
     () => projects.find((p) => p.id === projectId) ?? { id: projectId ?? '', name: '新建协作群聊', status: 'active', lastActiveAt: '' },
     [projects, projectId],
   );
+  // The fixed asset-design demo uses the conversation as the stage. Its
+  // scripted progress is visible in message bubbles, while the work tree
+  // remains an explicit, user-controlled view.
+  const isAssetDemoProject = activeProject.name.trim() === '标品资产设计与入库';
 
   const generateIdempotencyKey = (): string =>
     `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -537,19 +704,25 @@ export function ChatPage(): React.JSX.Element {
 
   const sendMessage = async (): Promise<void> => {
     const text = draft.trim();
-    if (!text || sending) return;
+    if (!text || sendingRef.current) return;
+    sendingRef.current = true;
     setSending(true);
 
-    const content = { schemaVersion: 1 as const, text, mentions: extractMentions(text, projectAgents), stagedUploadIds: [] };
-    const result = await window.kunqing?.messages.send({
-      idempotencyKey: generateIdempotencyKey(),
-      projectId: projectId ?? '',
-      content,
-    });
-
-    setSending(false);
+    const content = { schemaVersion: 1 as const, text, mentions: extractMentions(text, projectAgents), stagedUploadIds: [], collaborationMode };
+    let result: unknown;
+    try {
+      result = await window.kunqing?.messages.send({
+        idempotencyKey: generateIdempotencyKey(),
+        projectId: projectId ?? '',
+        content,
+        ...(replyingTo ? { replyToId: replyingTo.id } : {}),
+      });
+    } finally {
+      sendingRef.current = false;
+      setSending(false);
+    }
     if (result && typeof result === 'object' && 'ok' in result && result.ok) {
-      const data = (result as Record<string, unknown>).data as { id: string; createdAt: string };
+      const data = (result as Record<string, unknown>).data as { id: string; createdAt: string; replyToId?: string | null; resumedRunId?: string; rootTriggerMessageId?: string; noteOnly?: boolean };
       const tempMsg: MessageItem = {
         id: data.id,
         senderType: 'user',
@@ -557,16 +730,22 @@ export function ChatPage(): React.JSX.Element {
         kind: 'text',
         contentJson: JSON.stringify(content),
         status: 'sent',
+        ...(data.replyToId ? { replyToId: data.replyToId } : {}),
         createdAt: data.createdAt,
       };
-      setMessages((prev) => [...prev, tempMsg]);
+      setMessages((prev) => (prev.some((message) => message.id === tempMsg.id) ? prev : [...prev, tempMsg]));
+      setLastSentMessageId(data.id);
       setDraft('');
+      setReplyingTo(null);
       setPendingArtifact(null);
-      autoOpenedTaskRef.current = data.id;
+      // /note 消息不触发任何 run，跳过任务工作树自动打开（P2-18）。
+      if (!data.noteOnly && !isAssetDemoProject) {
+        autoOpenedTaskRef.current = data.rootTriggerMessageId ?? data.id;
+        setWorkTreeOpen(true);
+      }
       setPreviewOpen(false);
       setPreviewFile(null);
       setPreviewData(null);
-      setWorkTreeOpen(true);
       const url = new URL(window.location.href);
       url.searchParams.delete('preview');
       url.searchParams.delete('previewFileId');
@@ -626,7 +805,7 @@ export function ChatPage(): React.JSX.Element {
     .map(([runId, val]) => ({ runId, ...val }))
     .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt))
     .slice(-30), [runStatuses]);
-  const runningRuns = useMemo(() => activeRuns.filter((run) => !['completed', 'failed', 'cancelled', 'interrupted'].includes(run.status)), [activeRuns]);
+  const runningRuns = useMemo(() => activeRuns.filter((run) => !['awaiting_user', 'completed', 'failed', 'cancelled', 'interrupted'].includes(run.status)), [activeRuns]);
   const runningCount = runningRuns.length;
   const runningAgents = useMemo(() => {
     const orderedAgentIds = projectAgents.map((agent) => agent.id);
@@ -643,6 +822,43 @@ export function ChatPage(): React.JSX.Element {
     }
     return [...uniqueAgents.values()];
   }, [projectAgents, runningRuns]);
+  // 聊天流末尾的执行气泡：只展示接下来会输出文本的 Run。
+  // 正在等待子任务返回的 Run（例如统筹监听成员执行）只做监听，不显示
+  // 气泡——成员执行时只有成员有气泡，统筹做最终总结时才重新出现。
+  const runningAgentBubbles = useMemo(() => {
+    const waitingParentRunIds = new Set(
+      runningRuns
+        .filter((run) => Boolean(run.parentRunId))
+        .map((run) => run.parentRunId as string),
+    );
+    const speakingRuns = runningRuns.filter((run) => !waitingParentRunIds.has(run.runId));
+    const orderedAgentIds = projectAgents.map((agent) => agent.id);
+    const uniqueAgents = new Map<string, { id: string; name: string; tone: ReturnType<typeof getAgentTone>; streamingText: string }>();
+    for (const run of speakingRuns) {
+      const projectAgent = projectAgents.find((agent) => agent.id === run.agentId);
+      const id = projectAgent?.id ?? run.agentId ?? run.agentName ?? run.runId;
+      if (uniqueAgents.has(id)) continue;
+      let streamingText = '';
+      for (let i = messages.length - 1; i >= 0; i -= 1) {
+        const message = messages[i]!;
+        if (message.status === 'sending' && message.senderType === 'agent' && message.senderId === id) {
+          try {
+            streamingText = (JSON.parse(message.contentJson) as { text?: string }).text ?? '';
+          } catch {
+            streamingText = '';
+          }
+          break;
+        }
+      }
+      uniqueAgents.set(id, {
+        id,
+        name: projectAgent?.agentName ?? run.agentName ?? '智能体',
+        tone: getAgentTone(id, orderedAgentIds),
+        streamingText,
+      });
+    }
+    return [...uniqueAgents.values()];
+  }, [projectAgents, runningRuns, messages]);
   const rightPanelOpen = previewOpen || workTreeOpen;
 
   const cancelRun = async (runId: string): Promise<void> => {
@@ -708,6 +924,32 @@ export function ChatPage(): React.JSX.Element {
     }
   }, [projectId]);
 
+  const openWebPreview = useCallback((sourceUrl: string): void => {
+    if (!/^https?:\/\//i.test(sourceUrl)) return;
+    let title = '网页预览';
+    try { title = new URL(sourceUrl).hostname || title; } catch { /* validated by protocol above */ }
+    setWorkTreeOpen(false);
+    setPreviewFile(null);
+    setPreviewOpen(true);
+    setPreviewLoading(false);
+    setPreviewData({ kind: 'web', fileName: title, sourceUrl });
+    const currentUrl = new URL(window.location.href);
+    currentUrl.searchParams.delete('preview');
+    currentUrl.searchParams.delete('previewFileId');
+    currentUrl.searchParams.delete('previewVersionId');
+    window.history.replaceState(null, '', currentUrl.toString());
+  }, []);
+
+  const openImagePreview = useCallback((url: string, alt?: string): void => {
+    if (!url) return;
+    // app-file URLs are readable by the existing protocol handler, so they
+    // can be shown directly without copying or exposing the source path.
+    setPreviewFile(null);
+    setPreviewOpen(true);
+    setPreviewLoading(false);
+    setPreviewData({ kind: 'image', ...( /^app-file:\/\//i.test(url) ? { appFileUrl: url } : { dataUri: url }), fileName: alt ?? '图片' });
+  }, []);
+
   const closePreview = (): void => {
     setPreviewOpen(false);
     setPreviewFile(null);
@@ -747,6 +989,15 @@ export function ChatPage(): React.JSX.Element {
     setPendingArtifact(null);
     void openPreview(path);
   }, [activeRuns, openPreview, pendingArtifact]);
+
+  useEffect(() => {
+    if (!enlargedImage) return;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setEnlargedImage(null);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [enlargedImage]);
 
   const toggleWorkTree = (): void => {
     if (workTreeOpen) {
@@ -801,6 +1052,9 @@ export function ChatPage(): React.JSX.Element {
             <PanelLeftClose size={18} />
           </button>
           <h2>项目协作群组</h2>
+          <button type="button" className="icon-button project-panel-create" aria-label="创建群组" title="创建群组" onClick={() => window.dispatchEvent(new Event('kunqing:open-new-chat'))}>
+            <Plus size={17} />
+          </button>
         </div>
         <div className="project-panel__resize-handle" onMouseDown={startResize} />
         <div className="project-list">
@@ -812,8 +1066,14 @@ export function ChatPage(): React.JSX.Element {
               className={`project-list-item${project.id === projectId ? ' project-list-item--active' : ''}`}
               onClick={() => navigate(`/projects/${project.id}/chat`)}
             >
-              <strong>{project.name}</strong>
-              <span className="project-list-item__status"><i className={`project-status-dot project-status-dot--${project.status.toLowerCase()}`} />{project.status === 'active' ? '进行中' : project.status}</span>
+              <NameAvatar name={project.name} />
+              <span className="project-list-item__body">
+                <span className="project-list-item__title"><strong>{project.name}</strong><time>{formatSidebarTime(project.lastActiveAt)}</time></span>
+                {(() => {
+                const association = projectAssociationLabel(enterpriseProjects, projectAssociations, 'group', project.id);
+                return <span className="project-list-item__meta"><span className="project-list-item__status"><i className={`project-status-dot project-status-dot--${project.status.toLowerCase()}`} />{project.status === 'active' ? '进行中' : project.status}</span><small className={association.linked ? 'project-association project-association--linked' : 'project-association project-association--unlinked'}>{association.name}</small></span>;
+                })()}
+              </span>
             </button>
           ))}
         </div>
@@ -854,6 +1114,7 @@ export function ChatPage(): React.JSX.Element {
               <button type="button" className={`icon-button${moreMenuOpen ? ' icon-button--active' : ''}`} aria-label="更多操作" title="更多操作" onClick={() => setMoreMenuOpen((value) => !value)}><MoreVertical size={18} /></button>
               {moreMenuOpen && <div className="conversation-more-menu">
                 <button type="button" onClick={() => { setMoreMenuOpen(false); setRenameValue(activeProject.name); setRenameError(''); setRenameOpen(true); }}><Pencil size={15} />重命名</button>
+                <button type="button" onClick={() => { setMoreMenuOpen(false); setAssociateProjectOpen(true); }}><FolderOpen size={15} />关联项目</button>
                 <button type="button" onClick={() => { setMoreMenuOpen(false); setChannelBindOpen(true); }}><Link size={15} />绑定渠道会话</button>
                 <button type="button" className="conversation-more-menu__danger" onClick={() => { setMoreMenuOpen(false); setDissolveOpen(true); }}><Trash2 size={15} />解散群聊</button>
               </div>}
@@ -873,6 +1134,12 @@ export function ChatPage(): React.JSX.Element {
           onLoadMore={loadMore}
           onRetryRun={retryRun}
           onPreviewFile={openPreview}
+          onPreviewUrl={openWebPreview}
+          onPreviewImage={(url, alt) => { void openImagePreview(url, alt); }}
+          onReplyMessage={(message) => { setReplyingTo(message); requestAnimationFrame(() => textareaRef.current?.focus()); }}
+          userProfile={userProfile}
+          scrollToBottomSignal={lastSentMessageId}
+          runningAgents={runningAgentBubbles}
         />
 
         {eventError && <div className="composer-error"><AlertTriangle size={14} />{eventError}<button type="button" className="icon-button" onClick={() => setEventError(null)}><X size={14} /></button></div>}
@@ -903,6 +1170,21 @@ export function ChatPage(): React.JSX.Element {
           </div>
         )}
         <form className="chat-composer-wrap" onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
+          {replyingTo && (
+            <div className="composer-reply-reference">
+              <button type="button" className="icon-button" aria-label="取消回复" onClick={() => setReplyingTo(null)}><X size={15} /></button>
+              <div>
+                <strong>回复 {replyingTo.senderType === 'user'
+                  ? userProfile.nickname
+                  : projectAgents.find((agent) => agent.id === replyingTo.senderId)?.agentName ?? '智能体'}</strong>
+                {(() => {
+                  let fullText = '文件消息';
+                  try { fullText = (JSON.parse(replyingTo.contentJson) as { text?: string }).text ?? fullText; } catch { /* use fallback */ }
+                  return <span title={fullText}>{formatReplyPreview(fullText)}</span>;
+                })()}
+              </div>
+            </div>
+          )}
           <div className="chat-composer">
             <button type="button" className="composer-tool" aria-label="添加附件" onClick={() => { if (projectId) void window.kunqing?.workspace.uploadFiles({ projectId }); }}><Paperclip size={17} /></button>
             <textarea
@@ -934,7 +1216,14 @@ export function ChatPage(): React.JSX.Element {
               {sending ? <Sparkles size={17} /> : <Send size={17} />}
             </button>
           </div>
-          <p><Sparkles size={12} /> AI 正在监控工作流合规性</p>
+          <div className="composer-footer">
+            <div className="collaboration-mode-switch" role="group" aria-label="协同模式">
+              <button type="button" className={collaborationMode === 'fast' ? 'is-active' : ''} aria-pressed={collaborationMode === 'fast'} title="以最少必要步骤完成任务" onClick={() => changeCollaborationMode('fast')}><Zap size={13} />快速</button>
+              <button type="button" className={collaborationMode === 'balanced' ? 'is-active' : ''} aria-pressed={collaborationMode === 'balanced'} title="在速度与完整性之间保持均衡" onClick={() => changeCollaborationMode('balanced')}><Sparkles size={13} />均衡</button>
+              <button type="button" className={collaborationMode === 'expert' ? 'is-active' : ''} aria-pressed={collaborationMode === 'expert'} title="完整规划、核验与恢复循环，适合复杂和高质量任务" onClick={() => changeCollaborationMode('expert')}><Brain size={13} />专家</button>
+            </div>
+            <span><Sparkles size={12} /> AI 正在监控工作流合规性</span>
+          </div>
         </form>
       </section>
 
@@ -959,8 +1248,13 @@ export function ChatPage(): React.JSX.Element {
         <aside className="artifact-preview" aria-label="成果文件预览">
           <div className="preview-resize-handle" role="separator" aria-label="调整对话与预览宽度" onMouseDown={startPreviewResize} />
           <header className="preview-header">
-            <div><FileText size={18} /><strong>{previewData?.fileName ? previewData.fileName : (previewFile ?? '项目摘要')}</strong></div>
+            <div>{previewData?.kind === 'web' ? <Globe2 size={18} /> : <FileText size={18} />}<strong title={previewData?.sourceUrl}>{previewData?.fileName ? previewData.fileName : (previewFile ?? '项目摘要')}</strong></div>
             <div>
+              {previewData?.kind === 'web' && previewData.sourceUrl && (
+                <button type="button" className="icon-button" aria-label="使用系统浏览器打开" title="浏览器打开" onClick={() => { void window.kunqing?.app.openExternal({ url: previewData.sourceUrl! }); }}>
+                  <ExternalLink size={17} />
+                </button>
+              )}
               {previewFile && !previewLoading && !previewData?.error && (
                 <button type="button" className="icon-button" aria-label="使用系统应用打开" title="系统打开" onClick={() => { void window.kunqing?.workspace.openWithSystem({ projectId: projectId ?? '', relativePath: previewFile }); }}>
                   <ExternalLink size={17} />
@@ -969,14 +1263,14 @@ export function ChatPage(): React.JSX.Element {
               <button type="button" className="icon-button" aria-label="关闭预览" onClick={closePreview}><X size={18} /></button>
             </div>
           </header>
-          <div className={`preview-scroll${previewData?.kind === 'html' || previewData?.kind === 'pdf' ? ' preview-scroll--document' : ''}`}>
+          <div className={`preview-scroll${previewData?.kind === 'html' || previewData?.kind === 'pdf' || previewData?.kind === 'web' ? ' preview-scroll--document' : ''}`}>
             {previewLoading ? (
               <div className="file-empty" style={{ padding: '40px' }}><Loader2 size={34} className="spin" /><span>正在加载预览…</span></div>
             ) : previewData ? (
               previewData.error ? (
                 <div className="file-empty" style={{ padding: '40px' }}><FileText size={34} /><span>{previewData.error}</span></div>
-              ) : previewData.kind === 'image' && previewData.dataUri ? (
-                <div style={{ padding: '16px', textAlign: 'center' }}><img src={previewData.dataUri} alt={previewData.fileName} style={{ maxWidth: '100%', maxHeight: '70vh', objectFit: 'contain' }} /></div>
+              ) : previewData.kind === 'image' && (previewData.dataUri || previewData.appFileUrl) ? (
+                <div style={{ padding: '16px', textAlign: 'center' }}><img src={previewData.dataUri ?? previewData.appFileUrl} alt={previewData.fileName} style={{ maxWidth: '100%', maxHeight: '70vh', objectFit: 'contain', cursor: 'zoom-in' }} onClick={() => setEnlargedImage({ url: previewData.dataUri ?? previewData.appFileUrl!, alt: previewData.fileName })} /></div>
               ) : previewData.kind === 'pdf' && previewData.appFileUrl ? (
                 <iframe src={previewData.appFileUrl} className="preview-iframe" title="PDF 预览" style={{ width: '100%', flex: 1, border: 'none' }} />
               ) : previewData.kind === 'html' && previewData.appFileUrl ? (
@@ -986,6 +1280,14 @@ export function ChatPage(): React.JSX.Element {
                   sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups"
                   referrerPolicy="no-referrer"
                   title="HTML 预览"
+                />
+              ) : previewData.kind === 'web' && previewData.sourceUrl ? (
+                <iframe
+                  src={previewData.sourceUrl}
+                  className="preview-iframe preview-iframe--web"
+                  sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
+                  referrerPolicy="no-referrer"
+                  title={`网页预览 ${previewData.fileName}`}
                 />
               ) : previewData.kind === 'text' ? (
                 <pre className="preview-content" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontSize: '10px', lineHeight: 1.6 }}>{previewData.content}</pre>
@@ -997,6 +1299,12 @@ export function ChatPage(): React.JSX.Element {
             )}
           </div>
         </aside>
+      )}
+      {enlargedImage && (
+        <div className="image-lightbox" role="dialog" aria-modal="true" aria-label={enlargedImage.alt ?? '图片预览'} onMouseDown={(event) => { if (event.target === event.currentTarget) setEnlargedImage(null); }}>
+          <button type="button" className="icon-button image-lightbox__close" aria-label="关闭图片预览" title="关闭" onClick={() => setEnlargedImage(null)}><X size={20} /></button>
+          <img src={enlargedImage.url} alt={enlargedImage.alt ?? '图片'} />
+        </div>
       )}
       {memoryManagerOpen && (
         <MemoryManager
@@ -1029,6 +1337,15 @@ export function ChatPage(): React.JSX.Element {
       )}
       {channelBindOpen && (
         <ChannelBindingsDialog projectId={projectId ?? ''} projectName={activeProject.name} onClose={() => setChannelBindOpen(false)} />
+      )}
+      {associateProjectOpen && projectId && (
+        <AssociateProjectDialog
+          kind="group"
+          resourceId={projectId}
+          resourceName={activeProject.name}
+          onClose={() => setAssociateProjectOpen(false)}
+          onSaved={(available, associations) => { setEnterpriseProjects(available); setProjectAssociations(associations); }}
+        />
       )}
     </div>
   );

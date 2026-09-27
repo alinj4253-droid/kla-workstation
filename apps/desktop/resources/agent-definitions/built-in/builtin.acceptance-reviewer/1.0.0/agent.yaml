@@ -18,9 +18,13 @@ tools:
   - skill.search
   - skill.load
   - knowledge.search
+  - knowledge.readDocument
+  - template.list
+  - template.read
   - workspace.read
+  - temp.read
+  - temp.list
   - memory.writeOwn
 memoryPolicy:
   shortTermTtlHours: 72
   longTermWrite: candidate-then-commit
-

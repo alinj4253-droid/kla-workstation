@@ -317,8 +317,8 @@ describe('AC-SET-04: 主题切换实时生效，重启后保留', () => {
     expect(JSON.parse(row.value_json).value).toBe('dark');
   });
 
-  it('支持三种主题值', () => {
-    for (const theme of ['light', 'dark', 'system']) {
+  it('支持四种主题值', () => {
+    for (const theme of ['standard', 'professional', 'technology', 'prestige']) {
       const now = new Date().toISOString();
       db.prepare("INSERT INTO settings (key, value_json, updated_at) VALUES ('theme', ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at")
         .run(JSON.stringify({ value: theme }), now);
@@ -335,6 +335,6 @@ describe('AC-SET-04: 主题切换实时生效，重启后保留', () => {
     expect(src).toContain("settings.getAll");
     expect(src).toContain("settings.update");
     expect(src).toContain("data-theme");
-    expect(src).toContain("'light' | 'dark' | 'system'");
+    expect(src).toContain("'standard' | 'professional' | 'technology' | 'prestige'");
   });
 });

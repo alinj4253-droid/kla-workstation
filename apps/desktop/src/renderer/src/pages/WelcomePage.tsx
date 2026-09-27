@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react';
-import { Sparkles, FolderPlus, FolderOpen, Loader2, AlertCircle, ShieldCheck } from 'lucide-react';
+import { FolderPlus, FolderOpen, Loader2, AlertCircle, ShieldCheck } from 'lucide-react';
+import klaBrandBlackUrl from '../assets/kla-brand-black.png';
 
 interface WelcomePageProps {
   onComplete: () => void;
@@ -9,8 +10,8 @@ function PrivacyNotice({ onAccept }: { onAccept: () => void }): React.JSX.Elemen
   return (
     <div className="welcome-inner">
       <div className="welcome-brand">
-        <span className="welcome-brand-mark"><ShieldCheck size={32} strokeWidth={2.2} /></span>
-        <h1>欢迎使用鲲擎平台</h1>
+        <img className="welcome-brand-image" src={klaBrandBlackUrl} alt="KLA Workstation" />
+        <h1>欢迎使用 KLA Workstation</h1>
         <p>K_Studio — 多智能体协作工作台</p>
       </div>
 
@@ -107,8 +108,8 @@ export function WelcomePage({ onComplete }: WelcomePageProps): React.JSX.Element
     <div className="welcome-page">
       <div className="welcome-inner">
         <div className="welcome-brand">
-          <span className="welcome-brand-mark"><Sparkles size={32} strokeWidth={2.2} /></span>
-          <h1>鲲擎平台</h1>
+          <img className="welcome-brand-image" src={klaBrandBlackUrl} alt="KLA Workstation" />
+          <h1>KLA Workstation</h1>
           <p>K_Studio — 多智能体协作工作台</p>
         </div>
 

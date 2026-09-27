@@ -84,3 +84,10 @@ export function displayAgentText(text: string, agents: MentionTarget[]): string 
   }
   return result;
 }
+
+export function formatReplyPreview(text: string, maxLength = 180): string {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  const characters = Array.from(normalized);
+  if (characters.length <= maxLength) return normalized;
+  return `${characters.slice(0, Math.max(1, maxLength - 1)).join('')}…`;
+}

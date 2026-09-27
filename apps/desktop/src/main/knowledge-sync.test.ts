@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { FileRepository, KnowledgeRepository } from '@kunqing/database';
 import { setStudioRoot } from './paths';
 import {
+  getKnowledgeProcessingCoverage,
   recoverInterruptedKnowledgeIngestions,
   refreshKnowledgeBeforeSearch,
   syncKnowledgeSources,
@@ -41,6 +42,14 @@ function createDb(): Database.Database {
       id TEXT PRIMARY KEY, scope_type TEXT NOT NULL, scope_id TEXT NOT NULL, source_id TEXT NOT NULL,
       status TEXT NOT NULL, stage TEXT, progress INTEGER, error_code TEXT,
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE enterprise_projects (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', token_used INTEGER NOT NULL DEFAULT 0,
+      completed_nodes INTEGER NOT NULL DEFAULT 0, total_nodes INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE project_resource_links (
+      project_id TEXT NOT NULL, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, permission TEXT NOT NULL,
+      status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(resource_type, resource_id)
     );
   `);
   return db;
@@ -122,6 +131,27 @@ describe('knowledge source synchronization', () => {
     expect(new FileRepository(db).getByPath('shared', 'shared-knowledge', 'shared.txt')).not.toBeNull();
   });
 
+  it('includes only the enterprise project linked to the current group', async () => {
+    const now = new Date().toISOString();
+    db.prepare('INSERT INTO enterprise_projects VALUES (?, ?, ?, 0, 0, 0, ?, ?)')
+      .run('enterprise-1', '专项项目', '', now, now);
+    db.prepare("INSERT INTO project_resource_links VALUES (?, 'group', ?, 'read-write', 'active', ?, ?)")
+      .run('enterprise-1', 'project-1', now, now);
+    const enterpriseRoot = join(studioRoot, 'projects', 'enterprise-1', 'original-files');
+    await mkdir(enterpriseRoot, { recursive: true });
+    await writeFile(join(enterpriseRoot, 'project-evidence.txt'), 'project evidence', 'utf8');
+
+    const linked = await refreshKnowledgeBeforeSearch(db, null, 'project-1');
+    expect(linked.changedFileIds).toHaveLength(1);
+    expect(new FileRepository(db).getByPath('project', 'enterprise-1', 'project-evidence.txt')).not.toBeNull();
+
+    db.prepare("UPDATE project_resource_links SET status = 'revoked' WHERE resource_type = 'group' AND resource_id = 'project-1'").run();
+    await writeFile(join(enterpriseRoot, 'private-after-revoke.txt'), 'must stay outside retrieval scope', 'utf8');
+    const revoked = await refreshKnowledgeBeforeSearch(db, null, 'project-1');
+    expect(revoked.changedFileIds).toEqual([]);
+    expect(new FileRepository(db).getByPath('project', 'enterprise-1', 'private-after-revoke.txt')).toBeNull();
+  });
+
   it('ingests an uploaded file that has a current version but no knowledge source', async () => {
     const fileRepo = new FileRepository(db);
     const content = 'uploaded evidence';
@@ -145,7 +175,7 @@ describe('knowledge source synchronization', () => {
     expect(refreshed.changedFileIds).toContain(file.id);
   });
 
-  it('does not retry an unchanged incomplete source during retrieval but allows explicit processing', async () => {
+  it('does not retry an unchanged source that is already ingesting', async () => {
     await writeFile(join(originalRoot, 'retry.txt'), 'retry evidence', 'utf8');
     await syncKnowledgeSources(db, { scopeType: 'project', scopeId: 'project-1' });
     const file = new FileRepository(db).getByPath('project', 'project-1', 'retry.txt')!;
@@ -161,7 +191,25 @@ describe('knowledge source synchronization', () => {
     expect(deferred.changedFileIds).toEqual([]);
 
     const explicit = await syncKnowledgeSources(db, { scopeType: 'project', scopeId: 'project-1' });
-    expect(explicit.changedFileIds).toEqual([file.id]);
+    expect(explicit.changedFileIds).toEqual([]);
+    expect(getKnowledgeProcessingCoverage(db, 'project-1')).toMatchObject({
+      processingFileCount: 1,
+      backgroundRunning: false,
+    });
+  });
+
+  it('retries failed sources only during explicit workspace knowledge processing', async () => {
+    await writeFile(join(originalRoot, 'failed.txt'), 'failed evidence', 'utf8');
+    await syncKnowledgeSources(db, { scopeType: 'project', scopeId: 'project-1' });
+    const file = new FileRepository(db).getByPath('project', 'project-1', 'failed.txt')!;
+    const repo = new KnowledgeRepository(db);
+    const source = repo.createSource({
+      scopeType: 'project', scopeId: 'project-1', fileId: file.id, versionId: file.currentVersionId!,
+    });
+    repo.setSourceStatus(source.id, 'error');
+
+    expect((await refreshKnowledgeBeforeSearch(db, null, 'project-1')).changedFileIds).toEqual([]);
+    expect((await syncKnowledgeSources(db, { scopeType: 'project', scopeId: 'project-1' })).changedFileIds).toEqual([file.id]);
   });
 
   it('marks orphaned ingestion jobs as interrupted without deleting existing knowledge', async () => {

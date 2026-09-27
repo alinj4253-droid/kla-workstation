@@ -139,4 +139,38 @@ describe('conversation memory manager', () => {
     const pinned = db.prepare("SELECT pinned, confidence FROM memory_records WHERE agent_instance_id = 'worker-1' AND type = 'project-constraint' AND status = 'active'").get() as { pinned: number; confidence: number };
     expect(pinned).toEqual({ pinned: 1, confidence: 1 });
   });
+
+  it('同一 runId 的重复捕获复用既有短期记录而不是新增', async () => {
+    const base = {
+      projectId: 'project-1',
+      agentInstanceId: 'worker-1',
+      triggerMessageId: 'message-dup',
+    };
+    await memory.captureTurn({ ...base, runId: 'run-dup', request: '整理报销台账', result: '第一版台账',
+      reflection: { topic: '报销台账', taskSummary: '整理了第一版报销台账。', confidence: 0.8, importance: 0.6 } });
+    await memory.captureTurn({ ...base, runId: 'run-dup', request: '整理报销台账', result: '第二版台账',
+      reflection: { topic: '报销台账', taskSummary: '整理了第二版报销台账。', confidence: 0.8, importance: 0.6 } });
+
+    const rows = db.prepare(
+      "SELECT content FROM memory_records WHERE agent_instance_id = 'worker-1' AND scope = 'short-term' AND status = 'active'",
+    ).all() as Array<{ content: string }>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.content).toContain('第二版报销台账');
+    expect(rows[0]?.content).not.toContain('第一版');
+  });
+
+  it('deferFileSync 跳过立即刷盘，随后 syncAgentMemory 补齐文件镜像', async () => {
+    await memory.captureTurn({
+      projectId: 'project-1', agentInstanceId: 'worker-1', triggerMessageId: 'message-defer', runId: 'run-defer',
+      request: '生成本周周报', result: '周报已生成。',
+      reflection: { topic: '周报', taskSummary: '生成了本周周报。', confidence: 0.8, importance: 0.6 },
+      deferFileSync: true,
+    });
+
+    const currentPath = join(studioRoot, 'group-chats', 'project-1-workspace', 'agent-memories', 'worker-1', 'short-term', 'current.md');
+    await expect(readFile(currentPath, 'utf8')).rejects.toThrow();
+    await memory.syncAgentMemory('project-1', 'worker-1');
+    const current = await readFile(currentPath, 'utf8');
+    expect(current).toContain('生成了本周周报');
+  });
 });

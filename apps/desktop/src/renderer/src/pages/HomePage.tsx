@@ -88,7 +88,9 @@ export function HomePage(): React.JSX.Element {
 
   const loadAgents = useCallback(async () => {
     const profRes = await ((window.kunqing?.agents.listProfiles() as Promise<{ ok: boolean; data: Array<{ id: string; name: string; runtimeMode: string }> }> | undefined) ?? Promise.resolve({ ok: true, data: [] }));
-    const options: Array<{ id: string; name: string }> = (profRes?.data ?? []).map((p) => ({ id: p.id, name: p.name }));
+    const options: Array<{ id: string; name: string }> = (profRes?.data ?? [])
+      .filter((p) => p.id !== 'builtin-gm-profile')
+      .map((p) => ({ id: p.id, name: p.name }));
     setAgentOptions(options);
   }, []);
 
@@ -156,13 +158,26 @@ export function HomePage(): React.JSX.Element {
     const mentionedProfileIds = mentions
       .filter((m) => m.target.scope === 'profile')
       .map((m) => m.target.id)
-      .filter((id) => id !== 'orchestrator');
-    const profileIds = [...new Set([...(overrides?.agentProfileIds ?? ['orchestrator']), ...mentionedProfileIds])];
+      .filter((id) => id !== 'builtin-gm-profile');
+    let gmPlan: { groupName: string; requestedAgentProfileIds: string[] } | null = null;
+    if (!overrides?.agentProfileIds && window.kunqing?.projects.planHomeRequest) {
+      const planResult = await window.kunqing.projects.planHomeRequest({ text }) as {
+        ok?: boolean;
+        data?: { groupName: string; requestedAgentProfileIds: string[] };
+      } | undefined;
+      if (planResult?.ok && planResult.data) gmPlan = planResult.data;
+    }
+    const profileIds = [...new Set([
+      ...(gmPlan?.requestedAgentProfileIds ?? overrides?.agentProfileIds ?? ['builtin-orchestrator-profile']),
+      ...mentionedProfileIds,
+    ])].slice(0, 9);
     const result = await window.kunqing?.projects.create({
       idempotencyKey,
       content,
       templateId: overrides?.templateId ?? '',
       requestedAgentProfileIds: profileIds,
+      ...(gmPlan?.groupName ? { customName: gmPlan.groupName } : {}),
+      autoStart: true,
     });
 
     setSubmitting(false);

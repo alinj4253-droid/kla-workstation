@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { CheckCircle2, ChevronDown, CircleDashed, GitBranch, Loader2, UserRound, XCircle } from 'lucide-react';
+import { CheckCircle2, ChevronDown, CircleDashed, Clock3, GitBranch, Loader2, UserRound, XCircle } from 'lucide-react';
 import { AgentAvatar, getAgentTone } from './AgentAvatar';
 import { AgentWorkTree, type RunActivity } from './VirtualMessageList';
 
@@ -26,6 +26,14 @@ function isSubtreeTerminal(run: RunActivity, allRuns: RunActivity[]): boolean {
   return allRuns
     .filter((candidate) => candidate.parentRunId === run.runId)
     .every((child) => isSubtreeTerminal(child, allRuns));
+}
+
+function isSubtreeWaitingForUser(run: RunActivity, allRuns: RunActivity[]): boolean {
+  const children = allRuns.filter((candidate) => candidate.parentRunId === run.runId);
+  const selfSettled = TERMINAL_STATUSES.has(run.status) || run.status === 'awaiting_user';
+  return selfSettled
+    && (run.status === 'awaiting_user' || children.some((child) => isSubtreeWaitingForUser(child, allRuns)))
+    && children.every((child) => TERMINAL_STATUSES.has(child.status) || isSubtreeWaitingForUser(child, allRuns));
 }
 
 function messageText(message: MessageItem | undefined): string {
@@ -66,6 +74,9 @@ function WorkRunBranch({
   const relationLabel = requesterName ? `${requesterName}委派` : run.requestedByType === 'user' ? '用户发起' : '协作执行';
   const shouldSplitRoot = depth === 0 && children.length > 0;
   const descendantsTerminal = !shouldSplitRoot || children.every((child) => isSubtreeTerminal(child, allRuns));
+  const descendantsWaitingForUser = shouldSplitRoot
+    && !descendantsTerminal
+    && children.every((child) => TERMINAL_STATUSES.has(child.status) || isSubtreeWaitingForUser(child, allRuns));
   const finalTraces = shouldSplitRoot
     ? run.traces.filter((trace) => /收集完成|验收|汇总|提交|交付|最终|结果已全部返回/.test(trace.title))
     : [];
@@ -81,8 +92,12 @@ function WorkRunBranch({
     ? {
       ...run,
       // 子任务尚未完成时，根节点不能在视觉上提前显示为已完成。
-      status: descendantsTerminal ? run.status : (TERMINAL_STATUSES.has(run.status) ? 'running' : run.status) as RunActivity['status'],
-      ...(descendantsTerminal ? {} : { stage: '等待成员返回结果' }),
+      status: descendantsTerminal
+        ? run.status
+        : descendantsWaitingForUser
+          ? 'awaiting_user'
+          : (TERMINAL_STATUSES.has(run.status) ? 'running' : run.status) as RunActivity['status'],
+      ...(descendantsTerminal ? {} : { stage: descendantsWaitingForUser ? '等待用户回复' : '等待成员返回结果' }),
       traces: run.traces.filter((trace) => !finalTraceIds.has(trace.id)),
       ...(planningChecklist ? { checklist: planningChecklist } : {}),
     }
@@ -159,6 +174,8 @@ function TaskChain({
 }): React.JSX.Element {
   const terminal = runs.every((run) => TERMINAL_STATUSES.has(run.status));
   const failed = runs.some((run) => run.status === 'failed');
+  const executingCount = runs.filter((run) => !TERMINAL_STATUSES.has(run.status) && run.status !== 'awaiting_user').length;
+  const awaitingUserCount = runs.filter((run) => run.status === 'awaiting_user').length;
   const [expanded, setExpanded] = useState(forceExpanded || !terminal);
   useEffect(() => {
     if (forceExpanded || !terminal) setExpanded(true);
@@ -167,18 +184,21 @@ function TaskChain({
   const roots = runs
     .filter((run) => !run.parentRunId || !runs.some((candidate) => candidate.runId === run.parentRunId))
     .sort((left, right) => (left.createdAt ?? left.updatedAt).localeCompare(right.createdAt ?? right.updatedAt));
-  const runningCount = runs.filter((run) => !TERMINAL_STATUSES.has(run.status)).length;
   const task = messageText(message);
 
   return (
     <section className={`task-chain${terminal ? ' task-chain--terminal' : ''}${failed ? ' task-chain--failed' : ''}`} aria-label={`任务工作树：${task}`}>
       <button type="button" className="task-chain__summary" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
         <span className="task-chain__state">
-          {failed ? <XCircle size={16} /> : terminal ? <CheckCircle2 size={16} /> : <Loader2 size={16} className="spin" />}
+          {failed ? <XCircle size={16} /> : terminal ? <CheckCircle2 size={16} /> : executingCount > 0 ? <Loader2 size={16} className="spin" /> : <Clock3 size={16} />}
         </span>
         <span className="task-chain__title">
           <strong>{task}</strong>
-          <small>{terminal ? `${runs.length} 个执行节点${failed ? '已结束，部分未完成' : '已完成'}` : `${runningCount} 个节点执行中 · 共 ${runs.length} 个`}</small>
+          <small>{terminal
+            ? `${runs.length} 个执行节点${failed ? '已结束，部分未完成' : '已完成'}`
+            : executingCount > 0
+              ? `${executingCount} 个节点执行中${awaitingUserCount > 0 ? ` · ${awaitingUserCount} 个等待用户` : ''} · 共 ${runs.length} 个`
+              : `${awaitingUserCount} 个节点等待用户回复 · 共 ${runs.length} 个`}</small>
         </span>
         <ChevronDown size={15} className={expanded ? 'task-chain__chevron--open' : ''} />
       </button>

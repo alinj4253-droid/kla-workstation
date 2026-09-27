@@ -1,6 +1,7 @@
 import type { ModelSlot, ModelMessage, GenerateOptions, GenerateResult } from '@kunqing/model-core';
 
 export type AgentRole = 'orchestrator' | 'knowledge-manager' | 'external-cli';
+export type CollaborationMode = 'fast' | 'balanced' | 'expert';
 
 export interface DelegatableAgentInfo {
   id: string;
@@ -76,7 +77,11 @@ export interface ToolCall {
 
 export interface ExecContextSnapshot {
   snapshotChecksum: string;
-  messages: Array<ModelMessage & { senderName?: string }>;
+  messages: Array<ModelMessage & {
+    id?: string;
+    senderName?: string;
+    taskRelation?: 'current' | 'chain' | 'history';
+  }>;
 }
 
 export interface SubRunParams {
@@ -112,6 +117,10 @@ export interface IGraphContext {
   triggerMessageId: string;
   signal: AbortSignal;
   workspaceRoot: string;
+  /** Defaults to expert for older callers and channel messages. */
+  collaborationMode?: CollaborationMode;
+  /** Some groups require the orchestrator to route every concrete task to a member. */
+  delegationOnly?: boolean;
 
   services: {
     generateText(slot: ModelSlot, messages: ModelMessage[], options?: GenerateOptions): Promise<GenerateResult>;
@@ -135,11 +144,24 @@ export interface IGraphContext {
       visibleInstruction?: string;
     }): Promise<{ messageId: string; childRunIds: string[] }>;
 
+    /** 群聊协调说明（例如复杂需求的子需求清单）：仅落库展示，不触发成员 Run。 */
+    sendOrchestratorNote?(input: {
+      runId: string;
+      projectId: string;
+      senderId: string;
+      rootTriggerMessageId: string;
+      text: string;
+    }): Promise<string>;
+
     setRunStatus(runId: string, status: string, error?: { errorCode?: string; errorMessage?: string }): void;
 
     setResultMessage(runId: string, messageId: string): void;
 
     addRunEvent(runId: string, type: string, payload: Record<string, unknown>): void;
+
+    /** Optional event reader used to carry compact, user-visible task summaries
+     * between planner rounds without re-injecting the full chat history. */
+    getRunEvents?(runId: string): Array<{ type: string; payload?: Record<string, unknown> }>;
 
     getRunStatus(runId: string): { status: string; resultMessageId?: string; errorMessage?: string };
 
@@ -150,6 +172,14 @@ export interface IGraphContext {
       status: string;
       resultMessageId?: string;
       errorMessage?: string;
+    }>;
+
+    getRunArtifacts?(runId: string, recursive?: boolean): Array<{
+      relativePath: string;
+      fileId?: string;
+      versionId?: string;
+      messageId?: string;
+      sha256?: string;
     }>;
 
     getParentRunId(runId: string): string | null;
@@ -184,6 +214,38 @@ export interface IGraphContext {
 
     getProjectDelegatableAgents(projectId: string): DelegatableAgentInfo[];
 
+    /** Persist the business-level TODO/DAG. agent_runs remains the low-level execution log. */
+    saveTaskPlan?(input: {
+      projectId: string;
+      rootRunId: string;
+      triggerMessageId: string;
+      resolvedGoal: string;
+      complexity: 'simple' | 'complex' | 'missing-input';
+      status?: 'planned' | 'running' | 'waiting-user' | 'completed' | 'failed' | 'cancelled';
+      completionCriteria: string[];
+      nodes: Array<{
+        id: string;
+        title: string;
+        objective: string;
+        inputs?: string[];
+        expectedResult?: string;
+        completionCriteria: string[];
+        dependsOn: string[];
+        executionMode?: 'serial' | 'parallel' | 'wait-user';
+        assignedAgentId?: string;
+        status?: 'pending' | 'ready' | 'assigned' | 'running' | 'waiting-user' | 'completed' | 'failed' | 'blocked' | 'cancelled';
+      }>;
+    }): string;
+
+    updateTaskNode?(rootRunId: string, nodeId: string, patch: {
+      status: 'pending' | 'ready' | 'assigned' | 'running' | 'waiting-user' | 'completed' | 'failed' | 'blocked' | 'cancelled';
+      assignedAgentId?: string;
+      resultMessageId?: string;
+      artifacts?: unknown[];
+    }): void;
+
+    setTaskPlanStatus?(rootRunId: string, status: 'planned' | 'running' | 'waiting-user' | 'completed' | 'failed' | 'cancelled'): void;
+
     getMessageContent(messageId: string): string | null;
 
     getLogger(): { info: (msg: string, ...args: unknown[]) => void; warn: (msg: string, ...args: unknown[]) => void; error: (msg: string, ...args: unknown[]) => void };
@@ -193,6 +255,20 @@ export interface IGraphContext {
 export interface FileRecordResult {
   id: string;
   normalizedPath: string;
+}
+
+export interface OrchestratorMacroStage {
+  id: string;
+  objective: string;
+  completionCriteria: string[];
+  dependsOn: string[];
+  status: 'pending' | 'active' | 'satisfied' | 'blocked';
+}
+
+export interface OrchestratorMacroPlan {
+  goal: string;
+  completionCriteria: string[];
+  stages: OrchestratorMacroStage[];
 }
 
 export interface OrchestratorGraphState {
@@ -209,12 +285,25 @@ export interface OrchestratorGraphState {
   needsCLIDelegation: boolean;
   /** True only when the current delegation batch was explicitly declared independent. */
   parallelDelegationApproved?: boolean;
+  /**
+   * True only when a single direct-planner delegation can fully close the loop:
+   * the member's own reply is the final answer, so the orchestrator ends right
+   * after delegating instead of waiting and summarizing.
+   */
+  fireAndForgetDelegation?: boolean;
   /** Work the root orchestrator must perform itself before replanning. */
   selfInstruction?: string;
   cliDelegations: CLIDelegation[];
   recoveryCount: number;
   /** Signatures of decisions already attempted in the adaptive planner loop. */
   plannerHistory?: string[];
+  /** Planner-provided natural chat text for each planned delegation target. */
+  delegationNotes?: Array<{ agentInstanceId: string; visibleMessage: string }>;
+  /** Stable high-level plan; only the active stage is replanned tactically. */
+  macroPlan?: OrchestratorMacroPlan | null;
+  activeStageId?: string;
+  stageAttempts?: Record<string, number>;
+  awaitingUser?: { question: string; missingFields: string[] } | null;
   materializationPass?: number;
   reviewAttempted?: boolean;
   reviewPass?: boolean;

@@ -1,0 +1,11 @@
+cases:
+  - name: internal-knowledge-answer
+    input: "依据公司制度回答报销时限"
+    expected:
+      delegatesLegacyRoles: false
+      usesRelevantSkillsOnly: true
+  - name: full-document-delivery
+    input: "依据指定制度和已有模板编写 HTML 报告"
+    expected:
+      closesLoopInternally: true
+      producesRealOutput: true

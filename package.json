@@ -1,8 +1,8 @@
 {
   "name": "kunqing-agent-workstation",
-  "version": "0.1.0",
+  "version": "0.1.819005",
   "private": true,
-  "description": "鲲擎多智能体集成工作站",
+  "description": "KLA Workstation 企业多智能体协同工作站",
   "packageManager": "pnpm@11.9.0",
   "engines": {
     "node": ">=22.0.0"

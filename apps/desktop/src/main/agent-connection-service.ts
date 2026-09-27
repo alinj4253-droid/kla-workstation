@@ -13,6 +13,7 @@ import type {
   ExternalAgentAdapter, DetectedExecutable, VersionEvidence,
   CliConnectionSnapshot, AuthProbeResult, AdapterCapability,
 } from '@kunqing/agent-core';
+import { getExternalAgentRole, resolveExternalAgentName } from './external-agent-roles';
 
 export type WizardStep =
   | 'idle'
@@ -103,7 +104,7 @@ export class AgentConnectionService {
     }
     const exe = executables[0]!;
     this.logger.info({ adapterType, executablePath: exe.executablePath, versionHint: exe.versionHint }, 'AgentConnectionService.startAuto');
-    this.state = createSnapshot({ step: 'readingVersion', name: adapterType, adapterType, executablePath: exe.executablePath, detectedVersion: exe.versionHint });
+    this.state = createSnapshot({ step: 'readingVersion', name: resolveExternalAgentName(adapterType, adapterType), adapterType, executablePath: exe.executablePath, detectedVersion: exe.versionHint });
     return { snapshot: this.state, detection: executables };
   }
 
@@ -282,12 +283,14 @@ export class AgentConnectionService {
         this.logger.info({ connectionId: existing.id }, 'AgentConnectionService.save updated existing connection');
         // 同步更新 agent_profiles 中对应的记录
         const existingProfile = db.prepare('SELECT id FROM agent_profiles WHERE cli_connection_id = ?').get(existing.id) as { id: string } | undefined;
+        const role = getExternalAgentRole(this.state.adapterType);
+        const displayName = resolveExternalAgentName(this.state.adapterType, this.state.name);
         if (existingProfile) {
-          db.prepare('UPDATE agent_profiles SET name = ?, updated_at = ? WHERE id = ?').run(this.state.name, now, existingProfile.id);
+          db.prepare('UPDATE agent_profiles SET name = ?, definition_id = ?, updated_at = ? WHERE id = ?').run(displayName, role.definitionId, now, existingProfile.id);
         } else {
           const profileId = randomUUID().toLowerCase().replace(/-/g, '').slice(0, 24);
           db.prepare(`INSERT INTO agent_profiles (id, name, definition_id, definition_version, runtime_mode, cli_connection_id, enabled, delegatable, is_system_default, created_at, updated_at) VALUES (?, ?, ?, '1.0.0', 'external-cli', ?, 1, 1, 0, ?, ?)`)
-            .run(profileId, this.state.name, `custom.${this.state.adapterType}`, existing.id, now, now);
+            .run(profileId, displayName, role.definitionId, existing.id, now, now);
           this.logger.info({ profileId, connectionId: existing.id }, 'AgentConnectionService.save created profile for existing connection');
         }
       } else {
@@ -299,8 +302,10 @@ export class AgentConnectionService {
         this.logger.info({ connectionId: id }, 'AgentConnectionService.save created new connection');
         // 同时创建对应的 agent_profiles 记录，使 CLI 智能体出现在 @ 列表和创建群聊对话框中
         const profileId = randomUUID().toLowerCase().replace(/-/g, '').slice(0, 24);
+        const role = getExternalAgentRole(this.state.adapterType);
+        const displayName = resolveExternalAgentName(this.state.adapterType, this.state.name);
         db.prepare(`INSERT INTO agent_profiles (id, name, definition_id, definition_version, runtime_mode, cli_connection_id, enabled, delegatable, is_system_default, created_at, updated_at) VALUES (?, ?, ?, '1.0.0', 'external-cli', ?, 1, 1, 0, ?, ?)`)
-          .run(profileId, this.state.name, `custom.${this.state.adapterType}`, id, now, now);
+          .run(profileId, displayName, role.definitionId, id, now, now);
         this.logger.info({ profileId, connectionId: id }, 'AgentConnectionService.save created profile for new connection');
       }
       

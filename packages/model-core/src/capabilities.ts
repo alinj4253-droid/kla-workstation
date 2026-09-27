@@ -7,23 +7,15 @@ export interface AgentCapabilityRequirements {
 
 export const BUILTIN_AGENT_REQUIREMENTS: AgentCapabilityRequirements[] = [
   {
+    definitionId: 'builtin.gm',
+    requiredCapabilities: ['structuredOutput'],
+  },
+  {
     definitionId: 'builtin.orchestrator',
     requiredCapabilities: ['streaming', 'toolCalling', 'structuredOutput'],
   },
   {
-    definitionId: 'builtin.knowledge-manager',
-    requiredCapabilities: ['streaming', 'structuredOutput'],
-  },
-  {
-    definitionId: 'builtin.researcher',
-    requiredCapabilities: ['streaming', 'structuredOutput'],
-  },
-  {
-    definitionId: 'builtin.material-writer',
-    requiredCapabilities: ['streaming', 'toolCalling', 'structuredOutput'],
-  },
-  {
-    definitionId: 'builtin.acceptance-reviewer',
+    definitionId: 'builtin.local-executor',
     requiredCapabilities: ['streaming', 'toolCalling', 'structuredOutput'],
   },
 ];

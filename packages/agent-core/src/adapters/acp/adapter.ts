@@ -1,7 +1,9 @@
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { createAcpTransport, type AcpTransportOptions } from './transport.js';
-import { runAcpSession, acpSmokeHandshake } from './session.js';
+import { runAcpSession, acpSmokeHandshake, allowAcpToolOnce } from './session.js';
 import { getAcpRegistryEntry, buildAcpSpawnSpec, type AcpCliRegistryEntry } from './registry.js';
 import { detectExecutables } from '../detect-shared.js';
 import { buildSpawnInvocation } from '../spawn.js';
@@ -33,7 +35,13 @@ export class AcpCliAdapter implements ExternalAgentAdapter {
 
   async detect(input: DetectInput, signal: AbortSignal): Promise<DetectedExecutable[]> {
     // 版本探测兼作存在性探测
-    return detectExecutables(input, signal, [this.entry.command], [], this.entry.versionArgs);
+    // Some CLIs install outside PATH. Keep the generic ACP registry while
+    // adding each vendor's documented per-user bin directory.
+    const home = os.homedir();
+    const knownDirs = this.type === 'kimi'
+      ? [path.join(home, '.kimi-code', 'bin'), path.join(home, '.kimi', 'bin')]
+      : [];
+    return detectExecutables(input, signal, [this.entry.command], knownDirs, this.entry.versionArgs);
   }
 
   async readVersion(executable: ExecutableRef, signal: AbortSignal): Promise<VersionEvidence> {
@@ -136,10 +144,23 @@ export class AcpCliAdapter implements ExternalAgentAdapter {
       workspaceRoot: input.workspaceRoot,
       sink,
       signal,
+      // trusted and sandboxed connections execute in a per-run isolated
+      // workspace. ACP still asks the client for each Read/Write/Bash action;
+      // without this callback the protocol default cancels every tool call.
+      ...(input.connection.trustTier === 'restricted'
+        ? {}
+        : { onPermissionRequest: async (context) => allowAcpToolOnce(context.params.options) }),
     });
 
     return {
-      exitCode: result.exitCode,
+      // ACP agents are terminated after session/close. On Windows that cleanup
+      // commonly reports process exit code 1 even though the prompt ended
+      // normally, so protocol stopReason is the authoritative outcome.
+      exitCode: result.stopReason === 'end_turn'
+        ? 0
+        : result.stopReason === 'cancelled'
+          ? null
+          : result.exitCode,
       stdout: result.stdout,
       stderr: result.stderr,
       durationMs: result.durationMs,

@@ -1,4 +1,7 @@
 import type Database from 'better-sqlite3';
+import { sanitizeUserFacingResponse } from '@kunqing/native-agent-core';
+import { resolveSpecialistChatPolicy } from './collaboration-policy';
+import { canonicalVisibleMessage, extractMessageText, questionsAreEquivalent } from './text-similarity';
 
 export interface AgentMention {
   target: { scope: 'instance' | 'user'; id: string };
@@ -7,12 +10,146 @@ export interface AgentMention {
   end: number;
 }
 
+export type AgentMessageAudience =
+  | { scope: 'user' }
+  | { scope: 'instance'; id: string }
+  | { scope: 'parent'; id: string; includeUser?: boolean }
+  | { scope: 'broadcast' };
+
 interface ProjectAgent {
   id: string;
   name: string;
   role: string;
   runtimeMode: string;
   definitionId: string;
+}
+
+/**
+ * 一次消息归一化/路由请求内复用的项目上下文快照。
+ *
+ * listEnabledProjectAgents、listProjectAgentNames 与 getLocalUserProfile 都是
+ * 同步 SQL；同一条消息的处理链路会反复需要这三份数据，请求级缓存可将
+ * 每条消息的重复查询收敛为一次，避免执行期间状态漂移与多余的主进程 IO。
+ */
+export interface ProjectContextSnapshot {
+  agents: ProjectAgent[];
+  agentNames: Array<{ id: string; name: string }>;
+  profile: LocalUserProfile;
+}
+
+export function loadProjectContext(db: Database.Database, projectId: string): ProjectContextSnapshot {
+  return {
+    agents: listEnabledProjectAgents(db, projectId),
+    agentNames: listProjectAgentNames(db, projectId),
+    profile: getLocalUserProfile(db),
+  };
+}
+
+export interface LocalUserProfile {
+  nickname: string;
+  avatarDataUrl: string;
+}
+
+export function getLocalUserProfile(db: Database.Database): LocalUserProfile {
+  const readSetting = (key: string): unknown => {
+    try {
+      const row = db.prepare('SELECT value_json as valueJson FROM settings WHERE key = ?').get(key) as { valueJson: string } | undefined;
+      return row ? (JSON.parse(row.valueJson) as { value?: unknown }).value : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const nickname = String(readSetting('personalNickname') ?? '').trim().slice(0, 24) || '项目负责人';
+  const avatarDataUrl = String(readSetting('personalAvatarDataUrl') ?? '').trim();
+  return { nickname, avatarDataUrl };
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+export function messageRequestsUserResponse(contentJson: string): boolean {
+  try {
+    const content = JSON.parse(contentJson) as {
+      text?: unknown;
+      requiresUserResponse?: unknown;
+      mentions?: Array<{ target?: { scope?: string; id?: string } }>;
+    };
+    const mentionsUser = Array.isArray(content.mentions)
+      && content.mentions.some((mention) => mention.target?.scope === 'user' && mention.target.id === 'local-user');
+    if (!mentionsUser) return false;
+    if (typeof content.requiresUserResponse === 'boolean') return content.requiresUserResponse;
+
+    const text = typeof content.text === 'string' ? content.text.replace(/\s+/g, ' ').trim() : '';
+    if (!text) return false;
+
+    // External agents may not emit structured intent metadata. Keep their fallback
+    // conservative: greetings, delivery notices and optional follow-ups must finish.
+    const optionalFollowUp = /(?:如需|若需|如果(?:你)?需要|需要我|是否(?:还)?需要我|要不要我|还要我).{0,120}(?:继续|补充|处理|整理|再做|告诉我|说一声|直接说|即可|就行|吗|[？?])/iu;
+    const notificationOnly = /(?:请查收|请知悉|供你参考|随时告诉我|有新任务.{0,16}(?:直接说|告诉我)|我在[的，,\s]*$)/iu;
+    if (optionalFollowUp.test(text) || notificationOnly.test(text)) return false;
+
+    const blockingRequest = /(?:请(?:你)?|麻烦(?:你)?|烦请(?:你)?|需要你|能否请你).{0,32}(?:补充|提供|确认|选择|决定|授权|上传|回复|回答|填写|告知|处理|操作)/iu;
+    const blockedWithoutInput = /(?:缺少|尚缺|还差|尚未获得|否则|不然).{0,48}(?:无法|不能|没法|需要你|请).{0,32}(?:继续|执行|完成|查询|处理|补充|提供|确认|选择|回复)/iu;
+    return blockingRequest.test(text) || blockedWithoutInput.test(text);
+  } catch {
+    return false;
+  }
+}
+
+export function findDuplicateAwaitingUserMessage(
+  db: Database.Database,
+  projectId: string,
+  triggerMessageId: string,
+  contentJson: string,
+  currentRunId?: string,
+): string | null {
+  const question = extractMessageText(contentJson);
+  const rows = db.prepare(
+    `SELECT ar.id as runId, ar.result_message_id as messageId, m.content_json as contentJson
+     FROM agent_runs ar
+     JOIN messages m ON m.id = ar.result_message_id
+     WHERE ar.project_id = ? AND ar.trigger_message_id = ? AND ar.status = 'awaiting_user'
+       AND (? IS NULL OR ar.id != ?)
+     ORDER BY ar.created_at DESC`,
+  ).all(projectId, triggerMessageId, currentRunId ?? null, currentRunId ?? null) as Array<{ runId: string; messageId: string; contentJson: string }>;
+  for (const row of rows) {
+    if (questionsAreEquivalent(question, extractMessageText(row.contentJson))) return row.messageId;
+  }
+  return null;
+}
+
+/** Root-task scoped semantic idempotency for final agent messages. */
+export function findEquivalentAgentTaskMessage(
+  db: Database.Database,
+  input: {
+    projectId: string;
+    triggerMessageId: string;
+    senderId: string;
+    kind: string;
+    contentJson: string;
+    excludeRunId?: string;
+  },
+): string | null {
+  const expected = canonicalVisibleMessage(input.contentJson);
+  if (!expected) return null;
+  const rows = db.prepare(
+    `SELECT DISTINCT m.id, m.content_json as contentJson
+     FROM agent_runs ar
+     JOIN messages m ON m.id = ar.result_message_id
+     WHERE ar.project_id = ? AND ar.trigger_message_id = ?
+       AND m.sender_type = 'agent' AND m.sender_id = ? AND m.kind = ?
+       AND (? IS NULL OR ar.id != ?)
+     ORDER BY ar.created_at DESC`,
+  ).all(
+    input.projectId,
+    input.triggerMessageId,
+    input.senderId,
+    input.kind,
+    input.excludeRunId ?? null,
+    input.excludeRunId ?? null,
+  ) as Array<{ id: string; contentJson: string }>;
+  return rows.find((row) => canonicalVisibleMessage(row.contentJson) === expected)?.id ?? null;
 }
 
 function listEnabledProjectAgents(db: Database.Database, projectId: string): ProjectAgent[] {
@@ -51,8 +188,9 @@ export function isAllowedAgentHandoff(
   senderId: string,
   targetId: string,
   text: string,
+  snapshot?: ProjectContextSnapshot,
 ): boolean {
-  const agents = listEnabledProjectAgents(db, projectId);
+  const agents = snapshot?.agents ?? listEnabledProjectAgents(db, projectId);
   const sender = agents.find((agent) => agent.id === senderId);
   const target = agents.find((agent) => agent.id === targetId);
   // 用户消息不受专业智能体之间的委派边界限制。
@@ -65,7 +203,7 @@ function listProjectAgentNames(db: Database.Database, projectId: string): Array<
     `SELECT pai.id, ap.name
      FROM project_agent_instances pai
      JOIN agent_profiles ap ON ap.id = pai.agent_profile_id
-     WHERE pai.project_id = ?
+     WHERE pai.project_id = ? AND ap.enabled = 1
      ORDER BY LENGTH(pai.id) DESC, pai.ordinal`,
   ).all(projectId) as Array<{ id: string; name: string }>;
 }
@@ -112,10 +250,12 @@ export function sanitizeAgentDisplayText(
   db: Database.Database,
   projectId: string,
   text: string,
+  snapshot?: ProjectContextSnapshot,
 ): string {
   if (!text) return text;
   let sanitized = text;
-  for (const agent of listProjectAgentNames(db, projectId)) {
+  const agentNames = snapshot?.agentNames ?? listProjectAgentNames(db, projectId);
+  for (const agent of agentNames) {
     if (!agent.id || !sanitized.includes(agent.id)) continue;
     sanitized = sanitized.split(agent.id).join(agent.name || '智能体');
   }
@@ -134,13 +274,15 @@ export function resolveAgentMentions(
   db: Database.Database,
   projectId: string,
   text: string,
+  snapshot?: ProjectContextSnapshot,
 ): AgentMention[] {
   if (!text.includes('@')) return [];
 
+  const ctx = snapshot ?? loadProjectContext(db, projectId);
   const lowerText = text.toLocaleLowerCase();
   const codeRanges = collectMarkdownCodeRanges(text);
   const candidates: Array<{ agent: ProjectAgent; start: number; end: number }> = [];
-  for (const agent of listEnabledProjectAgents(db, projectId)) {
+  for (const agent of ctx.agents) {
     const token = `@${agent.name}`;
     let searchFrom = 0;
     while (searchFrom < lowerText.length) {
@@ -158,12 +300,14 @@ export function resolveAgentMentions(
   candidates.sort((left, right) => left.start - right.start || (right.end - right.start) - (left.end - left.start));
   const mentions: AgentMention[] = [];
   const seen = new Set<string>();
-  const userMatch = /@(用户|项目负责人|user)(?=\s|[，。！？,:;]|$)/i.exec(text);
+  const userName = ctx.profile.nickname;
+  const userAliases = [...new Set(['用户', '项目负责人', 'user', userName])].map(escapeRegExp).join('|');
+  const userMatch = new RegExp(`@(${userAliases})(?=\\s|[，。！？,:;]|$)`, 'i').exec(text);
   if (userMatch && !isInsideMarkdownCode(userMatch.index, codeRanges)) {
     seen.add('user:local-user');
     mentions.push({
       target: { scope: 'user', id: 'local-user' },
-      label: '用户',
+      label: userMatch[1] ?? userName,
       start: userMatch.index,
       end: userMatch.index + userMatch[0].length,
     });
@@ -212,9 +356,24 @@ export function normalizeAgentMessageContent(
     content = { schemaVersion: 1, text: contentJson };
   }
 
-  let text = sanitizeAgentDisplayText(db, projectId, typeof content.text === 'string' ? content.text : '');
-  const sender = senderId ? listEnabledProjectAgents(db, projectId).find((agent) => agent.id === senderId) : undefined;
+  // 请求级快照：整条消息只读取一次项目成员与用户资料，供下方各环节复用。
+  const ctx = loadProjectContext(db, projectId);
+  const sender = senderId ? ctx.agents.find((agent) => agent.id === senderId) : undefined;
+  const rawText = sanitizeAgentDisplayText(db, projectId, typeof content.text === 'string' ? content.text : '', ctx);
+  // User-authored messages are left untouched.  The protocol scrubber is an
+  // agent-output boundary and must not alter a user who intentionally sends
+  // JSON as part of their request.
+  const agentAuthored = senderId !== undefined && senderId !== 'local-user';
+  let text = agentAuthored ? sanitizeUserFacingResponse(rawText) : rawText;
   if (sender) text = naturalizeAgentReply(text);
+  if (sender) {
+    const userName = ctx.profile.nickname;
+    const aliases = ['用户', '项目负责人', 'user']
+      .filter((alias) => alias.toLocaleLowerCase('zh-CN') !== userName.toLocaleLowerCase('zh-CN'))
+      .map(escapeRegExp)
+      .join('|');
+    if (aliases) text = text.replace(new RegExp(`@(?:${aliases})(?=\\s|[，。！？,:;]|$)`, 'giu'), `@${userName}`);
+  }
   if (sender) {
     const selfToken = `@${sender.name}`;
     let searchFrom = 0;
@@ -232,23 +391,34 @@ export function normalizeAgentMessageContent(
   }
   // 正文是 mention 的唯一事实来源。不能信任模型或调用方附带的 target，
   // 否则不存在于群聊中的名字也会显示为已成功 @，甚至被错误路由。
-  const resolved = resolveAgentMentions(db, projectId, text);
-  const confirmedExtras = extraMentions.filter((mention) => {
-    const token = `@${mention.label}`;
-    return text.slice(mention.start, mention.end) === token
-      && resolved.some((candidate) => (
-        candidate.target.scope === mention.target.scope
-        && candidate.target.id === mention.target.id
-        && candidate.start === mention.start
-        && candidate.end === mention.end
-      ));
-  });
+  const audience = isAgentMessageAudience(content.audience) ? content.audience : undefined;
+  const audienceAllows = (mention: AgentMention): boolean => {
+    if (!audience || audience.scope === 'broadcast') return true;
+    if (audience.scope === 'user') return mention.target.scope === 'user' && mention.target.id === 'local-user';
+    if (audience.scope === 'instance') return mention.target.scope === 'instance' && mention.target.id === audience.id;
+    return (mention.target.scope === 'instance' && mention.target.id === audience.id)
+      || (audience.includeUser === true && mention.target.scope === 'user' && mention.target.id === 'local-user');
+  };
+  let resolved = resolveAgentMentions(db, projectId, text, ctx);
+  if (audience && audience.scope !== 'broadcast') {
+    const excluded = resolved.filter((mention) => !audienceAllows(mention)).sort((left, right) => right.start - left.start);
+    for (const mention of excluded) {
+      text = `${text.slice(0, mention.start)}${text.slice(mention.start + 1)}`;
+    }
+    if (excluded.length > 0) resolved = resolveAgentMentions(db, projectId, text, ctx);
+  }
+  const confirmedExtras = resolved.filter((candidate) => extraMentions.some((mention) => (
+    candidate.target.scope === mention.target.scope
+    && candidate.target.id === mention.target.id
+    && candidate.label === mention.label
+  )));
   const confirmedExtraIds = new Set(confirmedExtras.map((mention) => mention.target.id));
   const mentions = mergeAgentMentions(confirmedExtras, resolved)
     .filter((mention) => mention.target.id !== senderId)
+    .filter(audienceAllows)
     .filter((mention) => mention.target.scope === 'user'
       || confirmedExtraIds.has(mention.target.id)
-      || isAllowedAgentHandoff(db, projectId, senderId ?? '', mention.target.id, text));
+      || isAllowedAgentHandoff(db, projectId, senderId ?? '', mention.target.id, text, ctx));
 
   return JSON.stringify({
     ...content,
@@ -258,12 +428,24 @@ export function normalizeAgentMessageContent(
   });
 }
 
+function isAgentMessageAudience(value: unknown): value is AgentMessageAudience {
+  if (!value || typeof value !== 'object') return false;
+  const audience = value as { scope?: unknown; id?: unknown; includeUser?: unknown };
+  if (audience.scope === 'user' || audience.scope === 'broadcast') return true;
+  if (audience.scope === 'instance') return typeof audience.id === 'string' && audience.id.length > 0;
+  return audience.scope === 'parent'
+    && typeof audience.id === 'string'
+    && audience.id.length > 0
+    && (audience.includeUser === undefined || typeof audience.includeUser === 'boolean');
+}
+
 export function buildAgentCollaborationInstructions(
   db: Database.Database,
   projectId: string,
   currentAgentInstanceId: string,
+  snapshot?: ProjectContextSnapshot,
 ): string {
-  const agents = listEnabledProjectAgents(db, projectId);
+  const agents = snapshot?.agents ?? listEnabledProjectAgents(db, projectId);
   const current = agents.find((agent) => agent.id === currentAgentInstanceId);
   const roster = agents
     .map((agent) => agent.id === currentAgentInstanceId
@@ -271,26 +453,17 @@ export function buildAgentCollaborationInstructions(
       : `- @${agent.name}（${agent.role}，${agent.runtimeMode}）`)
     .join('\n');
 
-  const leader = isLeaderAgent(current);
-  const specialistPolicy = leader
-    ? '- 你是统筹负责人：负责理解用户需求、拆解工作、决定是否需要专业成员，并通过正式消息把具体任务交给对应成员。只有在所有被委派的工作真实返回后，才验收、汇总并向用户交付。'
-    : current?.definitionId === 'builtin.researcher'
-      ? '- 你是资料调研智能体：优先直接完成统筹负责人交给你的资料检索、来源核验和分析任务。不要把调研任务、知识归集、经验沉淀或业务流程梳理转派给知识管理智能体；只有当前工作确实被某个具体资料依赖阻塞时，才用正式消息 @ 对方请求这一项依赖，收到结果后继续完成自己的任务。'
-      : current?.definitionId === 'builtin.material-writer'
-        ? '- 你是材料编写智能体：依据统筹提供的证据和模板先列框架再逐章编写，只把完整待审稿写入指定验收暂存路径；不得直接发布最终文件，也不得自行安排其他成员。'
-        : current?.definitionId === 'builtin.acceptance-reviewer'
-          ? '- 你是验收智能体：独立读取待审稿并检索本地知识证据，明确给出通过或不通过结论与返修项；不得修改或发布文件，也不得自行安排其他成员。'
-      : '- 你是专业执行成员：先完成统筹负责人交给你的工作，不要自行编排全局流程。只有当前执行被一个具体的外部依赖阻塞时，才用正式消息 @ 对方请求明确的输入或动作，收到结果后继续自己的任务，并把结果交回统筹负责人。';
+  const specialistPolicy = resolveSpecialistChatPolicy(current);
 
   return `## 群聊协作能力
 你在当前群聊中的身份是 ${current?.name ?? '智能体'}。
 当前群聊成员：
 ${roster || '- 暂无其他成员'}
 
-- ${specialistPolicy.slice(2)}
+- ${specialistPolicy}
 - 只有统筹负责人可以安排全局任务；其他成员不得把用户原始需求原样转发给别人，也不得为了“归集、验收、汇总、确认或等待”发起新的智能体任务。
-- 你可以在回复中使用上方的准确名称（例如 @知识管理智能体）@群聊成员；系统只会路由通过依赖校验的有效请求。需要对方处理工作时，必须把 @准确中文名 写在普通正文中，不能放进行内代码、代码块、HTML 或 JSON。
-- 你可以使用 \`@用户\` 请求用户做决定、补充缺失信息或确认高风险操作；\`@用户\` 只用于沟通，不会创建新的智能体任务。
+- 你可以在回复中使用上方成员名单里的准确名称 @群聊成员；系统只会路由通过依赖校验的有效请求。需要对方处理工作时，必须把 @准确中文名 写在普通正文中，不能放进行内代码、代码块、HTML 或 JSON。
+- 你可以使用 \`@用户\` 请求用户做决定、补充缺失信息或确认高风险操作；只有缺少该结果就无法继续时才进入等待。问候、提醒、成果交付、用户要求你主动 @ 他、以及“如需继续请告诉我”这类可选沟通，在发出后都应正常结束任务。
 - 只有在普通正文中明确写出 @准确中文名 才会触发该智能体；仅在正文中描述某位智能体的名称时不要添加 @，代码区内的 @ 永远只作为示例文本。
 - 不要 @ 自己；不要为了“收到、确认、谢谢、等待下一步”等无实际交付的内容 @ 任何成员。
 - 只有确实需要对方继续完成具体工作时才 @ 其他智能体，并用自然的话说明要做什么、可以参考哪些资料以及希望对方交回什么。同一项工作不要再次发回已经参与过的智能体，系统也会阻止这种回环。

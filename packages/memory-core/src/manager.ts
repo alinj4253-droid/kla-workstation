@@ -7,18 +7,54 @@ const DEFAULT_EXPIRY_HOURS = 72;
 const CONSOLIDATED_EXPIRY_HOURS = 72;
 const DEFAULT_SHORT_TERM_HALF_LIFE_HOURS = 72;
 const DEFAULT_LONG_TERM_HALF_LIFE_HOURS = 30 * 24;
+/** 单次召回的候选池上限（每个 scope）：控制查询与评分规模，置顶记忆不受此限制。 */
+const RECALL_CANDIDATE_LIMIT = 40;
+
+/** 查询分词缓存：同一查询文本在一次响应内可能被多次评分（召回、构建上下文）。 */
+const queryTokenCache = new Map<string, string[]>();
+const QUERY_TOKEN_CACHE_MAX = 64;
+/** 2-gram 只对前 256 个字符滑窗，防止超长查询产生无界的切片与匹配成本。 */
+const QUERY_GRAM_SOURCE_MAX = 256;
 
 function queryTokens(query: string): string[] {
-  const normalized = query.toLocaleLowerCase('zh-CN').replace(/[\s，。！？、：；,.!?:;"'“”‘’（）()【】\[\]]+/g, '');
-  if (!normalized) return [];
+  const cached = queryTokenCache.get(query);
+  if (cached) return cached;
+  const lowered = query.toLocaleLowerCase('zh-CN');
+  const normalized = lowered.replace(/[\s，。！？、：；,.!?:;"'“”‘’（）()【】\[\]]+/g, '');
   const tokens = new Set<string>();
-  for (const part of query.toLocaleLowerCase('zh-CN').split(/[\s，。！？、：；,.!?:;"'“”‘’（）()【】\[\]]+/)) {
-    if (part.length >= 2) tokens.add(part.slice(0, 32));
+  if (normalized) {
+    for (const part of lowered.split(/[\s，。！？、：；,.!?:;"'“”‘’（）()【】\[\]]+/)) {
+      if (part.length >= 2) tokens.add(part.slice(0, 32));
+    }
+    const gramSource = normalized.slice(0, QUERY_GRAM_SOURCE_MAX);
+    for (let index = 0; index < gramSource.length - 1 && tokens.size < 32; index += 2) {
+      tokens.add(gramSource.slice(index, index + 2));
+    }
   }
-  for (let index = 0; index < normalized.length - 1 && tokens.size < 32; index += 2) {
-    tokens.add(normalized.slice(index, index + 2));
+  const result = [...tokens];
+  if (queryTokenCache.size >= QUERY_TOKEN_CACHE_MAX) {
+    const oldest = queryTokenCache.keys().next().value;
+    if (oldest !== undefined) queryTokenCache.delete(oldest);
   }
-  return [...tokens];
+  queryTokenCache.set(query, result);
+  return result;
+}
+
+/** 记录归一化文本缓存：markAccessed 不改 updated_at，按 id+updatedAt+长度失效即可安全复用。 */
+const normalizedContentCache = new Map<string, { stamp: string; text: string }>();
+const NORMALIZED_CONTENT_CACHE_MAX = 512;
+
+function normalizedMemoryText(record: MemoryRecord): string {
+  const stamp = `${record.updatedAt}:${record.content.length}`;
+  const cached = normalizedContentCache.get(record.id);
+  if (cached && cached.stamp === stamp) return cached.text;
+  const text = `${record.topicKey ?? ''} ${record.content}`.toLocaleLowerCase('zh-CN');
+  if (normalizedContentCache.size >= NORMALIZED_CONTENT_CACHE_MAX) {
+    const oldest = normalizedContentCache.keys().next().value;
+    if (oldest !== undefined) normalizedContentCache.delete(oldest);
+  }
+  normalizedContentCache.set(record.id, { stamp, text });
+  return text;
 }
 
 export function memoryTimeScore(record: MemoryRecord, now = new Date(), shortTermHalfLifeHours = DEFAULT_SHORT_TERM_HALF_LIFE_HOURS, longTermHalfLifeHours = DEFAULT_LONG_TERM_HALF_LIFE_HOURS): number {
@@ -38,7 +74,7 @@ export function rankMemories(query: string, records: MemoryRecord[], options: Me
     .filter((record) => record.status === 'active')
     .filter((record) => record.scope === 'long-term' || !record.expiresAt || Date.parse(record.expiresAt) > now.getTime())
     .map((record) => {
-      const content = `${record.topicKey ?? ''} ${record.content}`.toLocaleLowerCase('zh-CN');
+      const content = normalizedMemoryText(record);
       const matched = tokens.filter((token) => content.includes(token)).length;
       const semanticScore = tokens.length > 0 ? matched / tokens.length : 0;
       const timeScore = memoryTimeScore(
@@ -64,11 +100,22 @@ export function rankMemories(query: string, records: MemoryRecord[], options: Me
 export class MemoryManager {
   constructor(private repo: IMemoryRepository) {}
 
+  /**
+   * 拉取召回候选：每个 scope 只取最新 RECALL_CANDIDATE_LIMIT 条，让评分成本
+   * 与历史记忆总量解耦；置顶记忆单独全量合并，不受 LIMIT 裁剪影响。
+   */
+  private listRecallCandidates(projectId: string, agentInstanceId: string): MemoryRecord[] {
+    const merged = new Map<string, MemoryRecord>();
+    for (const scope of ['short-term', 'long-term'] as const) {
+      const recent = this.repo.list(projectId, agentInstanceId, scope, 'active', { limit: RECALL_CANDIDATE_LIMIT });
+      const pinned = this.repo.list(projectId, agentInstanceId, scope, 'active', { pinnedOnly: true });
+      for (const item of [...recent, ...pinned]) merged.set(item.id, item);
+    }
+    return [...merged.values()];
+  }
+
   buildMemoryContext(projectId: string, agentInstanceId: string): string {
-    const all = [
-      ...this.repo.list(projectId, agentInstanceId, 'short-term', 'active'),
-      ...this.repo.list(projectId, agentInstanceId, 'long-term', 'active'),
-    ];
+    const all = this.listRecallCandidates(projectId, agentInstanceId);
     const ranked = rankMemories('', all, { minimumScore: 0, limit: 8 });
     const shortTerm = ranked.filter((item) => item.record.scope === 'short-term').map((item) => item.record).slice(0, 5);
     const longTerm = ranked.filter((item) => item.record.scope === 'long-term').map((item) => item.record).slice(0, 3);
@@ -149,14 +196,19 @@ export class MemoryManager {
   extractLongTerm(projectId: string, agentInstanceId: string): number {
     const active = this.repo.list(projectId, agentInstanceId, 'short-term', 'active');
     const highConfidence = active.filter((m) => m.confidence > LONG_TERM_CONFIDENCE_THRESHOLD);
+    if (highConfidence.length === 0) return 0;
+
+    // 循环外一次性拉取长期记忆并建去重索引，避免每条候选都全量重查（O(n*m) → O(n+m)）。
+    const duplicateKeys = new Set(
+      this.repo.list(projectId, agentInstanceId, 'long-term', 'active')
+        .map((e) => `${e.type}\n${e.content.slice(0, 50)}`),
+    );
 
     let extracted = 0;
     for (const m of highConfidence) {
-      const existing = this.repo.list(projectId, agentInstanceId, 'long-term', 'active');
-      const isDuplicate = existing.some(
-        (e) => e.type === m.type && e.content.slice(0, 50) === m.content.slice(0, 50),
-      );
-      if (isDuplicate) continue;
+      const key = `${m.type}\n${m.content.slice(0, 50)}`;
+      if (duplicateKeys.has(key)) continue;
+      duplicateKeys.add(key);
 
       this.repo.create({
         projectId,
@@ -178,10 +230,7 @@ export class MemoryManager {
   }
 
   recallRelevant(query: string, projectId: string, agentInstanceId: string, limit = 5): string[] {
-    const all = [
-      ...this.repo.list(projectId, agentInstanceId, 'short-term', 'active'),
-      ...this.repo.list(projectId, agentInstanceId, 'long-term', 'active'),
-    ];
+    const all = this.listRecallCandidates(projectId, agentInstanceId);
 
     const ranked = rankMemories(query, all, { limit });
     this.repo.markAccessed(ranked.map((item) => item.record.id), new Date().toISOString());

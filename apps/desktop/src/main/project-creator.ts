@@ -11,6 +11,9 @@ import {
 } from '@kunqing/database';
 import { getProjectRoot, getStudioRoot } from './paths';
 import { ensureAgentIdentityFiles } from './agent-identity';
+import { getExternalAgentRole } from './external-agent-roles';
+import { resolveRuntimeLimits } from './runtime-limits';
+import { rebuildProjectCoordinationRegistry } from './coordination-registry';
 export { validateEffectivePermissions, type PermissionDefinition } from './permission-validator';
 
 const ORCHESTRATOR_PROFILE_ID = 'builtin-orchestrator-profile';
@@ -18,6 +21,79 @@ const KNOWLEDGE_PROFILE_ID = 'builtin-knowledge-profile';
 const RESEARCHER_PROFILE_ID = 'builtin-researcher-profile';
 const MATERIAL_WRITER_PROFILE_ID = 'builtin-material-writer-profile';
 const ACCEPTANCE_REVIEWER_PROFILE_ID = 'builtin-acceptance-reviewer-profile';
+export const LOCAL_EXECUTOR_PROFILE_ID = 'builtin-local-executor-profile';
+const GM_PROFILE_ID = 'builtin-gm-profile';
+
+/** 群聊挂载操作平台时使用的虚拟选择项前缀。实际 profile 会在首次挂载时持久化。 */
+const OPERATION_PLATFORM_SELECTION_PREFIX = 'operation-platform:';
+
+function operationProfileId(platformId: string): string {
+  const safe = platformId.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 72);
+  return `operation-profile-${safe}`;
+}
+
+type OperationPlatformContext = {
+  id: string;
+  name: string;
+  url: string;
+  description: string;
+  skills: Array<{ name: string; description: string }>;
+};
+
+function getOperationPlatformContext(db: Database.Database, definitionId: string): OperationPlatformContext | undefined {
+  if (!definitionId.startsWith('operation-agent-')) return undefined;
+  const platform = db.prepare(
+    `SELECT id, name, url, description
+     FROM operation_platforms
+     WHERE owner_agent_id = ? AND status = 'active' LIMIT 1`,
+  ).get(definitionId) as Omit<OperationPlatformContext, 'skills'> | undefined;
+  if (!platform) return undefined;
+  const skills = db.prepare(
+    `SELECT name, description FROM operation_skills
+     WHERE platform_id = ? AND status = 'active' AND enabled = 1
+     ORDER BY updated_at DESC`,
+  ).all(platform.id) as Array<{ name: string; description: string }>;
+  return { ...platform, skills };
+}
+
+function ensureOperationProfile(db: Database.Database, platformId: string, now: string): string {
+  const platform = db.prepare(
+    `SELECT id, owner_agent_id as ownerAgentId, name, model_profile_id as modelProfileId
+     FROM operation_platforms WHERE id = ? AND status = 'active'`,
+  ).get(platformId) as { id: string; ownerAgentId: string; name: string; modelProfileId: string | null } | undefined;
+  if (!platform) throw new Error('操作平台不存在或已注销，请刷新列表后重试');
+  if (!platform.modelProfileId?.trim()) throw new Error(`操作平台“${platform.name}”尚未绑定模型，无法加入群聊`);
+
+  const profileId = operationProfileId(platform.id);
+  db.prepare(
+    `INSERT INTO agent_profiles
+       (id, name, definition_id, definition_version, runtime_mode, model_profile_id,
+        enabled, delegatable, is_system_default, created_at, updated_at)
+     VALUES (?, ?, ?, '1.0.0', 'native-model', ?, 1, 1, 0, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET name = excluded.name,
+       definition_id = excluded.definition_id, runtime_mode = 'native-model',
+       model_profile_id = excluded.model_profile_id, enabled = 1, delegatable = 1,
+       updated_at = excluded.updated_at`,
+  ).run(profileId, `${platform.name}操作智能体`, platform.ownerAgentId, platform.modelProfileId, now, now);
+  return profileId;
+}
+
+const DEFAULT_TEAM_PROFILE_IDS = [
+  ORCHESTRATOR_PROFILE_ID,
+  LOCAL_EXECUTOR_PROFILE_ID,
+] as const;
+
+const LEGACY_PROFILE_ALIASES: Record<string, string> = {
+  orchestrator: ORCHESTRATOR_PROFILE_ID,
+  knowledge: LOCAL_EXECUTOR_PROFILE_ID,
+  researcher: LOCAL_EXECUTOR_PROFILE_ID,
+  writer: LOCAL_EXECUTOR_PROFILE_ID,
+  reviewer: LOCAL_EXECUTOR_PROFILE_ID,
+  [KNOWLEDGE_PROFILE_ID]: LOCAL_EXECUTOR_PROFILE_ID,
+  [RESEARCHER_PROFILE_ID]: LOCAL_EXECUTOR_PROFILE_ID,
+  [MATERIAL_WRITER_PROFILE_ID]: LOCAL_EXECUTOR_PROFILE_ID,
+  [ACCEPTANCE_REVIEWER_PROFILE_ID]: LOCAL_EXECUTOR_PROFILE_ID,
+};
 
 function extractProjectName(text: string, templateId?: string): string {
   if (templateId) {
@@ -72,6 +148,7 @@ export async function ensureProjectAgentFiles(db: Database.Database, projectId: 
       mkdir(join(memoryRoot, 'sessions'), { recursive: true }),
       mkdir(join(memoryRoot, 'long-term'), { recursive: true }),
     ]);
+    const operationPlatform = getOperationPlatformContext(db, instance.definitionId);
     await ensureAgentIdentityFiles({
       projectId,
       instanceId: instance.id,
@@ -80,6 +157,7 @@ export async function ensureProjectAgentFiles(db: Database.Database, projectId: 
       runtimeMode: instance.runtimeMode,
       definitionId: instance.definitionId,
       definitionVersion: instance.definitionVersion ?? '1.0.0',
+      ...(operationPlatform ? { operationPlatform } : {}),
     });
     const currentPath = join(memoryRoot, 'short-term', 'current.md');
     try { await access(currentPath); } catch {
@@ -92,6 +170,17 @@ export async function ensureProjectAgentFiles(db: Database.Database, projectId: 
     const indexPath = join(memoryRoot, 'index.jsonl');
     try { await access(indexPath); } catch { await writeFile(indexPath, '', 'utf8'); }
   }
+  // Identity/COORDINATION files remain the editable public source. Compile
+  // them once into a project-scoped registry so the leader can read the whole
+  // team in one query instead of re-reading every member file on every turn.
+  try {
+    rebuildProjectCoordinationRegistry(db, projectId);
+  } catch (error) {
+    // Compatibility for isolated tests/repair utilities that intentionally
+    // open a partial pre-031 schema. Normal application startup migrates
+    // before identities are ensured, so real registry errors still surface.
+    if (!(error instanceof Error) || !/no such table: project_agent_coordination/i.test(error.message)) throw error;
+  }
 }
 
 export async function addProjectAgents(
@@ -99,13 +188,37 @@ export async function addProjectAgents(
   projectId: string,
   requestedProfileIds: string[],
 ): Promise<Array<{ id: string; projectId: string; agentName: string; role: string; runtimeMode: string }>> {
+  if (requestedProfileIds.includes(GM_PROFILE_ID)) {
+    throw new Error('GM 智能体是全局管理智能体，不能作为普通群聊成员添加');
+  }
   const instanceRepo = new AgentInstanceRepository(db);
   const existing = instanceRepo.listByProject(projectId);
   const existingProfileIds = new Set(existing.map((instance) => instance.agentProfileId));
-  const uniqueRequestedIds = [...new Set(requestedProfileIds)].filter((id) => !existingProfileIds.has(id));
 
-  if (existing.length + uniqueRequestedIds.length > 9) {
-    throw new Error('每个群聊最多可添加 9 个智能体');
+  // 操作平台不是普通全局 Profile：它拥有自己的模型、技能和工作区。
+  // 这里为群聊创建一个轻量 profile 代理，definition_id 使用平台 ownerAgentId，
+  // 执行器再通过 operation_platforms 找回真实平台运行器。
+  const operationSelections = requestedProfileIds
+    .filter((id) => id.startsWith(OPERATION_PLATFORM_SELECTION_PREFIX))
+    .map((id) => id.slice(OPERATION_PLATFORM_SELECTION_PREFIX.length).trim())
+    .filter(Boolean);
+  if (operationSelections.length > 0) {
+    const now = new Date().toISOString();
+    const operationProfileIds = operationSelections.map((platformId) => ensureOperationProfile(db, platformId, now));
+    requestedProfileIds = requestedProfileIds
+      .filter((id) => !id.startsWith(OPERATION_PLATFORM_SELECTION_PREFIX))
+      .concat(operationProfileIds);
+  }
+  const normalizedRequestedIds = requestedProfileIds.map((id) => LEGACY_PROFILE_ALIASES[id] ?? id);
+  const uniqueRequestedIds = [...new Set(normalizedRequestedIds)].filter((id) => !existingProfileIds.has(id));
+  const activeInstanceCount = (db.prepare(
+    `SELECT COUNT(*) as count FROM project_agent_instances pai
+     JOIN agent_profiles ap ON ap.id = pai.agent_profile_id
+     WHERE pai.project_id = ? AND ap.enabled = 1`,
+  ).get(projectId) as { count: number }).count;
+
+  if (activeInstanceCount + uniqueRequestedIds.length > resolveRuntimeLimits(db).maxAgentsPerProject) {
+    throw new Error(`每个群聊最多可添加 ${resolveRuntimeLimits(db).maxAgentsPerProject} 个智能体`);
   }
 
   if (uniqueRequestedIds.length > 0) {
@@ -159,7 +272,7 @@ export async function addProjectAgents(
     `SELECT pai.id, pai.project_id as projectId, ap.name as agentName, pai.role, pai.runtime_mode as runtimeMode
      FROM project_agent_instances pai
      JOIN agent_profiles ap ON ap.id = pai.agent_profile_id
-     WHERE pai.project_id = ? ORDER BY pai.ordinal`,
+     WHERE pai.project_id = ? AND ap.enabled = 1 ORDER BY pai.ordinal`,
   ).all(projectId) as Array<{ id: string; projectId: string; agentName: string; role: string; runtimeMode: string }>;
 }
 
@@ -195,6 +308,7 @@ export async function createProject(
     content: { schemaVersion?: number; text?: string; mentions?: unknown[]; stagedUploadIds?: string[] };
     templateId?: string;
     requestedAgentProfileIds?: string[];
+    customName?: string;
   },
 ): Promise<{ ok: true; data: { id: string; status: string; createdAt: string; firstMessageId?: string } } | { ok: false; error: { code: string; message: string; retryable: boolean } }> {
   if (input.idempotencyKey) {
@@ -207,13 +321,10 @@ export async function createProject(
   const projectId = generateUlid();
   const now = new Date().toISOString();
   const contentText = input.content?.text ?? '';
-  const projectName = extractProjectName(contentText, input.templateId);
+  const projectName = input.customName?.replace(/[\r\n]/g, ' ').trim().slice(0, 40)
+    || extractProjectName(contentText, input.templateId);
 
   const orchInstanceId = generateInstanceId(projectId, 'orch');
-  const knowInstanceId = generateInstanceId(projectId, 'know');
-  const resInstanceId = generateInstanceId(projectId, 'res');
-  const writerInstanceId = generateInstanceId(projectId, 'writer');
-  const reviewerInstanceId = generateInstanceId(projectId, 'reviewer');
   const projectRoot = getProjectRoot(projectId);
 
   const projectRepo = new ProjectRepository(db);
@@ -230,11 +341,6 @@ export async function createProject(
     projectRepo.create(projectName, projectId);
 
     const leaderProfile = profileRepo.getById(ORCHESTRATOR_PROFILE_ID);
-    const knowledgeProfile = profileRepo.getById(KNOWLEDGE_PROFILE_ID);
-    const researcherProfile = profileRepo.getById(RESEARCHER_PROFILE_ID);
-    const materialWriterProfile = profileRepo.getById(MATERIAL_WRITER_PROFILE_ID);
-    const acceptanceReviewerProfile = profileRepo.getById(ACCEPTANCE_REVIEWER_PROFILE_ID);
-
     instanceRepo.create({
       id: orchInstanceId,
       projectId,
@@ -248,100 +354,63 @@ export async function createProject(
       ordinal: 0,
     });
 
-    instanceRepo.create({
-      id: knowInstanceId,
-      projectId,
-      agentProfileId: knowledgeProfile.id,
-      definitionId: knowledgeProfile.definitionId,
-      definitionVersion: knowledgeProfile.definitionVersion,
-      role: 'teammate',
-      runtimeMode: 'native-model',
-      identityRelPath: `agent-identities/${knowInstanceId}/IDENTITY.md`,
-      memoryRelPath: `agent-memories/${knowInstanceId}`,
-      ordinal: 1,
-    });
-
-    instanceRepo.create({
-      id: resInstanceId,
-      projectId,
-      agentProfileId: researcherProfile.id,
-      definitionId: researcherProfile.definitionId,
-      definitionVersion: researcherProfile.definitionVersion,
-      role: 'teammate',
-      runtimeMode: 'native-model',
-      identityRelPath: `agent-identities/${resInstanceId}/IDENTITY.md`,
-      memoryRelPath: `agent-memories/${resInstanceId}`,
-      ordinal: 2,
-    });
-
-    instanceRepo.create({
-      id: writerInstanceId,
-      projectId,
-      agentProfileId: materialWriterProfile.id,
-      definitionId: materialWriterProfile.definitionId,
-      definitionVersion: materialWriterProfile.definitionVersion,
-      role: 'teammate',
-      runtimeMode: 'native-model',
-      identityRelPath: `agent-identities/${writerInstanceId}/IDENTITY.md`,
-      memoryRelPath: `agent-memories/${writerInstanceId}`,
-      ordinal: 3,
-    });
-
-    instanceRepo.create({
-      id: reviewerInstanceId,
-      projectId,
-      agentProfileId: acceptanceReviewerProfile.id,
-      definitionId: acceptanceReviewerProfile.definitionId,
-      definitionVersion: acceptanceReviewerProfile.definitionVersion,
-      role: 'teammate',
-      runtimeMode: 'native-model',
-      identityRelPath: `agent-identities/${reviewerInstanceId}/IDENTITY.md`,
-      memoryRelPath: `agent-memories/${reviewerInstanceId}`,
-      ordinal: 4,
-    });
-
-    // 仅创建用户选择的 CLI 智能体（排除内置智能体 profile ID）
-    const BUILTIN_PROFILE_IDS = new Set([
-      ORCHESTRATOR_PROFILE_ID,  // 'builtin-orchestrator-profile'
-      KNOWLEDGE_PROFILE_ID,     // 'builtin-knowledge-profile'
-      RESEARCHER_PROFILE_ID,    // 'builtin-researcher-profile'
-      MATERIAL_WRITER_PROFILE_ID,
-      ACCEPTANCE_REVIEWER_PROFILE_ID,
-    ]);
-    const requestedIds = input.requestedAgentProfileIds ?? [];
-    const cliRequestedIds = requestedIds.filter((id) => !BUILTIN_PROFILE_IDS.has(id));
-    if (cliRequestedIds.length > 4) {
-      throw new Error('群聊已包含 5 个内置智能体，最多还能添加 4 个外部智能体');
-    }
-
-    if (cliRequestedIds.length > 0) {
-      const placeholders = cliRequestedIds.map(() => '?').join(',');
-      const cliProfiles = db.prepare(
-        `SELECT id, name, definition_id as definitionId, definition_version as definitionVersion,
-                cli_connection_id as cliConnectionId
-         FROM agent_profiles
-         WHERE runtime_mode = 'external-cli' AND enabled = 1 AND cli_connection_id IS NOT NULL
-           AND id IN (${placeholders})
-         ORDER BY name`,
-      ).all(...cliRequestedIds) as Array<{ id: string; name: string; definitionId: string; definitionVersion: string; cliConnectionId: string }>;
-
-      let cliOrdinal = 5;
-      for (const cliProfile of cliProfiles) {
-        const cliInstanceId = generateInstanceId(projectId, `cli-${cliProfile.id.slice(0, 8)}`);
-        instanceRepo.create({
-          id: cliInstanceId,
-          projectId,
-          agentProfileId: cliProfile.id,
-          definitionId: cliProfile.definitionId,
-          definitionVersion: cliProfile.definitionVersion,
-          role: 'teammate',
-          runtimeMode: 'external-cli',
-          cliConnectionId: cliProfile.cliConnectionId,
-          identityRelPath: `agent-identities/${cliInstanceId}/IDENTITY.md`,
-          memoryRelPath: `agent-memories/${cliInstanceId}`,
-          ordinal: cliOrdinal++,
-        });
+    // 未显式给出成员时初始化“统筹 + 本地执行”团队；首页 GM 和手动建群显式传入时，
+    // 只初始化所选成员，并始终由统筹管理智能体担任 Leader。旧四角色统一迁移为本地执行智能体。
+    const rawRequestedIds = input.requestedAgentProfileIds === undefined
+      ? [...DEFAULT_TEAM_PROFILE_IDS]
+      : input.requestedAgentProfileIds;
+    const requestedIds = rawRequestedIds.map((id) => {
+      if (id.startsWith(OPERATION_PLATFORM_SELECTION_PREFIX)) {
+        const platformId = id.slice(OPERATION_PLATFORM_SELECTION_PREFIX.length).trim();
+        if (!platformId) throw new Error('所选操作平台标识无效');
+        return ensureOperationProfile(db, platformId, now);
       }
+      return LEGACY_PROFILE_ALIASES[id] ?? id;
+    });
+    const selectedProfileIds = [...new Set([ORCHESTRATOR_PROFILE_ID, ...requestedIds])]
+      .filter((id) => id !== GM_PROFILE_ID);
+    if (selectedProfileIds.length > resolveRuntimeLimits(db).maxAgentsPerProject) throw new Error(`每个群聊最多可添加 ${resolveRuntimeLimits(db).maxAgentsPerProject} 个智能体`);
+
+    let ordinal = 1;
+    for (const profileId of selectedProfileIds) {
+      if (profileId === ORCHESTRATOR_PROFILE_ID) continue;
+      const profile = db.prepare(
+        `SELECT id, definition_id as definitionId, definition_version as definitionVersion,
+                runtime_mode as runtimeMode, cli_connection_id as cliConnectionId, enabled
+         FROM agent_profiles WHERE id = ?`,
+      ).get(profileId) as {
+        id: string;
+        definitionId: string;
+        definitionVersion: string;
+        runtimeMode: 'native-model' | 'external-cli';
+        cliConnectionId: string | null;
+        enabled: number;
+      } | undefined;
+      // 旧模板中可能带有已下线的占位 profile；忽略占位项但不影响建群。
+      // 用户在创建弹窗中明确选择的操作平台则已在上面转换为持久 Profile，
+      // 转换失败会直接报错，不能静默创建一个缺成员的群聊。
+      if (!profile) continue;
+      if (!profile.enabled) throw new Error('所选智能体当前不可用');
+      if (profile.runtimeMode === 'external-cli' && !profile.cliConnectionId) {
+        throw new Error('所选外部智能体尚未完成 CLI 连接配置');
+      }
+      const suffixByProfile: Record<string, string> = {
+        [LOCAL_EXECUTOR_PROFILE_ID]: 'local',
+      };
+      const instanceId = generateInstanceId(projectId, suffixByProfile[profile.id] ?? `agent-${generateUlid().slice(0, 10)}`);
+      instanceRepo.create({
+        id: instanceId,
+        projectId,
+        agentProfileId: profile.id,
+        definitionId: profile.definitionId,
+        definitionVersion: profile.definitionVersion,
+        role: 'teammate',
+        runtimeMode: profile.runtimeMode,
+        ...(profile.cliConnectionId ? { cliConnectionId: profile.cliConnectionId } : {}),
+        identityRelPath: `agent-identities/${instanceId}/IDENTITY.md`,
+        memoryRelPath: `agent-memories/${instanceId}`,
+        ordinal: ordinal++,
+      });
     }
 
     const stagedUploadIds = input.content?.stagedUploadIds ?? [];
@@ -360,6 +429,8 @@ export async function createProject(
     ).all(projectId) as Array<{ id: string; role: string; runtimeMode: string; definitionId: string; definitionVersion: string; name: string }>;
 
     await mkdir(join(projectRoot, 'original-files'), { recursive: true });
+    await mkdir(join(projectRoot, 'templates'), { recursive: true });
+    await mkdir(join(projectRoot, 'standardized-files'), { recursive: true });
     await mkdir(join(projectRoot, 'knowledge', 'graph', 'schema'), { recursive: true });
     await mkdir(join(projectRoot, 'knowledge', 'wiki', 'entities'), { recursive: true });
     await mkdir(join(projectRoot, 'knowledge', 'wiki', 'topics'), { recursive: true });
@@ -367,10 +438,10 @@ export async function createProject(
     await mkdir(join(projectRoot, 'graph-visualization', 'exports'), { recursive: true });
     await mkdir(join(projectRoot, 'outputs'), { recursive: true });
     await mkdir(join(projectRoot, '.runtime', 'trash'), { recursive: true });
+    await mkdir(join(projectRoot, 'temp'), { recursive: true });
     await mkdir(join(projectRoot, '.runtime', 'versions'), { recursive: true });
     await mkdir(join(projectRoot, '.runtime', 'run-temp'), { recursive: true });
     await mkdir(join(projectRoot, '.runtime', 'sandboxes'), { recursive: true });
-    await mkdir(join(projectRoot, '.runtime', 'review-drafts'), { recursive: true });
 
     for (const instance of allInstances) {
       const instId = instance.id;
@@ -381,6 +452,7 @@ export async function createProject(
       await mkdir(join(memRoot, 'short-term'), { recursive: true });
       await mkdir(join(memRoot, 'sessions'), { recursive: true });
       await mkdir(join(memRoot, 'long-term'), { recursive: true });
+      const operationPlatform = getOperationPlatformContext(db, instance.definitionId);
       await ensureAgentIdentityFiles({
         projectId,
         instanceId: instId,
@@ -389,6 +461,7 @@ export async function createProject(
         runtimeMode: instance.runtimeMode,
         definitionId: instance.definitionId,
         definitionVersion: instance.definitionVersion ?? '1.0.0',
+        ...(operationPlatform ? { operationPlatform } : {}),
       });
       try { await access(curPath); } catch { await writeFile(curPath, `---\nschemaVersion: 1\nmemoryId: current\ntype: summary\nscope: short-term\nconfidence: 1\ncreatedAt: ${now}\nupdatedAt: ${now}\n---\n\n# 当前会话\n\n群聊已创建，等待首次对话。\n`, 'utf8'); }
       try { await access(longPath); } catch { await writeFile(longPath, `---\nschemaVersion: 1\nscope: long-term\nupdatedAt: ${now}\n---\n\n# 长期记忆摘要\n\n暂无长期记忆。\n`, 'utf8'); }
@@ -398,7 +471,11 @@ export async function createProject(
     fsCreated = true;
 
     const publicName = projectName.replace(/[\r\n]/g, ' ').trim() || projectId;
-    await writeFile(join(projectRoot, 'group.yaml'), `schemaVersion: 1\nprojectId: ${projectId}\nname: ${JSON.stringify(publicName)}\n`, 'utf8');
+    await writeFile(
+      join(projectRoot, 'group.yaml'),
+      `schemaVersion: 1\nprojectId: ${projectId}\nname: ${JSON.stringify(publicName)}\nmembershipPolicy: ${input.requestedAgentProfileIds === undefined ? 'legacy-default' : 'selected'}\n`,
+      'utf8',
+    );
 
     if (stagedUploadIds.length > 0) {
       const studioRoot = getStudioRoot();
@@ -508,6 +585,25 @@ export async function seedDefaultProfiles(db: Database.Database): Promise<void> 
   const existingDefs = defRepo.list();
   const hasOrchDef = existingDefs.some((d) => d.id === 'builtin.orchestrator');
   const hasKnowDef = existingDefs.some((d) => d.id === 'builtin.knowledge-manager');
+  const hasLocalExecutorDef = existingDefs.some((d) => d.id === 'builtin.local-executor');
+  const hasGmDef = existingDefs.some((d) => d.id === 'builtin.gm');
+
+  if (!hasGmDef) {
+    defRepo.create({
+      id: 'builtin.gm',
+      kind: 'built-in',
+      isBuiltin: true,
+      manifestRelPath: 'agents/builtin-gm/manifest.json',
+      maxPermissionsJson: JSON.stringify({
+        read: ['system.projects', 'system.agent-profiles', 'system.settings', 'group.original-files', 'group.knowledge', 'shared.knowledge', 'group.messages'],
+        write: ['system.projects', 'system.project-members', 'system.project-names', 'system.plans'],
+        administer: ['projects.create', 'projects.configure', 'agents.select'],
+        network: 'model-gateway-only',
+        shell: 'deny',
+      }),
+      modelRequirementsJson: JSON.stringify(['structuredOutput']),
+    });
+  }
 
   if (!hasOrchDef) {
     defRepo.create({
@@ -516,8 +612,8 @@ export async function seedDefaultProfiles(db: Database.Database): Promise<void> 
       isBuiltin: true,
       manifestRelPath: 'agents/builtin-orchestrator/manifest.json',
       maxPermissionsJson: JSON.stringify({
-        read: ['group.original-files', 'group.knowledge', 'shared.knowledge', 'group.messages'],
-        write: ['self.memory', 'group.outputs'],
+        read: ['group.original-files', 'group.knowledge', 'shared.knowledge', 'group.messages', 'group.temp'],
+        write: ['self.memory', 'group.outputs', 'group.temp'],
         network: 'model-gateway-only',
         shell: 'deny',
       }),
@@ -532,7 +628,7 @@ export async function seedDefaultProfiles(db: Database.Database): Promise<void> 
       isBuiltin: true,
       manifestRelPath: 'agents/builtin-knowledge-manager/manifest.json',
       maxPermissionsJson: JSON.stringify({
-        read: ['group.original-files', 'group.knowledge', 'shared.knowledge', 'group.messages'],
+        read: ['group.original-files', 'project.original-files', 'shared.original-files', 'group.messages'],
         write: ['self.memory', 'group.outputs', 'group.knowledge'],
         network: 'model-gateway-only',
         shell: 'deny',
@@ -549,8 +645,8 @@ export async function seedDefaultProfiles(db: Database.Database): Promise<void> 
       isBuiltin: true,
       manifestRelPath: 'agents/builtin-researcher/manifest.json',
       maxPermissionsJson: JSON.stringify({
-        read: ['group.knowledge', 'group.messages'],
-        write: ['self.memory'],
+        read: ['group.knowledge', 'group.messages', 'group.temp'],
+        write: ['self.memory', 'group.temp'],
         network: 'model-gateway-only',
         shell: 'deny',
       }),
@@ -566,8 +662,8 @@ export async function seedDefaultProfiles(db: Database.Database): Promise<void> 
       isBuiltin: true,
       manifestRelPath: 'agents/builtin-material-writer/manifest.json',
       maxPermissionsJson: JSON.stringify({
-        read: ['group.original-files', 'group.knowledge', 'shared.knowledge', 'group.messages'],
-        write: ['self.memory', 'group.review-drafts'],
+        read: ['group.original-files', 'group.templates', 'group.knowledge', 'project.templates', 'project.knowledge', 'shared.templates', 'shared.knowledge', 'group.messages', 'group.temp'],
+        write: ['self.memory', 'group.temp'],
         network: 'model-gateway-only',
         shell: 'deny',
       }),
@@ -583,7 +679,7 @@ export async function seedDefaultProfiles(db: Database.Database): Promise<void> 
       isBuiltin: true,
       manifestRelPath: 'agents/builtin-acceptance-reviewer/manifest.json',
       maxPermissionsJson: JSON.stringify({
-        read: ['group.original-files', 'group.knowledge', 'shared.knowledge', 'group.messages', 'group.review-drafts'],
+        read: ['group.original-files', 'group.templates', 'group.knowledge', 'project.templates', 'project.knowledge', 'shared.templates', 'shared.knowledge', 'group.messages', 'group.temp'],
         write: ['self.memory'],
         network: 'model-gateway-only',
         shell: 'deny',
@@ -592,12 +688,83 @@ export async function seedDefaultProfiles(db: Database.Database): Promise<void> 
     });
   }
 
-  const existing = db.prepare('SELECT definition_id as definitionId FROM agent_profiles').all() as Array<{ definitionId: string }>;
+  if (!hasLocalExecutorDef) {
+    defRepo.create({
+      id: 'builtin.local-executor',
+      kind: 'built-in',
+      isBuiltin: true,
+      manifestRelPath: 'agents/builtin-local-executor/manifest.json',
+      maxPermissionsJson: JSON.stringify({
+        read: ['group.original-files', 'project.original-files', 'shared.original-files', 'group.templates', 'project.templates', 'shared.templates', 'group.knowledge', 'project.knowledge', 'shared.knowledge', 'group.messages', 'group.temp'],
+        write: ['self.memory', 'group.knowledge', 'group.temp', 'group.outputs'],
+        network: 'model-gateway-only',
+        shell: 'deny',
+      }),
+      modelRequirementsJson: JSON.stringify(['streaming', 'toolCalling', 'structuredOutput']),
+    });
+  }
+
+  const updateBuiltinPermissions = db.prepare('UPDATE agent_definitions SET max_permissions_json = ? WHERE id = ?');
+  updateBuiltinPermissions.run(JSON.stringify({
+    read: ['group.original-files', 'group.knowledge', 'shared.knowledge', 'group.messages', 'group.temp'],
+    write: ['self.memory', 'group.outputs', 'group.temp'],
+    network: 'model-gateway-only',
+    shell: 'deny',
+  }), 'builtin.orchestrator');
+  updateBuiltinPermissions.run(JSON.stringify({
+    read: ['group.original-files', 'project.original-files', 'shared.original-files', 'group.templates', 'project.templates', 'shared.templates', 'group.knowledge', 'project.knowledge', 'shared.knowledge', 'group.messages', 'group.temp'],
+    write: ['self.memory', 'group.knowledge', 'group.temp', 'group.outputs'],
+    network: 'model-gateway-only',
+    shell: 'deny',
+  }), 'builtin.local-executor');
+  updateBuiltinPermissions.run(JSON.stringify({
+    read: ['group.original-files', 'project.original-files', 'shared.original-files', 'group.messages', 'group.temp'],
+    write: ['self.memory', 'group.outputs', 'group.knowledge', 'group.temp'],
+    network: 'model-gateway-only',
+    shell: 'deny',
+  }), 'builtin.knowledge-manager');
+  updateBuiltinPermissions.run(JSON.stringify({
+    read: ['group.knowledge', 'group.messages', 'group.temp'],
+    write: ['self.memory', 'group.temp'],
+    network: 'model-gateway-only',
+    shell: 'deny',
+  }), 'builtin.researcher');
+  updateBuiltinPermissions.run(JSON.stringify({
+    read: ['group.original-files', 'group.templates', 'group.knowledge', 'project.templates', 'project.knowledge', 'shared.templates', 'shared.knowledge', 'group.messages', 'group.temp'],
+    write: ['self.memory', 'group.temp'],
+    network: 'model-gateway-only',
+    shell: 'deny',
+  }), 'builtin.material-writer');
+  updateBuiltinPermissions.run(JSON.stringify({
+    read: ['group.original-files', 'group.templates', 'group.knowledge', 'project.templates', 'project.knowledge', 'shared.templates', 'shared.knowledge', 'group.messages', 'group.temp'],
+    write: ['self.memory'],
+    network: 'model-gateway-only',
+    shell: 'deny',
+  }), 'builtin.acceptance-reviewer');
+
+  const existing = db.prepare('SELECT id, definition_id as definitionId FROM agent_profiles').all() as Array<{ id: string; definitionId: string }>;
+
+  // Keep already connected external agents on the stable product role cards.
+  // This is deliberately idempotent and only changes the definition identity;
+  // it does not alter the user's connection, model, memories, or memberships.
+  for (const row of db.prepare("SELECT ap.id, cc.adapter_type as adapterType FROM agent_profiles ap JOIN cli_connections cc ON cc.id = ap.cli_connection_id WHERE ap.runtime_mode = 'external-cli'").all() as Array<{ id: string; adapterType: string }>) {
+    const role = getExternalAgentRole(row.adapterType);
+    db.prepare('UPDATE agent_profiles SET definition_id = ?, updated_at = ? WHERE id = ? AND definition_id != ?').run(role.definitionId, now, row.id, role.definitionId);
+  }
   const hasOrch = existing.some((p) => p.definitionId === 'builtin.orchestrator');
   const hasKnow = existing.some((p) => p.definitionId === 'builtin.knowledge-manager');
   const hasRes = existing.some((p) => p.definitionId === 'builtin.researcher');
   const hasWriter = existing.some((p) => p.definitionId === 'builtin.material-writer');
   const hasReviewer = existing.some((p) => p.definitionId === 'builtin.acceptance-reviewer');
+  const hasLocalExecutor = existing.some((p) => p.id === LOCAL_EXECUTOR_PROFILE_ID);
+  const hasGm = existing.some((p) => p.definitionId === 'builtin.gm');
+
+  if (!hasGm) {
+    db.prepare(
+      `INSERT INTO agent_profiles (id, name, definition_id, definition_version, runtime_mode, enabled, delegatable, is_system_default, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 1, 0, 0, ?, ?)`,
+    ).run(GM_PROFILE_ID, 'GM智能体', 'builtin.gm', '1.0.0', 'native-model', now, now);
+  }
 
   if (!hasOrch) {
     db.prepare(
@@ -634,55 +801,117 @@ export async function seedDefaultProfiles(db: Database.Database): Promise<void> 
     ).run(ACCEPTANCE_REVIEWER_PROFILE_ID, '验收智能体', 'builtin.acceptance-reviewer', '1.0.0', 'native-model', now, now);
   }
 
-  // 历史群聊在容量允许时补齐官方写作/验收角色。两者作为一个闭环补充，
-  // 不会为了塞入单个角色而突破每群 9 个智能体的上限。
+  if (!hasLocalExecutor) {
+    const inherited = db.prepare(
+      `SELECT model_profile_id as modelProfileId, overrides_json as overridesJson
+       FROM agent_profiles
+       WHERE id IN (?, ?, ?, ?)
+       ORDER BY (model_profile_id IS NULL), CASE id WHEN ? THEN 0 WHEN ? THEN 1 WHEN ? THEN 2 ELSE 3 END
+       LIMIT 1`,
+    ).get(
+      MATERIAL_WRITER_PROFILE_ID,
+      ACCEPTANCE_REVIEWER_PROFILE_ID,
+      KNOWLEDGE_PROFILE_ID,
+      RESEARCHER_PROFILE_ID,
+      MATERIAL_WRITER_PROFILE_ID,
+      ACCEPTANCE_REVIEWER_PROFILE_ID,
+      KNOWLEDGE_PROFILE_ID,
+    ) as { modelProfileId: string | null; overridesJson: string | null } | undefined;
+    db.prepare(
+      `INSERT INTO agent_profiles (
+         id, name, definition_id, definition_version, runtime_mode,
+         model_profile_id, overrides_json, enabled, delegatable, is_system_default, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, 0, ?, ?)`,
+    ).run(
+      LOCAL_EXECUTOR_PROFILE_ID,
+      '本地执行智能体',
+      'builtin.local-executor',
+      '1.0.0',
+      'native-model',
+      inherited?.modelProfileId ?? null,
+      inherited?.overridesJson ?? null,
+      now,
+      now,
+    );
+  } else {
+    db.prepare(
+      'UPDATE agent_profiles SET name = ?, enabled = 1, delegatable = 1, updated_at = ? WHERE id = ?',
+    ).run('本地执行智能体', now, LOCAL_EXECUTOR_PROFILE_ID);
+  }
+
+  // 旧四角色仅保留 Profile 和实例用于历史消息回显；不再出现在成员池、设置页或调度上下文中。
+  // 其能力已由 builtin.local-executor 的技能绑定承接。
+  db.prepare(
+    `UPDATE agent_profiles SET enabled = 0, delegatable = 0, is_system_default = 0, updated_at = ?
+     WHERE id IN (?, ?, ?, ?)`,
+  ).run(
+    now,
+    KNOWLEDGE_PROFILE_ID,
+    RESEARCHER_PROFILE_ID,
+    MATERIAL_WRITER_PROFILE_ID,
+    ACCEPTANCE_REVIEWER_PROFILE_ID,
+  );
+
+  // 历史群聊只要曾包含任一旧专业角色，就补入一个本地执行实例。
+  // 旧实例不删除，以保留历史消息发送者和既有记忆文件。
   const projects = db.prepare("SELECT id FROM projects WHERE status != 'archived' ORDER BY created_at").all() as Array<{ id: string }>;
-  const builtinAdditions = [
-    { profileId: MATERIAL_WRITER_PROFILE_ID, suffix: 'writer', definitionId: 'builtin.material-writer' },
-    { profileId: ACCEPTANCE_REVIEWER_PROFILE_ID, suffix: 'reviewer', definitionId: 'builtin.acceptance-reviewer' },
-  ];
   const touchedProjects: string[] = [];
   for (const project of projects) {
     const instances = new AgentInstanceRepository(db).listByProject(project.id);
     const existingProfileIds = new Set(instances.map((instance) => instance.agentProfileId));
-    const missing = builtinAdditions.filter((item) => !existingProfileIds.has(item.profileId));
-    if (missing.length === 0 || instances.length + missing.length > 9) continue;
+    const hadLegacySpecialist = [
+      KNOWLEDGE_PROFILE_ID,
+      RESEARCHER_PROFILE_ID,
+      MATERIAL_WRITER_PROFILE_ID,
+      ACCEPTANCE_REVIEWER_PROFILE_ID,
+    ].some((profileId) => existingProfileIds.has(profileId));
+    if (!hadLegacySpecialist || existingProfileIds.has(LOCAL_EXECUTOR_PROFILE_ID)) continue;
     let ordinal = instances.reduce((max, instance) => Math.max(max, instance.ordinal), -1) + 1;
-    for (const item of missing) {
-      const profile = profileRepo.getById(item.profileId);
-      const instanceId = generateInstanceId(project.id, item.suffix);
-      new AgentInstanceRepository(db).create({
-        id: instanceId,
-        projectId: project.id,
-        agentProfileId: profile.id,
-        definitionId: item.definitionId,
-        definitionVersion: profile.definitionVersion,
-        role: 'teammate',
-        runtimeMode: 'native-model',
-        identityRelPath: `agent-identities/${instanceId}/IDENTITY.md`,
-        memoryRelPath: `agent-memories/${instanceId}`,
-        ordinal: ordinal++,
-      });
-    }
+    const profile = profileRepo.getById(LOCAL_EXECUTOR_PROFILE_ID);
+    const preferredInstanceId = generateInstanceId(project.id, 'local');
+    const instanceId = db.prepare('SELECT 1 FROM project_agent_instances WHERE id = ?').get(preferredInstanceId)
+      ? generateInstanceId(project.id, `local-${generateUlid().slice(0, 8)}`)
+      : preferredInstanceId;
+    new AgentInstanceRepository(db).create({
+      id: instanceId,
+      projectId: project.id,
+      agentProfileId: profile.id,
+      definitionId: 'builtin.local-executor',
+      definitionVersion: profile.definitionVersion,
+      role: 'teammate',
+      runtimeMode: 'native-model',
+      identityRelPath: `agent-identities/${instanceId}/IDENTITY.md`,
+      memoryRelPath: `agent-memories/${instanceId}`,
+      ordinal: ordinal++,
+    });
     touchedProjects.push(project.id);
   }
   for (const projectId of touchedProjects) await ensureProjectAgentFiles(db, projectId);
 }
 
-/** 根据 agent_instance_id 解析当前 slot 绑定的模型快照，用于 Run 创建时快照 */
+/** 优先按智能体挂载模型生成 Run 快照，未挂载时回退到兼容槽位。 */
   export function buildModelProfileSnapshot(db: Database.Database, agentInstanceId: string): string | null {
     const row = db.prepare(
-      `SELECT ap.definition_id as definitionId
+      `SELECT ap.definition_id as definitionId,
+              COALESCE(pai.model_profile_id, ap.model_profile_id) as mountedProfileId,
+              ap.overrides_json as overridesJson
        FROM project_agent_instances pai
        JOIN agent_profiles ap ON ap.id = pai.agent_profile_id
        WHERE pai.id = ?`,
-    ).get(agentInstanceId) as { definitionId: string } | undefined;
+    ).get(agentInstanceId) as { definitionId: string; mountedProfileId: string | null; overridesJson: string | null } | undefined;
 
     if (!row) return null;
 
     const slot = (row.definitionId === 'builtin.knowledge-manager' || row.definitionId === 'builtin.researcher') ? 'fast' : 'reasoning';
 
-    const snapshot = db.prepare(
+    const snapshot = row.mountedProfileId ? db.prepare(
+      `SELECT mp.id as profileId, mp.name as profileName, mp.model_id as modelId,
+              mp.parameters_json as parametersJson, mp.verified_capabilities_json as verifiedCapabilitiesJson,
+              prv.id as providerId, prv.name as providerName, prv.type as providerType, prv.base_url as baseUrl
+       FROM model_profiles mp
+       JOIN model_providers prv ON prv.id = mp.provider_id
+       WHERE mp.id = ? AND mp.enabled = 1`,
+    ).get(row.mountedProfileId) : db.prepare(
       `SELECT mp.id as profileId, mp.name as profileName, mp.model_id as modelId,
               mp.parameters_json as parametersJson, mp.verified_capabilities_json as verifiedCapabilitiesJson,
               prv.id as providerId, prv.name as providerName, prv.type as providerType, prv.base_url as baseUrl
@@ -690,25 +919,35 @@ export async function seedDefaultProfiles(db: Database.Database): Promise<void> 
        JOIN model_profiles mp ON mp.id = msb.model_profile_id
        JOIN model_providers prv ON prv.id = mp.provider_id
        WHERE msb.slot = ? AND mp.enabled = 1`,
-    ).get(slot) as {
+    ).get(slot);
+    const typedSnapshot = snapshot as {
       profileId: string; profileName: string; modelId: string;
       parametersJson: string | null; verifiedCapabilitiesJson: string | null;
       providerId: string; providerName: string; providerType: string; baseUrl: string | null;
     } | undefined;
 
-    if (!snapshot) return null;
+    if (!typedSnapshot) return null;
+
+    let profileParameters: Record<string, unknown> = {};
+    let modelOptions: Record<string, unknown> = {};
+    try { profileParameters = typedSnapshot.parametersJson ? JSON.parse(typedSnapshot.parametersJson) as Record<string, unknown> : {}; } catch { /* ignore malformed model parameters */ }
+    try {
+      const overrides = row.overridesJson ? JSON.parse(row.overridesJson) as { modelOptions?: unknown } : {};
+      if (overrides.modelOptions && typeof overrides.modelOptions === 'object') modelOptions = overrides.modelOptions as Record<string, unknown>;
+    } catch { /* ignore malformed agent overrides */ }
 
     return JSON.stringify({
-      profileId: snapshot.profileId,
-      profileName: snapshot.profileName,
-      providerId: snapshot.providerId,
-      providerName: snapshot.providerName,
-      providerType: snapshot.providerType,
-      baseUrl: snapshot.baseUrl,
-      modelId: snapshot.modelId,
+      profileId: typedSnapshot.profileId,
+      profileName: typedSnapshot.profileName,
+      providerId: typedSnapshot.providerId,
+      providerName: typedSnapshot.providerName,
+      providerType: typedSnapshot.providerType,
+      baseUrl: typedSnapshot.baseUrl,
+      modelId: typedSnapshot.modelId,
       modelSlot: slot,
-      parameters: snapshot.parametersJson ? JSON.parse(snapshot.parametersJson) : null,
-      capabilities: snapshot.verifiedCapabilitiesJson ? JSON.parse(snapshot.verifiedCapabilitiesJson) : null,
+      bindingSource: row.mountedProfileId ? 'agent' : 'slot',
+      parameters: { ...profileParameters, ...modelOptions },
+      capabilities: typedSnapshot.verifiedCapabilitiesJson ? JSON.parse(typedSnapshot.verifiedCapabilitiesJson) : null,
       capturedAt: new Date().toISOString(),
     });
   }

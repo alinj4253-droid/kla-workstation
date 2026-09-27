@@ -54,7 +54,7 @@ describe('AgentArtifactPublisher', () => {
     await rm(studioRoot, { recursive: true, force: true });
   });
 
-  it('materializes inline HTML and emits a clickable artifact message', async () => {
+  it('does not materialize inline HTML without a system-confirmed file path', async () => {
     const events: unknown[] = [];
     const publisher = new AgentArtifactPublisher(db, (event) => events.push(event));
     const output = `分析完成。\n:::artifact{path="outputs/report.html"}\n<!doctype html><html><body><h1>报告</h1></body></html>\n:::`;
@@ -66,19 +66,11 @@ describe('AgentArtifactPublisher', () => {
       text: output,
     });
 
-    expect(result.text).toContain('已生成成果文件：outputs/report.html');
-    expect(result.text).not.toContain('```html');
-    expect(result.publishedPaths).toEqual(['outputs/report.html']);
-    expect(await readFile(join(getProjectRoot('group-1'), 'outputs', 'report.html'), 'utf8')).toContain('<h1>报告</h1>');
-
-    const file = db.prepare("SELECT normalized_path as path, mime_type as mimeType, origin FROM files").get() as { path: string; mimeType: string; origin: string };
-    expect(file).toEqual({ path: 'outputs/report.html', mimeType: 'text/html', origin: 'artifact' });
-
-    const message = db.prepare("SELECT sender_id as senderId, kind, content_json as contentJson FROM messages").get() as { senderId: string; kind: string; contentJson: string };
-    expect(message.senderId).toBe('group-1-orch');
-    expect(message.kind).toBe('artifact');
-    expect(JSON.parse(message.contentJson).text).toBe('outputs/report.html');
-    expect(events).toEqual([expect.objectContaining({ type: 'message.created', projectId: 'group-1' })]);
+    expect(result.publishedPaths).toEqual([]);
+    expect(result.failedPaths).toEqual(['outputs/report.html']);
+    expect(result.text).toContain('未交付');
+    expect(events).toEqual([]);
+    await expect(readFile(join(getProjectRoot('group-1'), 'outputs', 'report.html'), 'utf8')).rejects.toThrow();
   });
 
   it('extracts an existing-file ARTIFACT marker without treating it as inline HTML', () => {
@@ -94,13 +86,18 @@ describe('AgentArtifactPublisher', () => {
     expect(prepared.referencedPaths).toEqual(['outputs/doubao-geo-brainstorm.html']);
   });
 
-  it('turns raw HTML into a right-side preview artifact without leaking source', () => {
-    const prepared = prepareAgentOutput('<!doctype html><html><body><h1>仪表盘</h1></body></html>');
-    expect(prepared.text).toContain('已生成成果文件：');
-    expect(prepared.text).not.toContain('```html');
-    expect(prepared.text).not.toContain('<h1>仪表盘</h1>');
-    expect(prepared.inlineHtml).toHaveLength(1);
-    expect(prepared.referencedPaths[0]).toMatch(/^outputs\/generated-[a-f0-9]{10}\.html$/);
+  it('does not turn raw HTML into a preview artifact without a file tool call', async () => {
+    const publisher = new AgentArtifactPublisher(db);
+    const result = await publisher.publishFromOutput({
+      projectId: 'group-1',
+      agentInstanceId: 'agent-1',
+      runId: 'run-inline-html',
+      text: '<!doctype html><html><body><h1>仪表盘</h1></body></html>',
+    });
+    expect(result.publishedPaths).toEqual([]);
+    expect(result.failedPaths).toEqual([]);
+    expect(result.text).not.toContain('<h1>仪表盘</h1>');
+    expect(result.text).toContain('未作为成果交付');
   });
 
   it('rejects artifact paths outside outputs', async () => {
@@ -130,7 +127,34 @@ describe('AgentArtifactPublisher', () => {
     expect(first.text).toContain('outputs/final-report.pdf');
     expect(second.publishedPaths).toEqual(['outputs/final-report.pdf']);
     expect((db.prepare("SELECT COUNT(*) AS count FROM messages WHERE kind = 'artifact'").get() as { count: number }).count).toBe(1);
-    expect(events).toHaveLength(2);
-    expect(events[1]).toEqual(expect.objectContaining({ runId: 'run-2', triggerMessageId: 'message-1' }));
+    expect(events).toHaveLength(1);
+    expect(events[0]).toEqual(expect.objectContaining({ runId: 'run-2', triggerMessageId: 'message-1' }));
+  });
+
+  it('does not claim delivery when an output path does not exist', async () => {
+    const publisher = new AgentArtifactPublisher(db);
+    const result = await publisher.publishFromOutput({
+      projectId: 'group-1',
+      agentInstanceId: 'agent-1',
+      runId: 'run-missing-output',
+      text: '报告已生成，文件位于 outputs/missing.html。',
+    });
+    expect(result.publishedPaths).toEqual([]);
+    expect(result.failedPaths).toEqual(['outputs/missing.html']);
+    expect(result.text).toContain('成果文件写入或发布失败，未交付：outputs/missing.html');
+    expect(result.text).not.toContain('文件位于 outputs/missing.html');
+  });
+
+  it('sanitizes a missing path even when the model only says it is available', async () => {
+    const publisher = new AgentArtifactPublisher(db);
+    const result = await publisher.publishFromOutput({
+      projectId: 'group-1',
+      agentInstanceId: 'agent-1',
+      runId: 'run-missing-natural-language',
+      text: '文件位于 outputs/missing.html，可直接查看。',
+    });
+    expect(result.failedPaths).toEqual(['outputs/missing.html']);
+    expect(result.text).toContain('成果文件写入或发布失败，未交付：outputs/missing.html');
+    expect(result.text).not.toContain('可直接查看');
   });
 });

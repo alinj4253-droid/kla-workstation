@@ -54,6 +54,10 @@ export async function runIngestionPipeline(ctx: PipelineContext): Promise<void> 
     const chunks = chunkDocument(doc);
     ctx.log(`文本分块完成: ${chunks.length} 个块`);
 
+    // The normalized full document and chunk files are a parallel, non-indexed
+    // artifact of parsing. They are never scanned as new source files.
+    await ctx.saveStandardizedDocument?.(doc, chunks);
+
     // Deduplicate and save chunks
     let savedCount = 0;
     for (const chunk of chunks) {

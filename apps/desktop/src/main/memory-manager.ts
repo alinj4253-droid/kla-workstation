@@ -6,6 +6,7 @@ import { MemoryRepository } from '@kunqing/database';
 import { MemoryManager as CoreMemoryManager } from '@kunqing/memory-core';
 import type {
   IMemoryRepository,
+  MemoryListOptions,
   MemoryRecord,
   CreateMemoryInput,
   UpdateMemoryInput,
@@ -30,12 +31,16 @@ class DatabaseMemoryRepository implements IMemoryRepository {
     this.repo = new MemoryRepository(db);
   }
 
-  list(projectId: string, agentInstanceId: string, scope?: MemoryScope, status?: MemoryStatus): MemoryRecord[] {
-    return this.repo.list(projectId, agentInstanceId, scope, status) as MemoryRecord[];
+  list(projectId: string, agentInstanceId: string, scope?: MemoryScope, status?: MemoryStatus, options?: MemoryListOptions): MemoryRecord[] {
+    return this.repo.list(projectId, agentInstanceId, scope, status, options) as MemoryRecord[];
   }
 
   get(id: string): MemoryRecord | null {
     return this.repo.get(id) as MemoryRecord | null;
+  }
+
+  findByRunId(projectId: string, agentInstanceId: string, runId: string): MemoryRecord | null {
+    return this.repo.findByRunId(projectId, agentInstanceId, runId) as MemoryRecord | null;
   }
 
   create(input: CreateMemoryInput): MemoryRecord {
@@ -90,6 +95,8 @@ export type CaptureTurnInput = {
   reflection?: Partial<MemoryReflection>;
   /** 旧调用兼容；新调用应传 reflection。 */
   selfSummary?: string;
+  /** 批处理使用：跳过结尾的立即文件刷盘，由调用方在批末统一 syncAgentMemory 合并重写。 */
+  deferFileSync?: boolean;
 };
 
 const plainInstruction = (input: string): string => {
@@ -230,7 +237,9 @@ export class MemoryManager extends CoreMemoryManager {
     const topicKey = normalized(reflection.topic).slice(0, 120) || normalized(request).slice(0, 120) || 'general';
     const artifacts = input.artifacts ?? [];
     const content = reflectionContent(reflection, artifacts);
-    if (this.isTombstoned(input.projectId, input.agentInstanceId, `${topicKey}${content}`)) return null;
+    // 一次捕获内三处墓碑检查共用同一份键列表，避免重复读取墓碑表。
+    const tombstones = this.loadTombstoneKeys(input.projectId, input.agentInstanceId);
+    if (this.matchesTombstone(tombstones, `${topicKey}${content}`)) return null;
 
     const sourceRefsJson = JSON.stringify({
       triggerMessageId: input.triggerMessageId,
@@ -247,14 +256,7 @@ export class MemoryManager extends CoreMemoryManager {
       unresolved: reflection.unresolved,
       longTermWorth: reflection.longTermWorth,
     });
-    const existing = this.repository.list(input.projectId, input.agentInstanceId, 'short-term', 'active')
-      .find((item) => {
-        try {
-          return (JSON.parse(item.sourceRefsJson ?? '{}') as { runId?: string }).runId === input.runId;
-        } catch {
-          return false;
-        }
-      });
+    const existing = this.repository.findByRunId(input.projectId, input.agentInstanceId, input.runId);
 
     const now = new Date().toISOString();
     let record: MemoryRecord;
@@ -287,10 +289,12 @@ export class MemoryManager extends CoreMemoryManager {
       });
     }
 
-    await this.consolidateTopic(input, reflection, topicKey);
-    this.promoteLongTerm(input, reflection, topicKey, record.id);
+    await this.consolidateTopic(input, reflection, topicKey, tombstones);
+    this.promoteLongTerm(input, reflection, topicKey, record.id, tombstones);
     await this.writeSessionMemory(input, content, reflection);
-    await this.syncAgentMemory(input.projectId, input.agentInstanceId);
+    if (!input.deferFileSync) {
+      await this.syncAgentMemory(input.projectId, input.agentInstanceId);
+    }
     return record;
   }
 
@@ -362,9 +366,8 @@ export class MemoryManager extends CoreMemoryManager {
     };
   }
 
-  private async consolidateTopic(input: CaptureTurnInput, reflection: MemoryReflection, topicKey: string): Promise<void> {
-    const episodes = this.repository.list(input.projectId, input.agentInstanceId, 'short-term', 'active')
-      .filter((item) => item.type === 'task-episode' && item.topicKey === topicKey);
+  private async consolidateTopic(input: CaptureTurnInput, reflection: MemoryReflection, topicKey: string, tombstones: string[]): Promise<void> {
+    const episodes = this.repository.list(input.projectId, input.agentInstanceId, 'short-term', 'active', { type: 'task-episode', topicKey });
     if (episodes.length < SHORT_TERM_CONSOLIDATION_COUNT && episodes.reduce((sum, item) => sum + item.content.length, 0) < SHORT_TERM_CONSOLIDATION_CHARS) return;
 
     const content = compact(
@@ -372,7 +375,7 @@ export class MemoryManager extends CoreMemoryManager {
         ?? `近期围绕“${reflection.topic}”的工作进展：${episodes.map((item) => item.content).join('；')}`,
       2_800,
     );
-    if (this.isTombstoned(input.projectId, input.agentInstanceId, `${topicKey}${content}`)) return;
+    if (this.matchesTombstone(tombstones, `${topicKey}${content}`)) return;
     const now = new Date().toISOString();
     const summary = this.repository.create({
       projectId: input.projectId,
@@ -391,12 +394,11 @@ export class MemoryManager extends CoreMemoryManager {
     for (const episode of episodes) this.repository.update(episode.id, { status: 'consolidated', consolidatedIntoId: summary.id });
   }
 
-  private promoteLongTerm(input: CaptureTurnInput, reflection: MemoryReflection, topicKey: string, sourceId: string): void {
+  private promoteLongTerm(input: CaptureTurnInput, reflection: MemoryReflection, topicKey: string, sourceId: string, tombstones: string[]): void {
     if (reflection.confidence <= LONG_TERM_CONFIDENCE_THRESHOLD || !reflection.longTermWorth) return;
     const content = compact(reflection.longTermSummary ?? reflectionContent(reflection, input.artifacts ?? []), 3_000);
-    if (!content || this.isTombstoned(input.projectId, input.agentInstanceId, `${topicKey}${content}`)) return;
-    const previous = this.repository.list(input.projectId, input.agentInstanceId, 'long-term', 'active')
-      .find((item) => item.type === 'semantic-summary' && item.topicKey === topicKey);
+    if (!content || this.matchesTombstone(tombstones, `${topicKey}${content}`)) return;
+    const previous = this.repository.list(input.projectId, input.agentInstanceId, 'long-term', 'active', { type: 'semantic-summary', topicKey })[0];
     const next = this.repository.create({
       projectId: input.projectId,
       agentInstanceId: input.agentInstanceId,
@@ -414,13 +416,16 @@ export class MemoryManager extends CoreMemoryManager {
     if (previous) this.repository.update(previous.id, { status: 'superseded', consolidatedIntoId: next.id });
   }
 
-  private isTombstoned(projectId: string, agentInstanceId: string, value: string): boolean {
+  private loadTombstoneKeys(projectId: string, agentInstanceId: string): string[] {
+    return (this.db.prepare(
+      'SELECT normalized_key as normalizedKey FROM memory_tombstones WHERE project_id = ? AND agent_instance_id = ?',
+    ).all(projectId, agentInstanceId) as Array<{ normalizedKey: string }>).map((row) => row.normalizedKey);
+  }
+
+  private matchesTombstone(tombstones: string[], value: string): boolean {
     const key = normalized(value);
     if (!key) return false;
-    const rows = this.db.prepare(
-      'SELECT normalized_key as normalizedKey FROM memory_tombstones WHERE project_id = ? AND agent_instance_id = ?',
-    ).all(projectId, agentInstanceId) as Array<{ normalizedKey: string }>;
-    return rows.some((row) => key.includes(row.normalizedKey) || row.normalizedKey.includes(key));
+    return tombstones.some((needle) => key.includes(needle) || needle.includes(key));
   }
 
   private upsertTombstone(projectId: string, agentInstanceId: string, key: string, sourceMessageId: string, reason: string): void {

@@ -1,7 +1,14 @@
 import type { ModelSlot, ModelMessage, GenerateOptions, GenerateResult, CapabilityTestResults, ProviderConfig } from './types.js';
 
+/** 流式生成可选项：系统提示、输出上限与取消信号。 */
+export interface ModelGatewayStreamOptions {
+  system?: string;
+  maxOutputTokens?: number;
+  signal?: AbortSignal;
+}
+
 export interface ModelGateway {
-  streamText(slot: ModelSlot, messages: ModelMessage[]): Promise<ReadableStream<string>>;
+  streamText(slot: ModelSlot, messages: ModelMessage[], options?: ModelGatewayStreamOptions): Promise<ReadableStream<string>>;
 
   generateText(
     slot: ModelSlot,

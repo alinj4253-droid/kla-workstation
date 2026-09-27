@@ -6,14 +6,35 @@ import { streamText, generateText, generateObject, jsonSchema, type LanguageMode
 import { safeStorage } from 'electron';
 import { z } from 'zod';
 import type pino from 'pino';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { BUILTIN_AGENT_REQUIREMENTS, validateModelForAgent } from '@kunqing/model-core';
-import type { ModelCapability, ModelSlot, ModelMessage } from '@kunqing/model-core';
+import type { GenerateOptions, ModelCapability, ModelSlot, ModelMessage } from '@kunqing/model-core';
 import { getLogger } from './logger';
+import type { CollaborationMode } from './collaboration-mode';
 
 export type { ModelSlot, ModelCapability, ModelMessage };
 export { BUILTIN_AGENT_REQUIREMENTS, validateModelForAgent, noModelError };
 
-type ProviderSettings = { providerType: string; baseUrl?: string; modelId: string; apiKey?: string };
+type ProviderSettings = {
+  providerType: string;
+  baseUrl?: string;
+  modelId: string;
+  apiKey?: string;
+  parameters?: Record<string, unknown>;
+};
+/** 槽位 profile 的库内解析结果：不含运行期合并参数（挂载覆盖 / 协作模式），可跨调用缓存。 */
+type SlotProfileRow = {
+  providerType: string;
+  baseUrl?: string | undefined;
+  modelId: string;
+  apiKey?: string | undefined;
+  storedParameters: Record<string, unknown>;
+};
+type ModelExecutionContext = {
+  profileId?: string;
+  parameters?: Record<string, unknown>;
+  collaborationMode?: CollaborationMode;
+};
 type GatewayToolDefinition = { description: string; parameters: Record<string, unknown> };
 
 export function normalizeModelTools(
@@ -55,6 +76,45 @@ function stripUndefined<T extends Record<string, unknown>>(obj: T): { [K in keyo
   return result as ReturnType<typeof stripUndefined<T>>;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' ? value as Record<string, unknown> : null;
+}
+
+function parseJsonPayload(value: unknown): unknown {
+  if (typeof value !== 'string' || !value.trim()) return undefined;
+  const trimmed = value.trim();
+  const unfenced = trimmed.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+  const candidates = [trimmed, unfenced];
+  const objectStart = unfenced.indexOf('{');
+  const objectEnd = unfenced.lastIndexOf('}');
+  if (objectStart >= 0 && objectEnd > objectStart) candidates.push(unfenced.slice(objectStart, objectEnd + 1));
+  const arrayStart = unfenced.indexOf('[');
+  const arrayEnd = unfenced.lastIndexOf(']');
+  if (arrayStart >= 0 && arrayEnd > arrayStart) candidates.push(unfenced.slice(arrayStart, arrayEnd + 1));
+  for (const candidate of candidates) {
+    try { return JSON.parse(candidate); } catch { /* try the next representation */ }
+  }
+  return undefined;
+}
+
+function recoverStructuredObjectFromModelError<T>(error: unknown): { object: T; usage?: unknown } | null {
+  const errorRow = asRecord(error);
+  const response = asRecord(errorRow?.response);
+  let body: unknown = response?.body;
+  if (typeof body === 'string') {
+    try { body = JSON.parse(body); } catch { /* retain raw body */ }
+  }
+  const bodyRow = asRecord(body);
+  const choices = Array.isArray(bodyRow?.choices) ? bodyRow.choices : [];
+  const message = asRecord(asRecord(choices[0])?.message);
+  const payloads = [message?.content, message?.reasoning_content, errorRow?.text, errorRow?.reasoningText];
+  for (const payload of payloads) {
+    const object = parseJsonPayload(payload);
+    if (object !== undefined) return { object: object as T, usage: response?.usage ?? bodyRow?.usage ?? errorRow?.usage };
+  }
+  return null;
+}
+
 /** 用户友好的槽位名称映射 */
 const SLOT_LABELS: Record<string, string> = {
   reasoning: '推理',
@@ -65,7 +125,7 @@ const SLOT_LABELS: Record<string, string> = {
 /** 生成用户友好的模型未配置错误消息 */
 function noModelError(slot: string): string {
   const label = SLOT_LABELS[slot] ?? slot;
-  return `模型未配置：请先在「设置 → 模型管理」中为「${label}」绑定一个可用模型，然后重试。`;
+  return `模型未配置：请先在「设置 → 模型管理」中添加可用模型，并在「智能体管理」中为当前智能体挂载模型（未挂载时将使用${label}默认模型）。`;
 }
 
 /** 结构化输出的测试 schema */
@@ -74,11 +134,47 @@ const testObjectSchema = z.object({
   keywords: z.array(z.string()).describe('关键词列表'),
 });
 
+/** 生产 LLM 调用的默认超时：避免网络挂起长期占用调度并发槽。 */
+const DEFAULT_LLM_TIMEOUT_MS = 120_000;
+
+/** 判断模型调用错误是否值得幂等重试一次（网络中断、超时、429/5xx 等）。 */
+function isRetryableModelError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const row = error as Record<string, unknown>;
+  if (row.isRetryable === true) return true; // ai-sdk APICallError：连接失败 / 429 / 5xx
+  const name = typeof row.name === 'string' ? row.name : '';
+  if (name === 'TimeoutError' || name === 'APIConnectionError') return true;
+  if (name === 'TypeError' && typeof row.message === 'string' && /fetch|network|econn|etimedout/i.test(row.message)) return true;
+  return false;
+}
+
 export class ModelGateway {
   protected readonly logger: pino.Logger;
+  private readonly modelExecutionContext = new AsyncLocalStorage<ModelExecutionContext>();
 
   constructor(protected db: Database) {
     this.logger = getLogger();
+  }
+
+  runWithModelProfileSnapshot<T>(snapshotJson: string | null | undefined, task: () => Promise<T>): Promise<T> {
+    // Establish an explicit empty context as well. Background work may be
+    // scheduled from another run's AsyncLocalStorage scope and must not inherit
+    // that run's mounted model accidentally.
+    if (!snapshotJson) return this.modelExecutionContext.run({}, task);
+    try {
+      const snapshot = JSON.parse(snapshotJson) as { profileId?: unknown; parameters?: unknown };
+      if (typeof snapshot.profileId !== 'string' || !snapshot.profileId) return this.modelExecutionContext.run({}, task);
+      const parameters = snapshot.parameters && typeof snapshot.parameters === 'object'
+        ? snapshot.parameters as Record<string, unknown>
+        : undefined;
+      return this.modelExecutionContext.run({ profileId: snapshot.profileId, ...(parameters ? { parameters } : {}) }, task);
+    } catch {
+      return this.modelExecutionContext.run({}, task);
+    }
+  }
+
+  runWithCollaborationMode<T>(mode: CollaborationMode, task: () => Promise<T>): Promise<T> {
+    return this.modelExecutionContext.run({ ...this.modelExecutionContext.getStore(), collaborationMode: mode }, task);
   }
 
   private recordTokenUsage(usage: unknown): void {
@@ -107,52 +203,198 @@ export class ModelGateway {
     }
   }
 
-  private getSlotProfile(slot: ModelSlot): ProviderSettings | null {
-    const row = this.db.prepare(
+  /**
+   * 为一次生产模型调用提供默认超时与单次幂等重试。
+   * - 生成类调用本身无副作用（副作用发生在工具执行侧），失败重试安全；
+   * - 超时或网络类错误重试一次，其余错误直接抛出，不放大延迟。
+   */
+  private async callWithTimeoutRetry<T>(slot: ModelSlot, invoke: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), DEFAULT_LLM_TIMEOUT_MS);
+      try {
+        return await invoke(controller.signal);
+      } catch (error) {
+        lastError = error;
+        const timedOut = controller.signal.aborted;
+        if (attempt === 0 && (timedOut || isRetryableModelError(error))) {
+          this.logger.warn(
+            { slot, attempt, timedOut, error: error instanceof Error ? error.message : String(error) },
+            'ModelGateway: 模型调用失败，将重试一次',
+          );
+          continue;
+        }
+        if (timedOut && attempt === 1) {
+          throw new Error(`模型请求超时（${DEFAULT_LLM_TIMEOUT_MS / 1_000}s），已重试一次仍失败`, { cause: error });
+        }
+        throw error;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    throw lastError;
+  }
+
+  /** 槽位/挂载 profile 的库内行缓存：同一 run 的多轮 LLM 调用复用解析与解密结果。 */
+  private slotProfileRows = new Map<string, SlotProfileRow | null>();
+
+  /** 模型设置（provider/profile/槽位绑定/API Key）变更后调用，确保后续调用读到新配置。 */
+  invalidateSlotProfiles(): void {
+    this.slotProfileRows.clear();
+  }
+
+  private loadSlotProfileRow(slot: ModelSlot, mountedProfileId?: string): SlotProfileRow | null {
+    const row = mountedProfileId
+      ? this.db.prepare(
+        `SELECT mp.id, mp.model_id as modelId, mp.provider_id as providerId,
+                prv.type as providerType, prv.base_url as baseUrl, prv.secret_ref as secretRef,
+                mp.parameters_json as parametersJson
+         FROM model_profiles mp
+         JOIN model_providers prv ON prv.id = mp.provider_id
+         WHERE mp.id = ? AND mp.enabled = 1`,
+      ).get(mountedProfileId)
+      : this.db.prepare(
       `SELECT mp.id, mp.model_id as modelId, mp.provider_id as providerId,
-              prv.type as providerType, prv.base_url as baseUrl, prv.secret_ref as secretRef
+              prv.type as providerType, prv.base_url as baseUrl, prv.secret_ref as secretRef,
+              mp.parameters_json as parametersJson
        FROM model_slot_bindings msb
        JOIN model_profiles mp ON mp.id = msb.model_profile_id
        JOIN model_providers prv ON prv.id = mp.provider_id
        WHERE msb.slot = ? AND mp.enabled = 1`,
-    ).get(slot) as { id: string; modelId: string; providerId: string; providerType: string; baseUrl: string | null; secretRef: string | null } | undefined;
+    ).get(slot);
+    const typedRow = row as { id: string; modelId: string; providerId: string; providerType: string; baseUrl: string | null; secretRef: string | null; parametersJson: string | null } | undefined;
 
-    if (!row) {
-      this.logger.warn({ slot }, 'ModelGateway: no profile found for slot');
+    if (!typedRow) {
+      this.logger.warn({ slot, mountedProfileId }, 'ModelGateway: no profile found');
       return null;
     }
     let apiKey: string | undefined;
-    if (row.secretRef) {
-      const secret = this.db.prepare('SELECT ciphertext FROM secrets WHERE id = ?').get(row.secretRef) as { ciphertext: Buffer } | undefined;
+    if (typedRow.secretRef) {
+      const secret = this.db.prepare('SELECT ciphertext FROM secrets WHERE id = ?').get(typedRow.secretRef) as { ciphertext: Buffer } | undefined;
       if (secret) {
         try {
           apiKey = safeStorage.decryptString(secret.ciphertext);
         } catch {
-          this.logger.warn({ slot, secretRef: row.secretRef }, 'ModelGateway: failed to decrypt API key');
+          this.logger.warn({ slot, secretRef: typedRow.secretRef }, 'ModelGateway: failed to decrypt API key');
         }
       }
     }
-    return stripUndefined({ providerType: row.providerType, baseUrl: row.baseUrl ?? undefined, modelId: row.modelId, apiKey }) as ProviderSettings;
+    let storedParameters: Record<string, unknown> = {};
+    try { storedParameters = typedRow.parametersJson ? JSON.parse(typedRow.parametersJson) as Record<string, unknown> : {}; } catch { /* ignore malformed parameters */ }
+    return {
+      providerType: typedRow.providerType,
+      baseUrl: typedRow.baseUrl ?? undefined,
+      modelId: typedRow.modelId,
+      apiKey,
+      storedParameters,
+    };
   }
 
-  async streamText(slot: ModelSlot, messages: Array<{ role: 'user' | 'assistant'; content: string }>, system?: string): Promise<ReadableStream<string>> {
+  private getSlotProfile(slot: ModelSlot): ProviderSettings | null {
+    const mounted = this.modelExecutionContext.getStore();
+    const cacheKey = mounted?.profileId ? `profile:${mounted.profileId}` : `slot:${slot}`;
+    let row = this.slotProfileRows.get(cacheKey);
+    if (row === undefined) {
+      row = this.loadSlotProfileRow(slot, mounted?.profileId);
+      this.slotProfileRows.set(cacheKey, row);
+    }
+    if (!row) return null;
+    const collaborationParameters = mounted?.collaborationMode === 'fast'
+      ? { thinking: false, thinkingLevel: 'none' }
+      : mounted?.collaborationMode === 'balanced'
+        ? { thinking: true, thinkingLevel: 'minimal' }
+        : {};
+    const parameters = { ...row.storedParameters, ...(mounted?.parameters ?? {}), ...collaborationParameters };
+    return stripUndefined({ providerType: row.providerType, baseUrl: row.baseUrl, modelId: row.modelId, apiKey: row.apiKey, parameters }) as ProviderSettings;
+  }
+
+  private getGenerationOptions(
+    profile: ProviderSettings,
+    overrides?: Pick<GenerateOptions, 'thinking' | 'thinkingLevel'>,
+  ): { temperature?: number; providerOptions?: Record<string, unknown> } {
+    const parameters: Record<string, unknown> = {
+      ...(profile.parameters ?? {}),
+      ...(typeof overrides?.thinking === 'boolean' ? { thinking: overrides.thinking } : {}),
+      ...(overrides?.thinkingLevel ? { thinkingLevel: overrides.thinkingLevel } : {}),
+    };
+    const thinking = parameters.thinking === true;
+    const thinkingLevel = typeof parameters.thinkingLevel === 'string' ? parameters.thinkingLevel : 'medium';
+    const isOpenAiReasoningModel = /(?:^|[-_.])(o1|o3|o4)(?:[-_.]|$)|gpt-5/i.test(profile.modelId);
+    const temperature = typeof parameters.temperature === 'number' && Number.isFinite(parameters.temperature)
+      && !(thinking && (isOpenAiReasoningModel || profile.providerType === 'anthropic'))
+      ? Math.max(0, Math.min(2, parameters.temperature))
+      : undefined;
+    const temperatureOptions = temperature === undefined ? {} : { temperature };
+    if (!thinking || thinkingLevel === 'none') {
+      if (thinkingLevel === 'none' && profile.providerType === 'openai' && isOpenAiReasoningModel) {
+        return {
+          ...temperatureOptions,
+          providerOptions: { openai: { reasoningEffort: 'none' } },
+        };
+      }
+      return temperatureOptions;
+    }
+    if (profile.providerType === 'openai' && isOpenAiReasoningModel) {
+      return {
+        ...temperatureOptions,
+        providerOptions: { openai: { reasoningEffort: thinkingLevel } },
+      };
+    }
+    if (profile.providerType === 'anthropic') {
+      const budgetByLevel: Record<string, number> = { minimal: 1_024, low: 2_048, medium: 4_096, high: 8_192, xhigh: 16_384 };
+      return {
+        ...temperatureOptions,
+        providerOptions: { anthropic: { thinking: { type: 'enabled', budgetTokens: budgetByLevel[thinkingLevel] ?? 4_096 } } },
+      };
+    }
+    return temperatureOptions;
+  }
+
+  private resolveMaxOutputTokens(
+    generationOptions: { providerOptions?: Record<string, unknown> },
+    requested: number | undefined,
+  ): number | undefined {
+    const base = typeof requested === 'number' && Number.isFinite(requested)
+      ? Math.max(64, Math.floor(requested))
+      : undefined;
+    if (base === undefined) return undefined;
+    const anthropic = generationOptions.providerOptions?.anthropic as { thinking?: { budgetTokens?: unknown } } | undefined;
+    const budget = anthropic?.thinking?.budgetTokens;
+    if (typeof budget !== 'number' || !Number.isFinite(budget) || budget <= 0) return base;
+    // Anthropic 的 max_tokens 同时覆盖思考与正文，而调用方传入的
+    // maxOutputTokens 语义是可见输出上限。这里把思考预算补到 max_tokens
+    // 上，避免正文配额被思考挤占后在结构化输出中途截断。
+    return base + budget;
+  }
+
+  async streamText(
+    slot: ModelSlot,
+    messages: Array<{ role: 'user' | 'assistant'; content: string }>,
+    options?: { system?: string; maxOutputTokens?: number; signal?: AbortSignal },
+  ): Promise<ReadableStream<string>> {
     const profile = this.getSlotProfile(slot);
     if (!profile) throw new Error(noModelError(slot));
 
     this.logger.info({ slot, modelId: profile.modelId, providerType: profile.providerType, msgCount: messages.length }, 'ModelGateway.streamText');
     const provider = this.buildProvider(profile);
+    const generationOptions = this.getGenerationOptions(profile);
+    const maxOutputTokens = this.resolveMaxOutputTokens(generationOptions, options?.maxOutputTokens);
     const result = streamText({
       model: provider(profile.modelId),
       messages,
-      ...(system !== undefined ? { system } : {}),
-    });
+      ...(options?.system !== undefined ? { system: options.system } : {}),
+      ...(maxOutputTokens ? { maxOutputTokens } : {}),
+      ...(options?.signal ? { abortSignal: options.signal } : {}),
+      ...generationOptions,
+    } as never);
     return result.textStream;
   }
 
   async generateText(
     slot: ModelSlot,
     messages: Array<{ role: 'user' | 'assistant'; content: string }>,
-    options?: { system?: string; tools?: Record<string, { description: string; parameters: Record<string, unknown> }> },
+    options?: GenerateOptions & { system?: string },
   ): Promise<{ text: string; toolCalls?: Array<{ name: string; args: Record<string, unknown> }> }> {
     const profile = this.getSlotProfile(slot);
     if (!profile) throw new Error(noModelError(slot));
@@ -161,20 +403,26 @@ export class ModelGateway {
     const provider = this.buildProvider(profile);
     const { system: sys } = options ?? {};
     const normalizedTools = normalizeModelTools(options?.tools);
-    const result = await generateText({
+    const generationOptions = this.getGenerationOptions(profile, options);
+    const maxOutputTokens = this.resolveMaxOutputTokens(generationOptions, options?.maxOutputTokens);
+    return await this.callWithTimeoutRetry(slot, (signal) => generateText({
       model: provider(profile.modelId),
       messages,
       ...(sys !== undefined ? { system: sys } : {}),
       ...(normalizedTools.tools ? { tools: normalizedTools.tools } : {}),
-    });
-    this.recordTokenUsage(result.usage);
-    return {
-      text: result.text,
-      toolCalls: result.toolCalls?.map((tc) => ({
-        name: normalizedTools.internalNameByProviderName.get(tc.toolName) ?? tc.toolName,
-        args: tc.input as Record<string, unknown>,
-      })),
-    };
+      ...(maxOutputTokens ? { maxOutputTokens } : {}),
+      abortSignal: signal,
+      ...generationOptions,
+    } as never).then((res) => {
+      this.recordTokenUsage(res.usage);
+      return {
+        text: res.text,
+        toolCalls: res.toolCalls?.map((tc) => ({
+          name: normalizedTools.internalNameByProviderName.get(tc.toolName) ?? tc.toolName,
+          args: tc.input as Record<string, unknown>,
+        })),
+      };
+    }));
   }
 
   async generateObject<T>(slot: ModelSlot, messages: Array<{ role: 'user' | 'assistant'; content: string }>, system?: string): Promise<T> {
@@ -183,14 +431,64 @@ export class ModelGateway {
 
     this.logger.info({ slot, modelId: profile.modelId, providerType: profile.providerType, msgCount: messages.length }, 'ModelGateway.generateObject');
     const provider = this.buildProvider(profile);
-    const result = await generateObject({
-      model: provider(profile.modelId),
-      messages,
-      ...(system !== undefined ? { system } : {}),
-      output: 'no-schema',
-    } as never);
-    this.recordTokenUsage((result as { usage?: unknown }).usage);
-    return result.object as T;
+    const generationOptions = this.getGenerationOptions(profile);
+    return this.callWithTimeoutRetry(slot, async (signal) => {
+      try {
+        const result = await generateObject({
+          model: provider(profile.modelId),
+          messages,
+          ...(system !== undefined ? { system } : {}),
+          abortSignal: signal,
+          ...generationOptions,
+          output: 'no-schema',
+        } as never);
+        this.recordTokenUsage((result as { usage?: unknown }).usage);
+        return result.object as T;
+      } catch (error) {
+        const recovered = recoverStructuredObjectFromModelError<T>(error);
+        if (!recovered) throw error;
+        this.recordTokenUsage(recovered.usage);
+        this.logger.warn({ slot, modelId: profile.modelId }, 'ModelGateway: 从模型思考字段恢复结构化结果');
+        return recovered.object;
+      }
+    });
+  }
+
+  async generateObjectWithImages<T>(slot: ModelSlot, text: string, images: Uint8Array[], system?: string): Promise<T> {
+    const profile = this.getSlotProfile(slot);
+    if (!profile) throw new Error(noModelError(slot));
+    const provider = this.buildProvider(profile);
+    const generationOptions = this.getGenerationOptions(profile);
+    return this.callWithTimeoutRetry(slot, async (signal) => {
+      try {
+        const result = await generateObject({
+          model: provider(profile.modelId),
+          messages: [{
+            role: 'user',
+            content: [
+              { type: 'text', text },
+              ...images.slice(0, 4).map((image) => ({
+                type: 'file' as const,
+                mediaType: 'image/png',
+                data: { type: 'data' as const, data: image },
+              })),
+            ],
+          }],
+          ...(system !== undefined ? { system } : {}),
+          abortSignal: signal,
+          ...generationOptions,
+          output: 'no-schema',
+        } as never);
+        this.recordTokenUsage((result as { usage?: unknown }).usage);
+        return result.object as T;
+      } catch (error) {
+        const recovered = recoverStructuredObjectFromModelError<T>(error);
+        if (!recovered) throw error;
+        this.recordTokenUsage(recovered.usage);
+        this.logger.warn({ slot, modelId: profile.modelId }, 'ModelGateway: 从模型思考字段恢复结构化结果');
+        return recovered.object;
+      }
+    });
   }
 
   /**
@@ -289,7 +587,11 @@ export class ModelGateway {
 
     switch (type) {
       case 'openai':
-      case 'openai-compatible': {
+      case 'openai-compatible':
+      case 'deepseek':
+      case 'glm':
+      case 'kimi':
+      case 'qwen': {
         const opts: Record<string, string> = {};
         if (profile.apiKey) opts.apiKey = profile.apiKey;
         if (profile.baseUrl) opts.baseURL = profile.baseUrl;

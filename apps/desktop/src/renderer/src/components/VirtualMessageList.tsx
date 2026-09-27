@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { CheckCircle2, ChevronDown, CircleDashed, Clock3, FileOutput, FileText, GitBranch, Loader2, RefreshCw, Square, Wrench, XCircle } from 'lucide-react';
 import { MarkdownMessage, type ConfirmedMention } from './MarkdownMessage';
 import { AgentAvatar, getAgentTone } from './AgentAvatar';
-import { displayAgentText } from '../chat-input-utils';
+import { displayAgentText, formatReplyPreview } from '../chat-input-utils';
 import type { BusinessProcess } from '@kunqing/native-agent-core';
 
 type MessageItem = {
@@ -12,6 +12,7 @@ type MessageItem = {
   kind: string;
   contentJson: string;
   status: string;
+  replyToId?: string | null;
   createdAt: string;
 };
 
@@ -47,6 +48,15 @@ export type RunActivity = {
   businessProcess?: BusinessProcess;
 };
 
+// 执行中的智能体在聊天流末尾渲染为一个动态气泡：
+// 无输出时展示「正在执行任务」动画，开始输出后在同一气泡内流式展示文本。
+export type RunningAgentBubble = {
+  id: string;
+  name: string;
+  tone: ReturnType<typeof getAgentTone>;
+  streamingText: string;
+};
+
 const isLegacyMechanicalProgress = (message: MessageItem): boolean => {
   if (message.senderType !== 'agent') return false;
   const { text, messageType } = parseContent(message.contentJson);
@@ -73,13 +83,20 @@ interface VirtualMessageListProps {
   onLoadMore: () => void;
   onRetryRun: (messageId: string) => void;
   onPreviewFile?: (filePath: string) => void;
+  onPreviewUrl?: (url: string) => void;
+  onPreviewImage?: (url: string, alt?: string) => void;
+  onReplyMessage?: (message: MessageItem) => void;
+  userProfile?: { nickname: string; avatarDataUrl?: string };
+  scrollToBottomSignal?: string | null;
+  runningAgents?: RunningAgentBubble[];
 }
 
 type VirtualItem =
   | { kind: 'load-more' }
   | { kind: 'loading' }
   | { kind: 'empty' }
-  | { kind: 'message'; msg: MessageItem };
+  | { kind: 'message'; msg: MessageItem }
+  | { kind: 'running-agent'; agent: RunningAgentBubble };
 
 export function VirtualMessageList({
   messages,
@@ -92,8 +109,25 @@ export function VirtualMessageList({
   onLoadMore,
   onRetryRun,
   onPreviewFile,
+  onPreviewUrl,
+  onPreviewImage,
+  onReplyMessage,
+  userProfile = { nickname: '项目负责人' },
+  scrollToBottomSignal,
+  runningAgents = [],
 }: VirtualMessageListProps): React.JSX.Element {
   const parentRef = useRef<HTMLDivElement>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; message: MessageItem } | null>(null);
+
+  useEffect(() => {
+    const close = (): void => setContextMenu(null);
+    window.addEventListener('click', close);
+    window.addEventListener('blur', close);
+    return () => {
+      window.removeEventListener('click', close);
+      window.removeEventListener('blur', close);
+    };
+  }, []);
 
   const allItems = useCallback((): VirtualItem[] => {
     if (loading) {
@@ -102,17 +136,24 @@ export function VirtualMessageList({
 
     const items: VirtualItem[] = [];
 
-    if (messages.length === 0) {
+    if (messages.length === 0 && runningAgents.length === 0) {
       items.push({ kind: 'empty' });
       return items;
     }
 
-    const visibleMessages = messages.filter((message) => !isLegacyMechanicalProgress(message));
+    // 执行中智能体的流式占位消息（sending）由末尾的动态气泡接管渲染，
+    // 这里跳过，避免同一段流式文本在聊天流里出现两份。
+    const runningAgentIds = new Set(runningAgents.map((agent) => agent.id));
+    const visibleMessages = messages.filter((message) => !isLegacyMechanicalProgress(message)
+      && !(message.status === 'sending' && message.senderType === 'agent' && runningAgentIds.has(message.senderId)));
     for (const msg of visibleMessages) {
       items.push({ kind: 'message', msg });
     }
+    for (const agent of runningAgents) {
+      items.push({ kind: 'running-agent', agent });
+    }
     return items;
-  }, [messages, hasMore, loading]);
+  }, [messages, hasMore, loading, runningAgents]);
 
   // Auto-scroll to bottom when new messages arrive
   const prevItemCount = useRef(0);
@@ -133,6 +174,31 @@ export function VirtualMessageList({
     }
     prevItemCount.current = count;
   }, [allItems]);
+
+  useEffect(() => {
+    if (!scrollToBottomSignal) return;
+    const parent = parentRef.current;
+    if (!parent) return;
+    const distanceFromBottom = parent.scrollHeight - parent.scrollTop - parent.clientHeight;
+    if (distanceFromBottom <= 2) return;
+    requestAnimationFrame(() => {
+      parent.scrollTop = parent.scrollHeight;
+    });
+  }, [scrollToBottomSignal]);
+
+  // 执行气泡内的流式文本持续增长时，若视口停留在底部附近则跟随滚动，
+  // 让「正在执行任务」到流式输出的切换始终保持在可视区域内。
+  const streamingSignature = runningAgents.map((agent) => `${agent.id}:${agent.streamingText.length}`).join('|');
+  useEffect(() => {
+    if (!streamingSignature) return;
+    const parent = parentRef.current;
+    if (!parent) return;
+    const isNearBottom = parent.scrollHeight - parent.scrollTop - parent.clientHeight < 160;
+    if (!isNearBottom) return;
+    requestAnimationFrame(() => {
+      parent.scrollTop = parent.scrollHeight;
+    });
+  }, [streamingSignature]);
 
   // Restore scroll position on initial mount
   useEffect(() => {
@@ -158,7 +224,7 @@ export function VirtualMessageList({
   };
 
   const senderDisplay = (msg: MessageItem): string => {
-    if (msg.senderType === 'user') return '项目负责人 (You)';
+    if (msg.senderType === 'user') return `${userProfile.nickname} (You)`;
     if (msg.senderType === 'agent') {
       const agent = projectAgents.find((a) => a.id === msg.senderId);
       return agent?.agentName ?? '智能体';
@@ -201,8 +267,22 @@ export function VirtualMessageList({
           const { text, mentions } = parseContent(item.msg.contentJson);
           const displayText = item.msg.kind === 'artifact' ? text : displayAgentText(text, projectAgents);
           const role = roleClass(item.msg);
+          const quotedMessage = item.msg.replyToId ? messages.find((message) => message.id === item.msg.replyToId) : undefined;
+          const quotedText = quotedMessage ? parseContent(quotedMessage.contentJson).text : '';
+          const quotedPreview = formatReplyPreview(quotedText || '文件消息');
           return (
-            <div key={item.msg.id} className="message-entry">
+            <div
+              key={item.msg.id}
+              className="message-entry"
+              onContextMenu={(event) => {
+                event.preventDefault();
+                const menuWidth = 152;
+                const menuHeight = 48;
+                const x = Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8));
+                const y = Math.max(8, Math.min(event.clientY, window.innerHeight - menuHeight - 8));
+                setContextMenu({ x, y, message: item.msg });
+              }}
+            >
             <article className={`message-row message-row--${role}`}>
               {item.msg.senderType !== 'user' && (
                 <AgentAvatar
@@ -220,6 +300,12 @@ export function VirtualMessageList({
                   )}
                 </div>
                 <div className={`message-bubble${item.msg.kind === 'warning' ? ' message-bubble--warning' : ''}`}>
+                  {quotedMessage && (
+                    <div className="message-reply-reference">
+                      <strong>{senderDisplay(quotedMessage)}</strong>
+                      <span title={quotedText || '文件消息'}>{quotedPreview}</span>
+                    </div>
+                  )}
                   {item.msg.kind === 'artifact' ? (
                     <button
                       type="button"
@@ -235,18 +321,67 @@ export function VirtualMessageList({
                       <em>右侧预览</em>
                     </button>
                   ) : (
-                    <MarkdownMessage content={displayText} mentions={mentions} />
+                    <MarkdownMessage content={displayText} mentions={mentions} {...(onPreviewUrl ? { onOpenLink: onPreviewUrl } : {})} {...(onPreviewImage ? { onOpenImage: onPreviewImage } : {})} />
                   )}
                   {item.msg.status === 'failed' && <span className="error-tag">发送失败</span>}
+                  {item.msg.status === 'sending' && <span className="message-streaming-caret" aria-label="正在生成" />}
                 </div>
               </div>
+              {item.msg.senderType === 'user' && (
+                <span className="user-message-avatar" aria-label={userProfile.nickname}>
+                  {userProfile.avatarDataUrl ? <img src={userProfile.avatarDataUrl} alt="" /> : userProfile.nickname.slice(0, 1).toUpperCase()}
+                </span>
+              )}
             </article>
+            </div>
+          );
+        }
+
+        if (item.kind === 'running-agent') {
+          const agent = item.agent;
+          const streaming = agent.streamingText.trim().length > 0;
+          const streamingDisplay = streaming ? displayAgentText(agent.streamingText, projectAgents) : '';
+          return (
+            <div key={`running-${agent.id}`} className="message-entry">
+              <article className="message-row message-row--agent" role="status" aria-label={`${agent.name} 正在执行任务`}>
+                <AgentAvatar label={agent.name} tone={agent.tone} size="md" />
+                <div className="message-body">
+                  <div className="message-sender">
+                    <strong>{agent.name}</strong>
+                    <span className="agent-running-badge" aria-hidden="true">执行中</span>
+                  </div>
+                  <div className="message-bubble message-bubble--running">
+                    {streaming ? (
+                      <>
+                        <MarkdownMessage content={streamingDisplay} mentions={[]} {...(onPreviewUrl ? { onOpenLink: onPreviewUrl } : {})} {...(onPreviewImage ? { onOpenImage: onPreviewImage } : {})} />
+                        <span className="message-streaming-caret" aria-label="正在生成" />
+                      </>
+                    ) : (
+                      <>
+                        <div className="agent-running-hint" aria-hidden="true">
+                          <Loader2 size={14} className="spin-soft" />
+                          <span className="agent-running-hint__label">{agent.name} 正在执行任务</span>
+                          <span className="agent-running-hint__dots"><i /><i /><i /></span>
+                        </div>
+                        <div className="agent-running-hint__bar" aria-hidden="true" />
+                      </>
+                    )}
+                  </div>
+                </div>
+              </article>
             </div>
           );
         }
 
         return null;
       })}
+      {contextMenu && (
+        <div className="message-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} role="menu" onClick={(event) => event.stopPropagation()}>
+          <button type="button" role="menuitem" onClick={() => { onReplyMessage?.(contextMenu.message); setContextMenu(null); }}>
+            回复消息
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -288,6 +423,7 @@ export function AgentWorkTree({
   hideChecklist?: boolean;
 }): React.JSX.Element {
   const terminal = ['completed', 'failed', 'cancelled', 'interrupted'].includes(run.status);
+  const awaitingUser = run.status === 'awaiting_user';
   const [expanded, setExpanded] = useState(forceExpanded || (!terminal && !autoCollapse));
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -295,10 +431,10 @@ export function AgentWorkTree({
     else if (terminal || autoCollapse) setExpanded(false);
   }, [terminal, autoCollapse, forceExpanded]);
   useEffect(() => {
-    if (terminal) return;
+    if (terminal || awaitingUser) return;
     const timer = window.setInterval(() => setNow(Date.now()), 1_000);
     return () => window.clearInterval(timer);
-  }, [terminal]);
+  }, [awaitingUser, terminal]);
 
   // 运行中的轨迹必须由后端明确发出 completed/failed 才能结束。
   // 不能为了视觉效果把旧的 running 轨迹直接标成完成，否则工作树会出现“尚未执行却已完成”。
@@ -314,6 +450,8 @@ export function AgentWorkTree({
       ? '未能完成'
       : run.status === 'cancelled'
         ? '已停止'
+        : awaitingUser
+          ? '等待用户回复'
         : run.status === 'queued'
           ? '正在等待开始'
           : displayWorkText(currentStatusText || '正在准备', projectAgents);
@@ -333,6 +471,8 @@ export function AgentWorkTree({
       ? '执行失败'
       : run.status === 'cancelled' || run.status === 'interrupted'
         ? '已停止'
+        : awaitingUser
+          ? '等待用户'
         : run.status === 'queued'
           ? '等待中'
           : '执行中';
@@ -349,7 +489,7 @@ export function AgentWorkTree({
   };
 
   return (
-    <section className={`agent-work-tree${terminal ? ' agent-work-tree--terminal' : ''}`} aria-label={`${displayName}工作过程`}>
+    <section className={`agent-work-tree${terminal ? ' agent-work-tree--terminal' : ''}${awaitingUser ? ' agent-work-tree--awaiting-user' : ''}`} aria-label={`${displayName}工作过程`}>
       <button type="button" className="agent-work-tree__toggle" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
         <strong className="agent-work-tree__status">{completionLabel} <time>{duration}</time></strong>
         <span className="agent-work-tree__meta">{phaseLabel ?? displayName}{!terminal && currentStatusText ? ` · ${statusLabel}` : ''}</span>
@@ -358,7 +498,7 @@ export function AgentWorkTree({
       {expanded && (
         <div className="agent-work-tree__body">
           {checklist.length === 0 && visibleTraces.length === 0 && (
-            <div className="agent-work-tree__empty">{terminal ? <CheckCircle2 size={14} /> : <Loader2 size={14} className="spin-soft" />}<span>{statusLabel}</span></div>
+            <div className="agent-work-tree__empty">{terminal ? <CheckCircle2 size={14} /> : awaitingUser ? <Clock3 size={14} /> : <Loader2 size={14} className="spin-soft" />}<span>{statusLabel}</span></div>
           )}
           {checklist.length > 0 && (
             <details className="agent-work-branch" open>
@@ -390,7 +530,7 @@ export function AgentWorkTree({
               </div>
             </details>
           )}
-          {!terminal && <button type="button" className="agent-work-tree__cancel" onClick={() => onCancel(run.runId)}><Square size={11} />停止</button>}
+          {!terminal && !awaitingUser && <button type="button" className="agent-work-tree__cancel" onClick={() => onCancel(run.runId)}><Square size={11} />停止</button>}
         </div>
       )}
     </section>

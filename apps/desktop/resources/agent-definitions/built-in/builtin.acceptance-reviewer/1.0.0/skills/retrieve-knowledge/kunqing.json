@@ -3,9 +3,9 @@
   "id": "retrieve-knowledge",
   "version": "1.0.0",
   "entry": "SKILL.md",
-  "agentDefinitions": ["builtin.acceptance-reviewer"],
-  "executionMode": "instructions",
-  "requiredTools": ["knowledge:search", "knowledge:listGraph"],
-  "permissions": ["read:knowledge"]
+  "agentDefinitions": ["builtin.material-writer", "builtin.acceptance-reviewer"],
+  "executionMode": "hybrid",
+  "requiredTools": ["knowledge:search", "knowledge:readDocument", "knowledge:listGraph", "temp:list", "temp:read"],
+  "permissions": ["read:knowledge", "read:document", "read:shared-knowledge"],
+  "compatibility": { "codexSkill": true, "kunqing": ">=0.1.0" }
 }
-

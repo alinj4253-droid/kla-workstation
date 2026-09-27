@@ -8,14 +8,21 @@ type AgentProfile = {
   runtimeMode: 'native-model' | 'external-cli';
   enabled: boolean;
   cliConnectionName?: string | null;
+  operationPlatformId?: string;
+  description?: string;
 };
 
 type ExistingAgent = { id: string; agentName: string };
 
 const DESCRIPTIONS: Record<string, string> = {
   'builtin.orchestrator': '理解目标、拆解任务并协调团队。',
+  'builtin.local-executor': '闭环完成知识化、调研、材料编写、验收和成果交付。',
   'builtin.knowledge-manager': '处理文档、知识图谱和 Wiki。',
   'builtin.researcher': '检索资料、分析信息并核查事实。',
+  'custom.workbuddy': '通过 MCP 调用 WorkBuddy 的外部智能体能力。',
+  'custom.kimi': 'Kimi Code 代码编写智能体：分析需求、修改代码并验证结果。',
+  'custom.kimi-code': 'Kimi Code 代码编写智能体：分析需求、修改代码并验证结果。',
+  'custom.codebuddy': 'CodeBuddy 验收智能体：读取真实成果并核对质量、事实与完整性。',
 };
 
 export function AddAgentsModal({
@@ -42,7 +49,9 @@ export function AddAgentsModal({
       const response = result as { ok: boolean; data?: AgentProfile[] } | undefined;
       if (response?.ok && response.data) {
         const existingNames = new Set(existingAgents.map((agent) => agent.agentName));
-        setProfiles(response.data.filter((profile) => profile.enabled && !existingNames.has(profile.name)));
+        // WorkBuddy MCP remains stored for compatibility, but is not selectable
+        // while its external task-consumer lifecycle is paused.
+        setProfiles(response.data.filter((profile) => profile.enabled && profile.definitionId !== 'builtin.gm' && profile.definitionId !== 'custom.workbuddy' && !existingNames.has(profile.name)));
       }
       setLoading(false);
     }).catch(() => {
@@ -98,7 +107,7 @@ export function AddAgentsModal({
             return (
               <button type="button" key={profile.id} className={`add-agent-row${checked ? ' add-agent-row--selected' : ''}`} onClick={() => toggle(profile.id)}>
                 <span><Bot size={18} /></span>
-                <div><strong>{profile.name}</strong><small>{profile.runtimeMode === 'external-cli' ? `外部 CLI${profile.cliConnectionName ? ` · ${profile.cliConnectionName}` : ''}` : DESCRIPTIONS[profile.definitionId] ?? '本地智能体'}</small></div>
+                <div><strong>{profile.name}</strong><small>{profile.operationPlatformId || profile.id.startsWith('operation-platform:') ? `操作平台 · ${profile.description || '网页操作与已生效技能执行'}` : DESCRIPTIONS[profile.definitionId] ?? (profile.runtimeMode === 'external-cli' ? `外部 CLI${profile.cliConnectionName ? ` · ${profile.cliConnectionName}` : ''}` : '本地智能体')}</small></div>
                 <i>{checked && <Check size={13} />}</i>
               </button>
             );

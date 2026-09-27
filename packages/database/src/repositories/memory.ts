@@ -36,17 +36,39 @@ const COLS = `id, project_id as projectId, agent_instance_id as agentInstanceId,
 export class MemoryRepository extends BaseRepository {
   constructor(db: Database.Database) { super(db); }
 
-  list(projectId: string, agentInstanceId: string, scope?: string, status?: string): MemoryRecordRow[] {
+  list(projectId: string, agentInstanceId: string, scope?: string, status?: string, options?: { limit?: number; pinnedOnly?: boolean; type?: string; topicKey?: string }): MemoryRecordRow[] {
     const clauses = ['project_id = ?', 'agent_instance_id = ?'];
     const params: unknown[] = [projectId, agentInstanceId];
     if (scope) { clauses.push('scope = ?'); params.push(scope); }
     if (status) { clauses.push('status = ?'); params.push(status); }
-    return this.db.prepare(`SELECT ${COLS} FROM memory_records WHERE ${clauses.join(' AND ')} ORDER BY created_at DESC`).all(...params) as MemoryRecordRow[];
+    if (options?.pinnedOnly) { clauses.push('pinned = 1'); }
+    if (options?.type) { clauses.push('type = ?'); params.push(options.type); }
+    if (options?.topicKey) { clauses.push('topic_key = ?'); params.push(options.topicKey); }
+    const limit = typeof options?.limit === 'number' && Number.isFinite(options.limit) && options.limit > 0
+      ? Math.floor(options.limit)
+      : 0;
+    const limitClause = limit > 0 ? ` LIMIT ${limit}` : '';
+    return this.db.prepare(`SELECT ${COLS} FROM memory_records WHERE ${clauses.join(' AND ')} ORDER BY created_at DESC${limitClause}`).all(...params) as MemoryRecordRow[];
   }
 
   get(id: string): MemoryRecordRow | null {
     const row = this.db.prepare(`SELECT ${COLS} FROM memory_records WHERE id = ?`).get(id) as MemoryRecordRow | undefined;
     return row ?? null;
+  }
+
+  /** 按 runId 直查活跃短期记录：LIKE 预筛后做 JSON 精确校验，替代全量 list + 逐条解析。 */
+  findByRunId(projectId: string, agentInstanceId: string, runId: string): MemoryRecordRow | null {
+    const rows = this.db.prepare(
+      `SELECT ${COLS} FROM memory_records
+       WHERE project_id = ? AND agent_instance_id = ? AND scope = 'short-term' AND status = 'active'
+         AND source_refs_json LIKE ?`,
+    ).all(projectId, agentInstanceId, `%"runId":"${runId}"%`) as MemoryRecordRow[];
+    for (const row of rows) {
+      try {
+        if ((JSON.parse(row.sourceRefsJson ?? '{}') as { runId?: string }).runId === runId) return row;
+      } catch { /* 跳过无法解析的行 */ }
+    }
+    return null;
   }
 
   create(input: {

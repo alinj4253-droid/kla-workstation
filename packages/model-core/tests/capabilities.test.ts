@@ -11,26 +11,13 @@ describe('BUILTIN_AGENT_REQUIREMENTS', () => {
     expect(orch!.requiredCapabilities).toContain('structuredOutput');
   });
 
-  it('contains knowledge-manager with streaming and structuredOutput', () => {
-    const km = BUILTIN_AGENT_REQUIREMENTS.find((r) => r.definitionId === 'builtin.knowledge-manager');
-    expect(km).toBeDefined();
-    expect(km!.requiredCapabilities).toContain('streaming');
-    expect(km!.requiredCapabilities).toContain('structuredOutput');
-  });
-
-  it('contains researcher with streaming and structuredOutput', () => {
-    const res = BUILTIN_AGENT_REQUIREMENTS.find((r) => r.definitionId === 'builtin.researcher');
-    expect(res).toBeDefined();
-    expect(res!.requiredCapabilities).toContain('streaming');
-    expect(res!.requiredCapabilities).toContain('structuredOutput');
-  });
-
-  it('requires reasoning tool support for writer and acceptance reviewer', () => {
-    for (const definitionId of ['builtin.material-writer', 'builtin.acceptance-reviewer']) {
-      const requirement = BUILTIN_AGENT_REQUIREMENTS.find((item) => item.definitionId === definitionId);
-      expect(requirement).toBeDefined();
-      expect(requirement!.requiredCapabilities).toEqual(expect.arrayContaining(['streaming', 'toolCalling', 'structuredOutput']));
-    }
+  it('uses the local executor as the single specialist capability boundary', () => {
+    const local = BUILTIN_AGENT_REQUIREMENTS.find((r) => r.definitionId === 'builtin.local-executor');
+    expect(local).toBeDefined();
+    expect(local!.requiredCapabilities).toEqual(expect.arrayContaining(['streaming', 'toolCalling', 'structuredOutput']));
+    expect(BUILTIN_AGENT_REQUIREMENTS.some((r) => [
+      'builtin.knowledge-manager', 'builtin.researcher', 'builtin.material-writer', 'builtin.acceptance-reviewer',
+    ].includes(r.definitionId))).toBe(false);
   });
 });
 
@@ -65,22 +52,15 @@ describe('validateModelForAgent', () => {
     expect(result.reason).toContain('structuredOutput');
   });
 
-  it('returns allowed: true for knowledge-manager with streaming only', () => {
+  it('treats legacy specialist definitions as compatibility aliases', () => {
     const capabilities: ModelCapability[] = ['streaming'];
-    const result = validateModelForAgent('builtin.knowledge-manager', capabilities);
-    expect(result.allowed).toBe(false);
-    expect(result.reason).toContain('structuredOutput');
-  });
-
-  it('returns allowed: true with all capabilities for knowledge-manager', () => {
-    const capabilities: ModelCapability[] = ['streaming', 'structuredOutput'];
     const result = validateModelForAgent('builtin.knowledge-manager', capabilities);
     expect(result.allowed).toBe(true);
   });
 
   it('ignores extra capabilities beyond requirements', () => {
     const capabilities: ModelCapability[] = ['streaming', 'toolCalling', 'structuredOutput'];
-    const result = validateModelForAgent('builtin.knowledge-manager', capabilities);
+    const result = validateModelForAgent('builtin.local-executor', capabilities);
     expect(result.allowed).toBe(true);
   });
 });

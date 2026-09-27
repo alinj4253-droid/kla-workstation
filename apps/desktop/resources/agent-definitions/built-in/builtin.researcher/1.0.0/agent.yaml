@@ -16,6 +16,9 @@ tools:
   - knowledge.search
   - workspace.search
   - web:search
+  - temp.save
+  - temp.read
+  - temp.list
   - memory.writeOwn
 memoryPolicy:
   shortTermTtlHours: 72

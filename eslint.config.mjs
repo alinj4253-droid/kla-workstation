@@ -3,7 +3,7 @@ import globals from 'globals';
 import tsParser from '@typescript-eslint/parser';
 
 export default [
-  { ignores: ['**/out/**', '**/dist-types/**', '**/node_modules/**', '**/K_Studio/**', '**/dist/**', '**/dist-web/**', '**/*.d.ts'] },
+  { ignores: ['**/out/**', '**/dist-types/**', '**/node_modules/**', '**/K_Studio/**', '**/dist/**', '**/dist-web/**', '**/release/**', '**/release-latest/**', '**/resources/tools/**', '**/.kqocr-build/**', '**/*.min.js', '**/*.d.ts'] },
   eslint.configs.recommended,
   {
     rules: {

@@ -57,6 +57,7 @@ export type ProcessEvent =
   | { type: 'stderr'; data: string }
   | { type: 'exit'; code: number | null; signal: string | null }
   | { type: 'error'; message: string }
+  | { type: 'timeout'; timeoutMs: number }
   | { type: 'size_limit_exceeded'; stream: 'stdout' | 'stderr'; limitBytes: number; actualBytes: number };
 
 /** 跨平台终止进程树 */
@@ -108,11 +109,24 @@ export class ProcessSupervisor {
 
     if (timeoutMs > 0) {
       const timer = setTimeout(() => {
-        logger?.warn({ runId, timeoutMs }, 'ProcessSupervisor: 进程超时，正在终止');
+        this.timeoutTimers.delete(runId);
+        this.emitter.emit(`timeout:${runId}`, { type: 'timeout', timeoutMs } as ProcessEvent);
+        logger?.warn({ runId, timeoutMs }, 'ProcessSupervisor: 进程超时，正在终止进程树');
         const proc = this.processes.get(runId);
         if (proc && !proc.killed && proc.pid) {
           try { proc.kill(); } catch { /* 可能已结束 */ }
           killProcessTree(proc.pid);
+          // 优雅终止宽限期：忽略 SIGTERM 的进程树升级为强杀（SIGKILL）。
+          const killTimer = setTimeout(() => {
+            try {
+              if (!proc.killed && proc.pid) {
+                killProcessTree(proc.pid, process.platform === 'win32' ? undefined : 'SIGKILL');
+                try { proc.kill('SIGKILL'); } catch { /* already dead */ }
+                logger?.warn({ runId }, 'ProcessSupervisor: 超时终止未生效，已强制终止进程树');
+              }
+            } catch { /* already dead */ }
+          }, 2000);
+          proc.on('exit', () => clearTimeout(killTimer));
         }
       }, timeoutMs);
       this.timeoutTimers.set(runId, timer);

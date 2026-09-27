@@ -59,6 +59,8 @@ export type CliConnectionSnapshot = {
   capabilities: AdapterCapability[];
   secretRefs: string[];
   detectedVersion: string | null;
+  /** Optional MCP connection data for external MCP adapters. */
+  mcpConfig?: Record<string, unknown> | null;
 };
 
 // ─── Auth ────────────────────────────────────────────────────────────────────

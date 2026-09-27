@@ -9,14 +9,15 @@ type GraphArtifactPreview = {
 };
 
 type GraphViewerProps = {
-  scopeType: 'project' | 'shared';
+  scopeType: 'project' | 'shared' | 'project-shared';
   projectId: string;
+  scopeId?: string;
   onClose: () => void;
 };
 
 const GRAPH_ARTIFACT_PATH = 'graph-visualization/knowledge-graph.html';
 
-export function GraphViewer({ scopeType, projectId, onClose }: GraphViewerProps): React.JSX.Element {
+export function GraphViewer({ scopeType, projectId, scopeId, onClose }: GraphViewerProps): React.JSX.Element {
   const [preview, setPreview] = useState<GraphArtifactPreview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -28,7 +29,8 @@ export function GraphViewer({ scopeType, projectId, onClose }: GraphViewerProps)
       const result = await window.kunqing?.workspace.getPreview({
         projectId,
         relativePath: GRAPH_ARTIFACT_PATH,
-        ...(scopeType === 'shared' ? { scopeType: 'shared' as const } : {}),
+        ...(scopeType !== 'project' ? { scopeType } : {}),
+        ...(scopeType === 'project-shared' && scopeId ? { scopeId } : {}),
       }) as {
         ok: boolean;
         data?: { kind?: string; content?: string; appFileUrl?: string; fileName?: string; error?: string };
@@ -59,7 +61,7 @@ export function GraphViewer({ scopeType, projectId, onClose }: GraphViewerProps)
     } finally {
       setLoading(false);
     }
-  }, [projectId, scopeType]);
+  }, [projectId, scopeId, scopeType]);
 
   useEffect(() => { void loadGraph(); }, [loadGraph]);
 
@@ -67,7 +69,8 @@ export function GraphViewer({ scopeType, projectId, onClose }: GraphViewerProps)
     await window.kunqing?.workspace.openWithSystem({
       projectId,
       relativePath: GRAPH_ARTIFACT_PATH,
-      ...(scopeType === 'shared' ? { scopeType: 'shared' as const } : {}),
+      ...(scopeType !== 'project' ? { scopeType } : {}),
+      ...(scopeType === 'project-shared' && scopeId ? { scopeId } : {}),
     });
   };
 
