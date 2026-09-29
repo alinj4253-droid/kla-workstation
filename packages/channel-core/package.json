@@ -1,1 +1,0 @@
-{"name":"@kunqing/channel-core","version":"0.1.0","private":true,"type":"module","exports":"./dist/index.js","types":"./dist/index.d.ts","scripts":{"build":"tsc -p tsconfig.json","typecheck":"tsc -p tsconfig.json --noEmit","test":"vitest run"},"dependencies":{"@larksuiteoapi/node-sdk":"1.71.1"},"devDependencies":{"vitest":"^4.1.10"}}

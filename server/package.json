@@ -1,5 +1,5 @@
 {
-  "name": "@kla-workstation/backend",
+  "name": "@kla-workstation/server",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -8,7 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
     "@fastify/cors": "^11.0.1",

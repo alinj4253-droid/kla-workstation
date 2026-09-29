@@ -1,13 +1,10 @@
 # Repository guidance
 
-- Current architecture and runtime boundaries: `docs/ARCHITECTURE.md`.
-- Historical MVP requirements and acceptance baseline: `docs/MVP_IMPLEMENTATION_SPEC.md`.
-- Use pnpm workspaces. Run `pnpm typecheck`, `pnpm lint`, `pnpm test`, and `pnpm build` before handoff.
-- better-sqlite3 must be rebuilt for the target Node ABI. Before `pnpm test`, run `node-gyp rebuild` (system Node). Before `pnpm build`/`pnpm dev`, run `electron-rebuild` (Electron). The desktop `build`/`dev` scripts handle electron-rebuild automatically; tests require the manual `node-gyp rebuild` step.
-- Renderer code must not import Node/Electron-only modules. All privileged capabilities go through the typed preload bridge.
-- Keep `contextIsolation: true`, `nodeIntegration: false`, and `sandbox: true`.
-- Reuse design tokens from `apps/desktop/src/renderer/src/styles.css`; do not scatter new raw colors across components.
-- Current UI contains both persisted flows and explicitly marked mock data. Mock data lives in renderer files and must be replaced through contracts rather than coupled to future database code.
-- Historical MVP documents describe an earlier feature boundary; current page availability is controlled by the implementation and feature settings.
-- CI/E2E/visual-regression are deferred to post-MVP. Local equivalents: `pnpm ci-check` (typecheck + lint + test + build), `pnpm test:e2e` (build artifact verification).
-- TypeScript 7 used for project; eslint uses `@typescript-eslint/parser` which does not support TS 7 — TS 6 is used at workspace root for lint compatibility only.
+- 本分支只承载新版本（客户端 + 服务端）；旧版纯桌面代码在 `main` / `chat` 分支，不要把旧版模块带回本分支。
+- 结构：`apps/desktop`（React 渲染层 + 轻量 Electron 壳）、`server`（Fastify 服务端）、`docs/`（新版设计文档）。
+- 使用 pnpm workspaces（`apps/*`、`server`）。禁止提交 `package-lock.json`；依赖一律进各包 `package.json` 后 `pnpm install`。
+- 交付前运行 `pnpm ci-check`（typecheck + lint + test + build）。
+- 客户端边界：渲染层不得访问数据库、文件系统、模型密钥或外部算力服务；Electron 壳仅提供窗口与类型化 Preload（`apps/desktop/desktop/preload.cjs`），保持 `contextIsolation: true`、`nodeIntegration: false`、`sandbox: true`。
+- 服务端 API 调用统一走 `apps/desktop/src/api/` 客户端适配器；`window.kunqing` 为迁移期遗留桥接，新代码不得新增使用，逐步收敛到 HTTP/SSE 契约。
+- 服务端权威数据（账号、身份、权限、知识、长期记忆、角色定义）只存服务端；客户端仅做缓存与草稿。
+- 设计文档见 `docs/`，拆分原则见 `docs/CLIENT_SERVER_SPLIT.md`。

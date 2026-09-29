@@ -1,98 +1,55 @@
-# 鲲擎多智能体集成工作站
+# KLA Workstation
 
-Electron + React + TypeScript 的本地优先多智能体桌面工作站。
+企业多智能体协同工作站（客户端 + 服务端架构）。本分支为新版本（服务端化拆分）代码；旧版纯桌面实现见 `main` / `chat` 分支。
 
 ## 要求
 
 - **Node.js** >= 22
-- **pnpm** 9（`corepack enable pnpm`）
-- Windows（MVP 以 Windows 为首要目标）
-
-## 快速开始
-
-```bash
-pnpm install
-pnpm dev          # Electron 开发模式
-pnpm dev:web      # 仅浏览器中调试 Renderer UI
-```
-
-Windows 用户也可以直接双击仓库根目录的 `启动桌面预览.bat`；脚本会从自身所在目录启动当前源码的最新桌面预览，并在窗口中保留启动日志。
-
-## 验证
-
-```bash
-pnpm typecheck    # TypeScript 类型检查（所有包）
-pnpm test         # Vitest 单元测试（303 tests / 19 files）
-pnpm build        # 全部包 + electron-vite 构建
-pnpm package:win  # 构建 + NSIS 安装包
-```
+- **pnpm**（`corepack enable pnpm`）
 
 ## 项目结构
 
 | 目录 | 说明 |
 |---|---|
-| `apps/desktop` | Electron 桌面主应用 |
-| `apps/runtime` | Agent Runtime utility process |
-| `packages/*` | 领域契约与业务模块 |
-| `docs/` | 开发规格与文档 |
-| `fixtures/` | 测试用 mock Agent |
+| `apps/desktop` | 桌面客户端：React + Vite 渲染层 + 轻量 Electron 壳（窗口与安全 Preload） |
+| `server` | 服务端：Fastify + TypeScript，账号/身份/项目/会话等 API |
+| `docs/` | 服务端化拆分的设计与规划文档 |
+| `packages/` | 预留：前后端共享契约包（后续按需建立） |
 
-## 数据目录
+## 快速开始
 
-默认工作区路径：`~/Documents/K_Studio/`（可在首次启动时通过选择对话框更改）。
-
-```
-K_Studio/
-├── .kstudio/
-│   ├── workspace.lock    # 文件锁，防止多实例冲突
-│   ├── workspace.json    # 工作区标记（含 workspaceId、schemaVersion）
-│   ├── k_studio.db       # SQLite 业务数据库（Drizzle ORM）
-│   ├── logs/             # pino 运行日志
-│   ├── cache/            # 缓存
-│   └── temp/staged-uploads/  # 临时上传暂存区
-├── group-chats/<id>-workspace/ # 个人作用域（按群聊隔离）
-│   ├── original-files/   # 源文件
-│   ├── standardized-files/ # 标准化全文
-│   ├── knowledge/        # 知识化切片与索引
-│   ├── temp/<rootRunId>/ # 单次任务中间文件
-│   ├── templates/        # 材料模板
-│   └── outputs/          # 正式成果
-├── projects/<projectId>/ # 项目作用域（关联资源共享）
-│   ├── original-files/   # 项目共享源文件
-│   ├── standardized-files/ # 项目标准化全文
-│   ├── knowledge/        # 项目知识
-│   ├── templates/        # 项目模板
-│   └── outputs/          # 项目成果
-├── shared-knowledge/     # 企业共享文件与知识
-└── meetings/<id>-workspace/ # 会议工作区
+```bash
+pnpm install
+pnpm dev:server   # 启动服务端（http://127.0.0.1:8787）
+pnpm dev          # 桌面客户端 Vite 开发模式（浏览器调试）
+pnpm dev:web      # 同上（根目录别名）
 ```
 
-> 应用业务数据仅写入上述声明的目录结构，不会散落到未声明位置。
-> UI 中的个人、项目、企业是逻辑作用域：分别对应 `group-chats/`、`projects/`、`shared-knowledge/`。
-> 旧版本的 `project-shared/` 内容仍由兼容迁移逻辑识别，详见 [当前架构](docs/ARCHITECTURE.md)。
+Electron 桌面壳运行：
 
-## 技术栈
+```bash
+pnpm --filter @kla-workstation/desktop desktop
+```
 
-- **框架**: Electron 43 + React 19 + TypeScript 7
-- **构建**: electron-vite 5 + Vite 8
-- **样式**: Tailwind CSS 4 + shadcn/ui 风格 Design Token
-- **数据库**: SQLite (better-sqlite3) + Drizzle ORM
-- **Agent**: LangGraph + ModelGateway + ToolRegistry
-- **渠道**: Telegram / 飞书 / 钉钉 / 企业微信 Webhook 适配器
-- **测试**: Vitest + Testing Library
+## 验证
 
-## 当前实现说明
+```bash
+pnpm typecheck    # 所有包 TypeScript 类型检查
+pnpm lint         # ESLint
+pnpm test         # Vitest 单元测试
+pnpm build        # 全部包构建
+pnpm package:win  # 客户端 Windows NSIS 安装包
+```
 
-- 页面与能力以当前代码和功能开关为准；历史 MVP 规格中的“会议/任务中心禁用”不再代表当前完整实现状态。
-- **渠道适配器**使用 mock 适配器进行 schema 验证；真实消息收发需通过对应外部服务验证。
-- **安装包**仅支持 Windows NSIS；卸载默认保留用户工作区数据。
-- **Crash Recovery**：Runtime 崩溃后重启会将未完成 Run 标记为 `interrupted`。
-- **原生模块** `better-sqlite3` 需 `node-gyp` 编译，`electron-rebuild` 在 `dev`/`build` 时自动处理。
+## 当前实现状态
+
+- **服务端**为骨架：健康检查、注册/登录/登出、账号/身份、项目与会话/消息接口可用（内存存储）；其余接口返回 501 契约占位。PostgreSQL、Redis、对象存储、知识处理与 Agent Runtime 未接入。
+- **客户端** UI 从旧版 Renderer 迁移而来，页面业务仍通过旧版 `window.kunqing` 桥接运行；服务端 API 客户端位于 `apps/desktop/src/api/`，尚未接入业务页面。
+- 迁移边界与计划见 `docs/CLIENT_SERVER_SPLIT.md` 与 `apps/desktop/README.md`。
 
 ## 文档索引
 
-- [当前架构](docs/ARCHITECTURE.md)
-- [MVP 基线（历史规格）](docs/MVP_IMPLEMENTATION_SPEC.md)
-- [ACP 适配器计划](docs/ACP_ADAPTER_PLAN.md)
-- [渠道手动绑定设计](docs/DESIGN_CHANNEL_MANUAL_BINDING.md)
-- [WorkBuddy MCP](docs/workbuddy-mcp.md)
+- [客户端/服务端拆分](docs/CLIENT_SERVER_SPLIT.md)
+- [下一版本 MVP：需求 / 技术设计 / 任务计划 / 项目计划](docs/NEXT_VERSION_MVP_REQUIREMENTS.md)
+- [KLA Workstation 账号、身份与权限管理设计](docs/KLA Workstation 账号、身份与权限管理设计.md)
+- [sub2api 算力平台设计](docs/DESIGN_SUB2API_COMPUTE_PLATFORM.md)

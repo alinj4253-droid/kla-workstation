@@ -1,9 +1,0 @@
-{
-  "schemaVersion": 1,
-  "id": "parallel-agent",
-  "version": "1.0.0",
-  "entry": "SKILL.md",
-  "executionMode": "instructions",
-  "requiredTools": ["agent:spawn_parallel"],
-  "compatibility": { "codexSkill": true, "kunqing": ">=0.1.0" }
-}

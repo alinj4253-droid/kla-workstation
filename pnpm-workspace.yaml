@@ -1,24 +1,8 @@
 packages:
   - apps/*
-  - packages/*
-  - fixtures/*
+  - server
 
 allowBuilds:
-  better-sqlite3: true
   electron: true
   electron-winstaller: true
   esbuild: true
-  protobufjs: true
-
-minimumReleaseAgeExclude:
-  - '@typescript-eslint/eslint-plugin@8.65.1-alpha.7'
-  - '@typescript-eslint/parser@8.65.1-alpha.7'
-  - '@typescript-eslint/project-service@8.65.1-alpha.7'
-  - '@typescript-eslint/scope-manager@8.65.1-alpha.7'
-  - '@typescript-eslint/tsconfig-utils@8.65.1-alpha.7'
-  - '@typescript-eslint/type-utils@8.65.1-alpha.7'
-  - '@typescript-eslint/types@8.65.1-alpha.7'
-  - '@typescript-eslint/typescript-estree@8.65.1-alpha.7'
-  - '@typescript-eslint/utils@8.65.1-alpha.7'
-  - '@typescript-eslint/visitor-keys@8.65.1-alpha.7'
-  - typescript-eslint@8.65.1-alpha.7

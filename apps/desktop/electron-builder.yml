@@ -1,31 +1,17 @@
-appId: com.kunqing.workstation
+appId: com.kla.workstation
 productName: KLA Workstation
 directories:
-  output: D:/temp/kunqing-release
+  output: release
 files:
-  - out/**/*
+  - dist/**/*
+  - desktop/**/*
   - package.json
-  - node_modules/**/*
-extraResources:
-  - from: resources
-    to: resources
-    filter:
-      - "**/*"
 asar: true
-asarUnpack:
-  - node_modules/better-sqlite3/**
-  - node_modules/pino/**
-  - node_modules/thread-stream/**
-  - node_modules/sonic-boom/**
-  - node_modules/real-require/**
 win:
-  icon: resources/branding/kla-app-icon-256.png
   target:
     - nsis
-  artifactName: ${productName}-0.1.0.081905-${arch}.${ext}
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
-  deleteAppDataOnUninstall: false
-electronDownload:
-  mirror: https://npmmirror.com/mirrors/electron/
+  createDesktopShortcut: true
+  createStartMenuShortcut: true

@@ -1,6 +1,0 @@
-interface:
-  display_name: "知识文件处理"
-  short_description: "增量处理群聊个人、关联项目与企业知识的原始文件"
-  default_prompt: "Use $process-knowledge-files to process new or changed local knowledge sources."
-policy:
-  allow_implicit_invocation: true

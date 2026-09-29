@@ -3,7 +3,7 @@ import globals from 'globals';
 import tsParser from '@typescript-eslint/parser';
 
 export default [
-  { ignores: ['**/out/**', '**/dist-types/**', '**/node_modules/**', '**/K_Studio/**', '**/dist/**', '**/dist-web/**', '**/release/**', '**/release-latest/**', '**/resources/tools/**', '**/.kqocr-build/**', '**/*.min.js', '**/*.d.ts'] },
+  { ignores: ['**/out/**', '**/dist/**', '**/dist-types/**', '**/node_modules/**', '**/release/**', '**/release-latest/**', '**/*.min.js', '**/*.d.ts'] },
   eslint.configs.recommended,
   {
     rules: {
@@ -22,19 +22,15 @@ export default [
     },
   },
   {
-    files: ['packages/**/*.ts'],
+    files: ['server/src/**/*.ts'],
     languageOptions: { globals: { ...globals.node } },
   },
   {
-    files: ['apps/runtime/**/*.ts'],
+    files: ['**/*.cjs'],
     languageOptions: { globals: { ...globals.node } },
   },
   {
-    files: ['apps/desktop/src/main/**/*.ts', 'apps/desktop/src/preload/**/*.ts'],
-    languageOptions: { globals: { ...globals.node } },
-  },
-  {
-    files: ['apps/desktop/src/renderer/**/*.{ts,tsx}'],
+    files: ['apps/desktop/src/**/*.{ts,tsx}'],
     languageOptions: { globals: { ...globals.browser } },
   },
   {
@@ -42,7 +38,7 @@ export default [
     rules: { 'no-empty': 'off' },
   },
   {
-    files: ['**/*.config.{js,ts,mjs}', '**/scripts/**/*.mjs'],
+    files: ['**/*.config.{js,ts,mjs}'],
     languageOptions: { globals: { ...globals.node } },
   },
 ];

@@ -1,23 +1,22 @@
 {
-  "name": "kunqing-agent-workstation",
-  "version": "0.1.819005",
+  "name": "kla-workstation",
+  "version": "0.1.0",
   "private": true,
-  "description": "KLA Workstation 企业多智能体协同工作站",
+  "description": "KLA Workstation 企业多智能体协同工作站（客户端 + 服务端）",
   "packageManager": "pnpm@11.9.0",
   "engines": {
     "node": ">=22.0.0"
   },
   "scripts": {
-    "dev": "pnpm --filter @kunqing/desktop dev",
-    "dev:web": "pnpm --filter @kunqing/desktop dev:web",
+    "dev": "pnpm --filter @kla-workstation/desktop dev",
+    "dev:web": "pnpm --filter @kla-workstation/desktop dev:web",
+    "dev:server": "pnpm --filter @kla-workstation/server dev",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
-    "test": "pnpm --filter @kunqing/desktop test",
-    "test:watch": "pnpm --filter @kunqing/desktop test:watch",
+    "test": "pnpm -r test",
     "lint": "eslint .",
     "ci-check": "pnpm typecheck && pnpm lint && pnpm test && pnpm build",
-    "licenses": "pnpm --filter @kunqing/desktop licenses",
-    "package:win": "pnpm --filter @kunqing/desktop package:win"
+    "package:win": "pnpm --filter @kla-workstation/desktop package:win"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

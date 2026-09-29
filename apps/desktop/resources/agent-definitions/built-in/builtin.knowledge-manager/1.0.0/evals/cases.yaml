@@ -1,9 +1,0 @@
-cases:
-  - name: document-ingestion
-    input: "上传一份 PDF 文档到知识库"
-    expected:
-      action: "ingest"
-  - name: graph-query
-    input: "列出项目中的知识图谱"
-    expected:
-      action: "query"

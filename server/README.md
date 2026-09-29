@@ -1,22 +1,22 @@
-# KLA Workstation Server
+# KLA Workstation Backend
 
-这是下一版本服务端化拆分的边界目录。当前仓库仍处于 Electron 本地优先实现阶段，服务端目录先用于固定模块边界和后续工程落位，不代表服务端能力已经完成。
+独立的 TypeScript + Node.js 服务端骨架。当前只提供健康检查、当前用户和身份列表占位接口；业务接口、数据库连接、Redis、对象存储、知识处理和 Agent Runtime 暂未实现。
 
-## 服务端归属
+## 开发
 
-- API Gateway、身份认证、租户和资源权限。
-- 对象存储及文件版本。
-- OCR/解析、标准化全文、切片、Embedding、向量检索和全文读取。
-- 长期记忆、成果文件、任务记录和审计。
-- Agent Orchestrator、角色注册表、默认技能、MCP 注册和运行记录。
-- Model Gateway、sub2api 适配、用量和结算事件。
-- Whisper/ASR 及其他算力模型服务的调用编排。
+```bash
+npm install
+npm run dev
+```
 
-## 不应直接迁移
+默认监听 `http://127.0.0.1:8787`。
 
-当前 `apps/desktop/src/main` 是 Electron 主进程，包含桌面 IPC、窗口生命周期、文件选择和本地兼容逻辑，不能整体复制到这里。应先抽取 HTTP/RPC 契约和领域服务，再把知识、长期记忆、成果和权限实现迁移到服务端。Electron Main 只保留客户端代理、短期缓存、上传队列和离线重试。
+## 当前目录
 
-## 角色存储原则
+- `src/server.ts`：Fastify 服务入口。
+- `src/routes.ts`：占位 API。
+- `src/repositories/`：数据访问接口和内存占位实现。
+- `migrations/`：PostgreSQL 初始结构占位。
+- `.env.example`：数据库、Redis 和对象存储配置预留。
 
-智能体角色的权威定义（身份、职责、技能、模型绑定、权限、版本、审计和组织共享范围）保存在服务端；客户端仅缓存当前用户有权读取的角色注册表快照和未同步的本地草稿。任何角色执行前都必须使用服务端版本和服务端权限重新校验。
-
+接口契约和存储实现均保持可替换，后续接入 PostgreSQL、Redis、对象存储和认证中间件时不需要改变前端目录结构。
