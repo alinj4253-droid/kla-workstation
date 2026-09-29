@@ -1,5 +1,7 @@
 # KLA Workstation 账号、身份与权限管理设计
 
+> 状态注记（对齐）：本文是身份/账号/权限的概念设计与决策依据；表命名（`user_accounts`/`identities`/`organization_members`/`organization_roles`/`organization_entitlements`）已被《FULL_STACK_IMPLEMENTATION_SPEC.md》§5.1 采纳为实现规格，字段与接口细节以该文为准。sub2api 账号与工作身份的映射依赖本文模型，见《DESIGN_SUB2API_COMPUTE_PLATFORM.md》§3。
+
 ## 1\. 核心原则
 
 

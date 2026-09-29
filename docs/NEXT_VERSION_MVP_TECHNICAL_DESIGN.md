@@ -2,6 +2,7 @@
 
 > 本文只描述技术架构、服务边界、数据模型、接口、迁移和实施顺序。
 > 产品需求见 `docs/NEXT_VERSION_MVP_REQUIREMENTS.md`。
+> 状态注记（对齐）：总体架构与 sub2api/Model Gateway 设计仍有效；数据模型、知识/记忆/文件的接口路径与字段以《FULL_STACK_IMPLEMENTATION_SPEC.md》为实现规格（冲突时以它为准）；sub2api 专项以《DESIGN_SUB2API_COMPUTE_PLATFORM.md》为准。
 
 ## 1. 目标架构
 
