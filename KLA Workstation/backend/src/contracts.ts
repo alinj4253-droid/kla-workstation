@@ -13,4 +13,10 @@ export const apiNotImplementedSchema = z.object({
   message: z.string(),
 });
 
+export const requestContextSchema = z.object({
+  accessToken: z.string().optional(),
+  identityId: z.string().optional(),
+  requestId: z.string().optional(),
+});
+
 export type HealthResponse = z.infer<typeof healthResponseSchema>;
