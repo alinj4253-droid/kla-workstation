@@ -35,6 +35,7 @@ blob-report/
 *.tmp
 *.bak
 *.pid
+.vscode/
 
 # Local-only demonstration assets (product source and docs are tracked separately)
 演示材料/
