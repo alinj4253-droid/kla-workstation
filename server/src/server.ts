@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import sensible from '@fastify/sensible';
+import { pathToFileURL } from 'node:url';
 import { loadConfig } from './config.js';
 import { registerRoutes } from './routes.js';
 import { MemoryAccountRepository } from './repositories/index.js';
@@ -14,7 +15,8 @@ export async function createServer() {
   return { app, config };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+const entryHref = process.argv[1] ? pathToFileURL(process.argv[1]).href : '';
+if (import.meta.url === entryHref) {
   const { app, config } = await createServer();
   await app.listen({ host: config.host, port: config.port });
 }
