@@ -1,0 +1,14 @@
+# 通用：仓库内统一 LF，避免多人多系统行尾churn
+* text=auto eol=lf
+
+# 二进制资产
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
+*.exe binary
+*.dll binary
