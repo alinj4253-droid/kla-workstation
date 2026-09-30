@@ -10,11 +10,11 @@
 
 ### 1.1 已具备
 
-- `frontend/`：React + Vite + Electron 客户端，可独立构建。
-- `backend/`：TypeScript + Node.js + Fastify 项目骨架（产品侧已生成，**待同步入库**）。
-- PostgreSQL 迁移目录、数据访问层边界、Redis/对象存储配置占位（随骨架同步）。
-- `API_CONTRACTS.md`：统一请求头、响应结构、错误码和业务接口设计（产品侧已生成，**待同步入库**）。
-- 前后端项目级 `.gitignore`、根级 `.gitignore` 和 `.gitattributes`。
+- `apps/desktop`：React + Vite + Electron 客户端，可独立构建（已入库）。
+- `server`：TypeScript + Node.js + Fastify 服务端骨架（已入库）。
+- PostgreSQL 迁移目录、数据访问层边界、Redis/对象存储配置占位（随骨架入库）。
+- `docs/API_CONTRACTS.md` 与 `packages/contracts`：统一响应结构、错误码、请求头、SSE 事件与 M0/M1 业务契约（已入库，机器可读契约为准）。
+- 根级 `docker-compose.dev.yml`（PostgreSQL/Redis/MinIO 本地开发编排）与前后端项目级 `.gitignore`（`.gitattributes` 尚未建立，需要时随 A 组补充）。
 
 ### 1.2 尚未完成
 
