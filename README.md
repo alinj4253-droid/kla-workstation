@@ -50,6 +50,7 @@ pnpm package:win  # 客户端 Windows NSIS 安装包
 ## 文档索引
 
 - [完整前后端技术落地规格](docs/FULL_STACK_IMPLEMENTATION_SPEC.md)
+- [API 契约索引与冻结流程](docs/API_CONTRACTS.md)
 - [客户端/服务端拆分](docs/CLIENT_SERVER_SPLIT.md)
 - [下一版本 MVP：需求 / 技术设计 / 任务计划 / 项目计划](docs/NEXT_VERSION_MVP_REQUIREMENTS.md)
 - [KLA Workstation 账号、身份与权限管理设计](docs/KLA Workstation 账号、身份与权限管理设计.md)

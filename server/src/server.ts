@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import cors from '@fastify/cors';
 import sensible from '@fastify/sensible';
+import { pathToFileURL } from 'node:url';
 import { loadConfig } from './config.js';
 import { registerRoutes } from './routes.js';
 import { PostgresAccountRepository } from './repositories/index.js';

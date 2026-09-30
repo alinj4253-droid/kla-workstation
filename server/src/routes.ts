@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import type { ApiErrorBody } from '@kla-workstation/contracts';
 import type { AccountRepository } from './repositories/types.js';
 import type { PostgresDatabase } from './database/postgres.js';
 import type { RedisDatabase } from './infrastructure/redis.js';
@@ -8,7 +9,7 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
     const raw = request.headers.authorization;
     const token = typeof raw === 'string' && raw.startsWith('Bearer ') ? raw.slice(7) : '';
     const session = token ? await deps.accounts.getSession(token) : null;
-    if (!session) { reply.code(401).send({ ok: false, error: { code: 'UNAUTHENTICATED', message: '请先登录', retryable: false } }); return null; }
+    if (!session) { reply.code(401).send({ ok: false, error: { code: 'UNAUTHENTICATED', message: '请先登录', retryable: false }, meta: { requestId: request.id } } satisfies ApiErrorBody); return null; }
     return session;
   };
   app.addHook('onRequest', async (request, reply) => {
@@ -39,7 +40,7 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
 
   app.post('/api/v1/auth/register', async (request, reply) => {
     const body = request.body as { email?: string; phone?: string; password?: string; nickname?: string };
-    if (!body.password || (!body.email && !body.phone) || !body.nickname) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: 'email/phone、password、nickname 均为必填', retryable: false } });
+    if (!body.password || (!body.email && !body.phone) || !body.nickname) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: 'email/phone、password、nickname 均为必填', retryable: false }, meta: { requestId: request.id } } satisfies ApiErrorBody);
     const result = await deps.accounts.register({ email: body.email, phone: body.phone, password: body.password, nickname: body.nickname });
     const session = await deps.accounts.createSession(result.user.id);
     return reply.send({ ok: true, data: { ...result, session } });
@@ -47,7 +48,7 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
   app.post('/api/v1/auth/login', async (request, reply) => {
     const body = request.body as { identifier?: string; password?: string };
     const result = body.identifier && body.password ? await deps.accounts.authenticate(body.identifier, body.password) : null;
-    if (!result) return reply.code(401).send({ ok: false, error: { code: 'INVALID_CREDENTIALS', message: '账号或密码错误', retryable: false } });
+    if (!result) return reply.code(401).send({ ok: false, error: { code: 'INVALID_CREDENTIALS', message: '账号或密码错误', retryable: false }, meta: { requestId: request.id } } satisfies ApiErrorBody);
     const session = await deps.accounts.createSession(result.user.id);
     return reply.send({ ok: true, data: { ...result, session, identities: await deps.accounts.listIdentities(result.user.id) } });
   });
@@ -109,11 +110,11 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
   app.get('/api/v1/conversations', async (request, reply) => { const session = await auth(request, reply); if (!session) return; const identities = await deps.accounts.listIdentities(session.userId); const identity = identities.find((item) => item.isDefault) ?? identities[0]; return reply.send({ ok: true, data: await deps.accounts.listConversations(undefined, identity?.id) }); });
   app.post('/api/v1/conversations', async (request, reply) => { const session = await auth(request, reply); if (!session) return; const body = request.body as { projectId?: string; name?: string }; if (!body.projectId || !body.name?.trim()) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: 'projectId 和 name 为必填', retryable: false } }); const identities = await deps.accounts.listIdentities(session.userId); const identity = identities.find((item) => item.isDefault) ?? identities[0]; const projects = await deps.accounts.listProjects(identity?.id ?? ''); if (!projects.some((project) => project.id === body.projectId)) return reply.code(403).send({ ok: false, error: { code: 'FORBIDDEN', message: '无权访问该项目', retryable: false } }); return reply.send({ ok: true, data: await deps.accounts.createConversation(body.projectId, body.name.trim()) }); });
   app.get('/api/v1/conversations/:conversationId/messages', async (request, reply) => { const session = await auth(request, reply); if (!session) return; const params = request.params as { conversationId: string }; return reply.send({ ok: true, data: await deps.accounts.listMessages(params.conversationId) }); });
-  app.post('/api/v1/conversations/:conversationId/messages', async (request, reply) => { const session = await auth(request, reply); if (!session) return; const params = request.params as { conversationId: string }; const body = request.body as { text?: string }; if (!body.text?.trim()) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: '消息不能为空', retryable: false } }); return reply.send({ ok: true, data: await deps.accounts.createMessage(params.conversationId, session.userId, body.text.trim()) }); });
+  app.post('/api/v1/conversations/:conversationId/messages', async (request, reply) => { const session = await auth(request, reply); if (!session) return; const params = request.params as { conversationId: string }; const body = request.body as { text?: string }; if (!body.text?.trim()) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: '消息不能为空', retryable: false }, meta: { requestId: request.id } } satisfies ApiErrorBody); return reply.send({ ok: true, data: await deps.accounts.createMessage(params.conversationId, session.userId, body.text.trim()) }); });
 
   const placeholder = (path: string, method: string) => app.route({
     method: method as 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', url: `/api/v1${path}`,
-    handler: async (_request, reply) => reply.code(501).send({ ok: false, error: { code: 'NOT_IMPLEMENTED', message: `${method} ${path} 接口已完成契约占位，待接入服务实现。`, retryable: false }, meta: { requestId: _request.id } }),
+    handler: async (_request, reply) => reply.code(501).send({ ok: false, error: { code: 'NOT_IMPLEMENTED', message: `${method} ${path} 接口已完成契约占位，待接入服务实现。`, retryable: false }, meta: { requestId: _request.id } } satisfies ApiErrorBody),
   });
   const placeholders: Array<[string, string]> = [
     ['/auth/refresh', 'POST'], ['/auth/sessions', 'GET'],
@@ -129,5 +130,5 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
     ok: false,
     error: { code: 'NOT_IMPLEMENTED', message: '该接口将在后续版本实现。', retryable: false },
     meta: { requestId: _request.id },
-  }));
+  } satisfies ApiErrorBody));
 }

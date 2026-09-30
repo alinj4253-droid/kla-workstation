@@ -12,6 +12,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@kla-workstation/contracts": "workspace:*",
     "@fastify/cors": "^11.0.1",
     "@fastify/sensible": "^6.0.3",
     "dotenv": "^18.0.4",

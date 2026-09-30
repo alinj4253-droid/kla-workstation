@@ -7,12 +7,6 @@ export const healthResponseSchema = z.object({
   mode: z.enum(['postgres', 'placeholder']),
 });
 
-export const apiNotImplementedSchema = z.object({
-  ok: z.literal(false),
-  code: z.literal('NOT_IMPLEMENTED'),
-  message: z.string(),
-});
-
 export const requestContextSchema = z.object({
   accessToken: z.string().optional(),
   identityId: z.string().optional(),

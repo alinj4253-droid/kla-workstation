@@ -1,13 +1,13 @@
+import type { ApiEnvelope, ApiErrorEnvelope } from '@kla-workstation/contracts';
+
 const defaultBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8787/api';
 const tokenKey = 'kla.access-token';
 const expiryKey = 'kla.access-expiry';
 const authExpiredEvent = 'kla:auth-expired';
 
-export type ApiResult<T> = { ok: true; data: T } | {
-  ok: false;
-  code: string;
-  message: string;
-};
+export type ApiResult<T> = ApiEnvelope<T>;
+
+export type ApiError = ApiErrorEnvelope;
 
 export class KlaApiClient {
   constructor(private readonly baseUrl = defaultBaseUrl) {}
@@ -24,13 +24,12 @@ export class KlaApiClient {
       ...init,
       headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}), ...init.headers },
     });
-    const body = await response.json().catch(() => ({})) as ApiResult<T> & { error?: { code?: string; message?: string } };
+    return (await response.json()).catch(() => ({})) as ApiResult<T> & { error?: { code?: string; message?: string } };
     if (response.status === 401) {
       this.clearAccessToken();
       window.dispatchEvent(new Event(authExpiredEvent));
     }
     if (!response.ok || body.ok === false) return { ok: false, code: body.ok === false ? body.code : body.error?.code ?? `HTTP_${response.status}`, message: body.ok === false ? body.message : body.error?.message ?? '请求失败' };
-    return body;
   }
 
   setAccessToken(token: string | null, expiresAt?: string) {
