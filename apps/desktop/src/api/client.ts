@@ -1,10 +1,10 @@
+import type { ApiEnvelope, ApiErrorEnvelope } from '@kla-workstation/contracts';
+
 const defaultBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8787/api';
 
-export type ApiResult<T> = { ok: true; data: T } | {
-  ok: false;
-  code: string;
-  message: string;
-};
+export type ApiResult<T> = ApiEnvelope<T>;
+
+export type ApiError = ApiErrorEnvelope;
 
 export class KlaApiClient {
   constructor(private readonly baseUrl = defaultBaseUrl) {}
@@ -14,8 +14,7 @@ export class KlaApiClient {
       ...init,
       headers: { 'content-type': 'application/json', ...init.headers },
     });
-    const body = await response.json() as ApiResult<T>;
-    return body;
+    return (await response.json()) as ApiResult<T>;
   }
 }
 
