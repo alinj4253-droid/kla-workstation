@@ -4,7 +4,7 @@ export const healthResponseSchema = z.object({
   ok: z.boolean(),
   service: z.literal('kla-backend'),
   version: z.string(),
-  mode: z.literal('placeholder'),
+  mode: z.enum(['postgres', 'placeholder']),
 });
 
 export const apiNotImplementedSchema = z.object({

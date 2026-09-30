@@ -1,0 +1,110 @@
+import { createHash, randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
+import { promisify } from 'node:util';
+import type { Pool } from 'pg';
+import type { AccountRepository, Conversation, Identity, Message, Project, Session, UserAccount } from './types.js';
+
+const scrypt = promisify(scryptCallback);
+const hashToken = (value: string) => createHash('sha256').update(value).digest('hex');
+
+async function hashPassword(password: string): Promise<string> {
+  const salt = randomBytes(16).toString('hex');
+  const derived = await scrypt(password, salt, 64) as Buffer;
+  return `${salt}:${derived.toString('hex')}`;
+}
+async function verifyPassword(password: string, encoded: string): Promise<boolean> {
+  const [salt, expectedHex] = encoded.split(':');
+  if (!salt || !expectedHex) return false;
+  const actual = await scrypt(password, salt, 64) as Buffer;
+  const expected = Buffer.from(expectedHex, 'hex');
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
+export class PostgresAccountRepository implements AccountRepository {
+  constructor(private readonly pool: Pool) {}
+
+  async getUser(id: string): Promise<UserAccount | null> {
+    const { rows } = await this.pool.query('SELECT id, email, phone, nickname, status FROM users WHERE id = $1', [id]);
+    return rows[0] ? { id: rows[0].id, email: rows[0].email, phone: rows[0].phone, nickname: rows[0].nickname, status: rows[0].status } : null;
+  }
+
+  async listIdentities(userId: string): Promise<Identity[]> {
+    const { rows } = await this.pool.query('SELECT id, user_id, type, display_name, organization_id, status, is_default FROM identities WHERE user_id = $1 ORDER BY is_default DESC, created_at', [userId]);
+    return rows.map((row) => ({ id: row.id, userId: row.user_id, type: row.type, displayName: row.display_name, organizationId: row.organization_id, status: row.status, isDefault: row.is_default }));
+  }
+
+  async register(input: { email?: string; phone?: string; password: string; nickname: string }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const userResult = await client.query('INSERT INTO users (email, phone, nickname) VALUES ($1, $2, $3) RETURNING id, email, phone, nickname, status', [input.email ?? null, input.phone ?? null, input.nickname]);
+      const userRow = userResult.rows[0];
+      await client.query('INSERT INTO user_credentials (user_id, password_hash) VALUES ($1, $2)', [userRow.id, await hashPassword(input.password)]);
+      const identityResult = await client.query("INSERT INTO identities (user_id, type, display_name, is_default) VALUES ($1, 'personal', $2, true) RETURNING id, user_id, type, display_name, organization_id, status, is_default", [userRow.id, input.nickname]);
+      await client.query("INSERT INTO workspaces (identity_id, type, name) VALUES ($1, 'personal', $2)", [identityResult.rows[0].id, `${input.nickname}的个人工作区`]);
+      await client.query('COMMIT');
+      return { user: { id: userRow.id, email: userRow.email, phone: userRow.phone, nickname: userRow.nickname, status: userRow.status }, identity: this.identity(identityResult.rows[0]) };
+    } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
+  }
+
+  async authenticate(identifier: string, password: string) {
+    const { rows } = await this.pool.query('SELECT u.id, u.email, u.phone, u.nickname, u.status, c.password_hash FROM users u JOIN user_credentials c ON c.user_id = u.id WHERE u.email = $1 OR u.phone = $1 LIMIT 1', [identifier]);
+    const row = rows[0];
+    if (!row || row.status !== 'active' || !(await verifyPassword(password, row.password_hash))) return null;
+    const identities = await this.listIdentities(row.id);
+    const identity = identities.find((item) => item.isDefault && item.status === 'active') ?? identities.find((item) => item.status === 'active');
+    return identity ? { user: { id: row.id, email: row.email, phone: row.phone, nickname: row.nickname, status: row.status }, identity } : null;
+  }
+
+  async createSession(userId: string): Promise<Session> {
+    const accessToken = randomUUID(); const refreshToken = randomUUID(); const expiresAt = new Date(Date.now() + 7 * 24 * 3600_000);
+    const { rows } = await this.pool.query('INSERT INTO sessions (user_id, access_token_hash, refresh_token_hash, expires_at) VALUES ($1, $2, $3, $4) RETURNING id, expires_at', [userId, hashToken(accessToken), hashToken(refreshToken), expiresAt]);
+    return { id: rows[0].id, userId, accessToken, refreshToken, expiresAt: new Date(rows[0].expires_at).toISOString() };
+  }
+  async getSession(token: string): Promise<Session | null> {
+    const { rows } = await this.pool.query('SELECT id, user_id, expires_at FROM sessions WHERE access_token_hash = $1 AND revoked_at IS NULL AND expires_at > now()', [hashToken(token)]);
+    return rows[0] ? { id: rows[0].id, userId: rows[0].user_id, accessToken: token, refreshToken: '', expiresAt: new Date(rows[0].expires_at).toISOString() } : null;
+  }
+  async revokeSession(token: string): Promise<void> { await this.pool.query('UPDATE sessions SET revoked_at = now() WHERE access_token_hash = $1 AND revoked_at IS NULL', [hashToken(token)]); }
+
+  async listProjects(identityId: string): Promise<Project[]> { const { rows } = await this.pool.query('SELECT id, name, owner_identity_id, created_at FROM projects WHERE owner_identity_id = $1 ORDER BY created_at DESC', [identityId]); return rows.map((row) => ({ id: row.id, name: row.name, ownerIdentityId: row.owner_identity_id, createdAt: new Date(row.created_at).toISOString() })); }
+  async createProject(identityId: string, name: string): Promise<Project> { const { rows } = await this.pool.query('INSERT INTO projects (owner_identity_id, name) VALUES ($1, $2) RETURNING id, name, owner_identity_id, created_at', [identityId, name]); const row = rows[0]; return { id: row.id, name: row.name, ownerIdentityId: row.owner_identity_id, createdAt: new Date(row.created_at).toISOString() }; }
+  async listConversations(projectId?: string, identityId?: string): Promise<Conversation[]> { const { rows } = await this.pool.query('SELECT c.id, c.project_id, c.name, c.created_at FROM conversations c JOIN projects p ON p.id = c.project_id WHERE ($1::uuid IS NULL OR c.project_id = $1) AND ($2::uuid IS NULL OR p.owner_identity_id = $2) ORDER BY c.created_at DESC', [projectId ?? null, identityId ?? null]); return rows.map((row) => ({ id: row.id, projectId: row.project_id, name: row.name, createdAt: new Date(row.created_at).toISOString() })); }
+  async createConversation(projectId: string, name: string): Promise<Conversation> { const { rows } = await this.pool.query('INSERT INTO conversations (project_id, name) VALUES ($1, $2) RETURNING id, project_id, name, created_at', [projectId, name]); const row = rows[0]; return { id: row.id, projectId: row.project_id, name: row.name, createdAt: new Date(row.created_at).toISOString() }; }
+  async listMessages(conversationId: string): Promise<Message[]> { const { rows } = await this.pool.query('SELECT id, conversation_id, sender_id, text, created_at FROM messages WHERE conversation_id = $1 ORDER BY created_at', [conversationId]); return rows.map((row) => ({ id: row.id, conversationId: row.conversation_id, senderId: row.sender_id, text: row.text, createdAt: new Date(row.created_at).toISOString() })); }
+  async createMessage(conversationId: string, senderId: string, text: string): Promise<Message> { const { rows } = await this.pool.query('INSERT INTO messages (conversation_id, sender_id, text) VALUES ($1, $2, $3) RETURNING id, conversation_id, sender_id, text, created_at', [conversationId, senderId, text]); const row = rows[0]; return { id: row.id, conversationId: row.conversation_id, senderId: row.sender_id, text: row.text, createdAt: new Date(row.created_at).toISOString() }; }
+  async createOrganization(userId: string, name: string, licenseNumber: string): Promise<Identity> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const personal = await client.query("SELECT id FROM identities WHERE user_id = $1 AND type = 'personal' LIMIT 1", [userId]);
+      if (!personal.rows[0]) throw new Error('PERSONAL_IDENTITY_REQUIRED');
+      const org = await client.query('INSERT INTO organizations (name, license_number) VALUES ($1, $2) RETURNING id', [name, licenseNumber]);
+      const identity = await client.query("INSERT INTO identities (user_id, type, display_name, organization_id, is_default) VALUES ($1, 'enterprise', $2, $3, false) RETURNING id, user_id, type, display_name, organization_id, status, is_default", [userId, name, org.rows[0].id]);
+      const role = await client.query("INSERT INTO roles (organization_id, name, description, is_system) VALUES ($1, '管理员', '企业管理员', true) RETURNING id", [org.rows[0].id]);
+      await client.query('INSERT INTO identity_roles (identity_id, role_id) VALUES ($1, $2)', [identity.rows[0].id, role.rows[0].id]);
+      await client.query("INSERT INTO workspaces (identity_id, type, name) VALUES ($1, 'enterprise', $2)", [identity.rows[0].id, `${name}企业工作区`]);
+      await client.query('COMMIT'); return this.identity(identity.rows[0]);
+    } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
+  }
+  async joinOrganization(userId: string, inviteCode: string): Promise<Identity | null> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const org = await client.query("SELECT id, name FROM organizations WHERE invite_code = $1 AND status = 'active'", [inviteCode.trim().toUpperCase()]);
+      if (!org.rows[0]) { await client.query('ROLLBACK'); return null; }
+      const identity = await client.query("INSERT INTO identities (user_id, type, display_name, organization_id, is_default) VALUES ($1, 'enterprise', $2, $3, false) RETURNING id, user_id, type, display_name, organization_id, status, is_default", [userId, org.rows[0].name, org.rows[0].id]);
+      const role = await client.query("INSERT INTO roles (organization_id, name, description, is_system) VALUES ($1, '成员', '企业成员', true) ON CONFLICT (organization_id, name) DO UPDATE SET name = EXCLUDED.name RETURNING id", [org.rows[0].id]);
+      await client.query('INSERT INTO identity_roles (identity_id, role_id) VALUES ($1, $2)', [identity.rows[0].id, role.rows[0].id]);
+      await client.query("INSERT INTO workspaces (identity_id, type, name) VALUES ($1, 'enterprise', $2)", [identity.rows[0].id, `${org.rows[0].name}企业工作区`]);
+      await client.query('COMMIT'); return this.identity(identity.rows[0]);
+    } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
+  }
+  async activateIdentity(userId: string, identityId: string): Promise<Identity | null> {
+    const found = await this.pool.query("SELECT id FROM identities WHERE id = $1 AND user_id = $2 AND status = 'active'", [identityId, userId]);
+    if (!found.rows[0]) return null;
+    const client = await this.pool.connect();
+    try { await client.query('BEGIN'); await client.query('UPDATE identities SET is_default = false WHERE user_id = $1', [userId]); const result = await client.query('UPDATE identities SET is_default = true WHERE id = $1 RETURNING id, user_id, type, display_name, organization_id, status, is_default', [identityId]); await client.query('COMMIT'); return this.identity(result.rows[0]); } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
+  }
+
+  private identity(row: Record<string, any>): Identity { return { id: row.id, userId: row.user_id, type: row.type, displayName: row.display_name, organizationId: row.organization_id, status: row.status, isDefault: row.is_default }; }
+}

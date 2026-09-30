@@ -1,0 +1,39 @@
+.ws-settings-menu{display:grid;align-content:start;gap:4px;padding:5px 0}
+.ws-login-register{position:absolute;top:14px;right:20px;color:#087ba8;font-size:12px;padding:8px 12px;border:1px solid #93c5d8;border-radius:6px;background:rgba(255,255,255,.65)}
+.ws-login-register:hover{background:#fff}
+.ws-auth-modal{width:min(460px,100%)}
+.ws-identity-list{display:grid;gap:8px}
+.ws-identity-list>button{display:flex;align-items:center;gap:10px;padding:12px;border:1px solid #e4ecf5;border-radius:7px;text-align:left;color:#2563eb}
+.ws-identity-list>button:hover{background:#f4f8ff;border-color:#bfdbfe}
+.ws-identity-list>button span{flex:1;color:#334155;font-weight:600}
+.ws-identity-list>button small{display:block;margin-top:4px;color:#94a3b8;font-weight:400;font-size:10px}
+.ws-identity-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;padding-top:12px;border-top:1px solid #eef2f6}
+.ws-identity-actions button{display:flex;justify-content:center;align-items:center;gap:6px;padding:10px;border:1px solid #e4ecf5;border-radius:6px;color:#53677d;font-size:11px}
+.ws-identity-actions button:hover{color:#2563eb;border-color:#bfdbfe;background:#f4f8ff}
+.ws-settings-menu>small{padding:15px 10px 6px;color:#94a3b8;font-size:10px;font-weight:700}
+.ws-settings-menu>button{display:flex;align-items:center;gap:10px;text-align:left;padding:10px 12px;border-radius:6px;color:#52677d;font-size:12px}
+.ws-settings-menu>button:hover,.ws-settings-menu>button.active{background:#e9f2ff;color:#2563eb}
+.ws-agent-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:7px 0 20px}
+.ws-agent-heading h1{display:flex;align-items:center;gap:10px;margin:0;color:#1e293b;font-size:20px}
+.ws-agent-heading p{color:#64748b;font-size:12px;margin:7px 0 0;line-height:1.5}
+.ws-agent-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px;padding-bottom:13px;border-bottom:1px solid #e8eef5}
+.ws-agent-toolbar .ws-sub-search{width:230px;background:#fff}
+.ws-agent-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;align-content:start}
+.ws-agent-card{min-width:0;min-height:244px;background:#fff;border:1px solid #e4ecf5;border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:12px;box-shadow:0 2px 9px rgba(34,87,138,.04)}
+.ws-agent-card:hover{border-color:#bfdbfe;box-shadow:0 6px 20px rgba(34,87,138,.09)}
+.ws-agent-card-head{display:flex;align-items:center;gap:10px;min-width:0}
+.ws-agent-card-head>.ws-avatar{width:42px;height:42px;border-radius:9px;font-size:12px}
+.ws-agent-card-head>div{min-width:0;flex:1}
+.ws-agent-card-head h3{font-size:14px;color:#1e293b;margin:0 0 4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ws-agent-card-head small{color:#94a3b8;font-size:10px}
+.ws-agent-card>p{font-size:11px;color:#64748b;line-height:1.6;margin:0;min-height:35px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.ws-agent-meta{display:grid;gap:7px;color:#75879d;font-size:10px}
+.ws-agent-meta span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ws-agent-skills{display:flex;gap:5px;flex-wrap:wrap;min-height:23px}
+.ws-agent-card footer{display:flex;justify-content:space-between;align-items:center;border-top:1px solid #eef2f7;padding-top:11px;margin-top:auto}
+.ws-agent-card footer button{display:inline-flex;align-items:center;gap:5px;color:#2563eb;font-size:11px;padding:5px}
+.ws-agent-card footer button:last-child{color:#64748b}
+.ws-agent-card footer button:hover{text-decoration:underline}
+@media(max-width:1350px){.ws-agent-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:900px){.ws-agent-grid{grid-template-columns:1fr}.ws-agent-toolbar{align-items:stretch;flex-direction:column}.ws-agent-toolbar .ws-sub-search{width:100%}}
+@media(max-width:760px){.ws-settings-menu{display:flex;overflow:auto;padding:0;gap:5px}.ws-settings-menu>small{display:none}.ws-settings-menu>button{white-space:nowrap;padding:8px}.ws-agent-heading{align-items:flex-start}.ws-agent-heading h1{font-size:18px}.ws-agent-toolbar .ws-segment{overflow:auto}.ws-agent-toolbar .ws-segment button{white-space:nowrap}}

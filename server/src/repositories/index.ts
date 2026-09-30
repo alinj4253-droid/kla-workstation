@@ -1,2 +1,2 @@
 export type * from './types.js';
-export { MemoryAccountRepository } from './memory-account-repository.js';
+export { PostgresAccountRepository } from './postgres-account-repository.js';

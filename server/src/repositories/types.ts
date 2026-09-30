@@ -33,8 +33,11 @@ export interface AccountRepository {
   revokeSession(token: string): Promise<void>;
   listProjects(identityId: string): Promise<Project[]>;
   createProject(identityId: string, name: string): Promise<Project>;
-  listConversations(projectId?: string): Promise<Conversation[]>;
+  listConversations(projectId?: string, identityId?: string): Promise<Conversation[]>;
   createConversation(projectId: string, name: string): Promise<Conversation>;
   listMessages(conversationId: string): Promise<Message[]>;
   createMessage(conversationId: string, senderId: string, text: string): Promise<Message>;
+  createOrganization(userId: string, name: string, licenseNumber: string): Promise<Identity>;
+  joinOrganization(userId: string, inviteCode: string): Promise<Identity | null>;
+  activateIdentity(userId: string, identityId: string): Promise<Identity | null>;
 }

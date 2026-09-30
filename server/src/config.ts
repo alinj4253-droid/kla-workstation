@@ -1,9 +1,12 @@
+import 'dotenv/config';
+
 export type ServerConfig = {
   nodeEnv: string;
   host: string;
   port: number;
   databaseUrl: string;
   redisUrl: string;
+  databaseSchema: string;
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
@@ -14,5 +17,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     port: Number.isFinite(port) ? port : 8787,
     databaseUrl: env.DATABASE_URL ?? '',
     redisUrl: env.REDIS_URL ?? '',
+    databaseSchema: /^[a-z_][a-z0-9_]*$/i.test(env.DATABASE_SCHEMA ?? 'kla') ? (env.DATABASE_SCHEMA ?? 'kla') : 'kla',
   };
 }
