@@ -1,6 +1,6 @@
 # KLA Workstation 算力板块与 Sub2API 当前落地方案
 
-> 版本：V1 MVP 设计
+> 版本：V1 MVP 设计（2026-10-06 修订：经 Sub2API 源码核实，其额度体系全部以美元计价，本文额度单位由 Token 调整为美元/USD；建号不预置额度，统一由管理员分配）
 >
 > 状态：可直接拆分开发。本文针对当前账号、身份、企业权限和算力页面实现，优先级高于早期算力概念稿中与本文冲突的部分。
 >
@@ -15,7 +15,7 @@ KLA 的算力模块作为 Sub2API 的业务前端和服务端代理层：
 - Sub2API 负责模型路由、请求转发、Key 验证、限流、实际请求计量和上游调用。
 - 模型管理页废弃。用户不能在 KLA 中任意添加、编辑、删除模型或填写模型供应商 Key。
 - 模型广场只展示平台已经接入并允许当前身份使用的模型、能力和费用，不展示上游 API Key。
-- 当前 MVP 只使用 Token 作为额度单位；积分、人民币价格、充值订单和结算规则保留接口与数据扩展位，但不进入本期扣费逻辑。
+- 额度单位与 Sub2API 保持一致，统一使用美元（USD）。Sub2API 不存在 Token 余额概念：用户余额、Key 配额、限速窗口和平台日/周/月配额全部按美元扣减，Token 仅用于计费换算与用量统计。人民币计价、积分、支付渠道和结算规则仍不进入本期逻辑。
 
 ## 2. 总体架构
 
@@ -74,7 +74,7 @@ KLA user account
 1. 生成确定性 Sub2API 用户名：`kla-personal-{identityId}`，使用内部邮箱域名。
 2. 生成随机托管密码，字段级加密后保存，用户不可见、不可修改。
 3. 调 Sub2API Admin API 创建普通 `user` 账号，禁止创建 admin、禁止开启 2FA。
-4. 为该 Sub2API 用户发放 `1,000,000` Token 初始余额。
+4. 建号后 Sub2API 余额为 0，不自动发放任何初始额度；额度按 §4 流程由管理员/运营分配。
 5. 通过用户面 API 创建默认 Key，名称为“默认工作站 Key”，绑定默认个人分组。
 6. KLA 只保存 `sub2api_user_id`、Key 引用、Key 前缀和指纹。
 7. 同步成功后身份状态为 `compute_ready`；失败时身份仍可登录，但算力页面显示“初始化中/需要重试”，不得伪造余额或 Key。
@@ -84,9 +84,8 @@ KLA user account
 企业创建成功并产生企业身份后，执行与个人身份完全相同的建号流程：
 
 - Sub2API 独立用户账号。
-- 初始余额 `1,000,000 Token`。
 - 一把默认 Key。
-- 企业身份的初始额度来源标记为 `enterprise_initial_grant`。
+- 建号后余额为 0；企业管理员本人的额度同样由企业池分配获得。
 - 创建企业的管理员拥有企业额度分配权限；普通成员没有充值和分配权限。
 
 ### 3.4 加入企业
@@ -95,7 +94,7 @@ KLA user account
 
 1. 创建该用户在该企业下的新 identity/member 记录。
 2. 建立该企业身份对应的 Sub2API 用户账号和默认 Key。
-3. 成员初始 Token 为 `1,000,000`。该额度计入企业初始权益池或由企业管理员确认后发放，具体应在部署配置中选择一种口径，默认采用“加入即获得 1,000,000，记入企业池”。
+3. 成员建号后额度为 0，由企业管理员从企业池分配后方可使用算力。
 4. 成员角色为企业系统角色“成员”，无 `compute.allocate`、`compute.recharge` 权限。
 
 ### 3.5 禁用和注销
@@ -105,17 +104,19 @@ KLA user account
 - 删除 KLA 业务记录不等于删除算力账：Sub2API 用户和用量记录至少保留审计周期，状态改为 disabled。
 - Sub2API 调用失败时不能把 KLA 身份标记为 ready；使用补偿任务和漂移检测重试。
 
-## 4. Token 额度规则
+## 4. 额度规则（单位：美元）
 
 ### 4.1 MVP 规则
 
 | 身份类型 | 首次初始化 | 自助充值 | 分配给成员 | 查看企业成员用量 |
 |---|---:|---:|---:|---:|
-| 个人身份 | 1,000,000 Token | 允许，充值接口先占位 | 不适用 | 仅本人 |
-| 企业管理员身份 | 1,000,000 Token | 不走个人充值；企业权益充值后入池 | 允许 | 允许 |
-| 企业成员身份 | 1,000,000 Token | 不允许 | 不允许 | 仅本人 |
+| 个人身份 | 0（不预置） | 允许，充值接口先占位 | 不适用 | 仅本人 |
+| 企业管理员身份 | 0（不预置） | 不走个人充值；企业权益充值后入池 | 允许 | 允许 |
+| 企业成员身份 | 0（不预置） | 不允许 | 不允许 | 仅本人 |
 
-说明：企业管理员的“分配”必须受企业可分配余额约束，不允许透支。管理员可以把企业池中的 Token 转移给成员，也可以回收未使用额度；已经消耗的 Token 不可回收。
+建号不预置任何金额，Sub2API 余额初始为 0。企业身份（含企业管理员本人）的额度由企业管理员通过分配接口从企业池发放；企业池资金由运营在 KLA 侧注入企业权益池（本期通过运维脚本/内部工具执行，写台账流水，不开放前端），再由同步器调用 Sub2API balance 接口完成注入。注资一律以 KLA 台账为先，不在 Sub2API 面板手工改余额；如应急处理，事后必须补记台账流水并标记人工对账复核。个人身份额度来自自助充值（本期占位）或平台运营发放。
+
+说明：企业管理员的“分配”必须受企业可分配余额约束，不允许透支。管理员可以把企业池中的额度转移给成员，也可以回收未使用额度；已经消耗的额度不可回收。
 
 ### 4.2 额度分层
 
@@ -132,6 +133,8 @@ KLA user account
 
 KLA 台账字段至少包含：`quota_total`、`quota_granted`、`quota_used`、`quota_reserved`、`available`、`expires_at`、`version`。
 
+所有 `quota_*` 字段以美元计价，存储精度建议 NUMERIC(20,8)，与 Sub2API `users.balance`（decimal(20,8)）一致，避免二次换算。
+
 计算：
 
 ```text
@@ -142,7 +145,7 @@ available = quota_total + quota_granted - quota_used - quota_reserved
 
 ### 4.3 额度操作
 
-- 初始发放：系统事件，幂等键 `initial:{identityId}`。
+- 运营发放（企业池注入/个人额度）：系统事件，幂等键 `grant:{identityId}:{requestId}`；本期由运维脚本/内部工具触发，不开放前端。
 - 管理员分配：幂等键 `allocate:{organizationId}:{requestId}`。
 - 管理员回收：幂等键 `reclaim:{organizationId}:{requestId}`。
 - 个人充值：幂等键 `recharge:{identityId}:{paymentOrderId}`；本期支付未实现时返回 `NOT_IMPLEMENTED`，不能直接改余额。
@@ -162,7 +165,7 @@ available = quota_total + quota_granted - quota_used - quota_reserved
 | KLA 能力 | Sub2API 操作 | 可靠性要求 |
 |---|---|---|
 | 创建身份算力账号 | `POST /api/v1/admin/users` | 确定性用户名 + 幂等查询 |
-| 初始化余额 | `POST /api/v1/admin/users/:id/balance` | 幂等 request id |
+| 发放/调整余额（美元） | `POST /api/v1/admin/users/:id/balance` | 幂等 request id |
 | 禁用身份 | `PUT /api/v1/admin/users/:id` | 重试和告警 |
 | 创建默认/用户 Key | 用户面 `POST /api/v1/api-keys` | 明文只返回一次 |
 | 查询 Key | 用户面 `GET /api/v1/api-keys` 或 Admin 只读接口 | 不返回完整 Key |
@@ -179,7 +182,7 @@ pending → provisioning → user_created → balance_granted → default_key_cr
                          └→ failed → retrying → dead_letter
 ```
 
-所有步骤写 `compute_provision_jobs` 和 `outbox_events`。页面展示真实状态；失败时允许“重试初始化”，不得重复创建账号或重复发放 1,000,000 Token。
+所有步骤写 `compute_provision_jobs` 和 `outbox_events`。页面展示真实状态；失败时允许“重试初始化”，不得重复创建账号或重复发放额度。
 
 ## 6. KLA 数据模型
 
@@ -200,7 +203,7 @@ last_synced_at, last_error, created_at, updated_at
 ```text
 id, identity_id NULL, organization_id NULL,
 quota_total, quota_granted, quota_used, quota_reserved,
-unit='token', source, expires_at, version, created_at, updated_at
+unit='usd', source, expires_at, version, created_at, updated_at
 ```
 
 个人身份使用 `identity_id`；企业池使用 `organization_id`。两者不可同时为空，也不可同时有值。
@@ -252,7 +255,7 @@ GET  /api/v1/compute/provision-status
 POST /api/v1/compute/provision/retry
 ```
 
-`summary` 返回当前身份、余额、已用、保留、默认 Key 状态、可用模型数量、Sub2API 健康状态和权限标志；不返回任何密钥。
+`summary` 返回当前身份、余额（美元）、已用、保留、默认 Key 状态、可用模型数量、Sub2API 健康状态和权限标志；不返回任何密钥。
 
 ### 7.2 API Key
 
@@ -264,7 +267,7 @@ POST   /api/v1/compute/keys/:keyId/disable
 DELETE /api/v1/compute/keys/:keyId
 ```
 
-创建参数：`name`、`groupId`、`expiresAt`、`quota`、`rpm`、`ipAllowList`。响应中的 `secret` 只返回一次；服务端数据库不保存明文。默认 Key 不允许删除，允许停用后重新生成。
+创建参数：`name`、`groupId`、`expiresAt`、`quota`（美元，对应 Sub2API Key 级 USD 配额）、`rpm`、`ipAllowList`。响应中的 `secret` 只返回一次；服务端数据库不保存明文。默认 Key 不允许删除，允许停用后重新生成。
 
 权限：`compute.key.view`、`compute.key.create`、`compute.key.update`、`compute.key.disable`。
 
@@ -306,7 +309,7 @@ POST /api/v1/compute/recharge/orders
 GET  /api/v1/compute/recharge/orders/:orderId
 ```
 
-本期可以创建 `pending` 订单，但没有支付成功回调时不得增加 Token。后续接入支付后，支付服务通过签名回调完成幂等入账。
+本期可以创建 `pending` 订单，但没有支付成功回调时不得增加余额。后续接入支付后，支付服务通过签名回调完成幂等入账。
 
 ## 8. Model Gateway 与智能体调用
 
@@ -314,7 +317,7 @@ GET  /api/v1/compute/recharge/orders/:orderId
 
 1. 从 Session 得到当前 identity。
 2. 校验 `model.use`、项目/群聊/任务权限和模型范围。
-3. 锁定并预扣 Token。
+3. 锁定并预扣额度（美元）。
 4. 根据模型槽位和当前身份分组选择 Sub2API Key。
 5. 注入业务标签：`identityId`、`organizationId`、`projectId`、`conversationId`、`taskId`、`agentId`。
 6. 透传普通响应、SSE、tool calling 和 usage。
@@ -329,7 +332,7 @@ Model Gateway 不允许使用前端模型管理页面传入的 URL 或 Key，所
 ### 9.1 仪表盘
 
 - 顶部显示当前身份和 Sub2API 同步状态。
-- 核心指标：可用 Token、已使用 Token、保留 Token、默认 Key、今日请求、今日 Token。
+- 核心指标：可用额度（美元）、已使用额度（美元）、保留额度（美元）、默认 Key、今日请求、今日 Token（统计）与今日消费（美元）。
 - 显示余额水位、最近用量、模型分布、失败率和延迟。
 - 个人身份显示“充值”入口；企业成员隐藏或禁用充值入口并说明需联系管理员。
 - 企业管理员显示“成员额度管理”入口。
@@ -338,7 +341,7 @@ Model Gateway 不允许使用前端模型管理页面传入的 URL 或 Key，所
 ### 9.2 API 密钥
 
 - 列出当前身份的 Key：名称、前缀、分组、状态、创建时间、过期时间、今日用量。
-- 创建 Key 弹窗：名称、模型分组、限额、速率、有效期。
+- 创建 Key 弹窗：名称、模型分组、限额（美元）、速率、有效期。
 - 创建成功展示一次完整 Secret，并提供复制按钮和“我已保存”确认；关闭后永不再次显示。
 - 默认 Key 显示“系统默认”，不能删除。
 - 禁止把 Key 放进 URL、localStorage、Redux 或日志。
@@ -366,8 +369,8 @@ Model Gateway 不允许使用前端模型管理页面传入的 URL 或 Key，所
 | 查看本人用量 | 是 | 是 | 是 |
 | 查看企业总用量 | 否 | 是 | 否 |
 | 查看成员用量 | 否 | 是 | 否 |
-| 分配企业 Token | 不适用 | 是 | 否 |
-| 回收成员未用 Token | 不适用 | 是 | 否 |
+| 分配企业额度 | 不适用 | 是 | 否 |
+| 回收成员未用额度 | 不适用 | 是 | 否 |
 | 个人充值 | 是 | 仅个人身份 | 否 |
 | 编辑模型/上游 Key | 否 | 否 | 否 |
 | 模型广场只读 | 是 | 是 | 是 |
@@ -405,7 +408,7 @@ model.catalog.view
 - Gateway 实时写入带请求 ID 的 usage。
 - 每 10 分钟从 Sub2API 拉取增量用量作为校准。
 - 使用 `dedupe_hash` 去重。
-- 日对账：KLA Gateway usage、Sub2API usage、余额变化三方比对。
+- 日对账：KLA Gateway usage、Sub2API usage、余额变化三方比对；KLA 台账与 Sub2API 余额同为美元，可直接按金额比对，Token 数仅作明细校验。
 - 差异超过阈值时停止自动补扣，进入人工复核；不得静默修改余额。
 
 ### 11.3 Redis 用途
@@ -441,7 +444,6 @@ SUB2API_TIMEOUT_MS=15000
 SUB2API_DEFAULT_GROUP_ID=group-chat
 SUB2API_PERSONAL_GROUP_ID=group-personal
 SUB2API_FAST_GROUP_ID=group-lite
-COMPUTE_INITIAL_TOKEN_GRANT=1000000
 COMPUTE_USAGE_SYNC_INTERVAL_MS=600000
 COMPUTE_OUTBOX_INTERVAL_MS=5000
 COMPUTE_RECONCILIATION_ENABLED=true
@@ -463,7 +465,7 @@ Sub2API 部署要求：
 1. `Sub2ApiClient`：Admin/User API、错误映射、超时、重试。
 2. 迁移 `compute_bindings`、`compute_entitlements`、`compute_allocation_ledger`、`compute_keys`、`compute_usage`、Outbox 和任务表。
 3. 身份创建事务接入初始建号事件。
-4. Token 预扣、实际扣减、释放和管理员分配事务。
+4. 额度（美元）预扣、实际扣减、释放和管理员分配事务。
 5. Key、模型广场、用量和管理员额度 API。
 6. Model Gateway 接入当前身份和 Sub2API Key。
 7. Provision Worker、Usage Sync Worker、漂移检测和对账任务。
@@ -474,15 +476,16 @@ Sub2API 部署要求：
 2. API Key 页面接入创建、一次性 Secret 展示、停用和默认 Key 保护。
 3. 使用记录接入筛选、分页、导出。
 4. 模型管理入口改为模型广场，只读展示。
-5. 企业管理员增加成员 Token 分配页；企业成员隐藏分配和充值操作。
+5. 企业管理员增加成员额度分配页；企业成员隐藏分配和充值操作。
 6. 身份切换后清理算力缓存并重新加载。
 
 ### 必测验收场景
 
-- 注册个人账号：自动创建个人 Sub2API 账号、1,000,000 Token 和默认 Key，重复事件不重复发放。
+- 注册个人账号：自动创建个人 Sub2API 账号（余额 0）和默认 Key，重复事件不重复创建。
+- 企业管理员分配额度后，成员 Sub2API 余额同步增加；未获分配额度的成员请求被软额度闸门拒绝。
 - 创建企业：管理员身份自动建号；管理员和成员身份隔离。
 - 加入企业：成员自动建号；成员无法调用额度分配和个人充值接口。
-- 管理员给成员分配/回收 Token，余额不足和重复请求正确拒绝/幂等。
+- 管理员给成员分配/回收额度，余额不足和重复请求正确拒绝/幂等。
 - 个人身份充值占位不会直接增加余额；支付回调前保持 pending。
 - 创建 Key 只返回一次完整 Secret，默认 Key 不可删除。
 - 智能体通过 Model Gateway 真实调用 Sub2API，usage 写入并扣减当前身份额度。
@@ -506,5 +509,6 @@ Sub2API 部署要求：
 1. Admin API 的建号、余额操作和 usage 返回字段是否与适配器契约一致。
 2. 用户面创建 Key 是否必须验证码/2FA；若必须，需要采用服务端专用免验证码托管账号或改为 Sub2API 管理 API 扩展。
 3. Token usage 是否能按 Key、模型和时间返回；若不能，Gateway usage 作为业务明细事实源，Sub2API 仅做余额对账。
-4. 模型费用是按输入/输出 Token 分开还是统一倍率；本期统一转换成 Token 消耗，费用仅展示估算值。
-5. 企业成员初始 1,000,000 Token 是否从企业权益池扣除；本文默认扣除企业池并保留完整划拨流水。
+4. 已确认（2026-10 对照 main 分支源码）：Sub2API 用户余额（`users.balance`，decimal(20,8)）、Key 配额（`api_keys.quota`，注释明确为 USD）、5h/1d/7d 限速窗口和平台日/周/月配额（`user_platform_quotas`）全部以美元计价，不存在 Token 余额或 Token 配额；Token 仅作为计费输入。本文额度单位据此统一为美元。
+5. 已定（2026-10）：企业池注资以 KLA 台账驱动——运营通过运维脚本/内部工具把权益记入 `organization_entitlements` 并写划拨流水（幂等键 `grant:*`），同步器调用 Sub2API balance 接口注入；不在 Sub2API 面板手工改余额（应急使用须补台账并人工对账复核）。是否产品化运营发放界面待后续确认。
+6. 个人额度来源：本期个人身份无自动发放，余额为 0，仅充值占位或运营发放；个人算力在发放/充值上线前不可用，需产品确认可接受。
