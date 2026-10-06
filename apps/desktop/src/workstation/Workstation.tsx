@@ -6,19 +6,19 @@ import { authExpiredEventName, klaApi } from '../api/client';
 type Section = 'home' | 'projects' | 'chats' | 'knowledge' | 'compute' | 'settings';
 type ComputeView = 'dashboard' | 'keys' | 'usage' | 'market' | 'mine';
 type Modal = 'project' | 'chat' | 'key' | 'knowledge' | 'agent' | 'register' | 'identity' | 'create-enterprise' | 'join-enterprise' | null;
-type Project = { id: number; name: string; description: string; progress: number; members: number; color: string };
-type Chat = { id: number; name: string; project: string; messages: { author: string; text: string; time: string }[] };
+type Project = { id: string; name: string; description: string; progress: number; members: number; color: string };
+type Chat = { id: string; name: string; project: string; projectId?: string; messages: { id?: string; author: string; text: string; time: string; senderType?: string; artifactId?: string }[] };
 type Document = { name: string; group: string; size: string; status: string; date: string };
 
 const initialProjects: Project[] = [
-  { id: 1, name: '智能办公平台升级', description: '构建跨团队智能协作与知识处理平台', progress: 72, members: 8, color: '#2779e9' },
-  { id: 2, name: '市场洞察与研究', description: '行业趋势分析、竞品研究与报告产出', progress: 48, members: 5, color: '#0d9488' },
-  { id: 3, name: '品牌标准化建设', description: '统一资产规范并推进设计资料入库', progress: 86, members: 6, color: '#8b5cf6' },
+  { id: 'demo-1', name: '智能办公平台升级', description: '构建跨团队智能协作与知识处理平台', progress: 72, members: 8, color: '#2779e9' },
+  { id: 'demo-2', name: '市场洞察与研究', description: '行业趋势分析、竞品研究与报告产出', progress: 48, members: 5, color: '#0d9488' },
+  { id: 'demo-3', name: '品牌标准化建设', description: '统一资产规范并推进设计资料入库', progress: 86, members: 6, color: '#8b5cf6' },
 ];
 const initialChats: Chat[] = [
-  { id: 1, name: '项目协作群组', project: '智能办公平台升级', messages: [{ author: '统筹智能体', text: '大家好，项目材料已经整理完成，可以继续讨论下一步工作。', time: '09:56' }] },
-  { id: 2, name: '市场调研讨论', project: '市场洞察与研究', messages: [{ author: '本地执行智能体', text: '已汇总行业趋势与主要竞品的公开资料。', time: '昨天' }] },
-  { id: 3, name: '品牌规范评审', project: '品牌标准化建设', messages: [] },
+  { id: 'demo-chat-1', name: '项目协作群组', project: '智能办公平台升级', projectId: 'demo-1', messages: [{ author: '统筹智能体', text: '大家好，项目材料已经整理完成，可以继续讨论下一步工作。', time: '09:56' }] },
+  { id: 'demo-chat-2', name: '市场调研讨论', project: '市场洞察与研究', projectId: 'demo-2', messages: [{ author: '本地执行智能体', text: '已汇总行业趋势与主要竞品的公开资料。', time: '昨天' }] },
+  { id: 'demo-chat-3', name: '品牌规范评审', project: '品牌标准化建设', projectId: 'demo-3', messages: [] },
 ];
 const initialDocs: Document[] = [
   { name: '企业知识管理规范.pdf', group: '企业知识', size: '2.4 MB', status: '已完成', date: '2026-09-27' },
@@ -26,13 +26,13 @@ const initialDocs: Document[] = [
   { name: '市场洞察报告.md', group: '项目知识', size: '48 KB', status: '已完成', date: '2026-09-25' },
   { name: '个人工作笔记.txt', group: '个人知识', size: '12 KB', status: '处理中', date: '2026-09-24' },
 ];
-const models = [
-  { name: 'DeepSeek-R1', vendor: 'deepseek-ai / deepseek-reasoner', category: '深度思考', context: '128K', latency: '18ms', cost: '$0.0005/1K', icon: '◈' },
-  { name: 'GPT-4o', vendor: 'openai / gpt-4o-2024-11-20', category: '全能旗舰', context: '128K', latency: '22ms', cost: '$0.0025/1K', icon: '◉' },
-  { name: 'Claude 3.5 Sonnet', vendor: 'anthropic / claude-3-5-sonnet', category: '编程写作', context: '200K', latency: '26ms', cost: '$0.0030/1K', icon: '✦' },
-  { name: 'Gemini 1.5 Pro', vendor: 'google / gemini-1.5-pro', category: '海量上下文', context: '2,000K', latency: '29ms', cost: '$0.00125/1K', icon: '▦' },
-  { name: 'GLM-4-Air', vendor: 'zhipu / glm-4-air', category: '中文优选', context: '128K', latency: '15ms', cost: '免费体验', icon: '文' },
-  { name: 'Qwen 2.5 72B-Instruct', vendor: 'qwen / qwen-2.5-72b-instruct', category: '企业级', context: '128K', latency: '20ms', cost: '$0.0007/1K', icon: '✣' },
+const initialModels = [
+  { id: 'deepseek-reasoner', name: 'DeepSeek Reasoner', vendor: 'deepseek / deepseek-reasoner', category: '深度思考', context: '128K', latency: '服务端探测', cost: '待配置密钥', icon: '◈' },
+  { id: 'gpt-4o', name: 'GPT-4o', vendor: 'openai / gpt-4o', category: '视觉多模态', context: '128K', latency: '服务端探测', cost: '待配置密钥', icon: '◉' },
+  { id: 'claude-3-5-sonnet', name: 'Claude 3.5 Sonnet', vendor: 'anthropic / claude-3-5-sonnet', category: '视觉多模态', context: '200K', latency: '服务端探测', cost: '待配置密钥', icon: '✦' },
+  { id: 'zhipu/glm-5.3-flash', name: 'GLM 5.3 Flash', vendor: 'zhipu / glm-5.3-flash', category: '视觉多模态', context: '128K', latency: '服务端探测', cost: '已配置', icon: '文' },
+  { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', vendor: 'deepseek / deepseek-v4-flash', category: '通用模型', context: '128K', latency: '服务端探测', cost: '待配置密钥', icon: '◈' },
+  { id: 'qwen-plus', name: 'Qwen Plus', vendor: 'qwen / qwen-plus', category: '深度思考', context: '128K', latency: '服务端探测', cost: '待配置密钥', icon: '✣' },
 ];
 const usage = [
   { time: '2026-09-29 14:08', model: 'zhipu/glm-5.3-flash', key: '订阅分组', tokens: '19.24K', cost: '$0.0021', state: '成功' },
@@ -90,8 +90,8 @@ export function Workstation(): React.JSX.Element {
   const [projects, setProjects] = useState(initialProjects);
   const [chats, setChats] = useState(initialChats);
   const [docs, setDocs] = useState(initialDocs);
-  const [activeProject, setActiveProject] = useState(1);
-  const [activeChat, setActiveChat] = useState(1);
+  const [activeProject, setActiveProject] = useState('demo-1');
+  const [activeChat, setActiveChat] = useState('demo-chat-1');
   const [query, setQuery] = useState('');
   const [draft, setDraft] = useState('');
   const [newName, setNewName] = useState('');
@@ -100,6 +100,7 @@ export function Workstation(): React.JSX.Element {
   const [newModel, setNewModel] = useState('DeepSeek-R1');
   const [knowledgeScope, setKnowledgeScope] = useState('全部知识');
   const [marketFilter, setMarketFilter] = useState('全部模型');
+  const [models, setModels] = useState(initialModels);
   const [selectedModels, setSelectedModels] = useState(['DeepSeek-R1']);
   const [keys, setKeys] = useState([{ name: '订阅分组', value: 'sk-0000...f7E2', created: '2026-09-28 21:58', active: true }]);
   const [notice, setNotice] = useState('');
@@ -113,10 +114,14 @@ export function Workstation(): React.JSX.Element {
   const [companyName, setCompanyName] = useState('');
   const [licenseNumber, setLicenseNumber] = useState('');
   const [inviteCode, setInviteCode] = useState('');
+  const [chatLoading, setChatLoading] = useState(false);
+  const [chatSending, setChatSending] = useState(false);
+  const [previewArtifact, setPreviewArtifact] = useState<{ name: string; content: string } | null>(null);
   const currentProject = projects.find(p => p.id === activeProject) ?? projects[0];
   const currentChat = chats.find(c => c.id === activeChat) ?? chats[0];
   const filteredDocs = useMemo(() => docs.filter(d => (knowledgeScope === '全部知识' || d.group === knowledgeScope) && d.name.toLowerCase().includes(query.toLowerCase())), [docs, knowledgeScope, query]);
   const notify = (message: string) => { setNotice(message); window.setTimeout(() => setNotice(''), 3500); };
+  const apiError = (result: { message?: string; error?: { message?: string } }) => result.message ?? result.error?.message ?? '请求失败';
   const navigate = (next: Section) => { setSection(next); setQuery(''); };
   useEffect(() => {
     const expire = () => { klaApi.clearAccessToken(); setSignedIn(false); setAuthChecking(false); notify('登录状态已失效，请重新登录'); };
@@ -126,11 +131,34 @@ export function Workstation(): React.JSX.Element {
     }
     return () => window.removeEventListener(authExpiredEventName, expire);
   }, []);
+  useEffect(() => {
+    if (!signedIn) return;
+    void (async () => {
+      const result = await klaApi.request<{ projects: Array<{ id: string; name: string }>; conversations: Array<{ id: string; name: string; projectId: string; projectName?: string }> }>('/v1/bootstrap');
+      if (!result.ok) return;
+      const nextProjects = result.data.projects.map((p, index) => ({ id: p.id, name: p.name, description: '当前身份下的项目工作区', progress: 0, members: 1, color: ['#2779e9', '#0d9488', '#8b5cf6'][index % 3] }));
+      const nextChats = result.data.conversations.map((c) => ({ id: c.id, name: c.name, project: c.projectName ?? nextProjects.find((p) => p.id === c.projectId)?.name ?? '项目', projectId: c.projectId, messages: [] }));
+      if (nextProjects.length) { setProjects(nextProjects); setActiveProject(nextProjects[0].id); }
+      if (nextChats.length) { setChats(nextChats); setActiveChat(nextChats[0].id); }
+      const agentResult = await klaApi.request<Array<{ id: string; name: string; role: string; type: string; modelId: string | null; enabled: boolean }>>('/v1/agents');
+      if (agentResult.ok && agentResult.data.length) setAgents(agentResult.data.map((a, index) => ({ name: a.name, role: a.role, type: a.type === 'official' ? '官方智能体' : a.type === 'external' ? '外接第三方' : '自定义智能体', model: a.modelId ?? '默认模型槽位', skills: [], enabled: a.enabled, color: ['#3b82f6', '#10b981', '#8b5cf6', '#f59e0b'][index % 4] })));
+      const modelResult = await klaApi.request<Array<{ id: string; name: string; provider: string; base_url?: string; capabilities?: { thinking?: boolean; vision?: boolean; context?: number }; configured?: boolean }>>('/v1/models');
+      if (modelResult.ok && modelResult.data.length) setModels(modelResult.data.map((m, index) => ({ id: m.id, name: m.name, vendor: `${m.provider} / ${m.id}`, category: m.capabilities?.vision ? '视觉多模态' : m.capabilities?.thinking ? '深度思考' : '通用模型', context: m.capabilities?.context ? `${Math.round(m.capabilities.context / 1000)}K` : '128K', latency: '服务端探测', cost: m.configured ? '已配置' : '待配置密钥', icon: ['◈', '文', '✣', '◉'][index % 4] })));
+    })();
+  }, [signedIn]);
+  useEffect(() => {
+    if (!signedIn || !activeChat || activeChat.startsWith('demo-')) return;
+    setChatLoading(true);
+    void klaApi.request<Array<{ id: string; senderType: string; senderName?: string; text: string; createdAt: string; metadata?: { artifactId?: string } }>>(`/v1/conversations/${activeChat}/messages`).then((result) => {
+      if (result.ok) setChats((items) => items.map((chat) => chat.id === activeChat ? { ...chat, messages: result.data.map((m) => ({ id: m.id, author: m.senderType === 'agent' ? (m.senderName ?? '智能体') : '我', text: m.text, time: new Date(m.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }), senderType: m.senderType, artifactId: m.metadata?.artifactId })) } : chat));
+      setChatLoading(false);
+    });
+  }, [signedIn, activeChat]);
   const login = async () => {
     const result = await klaApi.request<{ session: { accessToken: string; expiresAt: string } }>('/v1/auth/login', {
       method: 'POST', body: JSON.stringify({ identifier: username.trim(), password }),
     });
-    if (!result.ok) { notify(result.message); return; }
+    if (!result.ok) { notify(apiError(result)); return; }
     klaApi.setAccessToken(result.data.session.accessToken, result.data.session.expiresAt);
     setSignedIn(true);
     setAuthChecking(false);
@@ -140,22 +168,36 @@ export function Workstation(): React.JSX.Element {
   };
   const register = async () => {
     const result = await klaApi.request<{ session: { accessToken: string; expiresAt: string }; identities?: typeof identities }>('/v1/auth/register', { method: 'POST', body: JSON.stringify({ email: authNewEmail.trim(), password: authNewPassword, nickname: authNewName.trim() }) });
-    if (!result.ok) { notify(result.message); return; }
+    if (!result.ok) { notify(apiError(result)); return; }
     klaApi.setAccessToken(result.data.session.accessToken, result.data.session.expiresAt); setIdentities(result.data.identities ?? []); setSignedIn(true); setAuthChecking(false); setModal('identity');
   };
-  const activateIdentity = async (identityId: string) => { const result = await klaApi.request('/v1/me/identities/' + identityId + '/activate', { method: 'POST' }); if (!result.ok) { notify(result.message); return; } setModal(null); notify('已切换身份'); };
-  const createEnterprise = async () => { const result = await klaApi.request<{ id: string; displayName: string; type: string; organizationId: string | null }>('/v1/organizations', { method: 'POST', body: JSON.stringify({ name: companyName.trim(), licenseNumber: licenseNumber.trim() }) }); if (!result.ok) { notify(result.message); return; } setIdentities(items => [...items, result.data]); setCompanyName(''); setLicenseNumber(''); setModal('identity'); notify('企业创建成功'); };
-  const joinEnterprise = async () => { const result = await klaApi.request<{ id: string; displayName: string; type: string; organizationId: string | null }>('/v1/organizations/join', { method: 'POST', body: JSON.stringify({ inviteCode: inviteCode.trim() }) }); if (!result.ok) { notify(result.message); return; } setIdentities(items => [...items, result.data]); setInviteCode(''); setModal('identity'); notify('已加入企业'); };
+  const activateIdentity = async (identityId: string) => { const result = await klaApi.request('/v1/me/identities/' + identityId + '/activate', { method: 'POST' }); if (!result.ok) { notify(apiError(result)); return; } setModal(null); notify('已切换身份'); };
+  const createEnterprise = async () => { const result = await klaApi.request<{ id: string; displayName: string; type: string; organizationId: string | null }>('/v1/organizations', { method: 'POST', body: JSON.stringify({ name: companyName.trim(), licenseNumber: licenseNumber.trim() }) }); if (!result.ok) { notify(apiError(result)); return; } setIdentities(items => [...items, result.data]); setCompanyName(''); setLicenseNumber(''); setModal('identity'); notify('企业创建成功'); };
+  const joinEnterprise = async () => { const result = await klaApi.request<{ id: string; displayName: string; type: string; organizationId: string | null }>('/v1/organizations/join', { method: 'POST', body: JSON.stringify({ inviteCode: inviteCode.trim() }) }); if (!result.ok) { notify(apiError(result)); return; } setIdentities(items => [...items, result.data]); setInviteCode(''); setModal('identity'); notify('已加入企业'); };
   const send = () => {
     if (!draft.trim()) return;
-    const message = { author: '我', text: draft.trim(), time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) };
+    const text = draft.trim();
+    const message = { author: '我', text, time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) };
     setChats(items => items.map(c => c.id === activeChat ? { ...c, messages: [...c.messages, message] } : c));
     setDraft('');
+    if (!signedIn || activeChat.startsWith('demo-')) return;
+    setChatSending(true);
+    void klaApi.request<{ message: { id: string }; run: { id: string } }>(`/v1/conversations/${activeChat}/messages`, { method: 'POST', body: JSON.stringify({ text, mode: 'balanced' }) }).then(() => {
+      const poll = window.setInterval(() => {
+        void klaApi.request<Array<{ senderType: string; senderName?: string; text: string; createdAt: string; metadata?: { artifactId?: string } }>>(`/v1/conversations/${activeChat}/messages`).then((result) => {
+          if (!result.ok) return;
+          const mapped = result.data.map((m) => ({ author: m.senderType === 'agent' ? (m.senderName ?? '智能体') : '我', text: m.text, time: new Date(m.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }), senderType: m.senderType, artifactId: m.metadata?.artifactId }));
+          setChats((items) => items.map(c => c.id === activeChat ? { ...c, messages: mapped } : c));
+          if (mapped.some(m => m.senderType === 'agent')) { window.clearInterval(poll); setChatSending(false); }
+        });
+      }, 700);
+      window.setTimeout(() => { window.clearInterval(poll); setChatSending(false); }, 30_000);
+    });
   };
   const create = () => {
     if (!newName.trim()) return;
-    if (modal === 'project') { const id = Date.now(); setProjects(items => [...items, { id, name: newName.trim(), description: newDescription.trim() || '暂无项目说明', progress: 0, members: 1, color: '#2779e9' }]); setActiveProject(id); navigate('projects'); }
-    if (modal === 'chat') { const id = Date.now(); setChats(items => [...items, { id, name: newName.trim(), project: newProject || projects[0].name, messages: [] }]); setActiveChat(id); navigate('chats'); }
+    if (modal === 'project') { const id = `local-${Date.now()}`; if (signedIn) { void klaApi.request<{ id: string; name: string }>('/v1/projects', { method: 'POST', body: JSON.stringify({ name: newName.trim() }) }).then((result) => { if (result.ok) { setProjects(items => [...items, { id: result.data.id, name: result.data.name, description: newDescription.trim() || '暂无项目说明', progress: 0, members: 1, color: '#2779e9' }]); setActiveProject(result.data.id); } }); } else { setProjects(items => [...items, { id, name: newName.trim(), description: newDescription.trim() || '暂无项目说明', progress: 0, members: 1, color: '#2779e9' }]); setActiveProject(id); } navigate('projects'); }
+    if (modal === 'chat') { const selectedProject = projects.find((p) => p.name === (newProject || projects[0]?.name)) ?? projects[0]; if (signedIn && selectedProject && !selectedProject.id.startsWith('demo-')) void klaApi.request<{ id: string }>('/v1/conversations', { method: 'POST', body: JSON.stringify({ projectId: selectedProject.id, name: newName.trim() }) }).then((result) => { if (result.ok) { setChats(items => [...items, { id: result.data.id, name: newName.trim(), project: selectedProject.name, projectId: selectedProject.id, messages: [] }]); setActiveChat(result.data.id); } }); else { const id = `local-${Date.now()}`; setChats(items => [...items, { id, name: newName.trim(), project: selectedProject?.name ?? '项目', projectId: selectedProject?.id, messages: [] }]); setActiveChat(id); } navigate('chats'); }
     if (modal === 'key') setKeys(items => [...items, { name: newName.trim(), value: `sk-demo...${Math.random().toString(36).slice(2, 6)}`, created: new Date().toLocaleString('zh-CN'), active: true }]);
     if (modal === 'agent') {
       if (agents.some(a => a.name === newName.trim())) { notify('智能体名称已存在'); return; }
@@ -196,7 +238,7 @@ export function Workstation(): React.JSX.Element {
         {section === 'settings' && <><div className="ws-agent-heading"><div><h1>智能体管理 <Badge>Agent Registry</Badge></h1><p>管理官方智能体、外接三方和自定义智能体的模型、技能与权限。</p></div><button className="ws-primary" onClick={() => { setNewName(''); setNewDescription(''); setModal('agent'); }}><Plus size={15} /> 新建智能体</button></div><div className="ws-agent-toolbar"><div className="ws-segment">{['全部', '官方智能体', '外接第三方', '自定义智能体'].map(t => <button key={t} className={agentFilter === t ? 'active' : ''} onClick={() => setAgentFilter(t)}>{t}</button>)}</div><div className="ws-sub-search"><Search size={14} /><input placeholder="搜索智能体..." value={query} onChange={e => setQuery(e.target.value)} /></div></div><div className="ws-agent-grid">{agents.filter(a => (agentFilter === '全部' || agentFilter === a.type) && `${a.name}${a.role}`.toLowerCase().includes(query.toLowerCase())).map(a => <article className="ws-agent-card" key={a.name}><div className="ws-agent-card-head"><span className="ws-avatar" style={{ background: a.color }}>{a.name.slice(0, 2)}</span><div><h3>{a.name}</h3><small>{a.type}</small></div><Badge tone={a.enabled ? 'green' : 'muted'}>{a.enabled ? '已启用' : '未连接'}</Badge></div><p>{a.role}</p><div className="ws-agent-meta"><span>运行方式: {a.type === '外接第三方' ? '外部连接器' : '本地模型智能体'}</span><span>挂载模型: {a.model}</span></div><div className="ws-agent-skills">{a.skills.map(s => <Badge key={s}>{s}</Badge>)}</div><footer><button onClick={() => setAgentDraft(a)}><Settings size={14} /> 配置</button><button onClick={() => setAgents(items => items.map(x => x.name === a.name ? { ...x, enabled: !x.enabled } : x))}>{a.enabled ? '停用' : '启用'}</button></footer></article>)}</div></>}
         {section === 'home' && <><div className="ws-hero"><div><Badge>已自动识别身份 · 员工目录</Badge><p>早上好，老K · 开启高效多智能体协同的一天</p><div className="ws-hero-tags"><Badge tone="green">● 全域智能调度引擎运行中</Badge><Badge>算力响应正常 · 延迟 &lt; 85ms</Badge><Badge>4 大业务群组在协助你</Badge></div></div><div className="ws-hero-box"><Sparkles size={24} /><strong>已连接 4 个核心模型</strong><small>随时启动智能协同流程</small><button className="ws-primary" onClick={() => { navigate('compute'); setComputeView('market'); }}>查看模型广场 <ArrowRight size={15} /></button></div></div><div className="ws-stats four"><Stat icon={<Wallet />} label="可用 Token" value="0" hint="集团统一额度分配" /><Stat icon={<Bot />} label="已安装应用" value="4 个" hint="可选 4 个" color="green" /><Stat icon={<BookOpen />} label="可访问知识" value={`${docs.length + 8} 份`} hint="按 BG 与权限过滤" color="teal" /><Stat icon={<FileText />} label="工作记忆" value="18 条" hint="员工可查看、可删除" color="orange" /></div><div className="ws-home-grid"><Panel title="今天想完成什么？" action={<Badge tone="green">● 智能调度引擎就绪</Badge>}><textarea className="ws-home-prompt" placeholder="输入问题，鲲擎会自动拆分你的岗位、知识和记忆..." value={draft} onChange={e => setDraft(e.target.value)} /><div className="ws-prompt-actions"><Paperclip size={16} /><span>上传任务资料，开始协作</span><button className="ws-primary" onClick={() => { setActiveChat(chats[0].id); navigate('chats'); send(); }}> <Send size={16} /> </button></div><div className="ws-chip-row">{['总结本周工作', '查询集团制度', '生成项目汇报', '拆解今天的任务'].map(t => <button key={t} onClick={() => setDraft(t)}>{t}</button>)}</div><div className="ws-connection"><Bot size={17} /> 当前已连接 DeepSeek-V3 与高转私有化模型 <button onClick={() => { navigate('compute'); setComputeView('market'); }}>查看模型市场</button></div></Panel><Panel title="我的任务" action={<button className="ws-text-button" onClick={() => notify('任务模块待接入')}>+ 新建任务</button>}><div className="ws-empty"><CheckCircle2 size={28} /><strong>今天没有待办</strong><small>点击上方新建任务即可安排工作</small></div></Panel></div><Panel title="推荐多智能体群组" action={<button className="ws-text-button" onClick={() => navigate('chats')}>更多群组模板 →</button>}><div className="ws-recommend">{['财务审计协同组', '市场调研小组', '智能研发协作', '创意营销工坊'].map((name, i) => <button key={name} onClick={() => { setModal('chat'); setNewName(name); }}><span className={`ws-recommend-icon tint-${i}`}><BriefcaseBusiness size={20} /></span><strong>{name}</strong><small>连接专业智能体，快速启动协作</small></button>)}</div></Panel></>}
         {section === 'projects' && <><div className="ws-page-heading"><div><h1>{currentProject.name}</h1><p>{currentProject.description}</p></div><button className="ws-primary" onClick={() => setModal('project')}><Plus size={16} /> 创建项目</button></div><div className="ws-stats four"><Stat icon={<Folder />} label="项目总数" value={`${projects.length}`} hint="当前工作空间" /><Stat icon={<CheckCircle2 />} label="总体完成率" value={`${Math.round(projects.reduce((n, p) => n + p.progress, 0) / projects.length)}%`} hint="项目任务进度" color="green" /><Stat icon={<Users />} label="参与成员" value={`${currentProject.members} 人`} hint="含协作智能体" color="teal" /><Stat icon={<CalendarDays />} label="待办任务" value="8 项" hint="本周需跟进" color="orange" /></div><div className="ws-project-grid"><Panel title="项目进度概览" action={<Badge tone="green">进行中</Badge>}><div className="ws-project-progress"><div><strong>{currentProject.progress}%</strong><small>整体进度</small></div><div className="ws-progress-track"><i style={{ width: `${currentProject.progress}%` }} /></div><p>已完成 18 / 25 个任务节点</p></div><div className="ws-milestones">{['需求调研', '方案设计', '功能开发', '联调验收'].map((t, i) => <span key={t} className={i < 2 ? 'done' : ''}>{i < 2 ? '✓' : i + 1} {t}</span>)}</div></Panel><Panel title="近七日任务趋势" action={<span className="ws-muted">任务完成情况</span>}><Chart kind="bars" /></Panel></div><div className="ws-project-grid"><Panel title="项目成员与智能体"><div className="ws-people">{['老K', '统筹智能体', '本地执行智能体', '设计团队'].map(t => <span key={t}><span className="ws-avatar">{t.slice(0, 2)}</span>{t}</span>)}</div></Panel><Panel title="项目动态" action={<button className="ws-text-button" onClick={() => navigate('chats')}>进入群组 →</button>}><div className="ws-timeline"><p><b>今日 09:30</b> 统筹智能体更新项目阶段计划</p><p><b>昨日 16:20</b> 完成知识库资料归档</p><p><b>09月26日</b> 项目例会纪要已整理</p></div></Panel></div></>}
-        {section === 'chats' && <div className="ws-chat"><header><div><span className="ws-avatar">{currentChat.name.slice(0, 2)}</span><span><strong>{currentChat.name}</strong><small>● {currentChat.project} · 2 个智能体协作中</small></span></div><div><IconButton title="邀请成员" onClick={() => notify('邀请成员将在成员接口接入后开放')}><Users size={17} /></IconButton><IconButton title="群组文件" onClick={() => notify('群组文件将在服务端存储接入后开放')}><Folder size={17} /></IconButton><IconButton title="更多" onClick={() => notify('群组设置即将开放')}><MoreHorizontal size={17} /></IconButton></div></header><div className="ws-chat-messages"><p className="ws-chat-date">加载更多消息</p>{currentChat.messages.map((m, i) => <div className={`ws-message ${m.author === '我' ? 'self' : ''}`} key={`${m.time}-${i}`}><span className="ws-avatar">{m.author.slice(0, 2)}</span><div><small>{m.author} · {m.time}</small><p>{m.text}</p></div></div>)}</div><div className="ws-chat-compose"><textarea placeholder="发送消息给群组 (支持 @ 智能体)..." value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }} /><div><span><Paperclip size={16} /> 附件　<Bot size={16} /> 智能体</span><button className="ws-primary" onClick={send}><Send size={15} />发送给群组</button></div></div></div>}
+        {section === 'chats' && <div className="ws-chat"><header><div><span className="ws-avatar">{currentChat.name.slice(0, 2)}</span><span><strong>{currentChat.name}</strong><small>● {currentChat.project} · 2 个智能体协作中</small></span></div><div><IconButton title="邀请成员" onClick={() => notify('邀请成员将在成员接口接入后开放')}><Users size={17} /></IconButton><IconButton title="群组文件" onClick={() => notify('群组文件将在服务端存储接入后开放')}><Folder size={17} /></IconButton><IconButton title="更多" onClick={() => notify('群组设置即将开放')}><MoreHorizontal size={17} /></IconButton></div></header><div className="ws-chat-messages"><p className="ws-chat-date">{chatLoading ? '正在加载消息…' : '消息记录'}</p>{currentChat.messages.map((m, i) => <div className={`ws-message ${m.author === '我' ? 'self' : ''}`} key={m.id ?? `${m.time}-${i}`}><span className="ws-avatar">{m.author.slice(0, 2)}</span><div><small>{m.author} · {m.time}</small><p>{m.text}</p>{m.artifactId && <button className="ws-text-button" onClick={() => void klaApi.request<{ name: string; content: string }>(`/v1/artifacts/${m.artifactId}`).then((result) => { if (result.ok) setPreviewArtifact(result.data); })}><FileText size={14} /> 打开成果文件</button>}</div></div>)}{chatSending && <div className="ws-message"><span className="ws-avatar">统筹</span><div><small>统筹智能体 · 正在处理</small><p className="ws-thinking"><span /> <span /> <span /></p></div></div>}</div><div className="ws-chat-compose"><textarea placeholder="发送消息给群组 (支持 @ 智能体)..." value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }} /><div><span><Paperclip size={16} /> 附件　<Bot size={16} /> 智能体</span><button className="ws-primary" disabled={chatSending} onClick={send}><Send size={15} />{chatSending ? '处理中…' : '发送给群组'}</button></div></div></div>}
         {section === 'knowledge' && <><div className="ws-page-heading"><div><h1>知识库</h1><p>统一管理企业、项目及个人知识资产</p></div><button className="ws-primary" onClick={() => setModal('knowledge')}><Upload size={16} /> 上传文件</button></div><div className="ws-knowledge-layout"><div><div className="ws-stats three"><Stat icon={<BookOpen />} label="知识总量" value={`${docs.length + 8} 份`} hint="已授权访问" /><Stat icon={<CheckCircle2 />} label="已完成知识化" value={`${docs.filter(d => d.status === '已完成').length + 8} 份`} hint="可供智能体检索" color="green" /><Stat icon={<Clock3 />} label="处理中" value="1 份" hint="等待服务端处理" color="orange" /></div><Panel title="知识资产" action={<div className="ws-inline"><select aria-label="知识范围" value={knowledgeScope} onChange={e => setKnowledgeScope(e.target.value)}>{['全部知识', '企业知识', '项目知识', '个人知识'].map(t => <option key={t}>{t}</option>)}</select><div className="ws-sub-search"><Search size={14} /><input placeholder="搜索文件..." value={query} onChange={e => setQuery(e.target.value)} /></div></div>}><div className="ws-folder-row">{['企业知识', '项目知识', '个人知识'].map(t => <button className={knowledgeScope === t ? 'active' : ''} onClick={() => setKnowledgeScope(t)} key={t}><Folder size={18} />{t}<small>{docs.filter(d => d.group === t).length} 份</small></button>)}</div><table className="ws-table"><thead><tr><th>文件名称</th><th>所属知识库</th><th>大小</th><th>处理状态</th><th>更新时间</th><th>操作</th></tr></thead><tbody>{filteredDocs.map(d => <tr key={d.name}><td><FileText size={16} /> {d.name}</td><td>{d.group}</td><td>{d.size}</td><td><Badge tone={d.status === '已完成' ? 'green' : 'orange'}>{d.status}</Badge></td><td>{d.date}</td><td><button className="ws-text-button" onClick={() => setDetails(d.name)}>查看</button></td></tr>)}</tbody></table>{filteredDocs.length === 0 && <div className="ws-empty">没有匹配的文件</div>}</Panel></div><aside className="ws-rag"><div><Sparkles size={23} /><h2>智能知识引擎</h2><p>让企业知识为协同工作提供可信依据</p></div><div><h3>RAG 智能检索</h3><p>从当前权限范围内检索文档，结合上下文提供准确回答。</p><span>● 服务状态正常</span></div><button onClick={() => notify('知识问答将在检索 API 接入后开放')}>开始知识问答 <ArrowRight size={15} /></button></aside></div></>}
         {section === 'compute' && <><div className="ws-compute-heading"><span>算力平台 / <b>{computeNav.find(n => n.id === computeView)?.label}</b></span><div>时间范围: <select aria-label="时间范围"><option>近 7 天</option><option>近 24 小时</option><option>近 30 天</option></select></div></div>
           {computeView === 'dashboard' && <><div className="ws-stats four"><Stat icon={<Wallet />} label="余额" value="$1,000.00" hint="可用: $1,000.00" color="green" /><Stat icon={<KeyRound />} label="API 密钥" value={`${keys.length}`} hint="● 已启用" /><Stat icon={<Send />} label="今日请求" value="3" hint="总计: 3" color="teal" /><Stat icon={<CreditCard />} label="今日消费" value="$0.0049" hint="总计: $0.0049" /></div><div className="ws-stats four"><Stat icon={<Database />} label="今日 Token" value="43.8K" hint="输入: 29.1K / 输出: 14.4K" color="orange" /><Stat icon={<Activity />} label="累计 Token" value="43.8K" hint="近 7 天累计" color="teal" /><Stat icon={<Cloud />} label="性能指标" value="0 RPM" hint="0 TPM" /><Stat icon={<Clock3 />} label="平均响应" value="3.74s" hint="网络稳定" color="purple" /></div><Panel title="按平台拆分" action={<small className="ws-muted">已连接 1 个活跃分组</small>}><div className="ws-provider"><span className="ws-provider-icon">AI</span><strong>OpenAI</strong><small>请求 3 次 · Token 43.8K</small><b>$0.0049</b></div></Panel><div className="ws-project-grid"><Panel title="模型分布"><div className="ws-donut-row"><div className="ws-donut">100%<small>glm-5.3</small></div><div>zhipu/glm-5.3-flash<br /><small>3 次请求 · 43.8K Token</small></div></div></Panel><Panel title="Token 使用趋势"><Chart /><div className="ws-chart-labels">09/25　　09/26　　09/27　　09/28　　09/29　　今日</div></Panel></div></>}
@@ -217,5 +259,6 @@ export function Workstation(): React.JSX.Element {
       {modal === 'join-enterprise' && <form onSubmit={e => { e.preventDefault(); void joinEnterprise(); }}><label>企业邀请码<input required value={inviteCode} onChange={e => setInviteCode(e.target.value.toUpperCase())} /></label><p className="ws-detail-copy">加入成功后将为当前账号建立该企业的成员身份。</p><footer><button type="button" onClick={() => setModal('identity')}>返回</button><button className="ws-primary">加入并进入</button></footer></form>}
     </div></div>}
     {notice && <div className="ws-toast">{notice}</div>}
+    {previewArtifact && <div className="ws-modal-backdrop" style={{ justifyContent: 'flex-end', padding: 0, background: '#15375724' }} onMouseDown={e => { if (e.target === e.currentTarget) setPreviewArtifact(null); }}><div className="ws-modal" style={{ width: 'min(720px, 52vw)', minWidth: 420, height: '100%', borderRadius: 0, display: 'flex', flexDirection: 'column' }}><header><h2>{previewArtifact.name}</h2><IconButton title="关闭预览" onClick={() => setPreviewArtifact(null)}><X size={19} /></IconButton></header><iframe title={previewArtifact.name} srcDoc={previewArtifact.content} style={{ flex: 1, width: '100%', border: '1px solid #e5e7eb', borderRadius: 6, background: '#fff' }} /></div></div>}
   </div>;
 }

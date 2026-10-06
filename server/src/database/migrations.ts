@@ -103,6 +103,64 @@ const migrations = [
       ON CONFLICT (id) DO NOTHING;
     `,
   },
+  {
+    id: '0005_collaboration_runtime',
+    sql: `
+      ALTER TABLE messages ADD COLUMN IF NOT EXISTS sender_type text NOT NULL DEFAULT 'user';
+      ALTER TABLE messages ADD COLUMN IF NOT EXISTS sender_name text;
+      ALTER TABLE messages ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'text';
+      ALTER TABLE messages ADD COLUMN IF NOT EXISTS metadata jsonb NOT NULL DEFAULT '{}'::jsonb;
+      CREATE INDEX IF NOT EXISTS messages_conversation_created_idx ON messages(conversation_id, created_at, id);
+      CREATE TABLE IF NOT EXISTS conversation_agents (
+        conversation_id uuid NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        agent_id uuid NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+        role text NOT NULL DEFAULT 'member',
+        created_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (conversation_id, agent_id)
+      );
+      CREATE TABLE IF NOT EXISTS artifacts (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        identity_id uuid NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
+        conversation_id uuid REFERENCES conversations(id) ON DELETE SET NULL,
+        name text NOT NULL,
+        mime_type text NOT NULL DEFAULT 'text/plain',
+        content text NOT NULL DEFAULT '',
+        size_bytes bigint NOT NULL DEFAULT 0,
+        created_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS artifacts_identity_created_idx ON artifacts(identity_id, created_at DESC);
+      CREATE TABLE IF NOT EXISTS conversation_runs (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        conversation_id uuid NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        trigger_message_id uuid REFERENCES messages(id) ON DELETE SET NULL,
+        status text NOT NULL DEFAULT 'running' CHECK(status IN ('running','completed','failed')),
+        mode text NOT NULL DEFAULT 'balanced',
+        current_agent text,
+        result jsonb NOT NULL DEFAULT '{}'::jsonb,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS conversation_runs_conversation_idx ON conversation_runs(conversation_id, updated_at DESC);
+    `,
+  },
+  {
+    id: '0006_official_model_catalog',
+    sql: `
+      ALTER TABLE models ADD COLUMN IF NOT EXISTS base_url text;
+      ALTER TABLE models ADD COLUMN IF NOT EXISTS is_official boolean NOT NULL DEFAULT false;
+      INSERT INTO models (id, name, provider, base_url, is_official, capabilities) VALUES
+        ('deepseek-v4-flash', 'DeepSeek V4 Flash', 'deepseek', 'https://zhenze-huhehaote.cmecloud.cn/v1', true, '{"thinking":false,"streaming":true,"context":128000}'),
+        ('deepseek-chat', 'DeepSeek Chat', 'deepseek', 'https://api.deepseek.com/v1', true, '{"thinking":false,"streaming":true,"context":64000}'),
+        ('deepseek-reasoner', 'DeepSeek Reasoner', 'deepseek', 'https://api.deepseek.com/v1', true, '{"thinking":true,"streaming":true,"context":64000}'),
+        ('zhipu/glm-5.3-flash', 'GLM 5.3 Flash', 'zhipu', 'https://moma.cmecloud.cn/v1', true, '{"vision":true,"thinking":false,"streaming":true,"context":128000}'),
+        ('glm-4-air', 'GLM 4 Air', 'zhipu', 'https://open.bigmodel.cn/api/paas/v4', true, '{"thinking":false,"streaming":true,"context":128000}'),
+        ('qwen-plus', 'Qwen Plus', 'qwen', 'https://dashscope.aliyuncs.com/compatible-mode/v1', true, '{"thinking":true,"streaming":true,"context":128000}'),
+        ('qwen-turbo', 'Qwen Turbo', 'qwen', 'https://dashscope.aliyuncs.com/compatible-mode/v1', true, '{"thinking":false,"streaming":true,"context":128000}'),
+        ('gpt-4o', 'GPT-4o', 'openai', 'https://api.openai.com/v1', true, '{"vision":true,"streaming":true,"context":128000}'),
+        ('claude-3-5-sonnet', 'Claude 3.5 Sonnet', 'anthropic', 'https://api.anthropic.com/v1', true, '{"vision":true,"thinking":true,"streaming":true,"context":200000}')
+      ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, provider=EXCLUDED.provider, base_url=EXCLUDED.base_url, is_official=true, capabilities=EXCLUDED.capabilities;
+    `,
+  },
 ];
 
 export async function runMigrations(pool: Pool, schema = 'kla'): Promise<void> {

@@ -169,6 +169,9 @@ importers:
       '@kla-workstation/contracts':
         specifier: workspace:*
         version: link:../packages/contracts
+      dotenv:
+        specifier: ^18.0.4
+        version: 18.0.4
       fastify:
         specifier: ^5.6.1
         version: 5.12.5

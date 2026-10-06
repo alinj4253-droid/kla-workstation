@@ -5,7 +5,7 @@ const tokenKey = 'kla.access-token';
 const expiryKey = 'kla.access-expiry';
 const authExpiredEvent = 'kla:auth-expired';
 
-export type ApiResult<T> = ApiEnvelope<T>;
+export type ApiResult<T> = { ok: true; data: T; meta?: { requestId: string } } | { ok: false; code: string; message: string; error?: { code: string; message: string; retryable?: boolean }; meta?: { requestId: string } };
 
 export type ApiError = ApiErrorEnvelope;
 
@@ -24,12 +24,13 @@ export class KlaApiClient {
       ...init,
       headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}), ...init.headers },
     });
-    return (await response.json()).catch(() => ({})) as ApiResult<T> & { error?: { code?: string; message?: string } };
+    const body = await response.json().catch(() => ({})) as ApiResult<T> & { error?: { code?: string; message?: string } };
     if (response.status === 401) {
       this.clearAccessToken();
       window.dispatchEvent(new Event(authExpiredEvent));
     }
-    if (!response.ok || body.ok === false) return { ok: false, code: body.ok === false ? body.code : body.error?.code ?? `HTTP_${response.status}`, message: body.ok === false ? body.message : body.error?.message ?? '请求失败' };
+    if (!response.ok || body.ok === false) { const error = body.ok === false && 'error' in body ? body.error : undefined; return { ok: false, code: error?.code ?? `HTTP_${response.status}`, message: error?.message ?? '请求失败', error }; }
+    return body as ApiResult<T>;
   }
 
   setAccessToken(token: string | null, expiresAt?: string) {

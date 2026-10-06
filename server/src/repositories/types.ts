@@ -21,7 +21,10 @@ export type Identity = {
 export type Session = { id: string; userId: string; accessToken: string; refreshToken: string; expiresAt: string };
 export type Project = { id: string; name: string; ownerIdentityId: string; createdAt: string };
 export type Conversation = { id: string; projectId: string; name: string; createdAt: string };
-export type Message = { id: string; conversationId: string; senderId: string; text: string; createdAt: string };
+export type Message = { id: string; conversationId: string; senderId: string; senderType: 'user' | 'agent' | 'system'; senderName?: string | null; kind: string; text: string; metadata?: Record<string, unknown>; createdAt: string };
+export type AgentProfile = { id: string; name: string; role: string; type: string; modelId: string | null; enabled: boolean };
+export type Artifact = { id: string; conversationId: string | null; name: string; mimeType: string; content: string; sizeBytes: number; createdAt: string };
+export type ConversationRun = { id: string; conversationId: string; triggerMessageId: string | null; status: string; mode: string; currentAgent: string | null; result: Record<string, unknown>; createdAt: string; updatedAt: string };
 
 export interface AccountRepository {
   getUser(id: string): Promise<UserAccount | null>;
@@ -32,11 +35,20 @@ export interface AccountRepository {
   getSession(token: string): Promise<Session | null>;
   revokeSession(token: string): Promise<void>;
   listProjects(identityId: string): Promise<Project[]>;
+  listAllConversations(identityId: string): Promise<Array<Conversation & { projectName: string }>>;
   createProject(identityId: string, name: string): Promise<Project>;
   listConversations(projectId?: string, identityId?: string): Promise<Conversation[]>;
   createConversation(projectId: string, name: string): Promise<Conversation>;
   listMessages(conversationId: string): Promise<Message[]>;
   createMessage(conversationId: string, senderId: string, text: string): Promise<Message>;
+  createAgentMessage(conversationId: string, agentName: string, text: string, metadata?: Record<string, unknown>): Promise<Message>;
+  listAgents(identityId: string): Promise<AgentProfile[]>;
+  listConversationRuns(conversationId: string): Promise<ConversationRun[]>;
+  createRun(conversationId: string, triggerMessageId: string, mode: string): Promise<ConversationRun>;
+  completeRun(runId: string, status: string, agentName?: string, result?: Record<string, unknown>): Promise<ConversationRun>;
+  createArtifact(identityId: string, conversationId: string, name: string, mimeType: string, content: string): Promise<Artifact>;
+  listArtifacts(identityId: string, conversationId?: string): Promise<Artifact[]>;
+  getArtifact(identityId: string, artifactId: string): Promise<Artifact | null>;
   createOrganization(userId: string, name: string, licenseNumber: string): Promise<Identity>;
   joinOrganization(userId: string, inviteCode: string): Promise<Identity | null>;
   activateIdentity(userId: string, identityId: string): Promise<Identity | null>;
