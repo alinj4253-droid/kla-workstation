@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell } = require('electron');
+const { app, BrowserWindow, shell, ipcMain } = require('electron');
 const { join } = require('node:path');
 
 function createWindow() {
@@ -26,6 +26,14 @@ function createWindow() {
   if (devUrl) void window.loadURL(devUrl);
   else void window.loadFile(join(__dirname, '..', 'dist', 'index.html'));
 }
+
+ipcMain.handle('kla:operation-open-external', async (_event, payload) => {
+  const url = typeof payload?.url === 'string' ? payload.url : '';
+  if (!/^https?:\/\//i.test(url)) return { ok: false, error: 'URL_INVALID' };
+  await shell.openExternal(url);
+  return { ok: true };
+});
+ipcMain.handle('kla:operation-health', async () => ({ ok: true, runtime: 'electron', capabilities: ['external-navigation', 'task-bridge'] }));
 
 app.whenReady().then(() => {
   createWindow();

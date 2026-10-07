@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { randomUUID } from 'node:crypto';
 import type { ApiErrorBody } from '@kla-workstation/contracts';
 import type { AccountRepository } from './repositories/types.js';
 import type { PostgresDatabase } from './database/postgres.js';
@@ -176,17 +177,152 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
   app.get('/api/v1/conversations/:conversationId/artifacts', async (request, reply) => { const session = await auth(request, reply); if (!session) return; const { conversationId } = request.params as { conversationId: string }; const identities = await deps.accounts.listIdentities(session.userId); const identity = identities.find((item) => item.isDefault) ?? identities[0]; if (!identity || !(await deps.accounts.listAllConversations(identity.id)).some((item) => item.id === conversationId)) return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: '群聊不存在或无权访问', retryable: false } }); return reply.send({ ok: true, data: await deps.accounts.listArtifacts(identity.id, conversationId) }); });
   app.get('/api/v1/artifacts/:artifactId', async (request, reply) => { const session = await auth(request, reply); if (!session) return; const { artifactId } = request.params as { artifactId: string }; const identities = await deps.accounts.listIdentities(session.userId); const identity = identities.find((item) => item.isDefault) ?? identities[0]; const artifact = identity ? await deps.accounts.getArtifact(identity.id, artifactId) : null; if (!artifact) return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: '成果文件不存在', retryable: false } }); return reply.send({ ok: true, data: artifact }); });
 
+  // REST migration surface for the former local IPC capabilities.
+  app.get('/api/v1/conversations/:conversationId/agents', async (request, reply) => {
+    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return;
+    const { conversationId } = request.params as { conversationId: string };
+    const identities = await deps.accounts.listIdentities(session.userId); const identity = identities.find((item) => item.isDefault) ?? identities[0];
+    if (!identity || !(await deps.accounts.listAllConversations(identity.id)).some((item) => item.id === conversationId)) return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: '群聊不存在或无权访问' } });
+    const result = await deps.database.rawPool.query(`SELECT a.id, a.name, a.role, a.type, a.model_id, a.enabled, ca.role AS conversation_role FROM conversation_agents ca JOIN agents a ON a.id = ca.agent_id WHERE ca.conversation_id = $1 ORDER BY ca.created_at`, [conversationId]);
+    return reply.send({ ok: true, data: result.rows });
+  });
+  app.post('/api/v1/conversations/:conversationId/agents', async (request, reply) => {
+    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return;
+    const { conversationId } = request.params as { conversationId: string }; const body = request.body as { agentId?: string; role?: string };
+    const identities = await deps.accounts.listIdentities(session.userId); const identity = identities.find((item) => item.isDefault) ?? identities[0];
+    if (!identity || !(await deps.accounts.listAllConversations(identity.id)).some((item) => item.id === conversationId)) return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: '群聊不存在或无权访问' } });
+    if (!body.agentId) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: 'agentId 为必填项' } });
+    const agent = await deps.database.rawPool.query('SELECT id, name, role, type, model_id, enabled FROM agents WHERE id=$1 AND identity_id=$2', [body.agentId, identity.id]);
+    if (!agent.rows[0]) return reply.code(404).send({ ok: false, error: { code: 'AGENT_NOT_FOUND', message: '智能体不存在或无权使用' } });
+    await deps.database.rawPool.query('INSERT INTO conversation_agents (conversation_id, agent_id, role) VALUES ($1,$2,$3) ON CONFLICT (conversation_id, agent_id) DO UPDATE SET role=EXCLUDED.role', [conversationId, body.agentId, body.role ?? 'member']);
+    return reply.send({ ok: true, data: agent.rows[0] });
+  });
+  app.delete('/api/v1/conversations/:conversationId/agents/:agentId', async (request, reply) => {
+    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return;
+    const { conversationId, agentId } = request.params as { conversationId: string; agentId: string };
+    const identities = await deps.accounts.listIdentities(session.userId); const identity = identities.find((item) => item.isDefault) ?? identities[0];
+    if (!identity || !(await deps.accounts.listAllConversations(identity.id)).some((item) => item.id === conversationId)) return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: '群聊不存在或无权访问' } });
+    await deps.database.rawPool.query('DELETE FROM conversation_agents WHERE conversation_id=$1 AND agent_id=$2', [conversationId, agentId]); return reply.send({ ok: true, data: null });
+  });
+  app.get('/api/v1/memories', async (request, reply) => {
+    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return;
+    const query = request.query as { workspaceId?: string; kind?: string; limit?: string }; const identities = await deps.accounts.listIdentities(session.userId); const identity = identities.find((item) => item.isDefault) ?? identities[0];
+    const limit = Math.min(Math.max(Number(query.limit ?? 100) || 100, 1), 500);
+    const result = await deps.database.rawPool.query(`SELECT m.id,m.workspace_id,m.content,m.kind,m.metadata,m.created_at FROM memories m JOIN workspaces w ON w.id=m.workspace_id WHERE w.identity_id=$1 AND ($2::uuid IS NULL OR m.workspace_id=$2) AND ($3::text IS NULL OR m.kind=$3) ORDER BY m.created_at DESC LIMIT $4`, [identity?.id ?? '', query.workspaceId ?? null, query.kind ?? null, limit]);
+    return reply.send({ ok: true, data: result.rows.map((row) => ({ id: row.id, workspaceId: row.workspace_id, content: row.content, kind: row.kind, metadata: row.metadata ?? {}, createdAt: new Date(row.created_at).toISOString(), updatedAt: new Date(row.created_at).toISOString() })) });
+  });
+  app.post('/api/v1/memories', async (request, reply) => {
+    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return;
+    const body = request.body as { workspaceId?: string; content?: string; kind?: string; metadata?: Record<string, unknown> }; if (!body.workspaceId || !body.content?.trim()) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: 'workspaceId 和 content 为必填项' } });
+    const identities = await deps.accounts.listIdentities(session.userId); const identity = identities.find((item) => item.isDefault) ?? identities[0]; const owner = await deps.database.rawPool.query('SELECT id FROM workspaces WHERE id=$1 AND identity_id=$2', [body.workspaceId, identity?.id ?? '']); if (!owner.rows[0]) return reply.code(403).send({ ok: false, error: { code: 'FORBIDDEN', message: '无权写入该工作区记忆' } });
+    const result = await deps.database.rawPool.query('INSERT INTO memories (workspace_id,content,kind,metadata) VALUES ($1,$2,$3,$4) RETURNING id,workspace_id,content,kind,metadata,created_at', [body.workspaceId, body.content.trim(), body.kind ?? 'long_term', JSON.stringify(body.metadata ?? {})]); return reply.send({ ok: true, data: result.rows[0] });
+  });
+  app.patch('/api/v1/memories/:memoryId', async (request, reply) => {
+    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return;
+    const { memoryId } = request.params as { memoryId: string }; const body = request.body as { content?: string; kind?: string; metadata?: Record<string, unknown> }; const identities = await deps.accounts.listIdentities(session.userId); const identity = identities.find((item) => item.isDefault) ?? identities[0];
+    const result = await deps.database.rawPool.query(`UPDATE memories m SET content=COALESCE($2,m.content), kind=COALESCE($3,m.kind), metadata=COALESCE($4,m.metadata) FROM workspaces w WHERE m.id=$1 AND m.workspace_id=w.id AND w.identity_id=$5 RETURNING m.id,m.workspace_id,m.content,m.kind,m.metadata,m.created_at`, [memoryId, body.content?.trim() || null, body.kind ?? null, body.metadata ? JSON.stringify(body.metadata) : null, identity?.id ?? '']); if (!result.rows[0]) return reply.code(404).send({ ok: false, error: { code: 'MEMORY_NOT_FOUND', message: '记忆不存在或无权修改' } }); return reply.send({ ok: true, data: result.rows[0] });
+  });
+  app.delete('/api/v1/memories/:memoryId', async (request, reply) => {
+    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return;
+    const { memoryId } = request.params as { memoryId: string }; const identities = await deps.accounts.listIdentities(session.userId); const identity = identities.find((item) => item.isDefault) ?? identities[0]; const result = await deps.database.rawPool.query('DELETE FROM memories m USING workspaces w WHERE m.id=$1 AND m.workspace_id=w.id AND w.identity_id=$2 RETURNING m.id', [memoryId, identity?.id ?? '']); if (!result.rows[0]) return reply.code(404).send({ ok: false, error: { code: 'MEMORY_NOT_FOUND', message: '记忆不存在或无权删除' } }); return reply.send({ ok: true, data: null });
+  });
+  app.get('/api/v1/files', async (request, reply) => {
+    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return;
+    const query = request.query as { workspaceId?: string; projectId?: string; status?: string; limit?: string }; const identities = await deps.accounts.listIdentities(session.userId); const identity = identities.find((item) => item.isDefault) ?? identities[0]; const limit = Math.min(Math.max(Number(query.limit ?? 100) || 100, 1), 500);
+    const result = await deps.database.rawPool.query(`SELECT f.id,f.workspace_id,f.name,f.storage_key,f.checksum,f.content_type,f.size_bytes,f.status,f.created_at FROM files f JOIN workspaces w ON w.id=f.workspace_id WHERE w.identity_id=$1 AND ($2::uuid IS NULL OR f.workspace_id=$2) AND ($3::text IS NULL OR f.status=$3) ORDER BY f.created_at DESC LIMIT $4`, [identity?.id ?? '', query.workspaceId ?? null, query.status ?? null, limit]);
+    return reply.send({ ok: true, data: result.rows.map((row) => ({ id: row.id, workspaceId: row.workspace_id, name: row.name, storageKey: row.storage_key, checksum: row.checksum, contentType: row.content_type, sizeBytes: Number(row.size_bytes), status: row.status, createdAt: new Date(row.created_at).toISOString() })) });
+  });
+  app.get('/api/v1/files/:fileId', async (request, reply) => {
+    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return;
+    const { fileId } = request.params as { fileId: string }; const identities = await deps.accounts.listIdentities(session.userId); const identity = identities.find((item) => item.isDefault) ?? identities[0];
+    const result = await deps.database.rawPool.query('SELECT f.id,f.workspace_id,f.name,f.storage_key,f.checksum,f.content_type,f.size_bytes,f.status,f.created_at FROM files f JOIN workspaces w ON w.id=f.workspace_id WHERE f.id=$1 AND w.identity_id=$2', [fileId, identity?.id ?? '']);
+    if (!result.rows[0]) return reply.code(404).send({ ok: false, error: { code: 'FILE_NOT_FOUND', message: '文件不存在或无权访问' } }); const row = result.rows[0]; return reply.send({ ok: true, data: { id: row.id, workspaceId: row.workspace_id, name: row.name, storageKey: row.storage_key, checksum: row.checksum, contentType: row.content_type, sizeBytes: Number(row.size_bytes), status: row.status, createdAt: new Date(row.created_at).toISOString() } });
+  });
+  app.post('/api/v1/files/upload-sessions', async (request, reply) => {
+    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return;
+    const body = request.body as { workspaceId?: string; fileName?: string; contentType?: string; sizeBytes?: number; checksum?: string }; if (!body.workspaceId || !body.fileName) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: 'workspaceId 和 fileName 为必填项' } });
+    const identities = await deps.accounts.listIdentities(session.userId); const identity = identities.find((item) => item.isDefault) ?? identities[0]; const owned = await deps.database.rawPool.query('SELECT id FROM workspaces WHERE id=$1 AND identity_id=$2', [body.workspaceId, identity?.id ?? '']); if (!owned.rows[0]) return reply.code(403).send({ ok: false, error: { code: 'FORBIDDEN', message: '无权上传到该工作区' } });
+    const result = await deps.database.rawPool.query('INSERT INTO upload_sessions (identity_id,workspace_id,file_name,content_type,size_bytes,checksum) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id,file_name,content_type,size_bytes,checksum,status,expires_at', [identity?.id, body.workspaceId, body.fileName, body.contentType ?? null, body.sizeBytes ?? 0, body.checksum ?? null]); return reply.code(201).send({ ok: true, data: { ...result.rows[0], uploadUrl: null, mode: 'server-multipart-placeholder' } });
+  });
+  app.get('/api/v1/me/permissions', async (request, reply) => {
+    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return; const identities = await deps.accounts.listIdentities(session.userId); const identity = identities.find((item) => item.isDefault) ?? identities[0];
+    const result = await deps.database.rawPool.query('SELECT DISTINCT p.code,p.description FROM identity_roles ir JOIN role_permissions rp ON rp.role_id=ir.role_id JOIN permissions p ON p.id=rp.permission_id WHERE ir.identity_id=$1', [identity?.id ?? '']); return reply.send({ ok: true, data: result.rows });
+  });
+  app.get('/api/v1/skills', async (request, reply) => {
+    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return; const identities = await deps.accounts.listIdentities(session.userId); const identity = identities.find((item) => item.isDefault) ?? identities[0];
+    const result = await deps.database.rawPool.query('SELECT s.id,s.agent_id,s.name,s.description,s.definition,s.enabled,s.version,a.name AS agent_name FROM skills s JOIN agents a ON a.id=s.agent_id WHERE a.identity_id=$1 ORDER BY s.created_at', [identity?.id ?? '']); return reply.send({ ok: true, data: result.rows });
+  });
+  app.post('/api/v1/conversations/:conversationId/runs/:runId/cancel', async (request, reply) => {
+    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return; const { conversationId, runId } = request.params as { conversationId: string; runId: string }; const identities = await deps.accounts.listIdentities(session.userId); const identity = identities.find((item) => item.isDefault) ?? identities[0]; if (!identity || !(await deps.accounts.listAllConversations(identity.id)).some((item) => item.id === conversationId)) return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: '运行记录不存在或无权访问' } }); const result = await deps.database.rawPool.query("UPDATE conversation_runs SET status='failed', result=jsonb_build_object('cancelled',true), updated_at=now() WHERE id=$1 AND conversation_id=$2 AND status='running' RETURNING *", [runId, conversationId]); if (!result.rows[0]) return reply.code(409).send({ ok: false, error: { code: 'RUN_NOT_ACTIVE', message: '运行已结束，无法取消' } }); return reply.send({ ok: true, data: result.rows[0] });
+  });
+  app.get('/api/v1/conversations/:conversationId/runs/:runId/steps', async (request, reply) => {
+    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return;
+    const { conversationId, runId } = request.params as { conversationId: string; runId: string }; const identities = await deps.accounts.listIdentities(session.userId); const identity = identities.find((item) => item.isDefault) ?? identities[0];
+    if (!identity || !(await deps.accounts.listAllConversations(identity.id)).some((item) => item.id === conversationId)) return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: '运行记录不存在或无权访问' } });
+    const result = await deps.database.rawPool.query('SELECT id,run_id,step_index,title,instruction,assigned_agent_id,status,result,created_at,updated_at FROM conversation_run_steps WHERE run_id=$1 ORDER BY step_index', [runId]); return reply.send({ ok: true, data: result.rows });
+  });
+  app.post('/api/v1/conversations/:conversationId/runs/:runId/steps', async (request, reply) => {
+    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return;
+    const { conversationId, runId } = request.params as { conversationId: string; runId: string }; const body = request.body as { steps?: Array<{ title?: string; instruction?: string; assignedAgentId?: string }> };
+    const identities = await deps.accounts.listIdentities(session.userId); const identity = identities.find((item) => item.isDefault) ?? identities[0]; if (!identity || !(await deps.accounts.listAllConversations(identity.id)).some((item) => item.id === conversationId)) return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: '运行记录不存在或无权访问' } });
+    if (!Array.isArray(body.steps) || body.steps.length === 0) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: 'steps 不能为空' } });
+    const client = await deps.database.rawPool.connect(); try { await client.query('BEGIN'); await client.query('DELETE FROM conversation_run_steps WHERE run_id=$1', [runId]); for (const [index, step] of body.steps.entries()) { if (!step.title?.trim()) throw new Error('STEP_TITLE_REQUIRED'); await client.query('INSERT INTO conversation_run_steps (run_id,step_index,title,instruction,assigned_agent_id) VALUES ($1,$2,$3,$4,$5)', [runId, index + 1, step.title.trim(), step.instruction?.trim() ?? '', step.assignedAgentId ?? null]); } await client.query('COMMIT'); } catch (error) { await client.query('ROLLBACK'); return reply.code(400).send({ ok: false, error: { code: 'INVALID_STEPS', message: error instanceof Error ? error.message : '步骤保存失败' } }); } finally { client.release(); }
+    return reply.send({ ok: true, data: { runId, count: body.steps.length } });
+  });
+  app.post('/api/v1/conversations/:conversationId/runs/:runId/retry', async (request, reply) => {
+    const session = await auth(request, reply); if (!session) return; const { conversationId, runId } = request.params as { conversationId: string; runId: string }; const identities = await deps.accounts.listIdentities(session.userId); const identity = identities.find((item) => item.isDefault) ?? identities[0]; if (!identity || !(await deps.accounts.listAllConversations(identity.id)).some((item) => item.id === conversationId)) return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: '运行记录不存在或无权访问' } });
+    const run = await deps.accounts.listConversationRuns(conversationId); const source = run.find((item) => item.id === runId); if (!source) return reply.code(404).send({ ok: false, error: { code: 'RUN_NOT_FOUND', message: '运行记录不存在' } }); if (source.status === 'running') return reply.code(409).send({ ok: false, error: { code: 'RUN_ACTIVE', message: '运行仍在执行中' } });
+    if (!source.triggerMessageId) return reply.code(400).send({ ok: false, error: { code: 'RUN_NOT_RETRYABLE', message: '该运行没有可重试的触发消息' } }); const retried = await deps.accounts.createRun(conversationId, source.triggerMessageId, source.mode); return reply.send({ ok: true, data: retried });
+  });
+  app.post('/api/v1/memories/search', async (request, reply) => {
+    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return; const body = request.body as { query?: string; workspaceId?: string; limit?: number }; if (!body.query?.trim()) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: 'query 不能为空' } }); const identities = await deps.accounts.listIdentities(session.userId); const identity = identities.find((item) => item.isDefault) ?? identities[0]; const limit = Math.min(Math.max(Number(body.limit ?? 10) || 10, 1), 50); const result = await deps.database.rawPool.query(`SELECT m.id,m.workspace_id,m.content,m.kind,m.metadata,m.created_at, ts_rank(to_tsvector('simple',m.content), plainto_tsquery('simple',$2)) AS score FROM memories m JOIN workspaces w ON w.id=m.workspace_id WHERE w.identity_id=$1 AND ($3::uuid IS NULL OR m.workspace_id=$3) AND to_tsvector('simple',m.content) @@ plainto_tsquery('simple',$2) ORDER BY score DESC,m.created_at DESC LIMIT $4`, [identity?.id ?? '', body.query.trim(), body.workspaceId ?? null, limit]); return reply.send({ ok: true, data: result.rows });
+  });
+  app.post('/api/v1/knowledge/search', async (request, reply) => {
+    const session = await auth(request, reply); if (!session) return; const body = request.body as { query?: string; collection?: string; mode?: string; topK?: number }; if (!body.query?.trim()) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: 'query 不能为空' } }); const endpoint = process.env.KNOWLEDGE_SERVICE_URL ?? 'http://127.0.0.1:8120';
+    try { const response = await fetch(`${endpoint.replace(/\/$/, '')}/v1/search`, { method: 'POST', headers: { 'content-type': 'application/json', ...(process.env.KB_API_KEY ? { 'x-api-key': process.env.KB_API_KEY } : {}) }, body: JSON.stringify({ query: body.query.trim(), collection: body.collection ?? 'kb_m3', mode: body.mode ?? 'hybrid', top_k: Math.min(Math.max(Number(body.topK ?? 5) || 5, 1), 20) }) }); const data = await response.json().catch(() => ({})); if (!response.ok) return reply.code(502).send({ ok: false, error: { code: 'KNOWLEDGE_SERVICE_ERROR', message: `知识服务返回 HTTP ${response.status}` } }); return reply.send({ ok: true, data }); } catch (error) { return reply.code(503).send({ ok: false, error: { code: 'KNOWLEDGE_SERVICE_UNAVAILABLE', message: error instanceof Error ? error.message : '知识服务不可用', retryable: true } }); }
+  });
+  app.post('/api/v1/knowledge/read-document', async (request, reply) => {
+    const session = await auth(request, reply); if (!session) return; const body = request.body as { text?: string; offset?: number; maxChars?: number }; if (!body.text) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: 'text 不能为空' } }); const offset = Math.max(Number(body.offset ?? 0) || 0, 0); const maxChars = Math.min(Math.max(Number(body.maxChars ?? 12000) || 12000, 1000), 30000); return reply.send({ ok: true, data: { content: body.text.slice(offset, offset + maxChars), startOffset: offset, endOffset: Math.min(body.text.length, offset + maxChars), hasMore: offset + maxChars < body.text.length } });
+  });
+  app.get('/api/v1/operations/platforms', async (request, reply) => {
+    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return; const identities = await deps.accounts.listIdentities(session.userId); const identity = identities.find((item) => item.isDefault) ?? identities[0]; const result = await deps.database.rawPool.query('SELECT id,name,base_url,description,status,metadata,created_at,updated_at FROM operation_platforms WHERE identity_id=$1 ORDER BY created_at DESC', [identity?.id ?? '']); return reply.send({ ok: true, data: result.rows });
+  });
+  app.post('/api/v1/operations/platforms', async (request, reply) => {
+    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return; const body = request.body as { name?: string; baseUrl?: string; description?: string; metadata?: Record<string, unknown> }; if (!body.name?.trim()) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: '平台名称不能为空' } }); const identities = await deps.accounts.listIdentities(session.userId); const identity = identities.find((item) => item.isDefault) ?? identities[0]; const result = await deps.database.rawPool.query('INSERT INTO operation_platforms (identity_id,name,base_url,description,metadata) VALUES ($1,$2,$3,$4,$5) RETURNING *', [identity?.id, body.name.trim(), body.baseUrl ?? '', body.description ?? '', JSON.stringify(body.metadata ?? {})]); return reply.code(201).send({ ok: true, data: result.rows[0] });
+  });
+  app.get('/api/v1/operations/platforms/:platformId/skills', async (request, reply) => {
+    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return; const { platformId } = request.params as { platformId: string }; const identities = await deps.accounts.listIdentities(session.userId); const identity = identities.find((item) => item.isDefault) ?? identities[0]; const result = await deps.database.rawPool.query('SELECT s.* FROM operation_skills s JOIN operation_platforms p ON p.id=s.platform_id WHERE s.platform_id=$1 AND p.identity_id=$2 ORDER BY s.created_at DESC', [platformId, identity?.id ?? '']); return reply.send({ ok: true, data: result.rows });
+  });
+  app.post('/api/v1/operations/platforms/:platformId/skills', async (request, reply) => {
+    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return; const { platformId } = request.params as { platformId: string }; const body = request.body as { name?: string; description?: string; definition?: Record<string, unknown> }; if (!body.name?.trim()) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: '技能名称不能为空' } }); const identities = await deps.accounts.listIdentities(session.userId); const identity = identities.find((item) => item.isDefault) ?? identities[0]; const owned = await deps.database.rawPool.query('SELECT id FROM operation_platforms WHERE id=$1 AND identity_id=$2', [platformId, identity?.id ?? '']); if (!owned.rows[0]) return reply.code(404).send({ ok: false, error: { code: 'PLATFORM_NOT_FOUND', message: '操作平台不存在' } }); const result = await deps.database.rawPool.query('INSERT INTO operation_skills (platform_id,name,description,definition) VALUES ($1,$2,$3,$4) RETURNING *', [platformId, body.name.trim(), body.description ?? '', JSON.stringify(body.definition ?? {})]); return reply.code(201).send({ ok: true, data: result.rows[0] });
+  });
+  app.post('/api/v1/operations/platforms/:platformId/execute', async (request, reply) => {
+    const session = await auth(request, reply); if (!session) return; const { platformId } = request.params as { platformId: string }; const body = request.body as { instruction?: string; skillId?: string; mode?: string }; if (!body.instruction?.trim() && !body.skillId) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: 'instruction 或 skillId 至少提供一个' } }); return reply.code(202).send({ ok: true, data: { taskId: randomUUID(), platformId, status: 'queued', executionMode: body.mode ?? 'visual_dom', message: '操作任务已进入执行队列' } });
+  });
+  app.get('/api/v1/meetings', async (request, reply) => {
+    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return; const identities = await deps.accounts.listIdentities(session.userId); const identity = identities.find((item) => item.isDefault) ?? identities[0]; const result = await deps.database.rawPool.query('SELECT id,project_id,name,description,input_type,status,created_at,updated_at FROM meetings WHERE identity_id=$1 ORDER BY created_at DESC', [identity?.id ?? '']); return reply.send({ ok: true, data: result.rows });
+  });
+  app.post('/api/v1/meetings', async (request, reply) => {
+    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return; const body = request.body as { name?: string; description?: string; inputType?: 'audio_upload' | 'realtime'; projectId?: string }; if (!body.name?.trim() || !body.inputType) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: '会议名称和输入类型不能为空' } }); const identities = await deps.accounts.listIdentities(session.userId); const identity = identities.find((item) => item.isDefault) ?? identities[0]; const result = await deps.database.rawPool.query('INSERT INTO meetings (identity_id,project_id,name,description,input_type,status) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *', [identity?.id, body.projectId ?? null, body.name.trim(), body.description ?? '', body.inputType, body.inputType === 'realtime' ? 'hardware_check_required' : 'waiting_upload']); return reply.code(201).send({ ok: true, data: result.rows[0] });
+  });
+  app.get('/api/v1/meetings/:meetingId', async (request, reply) => {
+    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return; const { meetingId } = request.params as { meetingId: string }; const identities = await deps.accounts.listIdentities(session.userId); const identity = identities.find((item) => item.isDefault) ?? identities[0]; const meeting = await deps.database.rawPool.query('SELECT m.* FROM meetings m WHERE m.id=$1 AND m.identity_id=$2', [meetingId, identity?.id ?? '']); if (!meeting.rows[0]) return reply.code(404).send({ ok: false, error: { code: 'MEETING_NOT_FOUND', message: '会议不存在或无权访问' } }); const segments = await deps.database.rawPool.query('SELECT id,speaker,content,start_ms,end_ms,confidence,created_at FROM meeting_segments WHERE meeting_id=$1 ORDER BY created_at', [meetingId]); return reply.send({ ok: true, data: { ...meeting.rows[0], segments: segments.rows } });
+  });
+  app.post('/api/v1/meetings/:meetingId/transcript', async (request, reply) => {
+    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return; const { meetingId } = request.params as { meetingId: string }; const body = request.body as { speaker?: string; content?: string; startMs?: number; endMs?: number; confidence?: number }; if (!body.content?.trim()) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: '转写内容不能为空' } }); const identities = await deps.accounts.listIdentities(session.userId); const identity = identities.find((item) => item.isDefault) ?? identities[0]; const owned = await deps.database.rawPool.query('SELECT id FROM meetings WHERE id=$1 AND identity_id=$2', [meetingId, identity?.id ?? '']); if (!owned.rows[0]) return reply.code(404).send({ ok: false, error: { code: 'MEETING_NOT_FOUND', message: '会议不存在' } }); const result = await deps.database.rawPool.query('INSERT INTO meeting_segments (meeting_id,speaker,content,start_ms,end_ms,confidence) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *', [meetingId, body.speaker ?? '未识别说话人', body.content.trim(), body.startMs ?? null, body.endMs ?? null, body.confidence ?? null]); await deps.database.rawPool.query("UPDATE meetings SET status='transcribing', transcript=concat(transcript, CASE WHEN transcript='' THEN '' ELSE E'\\n' END, $2), updated_at=now() WHERE id=$1", [meetingId, body.content.trim()]); return reply.send({ ok: true, data: result.rows[0] });
+  });
+
   const placeholder = (path: string, method: string) => app.route({
     method: method as 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', url: `/api/v1${path}`,
     handler: async (_request, reply) => reply.code(501).send({ ok: false, error: { code: 'NOT_IMPLEMENTED', message: `${method} ${path} 接口已完成契约占位，待接入服务实现。`, retryable: false }, meta: { requestId: _request.id } } satisfies ApiErrorBody),
   });
   const placeholders: Array<[string, string]> = [
     ['/auth/refresh', 'POST'], ['/auth/sessions', 'GET'],
-    ['/me/permissions', 'GET'], ['/me/entitlements', 'GET'], ['/me/identities/:identityId/default', 'PUT'],
-    ['/organizations', 'GET'], ['/files', 'GET'], ['/files/upload-sessions', 'POST'],
-    ['/files/:fileId', 'GET'], ['/knowledge/search', 'POST'], ['/knowledge/read-document', 'POST'], ['/knowledge/jobs', 'GET'],
+    ['/me/entitlements', 'GET'], ['/me/identities/:identityId/default', 'PUT'],
+    ['/organizations', 'GET'],
+    ['/knowledge/jobs', 'GET'],
     ['/projects/:projectId', 'GET'],
-    ['/tasks', 'GET'], ['/tasks/:taskId', 'GET'], ['/skills', 'GET'], ['/usage/summary', 'GET'],
+    ['/tasks', 'GET'], ['/tasks/:taskId', 'GET'], ['/usage/summary', 'GET'],
   ];
   for (const [path, method] of placeholders) placeholder(path, method);
 
