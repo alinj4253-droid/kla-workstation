@@ -1,9 +1,15 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { randomUUID } from 'node:crypto';
 import type { ApiErrorBody } from '@kla-workstation/contracts';
 import type { AccountRepository } from './repositories/types.js';
 import type { PostgresDatabase } from './database/postgres.js';
 import type { RedisDatabase } from './infrastructure/redis.js';
+
+/** pino 子 logger 支持运行时 setBindings；FastifyBaseLogger 类型未暴露，且 logger:false 的 noop 实现没有该方法（规范 §3）。 */
+function bindRequestLog(request: FastifyRequest, bindings: Record<string, unknown>): void {
+  const log = request.log as FastifyRequest['log'] & Partial<{ setBindings: (bindings: Record<string, unknown>) => void }>;
+  log.setBindings?.(bindings);
+}
 
 async function runConversation(accounts: AccountRepository, userId: string, conversationId: string, runId: string, prompt: string): Promise<void> {
   try {
@@ -35,11 +41,13 @@ async function runConversation(accounts: AccountRepository, userId: string, conv
 }
 
 export async function registerRoutes(app: FastifyInstance, deps: { accounts: AccountRepository; database?: PostgresDatabase; redis?: RedisDatabase; mode?: 'postgres' | 'mock' }): Promise<void> {
-  const auth = async (request: { headers: Record<string, string | string[] | undefined>; id?: string }, reply: { code: (n: number) => { send: (v: unknown) => unknown } }) => {
+  const auth = async (request: FastifyRequest, reply: FastifyReply) => {
     const raw = request.headers.authorization;
     const token = typeof raw === 'string' && raw.startsWith('Bearer ') ? raw.slice(7) : '';
     const session = token ? await deps.accounts.getSession(token) : null;
-    if (!session) { reply.code(401).send({ ok: false, error: { code: 'UNAUTHENTICATED', message: '请先登录', retryable: false }, meta: { requestId: request.id ?? 'unknown' } } satisfies ApiErrorBody); return null; }
+    if (!session) { reply.code(401).send({ ok: false, error: { code: 'UNAUTHENTICATED', message: '请先登录', retryable: false }, meta: { requestId: request.id } } satisfies ApiErrorBody); return null; }
+    // 可观测性：认证通过后把操作者绑定到该请求的后续日志（规范 §3）
+    bindRequestLog(request, { userId: session.userId });
     return session;
   };
   app.addHook('onRequest', async (request, reply) => {

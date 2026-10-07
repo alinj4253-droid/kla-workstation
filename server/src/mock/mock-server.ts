@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 import type { PostgresDatabase } from '../database/postgres.js';
 import { loadConfig } from '../config.js';
 import { registerRoutes } from '../routes.js';
+import { buildLoggerOptions, createRequestIdGenerator } from '../observability/logger.js';
 import { CatalogPool } from './catalog-pool.js';
 import { MemoryAccountRepository } from './memory-account-repository.js';
 
@@ -16,7 +17,10 @@ import { MemoryAccountRepository } from './memory-account-repository.js';
  */
 export async function createMockServer(options: { seedDemoAccount?: boolean; logger?: boolean } = {}) {
   const config = loadConfig();
-  const app = Fastify({ logger: options.logger ?? (config.nodeEnv !== 'test' && config.nodeEnv !== 'mock') });
+  const app = Fastify({
+    logger: options.logger ?? buildLoggerOptions(config),
+    genReqId: createRequestIdGenerator(),
+  });
   await app.register(cors, { origin: true });
   await app.register(sensible);
   const accounts = new MemoryAccountRepository();

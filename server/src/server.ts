@@ -10,10 +10,11 @@ import { PostgresAccountRepository } from './repositories/index.js';
 import { PostgresDatabase } from './database/postgres.js';
 import { RedisDatabase } from './infrastructure/redis.js';
 import { AgentLoopWorker } from './infrastructure/agent-loop.js';
+import { buildLoggerOptions, createRequestIdGenerator } from './observability/logger.js';
 
 export async function createServer() {
   const config = loadConfig();
-  const app = Fastify({ logger: config.nodeEnv !== 'test' });
+  const app = Fastify({ logger: buildLoggerOptions(config), genReqId: createRequestIdGenerator() });
   await app.register(cors, { origin: true });
   await app.register(sensible);
   const database = new PostgresDatabase(config.databaseUrl, config.databaseSchema);

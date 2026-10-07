@@ -28,6 +28,7 @@ pnpm build && pnpm start:mock
 - `src/server.ts`：Fastify 服务入口（PostgreSQL + Redis + Agent Loop Worker）。
 - `src/routes.ts`：REST API 路由。
 - `src/mock/`：mock server（内存账号仓库、目录池、契约冒烟测试）。
+- `src/observability/`：可观测性基础（结构化日志、requestId 生成/复用），规范见 `docs/OBSERVABILITY_SPEC.md`。
 - `src/repositories/`：数据访问接口与 PostgreSQL 实现。
 - `src/database/`：连接池与迁移执行器；`migrations/` 为 SQL 迁移。
 - `src/infrastructure/`：Redis、对象存储占位、智能体循环 worker。
