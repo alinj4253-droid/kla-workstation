@@ -4,6 +4,8 @@
 
 服务启动时读取 `DATABASE_URL` 和 `DATABASE_SCHEMA`，默认 schema 为 `kla`。启动迁移是幂等的：创建应用专属 schema、创建 `schema_migrations`，按迁移编号检查并执行建表 SQL，迁移成功后才注册 API 路由。
 
+迁移采用**文件式单一来源**（见 `ADR-0001-DATABASE-MIGRATION.md`）：迁移文件位于 `server/migrations/`，命名 `NNNN_描述.sql`（如 `0004_identity_organizations.sql`），按文件名排序、逐文件事务执行并记账。新增迁移时在该目录新建编号递增的 `.sql` 文件，语句保持幂等，禁止修改已应用的迁移。也可手动执行：`pnpm --filter @kla-workstation/server db:migrate`。
+
 当前基础表包括：`users`、`user_credentials`、`organizations`、`identities`、`roles`、`permissions`、`identity_roles`、`role_permissions`、`sessions`、`projects`、`conversations`、`messages`。
 
 应用账号不需要 `public` schema 的建表权限，只需要数据库级 `CREATE` 权限，或由管理员预先创建并授权 `kla` schema：

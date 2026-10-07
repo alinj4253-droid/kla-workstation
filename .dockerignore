@@ -1,0 +1,12 @@
+.git
+.gitlab
+node_modules
+**/node_modules
+**/dist
+**/dist-ssr
+**/.env
+**/.env.*
+apps/desktop/release
+apps/desktop/docs
+*.md
+!README.md

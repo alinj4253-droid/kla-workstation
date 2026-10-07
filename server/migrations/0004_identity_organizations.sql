@@ -1,0 +1,98 @@
+-- 0004: 身份、组织与会话基础表（自 migrations.ts 原样搬移）
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE TABLE IF NOT EXISTS schema_migrations (id text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS organizations (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL, license_number text,
+  invite_code text UNIQUE NOT NULL DEFAULT upper(substr(encode(gen_random_bytes(8), 'hex'), 1, 8)),
+  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','disabled')),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS users (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), email text UNIQUE, phone text UNIQUE,
+  nickname text NOT NULL, status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','disabled')),
+  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (email IS NOT NULL OR phone IS NOT NULL)
+);
+CREATE TABLE IF NOT EXISTS user_credentials (
+  user_id uuid PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, password_hash text NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS identities (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  type text NOT NULL CHECK (type IN ('personal','enterprise')), display_name text NOT NULL,
+  organization_id uuid REFERENCES organizations(id) ON DELETE RESTRICT,
+  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','disabled')),
+  is_default boolean NOT NULL DEFAULT false, created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS identities_one_default_per_user ON identities(user_id) WHERE is_default;
+CREATE TABLE IF NOT EXISTS roles (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), organization_id uuid REFERENCES organizations(id) ON DELETE CASCADE,
+  name text NOT NULL, description text NOT NULL DEFAULT '', is_system boolean NOT NULL DEFAULT false,
+  UNIQUE (organization_id, name)
+);
+CREATE TABLE IF NOT EXISTS permissions (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), code text UNIQUE NOT NULL, description text NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS identity_roles (identity_id uuid REFERENCES identities(id) ON DELETE CASCADE, role_id uuid REFERENCES roles(id) ON DELETE CASCADE, PRIMARY KEY(identity_id, role_id));
+CREATE TABLE IF NOT EXISTS role_permissions (role_id uuid REFERENCES roles(id) ON DELETE CASCADE, permission_id uuid REFERENCES permissions(id) ON DELETE CASCADE, PRIMARY KEY(role_id, permission_id));
+CREATE TABLE IF NOT EXISTS sessions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  access_token_hash text UNIQUE NOT NULL, refresh_token_hash text UNIQUE NOT NULL,
+  expires_at timestamptz NOT NULL, revoked_at timestamptz, created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS sessions_user_idx ON sessions(user_id) WHERE revoked_at IS NULL;
+CREATE TABLE IF NOT EXISTS projects (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), owner_identity_id uuid NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
+  name text NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS conversations (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name text NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS messages (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), conversation_id uuid NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  sender_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT, text text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS messages_conversation_time_idx ON messages(conversation_id, created_at);
+CREATE TABLE IF NOT EXISTS workspaces (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), identity_id uuid NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
+  type text NOT NULL CHECK (type IN ('enterprise','project','personal')), project_id uuid REFERENCES projects(id) ON DELETE CASCADE,
+  name text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(identity_id, type, project_id)
+);
+CREATE TABLE IF NOT EXISTS agents (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), identity_id uuid REFERENCES identities(id) ON DELETE CASCADE,
+  name text NOT NULL, role text NOT NULL DEFAULT '', model_id text, type text NOT NULL DEFAULT 'custom',
+  enabled boolean NOT NULL DEFAULT true, version integer NOT NULL DEFAULT 1, created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(identity_id, name)
+);
+CREATE TABLE IF NOT EXISTS skills (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), agent_id uuid REFERENCES agents(id) ON DELETE CASCADE,
+  name text NOT NULL, description text NOT NULL DEFAULT '', definition jsonb NOT NULL DEFAULT '{}'::jsonb,
+  enabled boolean NOT NULL DEFAULT true, version integer NOT NULL DEFAULT 1, created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS files (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), workspace_id uuid REFERENCES workspaces(id) ON DELETE CASCADE,
+  name text NOT NULL, storage_key text NOT NULL, checksum text, content_type text, size_bytes bigint NOT NULL DEFAULT 0,
+  status text NOT NULL DEFAULT 'uploaded', created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS memories (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), workspace_id uuid REFERENCES workspaces(id) ON DELETE CASCADE,
+  content text NOT NULL, kind text NOT NULL DEFAULT 'long_term', metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS tasks (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), identity_id uuid REFERENCES identities(id) ON DELETE CASCADE,
+  title text NOT NULL, status text NOT NULL DEFAULT 'pending', result jsonb, created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS models (
+  id text PRIMARY KEY, name text NOT NULL, provider text NOT NULL, capabilities jsonb NOT NULL DEFAULT '{}'::jsonb,
+  enabled boolean NOT NULL DEFAULT true, created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS usage_records (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), identity_id uuid REFERENCES identities(id) ON DELETE SET NULL,
+  model_id text REFERENCES models(id) ON DELETE SET NULL, input_tokens integer NOT NULL DEFAULT 0, output_tokens integer NOT NULL DEFAULT 0,
+  cost numeric(18,8) NOT NULL DEFAULT 0, created_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO models (id, name, provider, capabilities) VALUES
+  ('deepseek-v4-flash', 'DeepSeek V4 Flash', 'deepseek', '{"thinking":false,"streaming":true}'),
+  ('zhipu/glm-5.3-flash', 'GLM 5.3 Flash', 'zhipu', '{"vision":true,"streaming":true}')
+ON CONFLICT (id) DO NOTHING;

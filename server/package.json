@@ -5,9 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
+    "dev:mock": "tsx watch src/mock/mock-server.ts",
     "db:migrate": "tsx src/database/migrate-cli.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
+    "start:mock": "node dist/mock/mock-server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --passWithNoTests"
   },

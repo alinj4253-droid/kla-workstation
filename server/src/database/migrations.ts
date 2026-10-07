@@ -1,3 +1,6 @@
+import { readdir, readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { Pool } from 'pg';
 
 const migrations = [
@@ -247,6 +250,7 @@ const migrations = [
 
 export async function runMigrations(pool: Pool, schema = 'kla'): Promise<void> {
   if (!/^[a-z_][a-z0-9_]*$/i.test(schema)) throw new Error('非法数据库 schema 名称');
+  const migrations = await loadMigrationFiles();
   await pool.query(`CREATE SCHEMA IF NOT EXISTS "${schema}" AUTHORIZATION CURRENT_USER`);
   const setupClient = await pool.connect();
   await setupClient.query(`SET search_path TO "${schema}", public`);

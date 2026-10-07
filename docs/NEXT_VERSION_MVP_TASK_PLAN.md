@@ -25,8 +25,8 @@
 | P0-01 | 确认服务端部署形态 | 无 | 部署架构决策记录 | 明确开发、测试、生产环境及网络边界 | 未开始 |
 | P0-02 | 确认租户、用户、项目和群聊资源模型 | 无 | 资源模型和权限矩阵 | 每种资源有唯一 ID、父级关系和作用域规则 | 已完成（见 FULL_STACK_IMPLEMENTATION_SPEC §4–§5） |
 | P0-03 | 选择对象存储、关系数据库、向量数据库和消息队列 | P0-01 | 组件选型及容量估算 | 完成可用性、备份、扩容和成本评估 | 已完成（PG/Redis/S3 兼容/Vector 已定稿，docker-compose.dev.yml 已落地；容量估算随 M4 收口） |
-| P0-04 | 建立服务端仓库、配置管理和 CI | P0-01 | 服务端工程骨架 | 能构建、启动、健康检查和发布 | 进行中（仓库重组、契约包 packages/contracts、pnpm ci-check、迁移执行器与 /health、/health/database、/health/redis 已就绪；CI 流水线与 mock server 未建） |
-| P0-05 | 建立日志、指标、链路追踪和审计规范 | P0-02 | 可观测性规范 | 可按用户、任务、文件和调用 ID 追踪一次请求 | 未开始 |
+| P0-04 | 建立服务端仓库、配置管理和 CI | P0-01 | 服务端工程骨架 | 能构建、启动、健康检查和发布 | 已完成（`pnpm ci-check` 通过；GitLab CI `.gitlab-ci.yml` check+package 两阶段，根 Dockerfile 多阶段构建含 HEALTHCHECK；CI 仅构建镜像做冒烟验证、不推送仓库；mock server `pnpm dev:mock` 无数据库联调，含 9 项契约冒烟测试） |
+| P0-05 | 建立日志、指标、链路追踪和审计规范 | P0-02 | 可观测性规范 | 可按用户、任务、文件和调用 ID 追踪一次请求 | 已完成（规范 docs/OBSERVABILITY_SPEC.md；已落地：结构化日志+脱敏、x-request-id 复用/回传、userId 日志绑定、LOG_LEVEL 配置；审计事件表由 P2-06 实现，指标/OTel 按规范在 M2/M3 接入） |
 
 ## 三、P1：算力服务器与模型服务
 
