@@ -34,7 +34,7 @@ async function runConversation(accounts: AccountRepository, userId: string, conv
   }
 }
 
-export async function registerRoutes(app: FastifyInstance, deps: { accounts: AccountRepository; database?: PostgresDatabase; redis?: RedisDatabase }): Promise<void> {
+export async function registerRoutes(app: FastifyInstance, deps: { accounts: AccountRepository; database?: PostgresDatabase; redis?: RedisDatabase; mode?: 'postgres' | 'mock' }): Promise<void> {
   const auth = async (request: { headers: Record<string, string | string[] | undefined>; id?: string }, reply: { code: (n: number) => { send: (v: unknown) => unknown } }) => {
     const raw = request.headers.authorization;
     const token = typeof raw === 'string' && raw.startsWith('Bearer ') ? raw.slice(7) : '';
@@ -49,7 +49,7 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
     ok: true,
     service: 'kla-backend' as const,
     version: '0.1.0',
-    mode: 'postgres' as const,
+    mode: deps.mode ?? ('postgres' as const),
   }));
   app.get('/api/health/database', async (_request, reply) => {
     if (!deps.database) return reply.code(503).send({ ok: false, error: { code: 'DATABASE_NOT_CONFIGURED', message: 'DATABASE_URL 未配置' } });

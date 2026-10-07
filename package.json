@@ -11,6 +11,7 @@
     "dev": "pnpm --filter @kla-workstation/desktop dev",
     "dev:web": "pnpm --filter @kla-workstation/desktop dev:web",
     "dev:server": "pnpm --filter @kla-workstation/server dev",
+    "dev:mock": "pnpm --filter @kla-workstation/server dev:mock",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
