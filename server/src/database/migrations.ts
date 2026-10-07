@@ -217,6 +217,32 @@ const migrations = [
       CREATE INDEX IF NOT EXISTS meeting_segments_meeting_idx ON meeting_segments(meeting_id, created_at);
     `,
   },
+  {
+    id: '0010_auth_sessions_permissions',
+    sql: `
+      ALTER TABLE sessions ADD COLUMN IF NOT EXISTS device_id text;
+      ALTER TABLE sessions ADD COLUMN IF NOT EXISTS device_name text;
+      ALTER TABLE sessions ADD COLUMN IF NOT EXISTS user_agent text;
+      ALTER TABLE sessions ADD COLUMN IF NOT EXISTS ip_address inet;
+      ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_seen_at timestamptz NOT NULL DEFAULT now();
+      CREATE INDEX IF NOT EXISTS sessions_device_idx ON sessions(user_id, device_id) WHERE revoked_at IS NULL;
+      INSERT INTO permissions (code, description) VALUES
+        ('read','读取资源'),('write','创建或修改资源'),('execute','执行智能体、操作或任务'),('manage','管理成员、资源和技能'),('export','导出文件和数据')
+      ON CONFLICT (code) DO NOTHING;
+    `,
+  },
+  {
+    id: '0011_organization_invite_code_backfill',
+    sql: `
+      ALTER TABLE organizations ADD COLUMN IF NOT EXISTS invite_code text;
+      UPDATE organizations
+      SET invite_code = upper(substr(encode(gen_random_bytes(8), 'hex'), 1, 8))
+      WHERE invite_code IS NULL OR invite_code = '';
+      ALTER TABLE organizations ALTER COLUMN invite_code SET DEFAULT upper(substr(encode(gen_random_bytes(8), 'hex'), 1, 8));
+      ALTER TABLE organizations ALTER COLUMN invite_code SET NOT NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS organizations_invite_code_idx ON organizations(invite_code);
+    `,
+  },
 ];
 
 export async function runMigrations(pool: Pool, schema = 'kla'): Promise<void> {

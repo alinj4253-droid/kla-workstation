@@ -4,7 +4,7 @@ import type { Pool } from 'pg';
 import type { AccountRepository, Conversation, Identity, Message, Project, Session, UserAccount, AgentProfile, ConversationRun, Artifact } from './types.js';
 
 const scrypt = promisify(scryptCallback);
-const hashToken = (value: string) => createHash('sha256').update(value).digest('hex');
+export const hashToken = (value: string) => createHash('sha256').update(value).digest('hex');
 
 async function hashPassword(password: string): Promise<string> {
   const salt = randomBytes(16).toString('hex');
@@ -58,16 +58,22 @@ export class PostgresAccountRepository implements AccountRepository {
     return identity ? { user: { id: row.id, email: row.email, phone: row.phone, nickname: row.nickname, status: row.status }, identity } : null;
   }
 
-  async createSession(userId: string): Promise<Session> {
+  async createSession(userId: string, metadata: { deviceId?: string; deviceName?: string; userAgent?: string; ipAddress?: string } = {}): Promise<Session> {
     const accessToken = randomUUID(); const refreshToken = randomUUID(); const expiresAt = new Date(Date.now() + 7 * 24 * 3600_000);
-    const { rows } = await this.pool.query('INSERT INTO sessions (user_id, access_token_hash, refresh_token_hash, expires_at) VALUES ($1, $2, $3, $4) RETURNING id, expires_at', [userId, hashToken(accessToken), hashToken(refreshToken), expiresAt]);
+    const { rows } = await this.pool.query('INSERT INTO sessions (user_id, access_token_hash, refresh_token_hash, expires_at, device_id, device_name, user_agent, ip_address) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::inet) RETURNING id, expires_at, device_id, device_name', [userId, hashToken(accessToken), hashToken(refreshToken), expiresAt, metadata.deviceId ?? null, metadata.deviceName ?? null, metadata.userAgent ?? null, metadata.ipAddress ?? null]);
     return { id: rows[0].id, userId, accessToken, refreshToken, expiresAt: new Date(rows[0].expires_at).toISOString() };
   }
   async getSession(token: string): Promise<Session | null> {
-    const { rows } = await this.pool.query('SELECT id, user_id, expires_at FROM sessions WHERE access_token_hash = $1 AND revoked_at IS NULL AND expires_at > now()', [hashToken(token)]);
-    return rows[0] ? { id: rows[0].id, userId: rows[0].user_id, accessToken: token, refreshToken: '', expiresAt: new Date(rows[0].expires_at).toISOString() } : null;
+    const { rows } = await this.pool.query("UPDATE sessions s SET last_seen_at=now() FROM users u WHERE s.user_id=u.id AND u.status='active' AND s.access_token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now() RETURNING s.id, s.user_id, s.expires_at, s.device_id, s.device_name, s.last_seen_at", [hashToken(token)]);
+    return rows[0] ? { id: rows[0].id, userId: rows[0].user_id, accessToken: token, refreshToken: '', expiresAt: new Date(rows[0].expires_at).toISOString(), deviceId: rows[0].device_id, deviceName: rows[0].device_name, lastSeenAt: new Date(rows[0].last_seen_at).toISOString() } : null;
   }
   async revokeSession(token: string): Promise<void> { await this.pool.query('UPDATE sessions SET revoked_at = now() WHERE access_token_hash = $1 AND revoked_at IS NULL', [hashToken(token)]); }
+  async revokeSessionByRefreshToken(refreshToken: string): Promise<void> { await this.pool.query('UPDATE sessions SET revoked_at = now() WHERE refresh_token_hash = $1 AND revoked_at IS NULL', [hashToken(refreshToken)]); }
+  async rotateSession(refreshToken: string, metadata: { deviceId?: string; deviceName?: string; userAgent?: string; ipAddress?: string } = {}): Promise<Session | null> {
+    const client = await this.pool.connect(); try { await client.query('BEGIN'); const found = await client.query("SELECT s.id,s.user_id FROM sessions s JOIN users u ON u.id=s.user_id WHERE u.status='active' AND s.refresh_token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>now() FOR UPDATE", [hashToken(refreshToken)]); if (!found.rows[0]) { await client.query('ROLLBACK'); return null; } const accessToken = randomUUID(); const nextRefresh = randomUUID(); const expiresAt = new Date(Date.now() + 7 * 24 * 3600_000); const result = await client.query('UPDATE sessions SET access_token_hash=$2,refresh_token_hash=$3,expires_at=$4,device_id=COALESCE($5,device_id),device_name=COALESCE($6,device_name),user_agent=COALESCE($7,user_agent),ip_address=COALESCE($8::inet,ip_address),last_seen_at=now() WHERE id=$1 RETURNING id,user_id,expires_at,device_id,device_name,last_seen_at', [found.rows[0].id, hashToken(accessToken), hashToken(nextRefresh), expiresAt, metadata.deviceId ?? null, metadata.deviceName ?? null, metadata.userAgent ?? null, metadata.ipAddress ?? null]); await client.query('COMMIT'); const row = result.rows[0]; return { id: row.id, userId: row.user_id, accessToken, refreshToken: nextRefresh, expiresAt: new Date(row.expires_at).toISOString(), deviceId: row.device_id, deviceName: row.device_name, lastSeenAt: new Date(row.last_seen_at).toISOString() }; } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
+  }
+  async listSessions(userId: string): Promise<Array<{ id: string; deviceId: string | null; deviceName: string | null; userAgent: string | null; ipAddress: string | null; expiresAt: string; lastSeenAt: string; current: boolean }>> { const { rows } = await this.pool.query('SELECT id,device_id,device_name,user_agent,host(ip_address) AS ip_address,expires_at,last_seen_at FROM sessions WHERE user_id=$1 AND revoked_at IS NULL AND expires_at>now() ORDER BY last_seen_at DESC', [userId]); return rows.map((row) => ({ id: row.id, deviceId: row.device_id, deviceName: row.device_name, userAgent: row.user_agent, ipAddress: row.ip_address, expiresAt: new Date(row.expires_at).toISOString(), lastSeenAt: new Date(row.last_seen_at).toISOString(), current: false })); }
+  async revokeAllSessions(userId: string, exceptSessionId?: string): Promise<void> { await this.pool.query('UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL AND ($2::uuid IS NULL OR id<>$2)', [userId, exceptSessionId ?? null]); }
 
   async listProjects(identityId: string): Promise<Project[]> { const { rows } = await this.pool.query('SELECT id, name, owner_identity_id, created_at FROM projects WHERE owner_identity_id = $1 ORDER BY created_at DESC', [identityId]); return rows.map((row) => ({ id: row.id, name: row.name, ownerIdentityId: row.owner_identity_id, createdAt: new Date(row.created_at).toISOString() })); }
   async listAllConversations(identityId: string): Promise<Array<Conversation & { projectName: string }>> { const { rows } = await this.pool.query('SELECT c.id,c.project_id,c.name,c.created_at,p.name AS project_name FROM conversations c JOIN projects p ON p.id=c.project_id WHERE p.owner_identity_id=$1 ORDER BY c.created_at DESC', [identityId]); return rows.map((r) => ({ id: r.id, projectId: r.project_id, name: r.name, createdAt: new Date(r.created_at).toISOString(), projectName: r.project_name })); }
@@ -100,6 +106,7 @@ export class PostgresAccountRepository implements AccountRepository {
       const identity = await client.query("INSERT INTO identities (user_id, type, display_name, organization_id, is_default) VALUES ($1, 'enterprise', $2, $3, false) RETURNING id, user_id, type, display_name, organization_id, status, is_default", [userId, name, org.rows[0].id]);
       const role = await client.query("INSERT INTO roles (organization_id, name, description, is_system) VALUES ($1, '管理员', '企业管理员', true) RETURNING id", [org.rows[0].id]);
       await client.query('INSERT INTO identity_roles (identity_id, role_id) VALUES ($1, $2)', [identity.rows[0].id, role.rows[0].id]);
+      await client.query("INSERT INTO role_permissions (role_id, permission_id) SELECT $1, id FROM permissions WHERE code IN ('read','write','execute','manage','export') ON CONFLICT DO NOTHING", [role.rows[0].id]);
       await client.query("INSERT INTO workspaces (identity_id, type, name) VALUES ($1, 'enterprise', $2)", [identity.rows[0].id, `${name}企业工作区`]);
       await client.query('COMMIT'); return this.identity(identity.rows[0]);
     } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
@@ -110,9 +117,12 @@ export class PostgresAccountRepository implements AccountRepository {
       await client.query('BEGIN');
       const org = await client.query("SELECT id, name FROM organizations WHERE invite_code = $1 AND status = 'active'", [inviteCode.trim().toUpperCase()]);
       if (!org.rows[0]) { await client.query('ROLLBACK'); return null; }
+      const existing = await client.query("SELECT id, user_id, type, display_name, organization_id, status, is_default FROM identities WHERE user_id=$1 AND organization_id=$2 AND type='enterprise' AND status='active' LIMIT 1", [userId, org.rows[0].id]);
+      if (existing.rows[0]) { await client.query('COMMIT'); return this.identity(existing.rows[0]); }
       const identity = await client.query("INSERT INTO identities (user_id, type, display_name, organization_id, is_default) VALUES ($1, 'enterprise', $2, $3, false) RETURNING id, user_id, type, display_name, organization_id, status, is_default", [userId, org.rows[0].name, org.rows[0].id]);
       const role = await client.query("INSERT INTO roles (organization_id, name, description, is_system) VALUES ($1, '成员', '企业成员', true) ON CONFLICT (organization_id, name) DO UPDATE SET name = EXCLUDED.name RETURNING id", [org.rows[0].id]);
       await client.query('INSERT INTO identity_roles (identity_id, role_id) VALUES ($1, $2)', [identity.rows[0].id, role.rows[0].id]);
+      await client.query("INSERT INTO role_permissions (role_id, permission_id) SELECT $1, id FROM permissions WHERE code='read' ON CONFLICT DO NOTHING", [role.rows[0].id]);
       await client.query("INSERT INTO workspaces (identity_id, type, name) VALUES ($1, 'enterprise', $2)", [identity.rows[0].id, `${org.rows[0].name}企业工作区`]);
       await client.query('COMMIT'); return this.identity(identity.rows[0]);
     } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
