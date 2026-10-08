@@ -12,6 +12,7 @@ describe('authentication and identity permissions', () => {
     const emailA = `auth-regression-a-${suffix}@example.test`;
     const emailB = `auth-regression-b-${suffix}@example.test`;
     const createdUsers: string[] = [];
+    const createdOrganizations: string[] = [];
     try {
       const registerA = await runtime.app.inject({
         method: 'POST', url: '/api/v1/auth/register',
@@ -66,6 +67,7 @@ describe('authentication and identity permissions', () => {
       });
       expect(organization.statusCode).toBe(200);
       const enterpriseIdentity = organization.json().data;
+      createdOrganizations.push(enterpriseIdentity.organizationId);
       expect(enterpriseIdentity.inviteCode).toMatch(/^[A-F0-9]{8}$/);
 
       const adminPermissions = await runtime.app.inject({
@@ -106,9 +108,20 @@ describe('authentication and identity permissions', () => {
         method: 'GET', url: '/api/v1/me/permissions', headers: { ...authB, 'x-identity-id': memberIdentity.id },
       });
       expect(memberPermissions.statusCode).toBe(200);
-      expect(memberPermissions.json().data.map((item: { code: string }) => item.code)).toEqual(['read']);
-      const forbiddenWrite = await runtime.app.inject({ method: 'POST', url: '/api/v1/projects', headers: { ...authB, 'x-identity-id': memberIdentity.id }, payload: { name: '成员不应创建的项目' } });
-      expect(forbiddenWrite.statusCode).toBe(403);
+      expect(memberPermissions.json().data.map((item: { code: string }) => item.code).sort()).toEqual(['execute', 'export', 'read', 'write']);
+      const memberCanCreate = await runtime.app.inject({ method: 'POST', url: '/api/v1/projects', headers: { ...authB, 'x-identity-id': memberIdentity.id }, payload: { name: '成员可创建的项目' } });
+      expect(memberCanCreate.statusCode).toBe(200);
+      const memberProject = memberCanCreate.json().data;
+      const memberChat = await runtime.app.inject({ method: 'POST', url: '/api/v1/conversations', headers: { ...authB, 'x-identity-id': memberIdentity.id }, payload: { name: '成员群聊', projectId: memberProject.id } });
+      expect(memberChat.statusCode).toBe(200);
+      const conversationId = memberChat.json().data.id;
+      const ownHistory = await runtime.app.inject({ method: 'GET', url: `/api/v1/conversations/${conversationId}/messages`, headers: { ...authB, 'x-identity-id': memberIdentity.id } });
+      expect(ownHistory.statusCode).toBe(200);
+      expect(ownHistory.json().data).toEqual([]);
+      const isolatedHistory = await runtime.app.inject({ method: 'GET', url: `/api/v1/conversations/${conversationId}/messages`, headers: { ...authB, 'x-identity-id': accountB.identities[0].id } });
+      expect(isolatedHistory.statusCode).toBe(404);
+      const isolatedCreate = await runtime.app.inject({ method: 'POST', url: '/api/v1/conversations', headers: { ...authB, 'x-identity-id': accountB.identities[0].id }, payload: { name: '跨身份群聊', projectId: memberProject.id } });
+      expect(isolatedCreate.statusCode).toBe(403);
 
       const memberList = await runtime.app.inject({ method: 'GET', url: `/api/v1/organizations/${enterpriseIdentity.organizationId}/members`, headers: { ...authA, 'x-identity-id': enterpriseIdentity.id } });
       expect(memberList.statusCode).toBe(200);
@@ -125,6 +138,12 @@ describe('authentication and identity permissions', () => {
       expect(memberCanWrite.statusCode).toBe(200);
       const memberCannotManage = await runtime.app.inject({ method: 'GET', url: `/api/v1/organizations/${enterpriseIdentity.organizationId}/members`, headers: { ...authB, 'x-identity-id': memberIdentity.id } });
       expect(memberCannotManage.statusCode).toBe(403);
+      const readOnlyRole = await runtime.app.inject({ method: 'POST', url: `/api/v1/organizations/${enterpriseIdentity.organizationId}/roles`, headers: { ...authA, 'x-identity-id': enterpriseIdentity.id }, payload: { name: '只读角色', permissions: ['read'] } });
+      expect(readOnlyRole.statusCode).toBe(201);
+      expect((await runtime.app.inject({ method: 'PUT', url: `/api/v1/organizations/${enterpriseIdentity.organizationId}/members/${memberIdentity.id}/roles`, headers: { ...authA, 'x-identity-id': enterpriseIdentity.id }, payload: { roleIds: [readOnlyRole.json().data.id] } })).statusCode).toBe(200);
+      const deniedCreate = await runtime.app.inject({ method: 'POST', url: '/api/v1/projects', headers: { ...authB, 'x-identity-id': memberIdentity.id }, payload: { name: '禁止写入的项目' } });
+      expect(deniedCreate.statusCode).toBe(403);
+      expect(deniedCreate.json().error.code).toBe('PERMISSION_DENIED');
 
       await runtime.database.rawPool?.query('UPDATE users SET status=\'disabled\' WHERE id=$1', [accountB.user.id]);
       expect((await runtime.app.inject({ method: 'GET', url: '/api/v1/me', headers: authB })).statusCode).toBe(401);
@@ -151,8 +170,8 @@ describe('authentication and identity permissions', () => {
     } finally {
       if (runtime.database.rawPool) {
         await runtime.database.rawPool.query('DELETE FROM users WHERE id = ANY($1::uuid[])', [createdUsers]);
-        await runtime.database.rawPool.query("DELETE FROM identities WHERE organization_id IN (SELECT id FROM organizations WHERE name LIKE '认证回归企业-%')");
-        await runtime.database.rawPool.query("DELETE FROM organizations WHERE name LIKE '认证回归企业-%'");
+        await runtime.database.rawPool.query('DELETE FROM identities WHERE organization_id = ANY($1::uuid[])', [createdOrganizations]);
+        await runtime.database.rawPool.query('DELETE FROM organizations WHERE id = ANY($1::uuid[])', [createdOrganizations]);
       }
       await runtime.app.close();
     }

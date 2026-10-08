@@ -122,7 +122,7 @@ export class PostgresAccountRepository implements AccountRepository {
       const identity = await client.query("INSERT INTO identities (user_id, type, display_name, organization_id, is_default) VALUES ($1, 'enterprise', $2, $3, false) RETURNING id, user_id, type, display_name, organization_id, status, is_default", [userId, org.rows[0].name, org.rows[0].id]);
       const role = await client.query("INSERT INTO roles (organization_id, name, description, is_system) VALUES ($1, '成员', '企业成员', true) ON CONFLICT (organization_id, name) DO UPDATE SET name = EXCLUDED.name RETURNING id", [org.rows[0].id]);
       await client.query('INSERT INTO identity_roles (identity_id, role_id) VALUES ($1, $2)', [identity.rows[0].id, role.rows[0].id]);
-      await client.query("INSERT INTO role_permissions (role_id, permission_id) SELECT $1, id FROM permissions WHERE code='read' ON CONFLICT DO NOTHING", [role.rows[0].id]);
+      await client.query("INSERT INTO role_permissions (role_id, permission_id) SELECT $1, id FROM permissions WHERE code IN ('read','write','execute','export') ON CONFLICT DO NOTHING", [role.rows[0].id]);
       await client.query("INSERT INTO workspaces (identity_id, type, name) VALUES ($1, 'enterprise', $2)", [identity.rows[0].id, `${org.rows[0].name}企业工作区`]);
       await client.query('COMMIT'); return this.identity(identity.rows[0]);
     } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }

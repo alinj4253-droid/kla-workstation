@@ -3,6 +3,32 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Pool } from 'pg';
 
+export type MigrationFile = { id: string; sql: string };
+
+/**
+ * Compatibility loader for the source migration directory. Runtime migration
+ * execution uses the embedded list below so packaged builds remain portable,
+ * while tooling and tests can still inspect the checked-in SQL files.
+ */
+export async function loadMigrationFiles(directory = fileURLToPath(new URL('../../migrations/', import.meta.url))): Promise<MigrationFile[]> {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const files = entries
+    .filter((entry) => entry.isFile() && /^\d+_[^/\\]+\.sql$/i.test(entry.name))
+    .map((entry) => entry.name)
+    .sort((a, b) => a.localeCompare(b, 'en'));
+  if (!files.length) throw new Error('未找到任何迁移文件');
+  const seenNumbers = new Set<string>();
+  const result: MigrationFile[] = [];
+  for (const file of files) {
+    const match = /^(\d+)_.*\.sql$/i.exec(file);
+    const number = match?.[1] ?? file;
+    if (seenNumbers.has(number)) throw new Error(`迁移编号重复: ${number}`);
+    seenNumbers.add(number);
+    result.push({ id: file.slice(0, -4), sql: await readFile(join(directory, file), 'utf8') });
+  }
+  return result;
+}
+
 const migrations = [
   {
     id: '0004_identity_organizations',
@@ -246,11 +272,56 @@ const migrations = [
       CREATE UNIQUE INDEX IF NOT EXISTS organizations_invite_code_idx ON organizations(invite_code);
     `,
   },
+  {
+    id: '0012_personal_identity_default_permissions',
+    sql: `
+      INSERT INTO roles (organization_id, name, description, is_system)
+      SELECT NULL, '个人用户', '个人身份默认权限', true
+      WHERE NOT EXISTS (SELECT 1 FROM roles WHERE organization_id IS NULL AND name = '个人用户');
+      INSERT INTO identity_roles (identity_id, role_id)
+      SELECT i.id, r.id
+      FROM identities i CROSS JOIN roles r
+      WHERE i.type='personal' AND i.status='active' AND r.organization_id IS NULL AND r.name='个人用户'
+        AND NOT EXISTS (SELECT 1 FROM identity_roles ir WHERE ir.identity_id=i.id AND ir.role_id=r.id);
+      INSERT INTO role_permissions (role_id, permission_id)
+      SELECT r.id, p.id FROM roles r CROSS JOIN permissions p
+      WHERE r.organization_id IS NULL AND r.name='个人用户' AND p.code IN ('read','write','execute','manage','export')
+        AND NOT EXISTS (SELECT 1 FROM role_permissions rp WHERE rp.role_id=r.id AND rp.permission_id=p.id);
+    `,
+  },
+  {
+    id: '0013_enterprise_collaboration_permissions',
+    sql: `
+      -- Older enterprise roles were created with compute-only permissions.
+      -- Preserve existing grants and add permissions required by collaboration APIs.
+      INSERT INTO role_permissions (role_id, permission_id)
+      SELECT r.id, p.id
+      FROM roles r CROSS JOIN permissions p
+      WHERE r.organization_id IS NOT NULL
+        AND r.name = '管理员'
+        AND p.code IN ('read','write','execute','manage','export')
+        AND NOT EXISTS (
+          SELECT 1 FROM role_permissions rp
+          WHERE rp.role_id = r.id AND rp.permission_id = p.id
+        );
+      INSERT INTO role_permissions (role_id, permission_id)
+      SELECT r.id, p.id
+      FROM roles r CROSS JOIN permissions p
+      WHERE r.organization_id IS NOT NULL
+        AND r.name = '成员'
+        AND p.code IN ('read','write','execute','export')
+        AND NOT EXISTS (
+          SELECT 1 FROM role_permissions rp
+          WHERE rp.role_id = r.id AND rp.permission_id = p.id
+        );
+    `,
+  },
 ];
 
 export async function runMigrations(pool: Pool, schema = 'kla'): Promise<void> {
   if (!/^[a-z_][a-z0-9_]*$/i.test(schema)) throw new Error('非法数据库 schema 名称');
-  const migrations = await loadMigrationFiles();
+  // Migrations are embedded in this module so the packaged server does not
+  // depend on a source-only migrations directory.
   await pool.query(`CREATE SCHEMA IF NOT EXISTS "${schema}" AUTHORIZATION CURRENT_USER`);
   const setupClient = await pool.connect();
   await setupClient.query(`SET search_path TO "${schema}", public`);

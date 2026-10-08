@@ -18,7 +18,7 @@ export type Identity = {
   isDefault: boolean;
 };
 
-export type Session = { id: string; userId: string; accessToken: string; refreshToken: string; expiresAt: string; deviceId?: string | null; deviceName?: string | null; lastSeenAt?: string };
+export type Session = { id: string; userId: string; accessToken: string; refreshToken: string; expiresAt: string; deviceId?: string | null; deviceName?: string | null; userAgent?: string | null; ipAddress?: string | null; lastSeenAt?: string };
 export type Project = { id: string; name: string; ownerIdentityId: string; createdAt: string };
 export type Conversation = { id: string; projectId: string; name: string; createdAt: string };
 export type Message = { id: string; conversationId: string; senderId: string; senderType: 'user' | 'agent' | 'system'; senderName?: string | null; kind: string; text: string; metadata?: Record<string, unknown>; createdAt: string };

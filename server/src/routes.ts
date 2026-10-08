@@ -4,8 +4,9 @@ import type { ApiErrorBody } from '@kla-workstation/contracts';
 import type { AccountRepository } from './repositories/types.js';
 import type { PostgresDatabase } from './database/postgres.js';
 import type { RedisDatabase } from './infrastructure/redis.js';
-import { requirePermission, type PermissionAction } from './auth/permission-service.js';
+import { PermissionDeniedError, requirePermission, type PermissionAction } from './auth/permission-service.js';
 import type { Session } from './repositories/types.js';
+import { htmlArtifactContent } from './artifacts/html-content.js';
 
 /** pino 子 logger 支持运行时 setBindings；FastifyBaseLogger 类型未暴露，且 logger:false 的 noop 实现没有该方法（规范 §3）。 */
 function bindRequestLog(request: FastifyRequest, bindings: Record<string, unknown>): void {
@@ -13,24 +14,22 @@ function bindRequestLog(request: FastifyRequest, bindings: Record<string, unknow
   log.setBindings?.(bindings);
 }
 
-async function runConversation(accounts: AccountRepository, userId: string, conversationId: string, runId: string, prompt: string): Promise<void> {
+async function runConversation(accounts: AccountRepository, identityId: string, conversationId: string, runId: string, prompt: string, allowModel = true): Promise<void> {
   try {
-    const identities = await accounts.listIdentities(userId);
-    const identity = identities.find((item) => item.isDefault) ?? identities[0];
     const agentName = '统筹智能体';
     let answer = `已收到你的需求：${prompt}\n\n我已将任务交给${agentName}，正在结合当前身份的项目工作区、知识和记忆进行处理。`;
     const endpoint = process.env.MODEL_API_URL;
     const apiKey = process.env.MODEL_API_KEY;
-    if (endpoint && apiKey) {
+    if (allowModel && endpoint && apiKey) {
       const history = (await accounts.listMessages(conversationId)).slice(-12).map((message) => ({ role: message.senderType === 'agent' ? 'assistant' : 'user', content: message.text }));
       const response = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` }, body: JSON.stringify({ model: process.env.MODEL_ID ?? 'deepseek-v4-flash', messages: [{ role: 'system', content: '你是鲲擎统筹智能体。只输出直接给用户的中文答复，不输出内部思考。根据对话上下文回答，不要重复用户原话。' }, ...history], temperature: 0.2 }) });
       if (response.ok) { const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> }; const content = payload.choices?.[0]?.message?.content?.trim(); if (content) answer = content; }
     }
     const artifactRequest = /文件|报告|文档|html|导出|成果/.test(prompt);
     let artifactId: string | undefined;
-    if (artifactRequest && identity) {
+    if (artifactRequest) {
       const title = prompt.slice(0, 24).replace(/[\\/:*?"<>|]/g, '').trim() || '协作成果';
-      const artifact = await accounts.createArtifact(identity.id, conversationId, `${title}.html`, 'text/html', `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>${title}</title><body><h1>${title}</h1><p>${answer.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('\n', '<br>')}</p><p>生成时间：${new Date().toLocaleString('zh-CN')}</p></body></html>`);
+      const artifact = await accounts.createArtifact(identityId, conversationId, `${title}.html`, 'text/html', htmlArtifactContent(title, answer));
       artifactId = artifact.id;
       answer += `\n\n成果文件已生成：${artifact.name}，可在右侧预览。`;
     }
@@ -59,7 +58,14 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
   };
   const enforce = async (session: Session, request: { headers: Record<string, string | string[] | undefined> }, action: PermissionAction, reply: { code: (n: number) => { send: (v: unknown) => unknown } }) => {
     if (!deps.database?.rawPool) return null; const identity = await identityFor(session.userId, request); if (!identity) { reply.code(403).send({ ok: false, error: { code: 'IDENTITY_REQUIRED', message: '当前身份不可用' } }); return null; }
-    try { await requirePermission(deps.database.rawPool, identity.id, action); return identity; } catch { reply.code(403).send({ ok: false, error: { code: 'PERMISSION_DENIED', message: `缺少 ${action} 权限` } }); return null; }
+    try {
+      await requirePermission(deps.database.rawPool, identity.id, action);
+      return identity;
+    } catch (error) {
+      if (!(error instanceof PermissionDeniedError)) throw error;
+      reply.code(403).send({ ok: false, error: { code: 'PERMISSION_DENIED', message: `缺少 ${action} 权限` } });
+      return null;
+    }
   };
   app.addHook('onRequest', async (request, reply) => {
     reply.header('x-request-id', request.id);
@@ -314,13 +320,15 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
   app.get('/api/v1/conversations/:conversationId/messages', async (request, reply) => { const session = await auth(request, reply); if (!session) return; const identity = await enforce(session, request, 'read', reply); if (!identity) return; const params = request.params as { conversationId: string }; const conversations = await deps.accounts.listAllConversations(identity.id); if (!conversations.some((item) => item.id === params.conversationId)) return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: '群聊不存在或无权访问', retryable: false } }); return reply.send({ ok: true, data: await deps.accounts.listMessages(params.conversationId) }); });
   app.post('/api/v1/conversations/:conversationId/messages', async (request, reply) => {
     const session = await auth(request, reply); if (!session) return;
-    const identity = await enforce(session, request, 'execute', reply); if (!identity) return;
+    // Sending a chat message is a write operation. The execute permission is
+    // reserved for invoking tools, operation platforms, or queued actions.
+    const identity = await enforce(session, request, 'write', reply); if (!identity) return;
     const params = request.params as { conversationId: string }; const body = request.body as { text?: string; mode?: string };
     if (!body.text?.trim()) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: '消息不能为空', retryable: false }, meta: { requestId: request.id } } satisfies ApiErrorBody);
     if (!identity || !(await deps.accounts.listAllConversations(identity.id)).some((item) => item.id === params.conversationId)) return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: '群聊不存在或无权访问', retryable: false } });
     const userMessage = await deps.accounts.createMessage(params.conversationId, session.userId, body.text.trim());
     const run = await deps.accounts.createRun(params.conversationId, userMessage.id, body.mode ?? 'balanced');
-    void runConversation(deps.accounts, session.userId, params.conversationId, run.id, body.text.trim());
+    void runConversation(deps.accounts, identity.id, params.conversationId, run.id, body.text.trim(), deps.mode !== 'mock');
     return reply.send({ ok: true, data: { message: userMessage, run } });
   });
 
@@ -403,9 +411,8 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
     const result = await deps.database.rawPool.query('INSERT INTO upload_sessions (identity_id,workspace_id,file_name,content_type,size_bytes,checksum) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id,file_name,content_type,size_bytes,checksum,status,expires_at', [identity?.id, body.workspaceId, body.fileName, body.contentType ?? null, body.sizeBytes ?? 0, body.checksum ?? null]); return reply.code(201).send({ ok: true, data: { ...result.rows[0], uploadUrl: null, mode: 'server-multipart-placeholder' } });
   });
   app.get('/api/v1/me/permissions', async (request, reply) => {
-    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return; const identity = await identityFor(session.userId, request);
-    if (!identity) return reply.code(403).send({ ok: false, error: { code: 'IDENTITY_REQUIRED', message: '当前身份不可用' } });
-    try { await requirePermission(deps.database.rawPool, identity.id, 'read'); } catch { return reply.code(403).send({ ok: false, error: { code: 'PERMISSION_DENIED', message: '当前身份不可用或缺少 read 权限' } }); }
+    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return;
+    const identity = await enforce(session, request, 'read', reply); if (!identity) return;
     if (identity?.type === 'personal') return reply.send({ ok: true, data: ['read', 'write', 'execute', 'manage', 'export'].map((code) => ({ code, description: '个人身份默认权限' })) });
     const result = await deps.database.rawPool.query('SELECT DISTINCT p.code,p.description FROM identity_roles ir JOIN role_permissions rp ON rp.role_id=ir.role_id JOIN permissions p ON p.id=rp.permission_id WHERE ir.identity_id=$1', [identity?.id ?? '']); return reply.send({ ok: true, data: result.rows });
   });
