@@ -76,7 +76,7 @@ export function KnowledgeDetail({ context, connection, base, slots = {}, onConfi
     const trusted = sourceMappings.find(item => item.docId === source.docId);
     if (!trusted) return;
     rememberTrigger();
-    setDrawer({ type: 'document', source: { docId: trusted.docId, displayName: trusted.name, ...(trusted.version !== undefined ? { version: trusted.version } : {}) }, ...(sliceIndex !== undefined ? { sliceIndex } : {}) });
+    setDrawer({ type: 'document', source: { docId: trusted.docId, displayName: trusted.name, ...(trusted.version !== undefined ? { version: trusted.version } : {}), ...(source.locateText !== undefined ? { locateText: source.locateText } : {}) }, ...(sliceIndex !== undefined ? { sliceIndex } : {}) });
   };
   const openSlice = (selection: { slice: KnowledgeSlice; source: KnowledgeSource }) => {
     const trusted = sourceMappings.find(item => item.docId === selection.source.docId);

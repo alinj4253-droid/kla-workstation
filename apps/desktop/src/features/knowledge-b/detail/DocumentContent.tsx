@@ -11,13 +11,14 @@ export interface DocumentContentProps {
   docId: string;
   displayName: string;
   sliceIndex?: number;
+  locateText?: string;
 }
 
 /**
  * Body for the host's document drawer. The host owns drawer semantics and focus;
  * this component only composes the independent detail, metadata, and text views.
  */
-export function DocumentContent({ context, docId, displayName, sliceIndex }: DocumentContentProps): JSX.Element {
+export function DocumentContent({ context, docId, displayName, sliceIndex, locateText }: DocumentContentProps): JSX.Element {
   const detailQuery = useDocumentDetail(context, docId);
 
   return (
@@ -49,7 +50,7 @@ export function DocumentContent({ context, docId, displayName, sliceIndex }: Doc
 
       <MetaSummary context={context} docId={docId} />
 
-      {sliceIndex !== undefined && detailQuery.data?.readable && (
+      {sliceIndex !== undefined && !locateText && detailQuery.data?.readable && (
         <p className="kb-b-document-content__slice-note">
           来自切片 {sliceIndex}。正文从首段读取，接口未提供切片对应的段落位置。
         </p>
@@ -61,6 +62,7 @@ export function DocumentContent({ context, docId, displayName, sliceIndex }: Doc
           docId={docId}
           format={detailQuery.data.ext.trim().toLowerCase() === 'md' ? 'md' : 'txt'}
           readable
+          {...(locateText !== undefined ? { locateText } : {})}
         />
       )}
 
