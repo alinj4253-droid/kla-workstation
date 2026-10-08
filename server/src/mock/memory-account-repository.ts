@@ -226,6 +226,7 @@ export class MemoryAccountRepository implements AccountRepository {
     const organization: StoredOrganization = { id: this.nextId('org'), name, inviteCode: randomUUID().slice(0, 8).toUpperCase(), status: 'active' };
     this.organizations.set(organization.id, organization);
     const identity = this.createIdentity(userId, 'enterprise', name, organization.id, false);
+    identity.role = 'admin';
     this.seedIdentityWorkspace(identity, `${name}企业工作区`, 'enterprise');
     return identity;
   }
@@ -267,10 +268,20 @@ export class MemoryAccountRepository implements AccountRepository {
   private workspaces: Array<{ id: string; identityId: string; type: 'personal' | 'enterprise'; name: string; projectId: string | null }> = [];
 
   private createIdentity(userId: string, type: Identity['type'], displayName: string, organizationId: string | null, isDefault: boolean): Identity {
-    const identity: Identity = { id: this.nextId('idy'), userId, type, displayName, organizationId, status: 'active', isDefault };
+    const role: Identity['role'] = type === 'personal' ? 'personal' : 'member';
+    const identity: Identity = { id: this.nextId('idy'), userId, type, displayName, organizationId, status: 'active', isDefault, role };
     if (isDefault) for (const item of this.identities.values()) if (item.userId === userId) item.isDefault = false;
     this.identities.set(identity.id, identity);
     return identity;
+  }
+
+  getOrganization(orgId: string): Promise<{ id: string; name: string; inviteCode: string; status: 'active' | 'disabled' } | null> {
+    const organization = this.organizations.get(orgId);
+    return Promise.resolve(organization ? { id: organization.id, name: organization.name, inviteCode: organization.inviteCode, status: organization.status } : null);
+  }
+
+  async isOrganizationMember(userId: string, orgId: string): Promise<boolean> {
+    return [...this.identities.values()].some((identity) => identity.userId === userId && identity.organizationId === orgId && identity.type === 'enterprise' && identity.status === 'active');
   }
 
   private seedIdentityWorkspace(identity: Identity, name = `${identity.displayName}的个人工作区`, type: 'personal' | 'enterprise' = 'personal'): void {

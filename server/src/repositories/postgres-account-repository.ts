@@ -1,10 +1,11 @@
 import { createHash, randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
-import type { Pool } from 'pg';
-import type { AccountRepository, Conversation, Identity, Message, Project, Session, UserAccount, AgentProfile, ConversationRun, Artifact } from './types.js';
+import type { Pool, PoolClient } from 'pg';
+import type { AccountRepository, Conversation, Identity, Message, Organization, Project, Session, UserAccount, AgentProfile, ConversationRun, Artifact } from './types.js';
+import { ENTERPRISE_ADMIN_PERMISSIONS, ENTERPRISE_MEMBER_PERMISSIONS, PERSONAL_DEFAULT_PERMISSIONS } from './permission-sets.js';
 
 const scrypt = promisify(scryptCallback);
-export const hashToken = (value: string) => createHash('sha256').update(value).digest('hex');
+const hashToken = (value: string) => createHash('sha256').update(value).digest('hex');
 
 async function hashPassword(password: string): Promise<string> {
   const salt = randomBytes(16).toString('hex');
@@ -28,8 +29,20 @@ export class PostgresAccountRepository implements AccountRepository {
   }
 
   async listIdentities(userId: string): Promise<Identity[]> {
-    const { rows } = await this.pool.query('SELECT id, user_id, type, display_name, organization_id, status, is_default FROM identities WHERE user_id = $1 ORDER BY is_default DESC, created_at', [userId]);
-    return rows.map((row) => ({ id: row.id, userId: row.user_id, type: row.type, displayName: row.display_name, organizationId: row.organization_id, status: row.status, isDefault: row.is_default }));
+    const { rows } = await this.pool.query(
+      `SELECT i.id, i.user_id, i.type, i.display_name, i.organization_id, i.status, i.is_default,
+              CASE WHEN i.type = 'personal' THEN 'personal'
+                   WHEN MAX(CASE WHEN r.name = '管理员' THEN 1 END) = 1 THEN 'admin'
+                   ELSE 'member' END AS role
+       FROM identities i
+       LEFT JOIN identity_roles ir ON ir.identity_id = i.id
+       LEFT JOIN roles r ON r.id = ir.role_id
+       WHERE i.user_id = $1
+       GROUP BY i.id, i.user_id, i.type, i.display_name, i.organization_id, i.status, i.is_default, i.created_at
+       ORDER BY i.is_default DESC, i.created_at`,
+      [userId],
+    );
+    return rows.map((row) => ({ id: row.id, userId: row.user_id, type: row.type, displayName: row.display_name, organizationId: row.organization_id, status: row.status, isDefault: row.is_default, role: row.role }));
   }
 
   async register(input: { email?: string; phone?: string; password: string; nickname: string }) {
@@ -44,8 +57,20 @@ export class PostgresAccountRepository implements AccountRepository {
       const project = await client.query("INSERT INTO projects (owner_identity_id, name) VALUES ($1, $2) RETURNING id", [identityResult.rows[0].id, '我的协作项目']);
       for (const [name, role, type] of [['统筹智能体', '识别目标、规划协作任务并调度执行智能体', 'official'], ['本地执行智能体', '检索知识、编写材料并交付成果文件', 'official']] as const) await client.query('INSERT INTO agents (identity_id, name, role, type) VALUES ($1,$2,$3,$4)', [identityResult.rows[0].id, name, role, type]);
       await client.query('INSERT INTO conversations (project_id, name) VALUES ($1, $2)', [project.rows[0].id, '默认协作群聊']);
+      await client.query(
+        `INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload, idempotency_key)
+         VALUES ('identity', $1, 'provision_identity_compute', $2, $3)
+         ON CONFLICT (idempotency_key) DO NOTHING`,
+        [identityResult.rows[0].id, JSON.stringify({ identityId: identityResult.rows[0].id, identityType: 'personal', displayName: input.nickname, userEmail: userRow.email, role: 'personal' }), `provision:${identityResult.rows[0].id}`],
+      );
+      // 个人默认角色（organization_id 为 NULL，唯一约束中 NULL 互不相等，故先查后插）
+      const personalRole = await client.query("SELECT id FROM roles WHERE organization_id IS NULL AND name = '个人默认' LIMIT 1");
+      const personalRoleId = personalRole.rows[0]?.id
+        ?? (await client.query("INSERT INTO roles (organization_id, name, description, is_system) VALUES (NULL, '个人默认', '个人用户默认角色', true) RETURNING id")).rows[0].id;
+      await this.bindRolePermissions(client, personalRoleId, PERSONAL_DEFAULT_PERMISSIONS);
+      await client.query('INSERT INTO identity_roles (identity_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [identityResult.rows[0].id, personalRoleId]);
       await client.query('COMMIT');
-      return { user: { id: userRow.id, email: userRow.email, phone: userRow.phone, nickname: userRow.nickname, status: userRow.status }, identity: this.identity(identityResult.rows[0]) };
+      return { user: { id: userRow.id, email: userRow.email, phone: userRow.phone, nickname: userRow.nickname, status: userRow.status }, identity: this.identity(identityResult.rows[0], 'personal') };
     } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
   }
 
@@ -61,7 +86,7 @@ export class PostgresAccountRepository implements AccountRepository {
   async createSession(userId: string, metadata: { deviceId?: string; deviceName?: string; userAgent?: string; ipAddress?: string } = {}): Promise<Session> {
     const accessToken = randomUUID(); const refreshToken = randomUUID(); const expiresAt = new Date(Date.now() + 7 * 24 * 3600_000);
     const { rows } = await this.pool.query('INSERT INTO sessions (user_id, access_token_hash, refresh_token_hash, expires_at, device_id, device_name, user_agent, ip_address) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::inet) RETURNING id, expires_at, device_id, device_name', [userId, hashToken(accessToken), hashToken(refreshToken), expiresAt, metadata.deviceId ?? null, metadata.deviceName ?? null, metadata.userAgent ?? null, metadata.ipAddress ?? null]);
-    return { id: rows[0].id, userId, accessToken, refreshToken, expiresAt: new Date(rows[0].expires_at).toISOString() };
+    return { id: rows[0].id, userId, accessToken, refreshToken, expiresAt: new Date(rows[0].expires_at).toISOString(), deviceId: rows[0].device_id, deviceName: rows[0].device_name };
   }
   async getSession(token: string): Promise<Session | null> {
     const { rows } = await this.pool.query("UPDATE sessions s SET last_seen_at=now() FROM users u WHERE s.user_id=u.id AND u.status='active' AND s.access_token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now() RETURNING s.id, s.user_id, s.expires_at, s.device_id, s.device_name, s.last_seen_at", [hashToken(token)]);
@@ -102,13 +127,21 @@ export class PostgresAccountRepository implements AccountRepository {
       await client.query('BEGIN');
       const personal = await client.query("SELECT id FROM identities WHERE user_id = $1 AND type = 'personal' LIMIT 1", [userId]);
       if (!personal.rows[0]) throw new Error('PERSONAL_IDENTITY_REQUIRED');
+      const userEmailRow = await client.query('SELECT email FROM users WHERE id = $1', [userId]);
       const org = await client.query('INSERT INTO organizations (name, license_number) VALUES ($1, $2) RETURNING id', [name, licenseNumber]);
       const identity = await client.query("INSERT INTO identities (user_id, type, display_name, organization_id, is_default) VALUES ($1, 'enterprise', $2, $3, false) RETURNING id, user_id, type, display_name, organization_id, status, is_default", [userId, name, org.rows[0].id]);
       const role = await client.query("INSERT INTO roles (organization_id, name, description, is_system) VALUES ($1, '管理员', '企业管理员', true) RETURNING id", [org.rows[0].id]);
+      // 基础权限（read/write/execute/manage/export）与算力权限集合并绑定
+      await this.bindRolePermissions(client, role.rows[0].id, [...ENTERPRISE_ADMIN_PERMISSIONS, 'read', 'write', 'execute', 'manage', 'export']);
       await client.query('INSERT INTO identity_roles (identity_id, role_id) VALUES ($1, $2)', [identity.rows[0].id, role.rows[0].id]);
-      await client.query("INSERT INTO role_permissions (role_id, permission_id) SELECT $1, id FROM permissions WHERE code IN ('read','write','execute','manage','export') ON CONFLICT DO NOTHING", [role.rows[0].id]);
       await client.query("INSERT INTO workspaces (identity_id, type, name) VALUES ($1, 'enterprise', $2)", [identity.rows[0].id, `${name}企业工作区`]);
-      await client.query('COMMIT'); return this.identity(identity.rows[0]);
+      await client.query(
+        `INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload, idempotency_key)
+         VALUES ('identity', $1, 'provision_identity_compute', $2, $3)
+         ON CONFLICT (idempotency_key) DO NOTHING`,
+        [identity.rows[0].id, JSON.stringify({ identityId: identity.rows[0].id, identityType: 'enterprise', displayName: name, userEmail: userEmailRow.rows[0]?.email ?? null, role: 'admin' }), `provision:${identity.rows[0].id}`],
+      );
+      await client.query('COMMIT'); return this.identity(identity.rows[0], 'admin');
     } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
   }
   async joinOrganization(userId: string, inviteCode: string): Promise<Identity | null> {
@@ -117,22 +150,65 @@ export class PostgresAccountRepository implements AccountRepository {
       await client.query('BEGIN');
       const org = await client.query("SELECT id, name FROM organizations WHERE invite_code = $1 AND status = 'active'", [inviteCode.trim().toUpperCase()]);
       if (!org.rows[0]) { await client.query('ROLLBACK'); return null; }
-      const existing = await client.query("SELECT id, user_id, type, display_name, organization_id, status, is_default FROM identities WHERE user_id=$1 AND organization_id=$2 AND type='enterprise' AND status='active' LIMIT 1", [userId, org.rows[0].id]);
-      if (existing.rows[0]) { await client.query('COMMIT'); return this.identity(existing.rows[0]); }
+      const userEmailRow = await client.query('SELECT email FROM users WHERE id = $1', [userId]);
       const identity = await client.query("INSERT INTO identities (user_id, type, display_name, organization_id, is_default) VALUES ($1, 'enterprise', $2, $3, false) RETURNING id, user_id, type, display_name, organization_id, status, is_default", [userId, org.rows[0].name, org.rows[0].id]);
       const role = await client.query("INSERT INTO roles (organization_id, name, description, is_system) VALUES ($1, '成员', '企业成员', true) ON CONFLICT (organization_id, name) DO UPDATE SET name = EXCLUDED.name RETURNING id", [org.rows[0].id]);
+      await this.bindRolePermissions(client, role.rows[0].id, [...ENTERPRISE_MEMBER_PERMISSIONS, 'read']);
       await client.query('INSERT INTO identity_roles (identity_id, role_id) VALUES ($1, $2)', [identity.rows[0].id, role.rows[0].id]);
-      await client.query("INSERT INTO role_permissions (role_id, permission_id) SELECT $1, id FROM permissions WHERE code='read' ON CONFLICT DO NOTHING", [role.rows[0].id]);
       await client.query("INSERT INTO workspaces (identity_id, type, name) VALUES ($1, 'enterprise', $2)", [identity.rows[0].id, `${org.rows[0].name}企业工作区`]);
-      await client.query('COMMIT'); return this.identity(identity.rows[0]);
+      await client.query(
+        `INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload, idempotency_key)
+         VALUES ('identity', $1, 'provision_identity_compute', $2, $3)
+         ON CONFLICT (idempotency_key) DO NOTHING`,
+        [identity.rows[0].id, JSON.stringify({ identityId: identity.rows[0].id, identityType: 'enterprise', displayName: org.rows[0].name, userEmail: userEmailRow.rows[0]?.email ?? null, role: 'member' }), `provision:${identity.rows[0].id}`],
+      );
+      await client.query('COMMIT'); return this.identity(identity.rows[0], 'member');
     } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
   }
   async activateIdentity(userId: string, identityId: string): Promise<Identity | null> {
     const found = await this.pool.query("SELECT id FROM identities WHERE id = $1 AND user_id = $2 AND status = 'active'", [identityId, userId]);
     if (!found.rows[0]) return null;
     const client = await this.pool.connect();
-    try { await client.query('BEGIN'); await client.query('UPDATE identities SET is_default = false WHERE user_id = $1', [userId]); const result = await client.query('UPDATE identities SET is_default = true WHERE id = $1 RETURNING id, user_id, type, display_name, organization_id, status, is_default', [identityId]); await client.query('COMMIT'); return this.identity(result.rows[0]); } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
+    try {
+      await client.query('BEGIN');
+      await client.query('UPDATE identities SET is_default = false WHERE user_id = $1', [userId]);
+      const result = await client.query('UPDATE identities SET is_default = true WHERE id = $1 RETURNING id, user_id, type, display_name, organization_id, status, is_default', [identityId]);
+      const roleRow = await client.query(
+        `SELECT CASE WHEN i.type = 'personal' THEN 'personal'
+                     WHEN MAX(CASE WHEN r.name = '管理员' THEN 1 END) = 1 THEN 'admin'
+                     ELSE 'member' END AS role
+         FROM identities i LEFT JOIN identity_roles ir ON ir.identity_id = i.id LEFT JOIN roles r ON r.id = ir.role_id
+         WHERE i.id = $1 GROUP BY i.type`,
+        [identityId],
+      );
+      await client.query('COMMIT');
+      return this.identity(result.rows[0], roleRow.rows[0]?.role ?? 'member');
+    } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
   }
 
-  private identity(row: Record<string, any>): Identity { return { id: row.id, userId: row.user_id, type: row.type, displayName: row.display_name, organizationId: row.organization_id, status: row.status, isDefault: row.is_default }; }
+  /** 把一组权限码绑定到指定角色；ON CONFLICT 保证重复调用幂等。 */
+  private async bindRolePermissions(client: PoolClient, roleId: string, codes: readonly string[]): Promise<void> {
+    await client.query(
+      `INSERT INTO role_permissions (role_id, permission_id)
+       SELECT $1, id FROM permissions WHERE code = ANY($2)
+       ON CONFLICT (role_id, permission_id) DO NOTHING`,
+      [roleId, codes],
+    );
+  }
+
+  private identity(row: Record<string, any>, role: 'personal' | 'admin' | 'member' = 'member'): Identity { return { id: row.id, userId: row.user_id, type: row.type, displayName: row.display_name, organizationId: row.organization_id, status: row.status, isDefault: row.is_default, role }; }
+
+  async getOrganization(orgId: string): Promise<Organization | null> {
+    const { rows } = await this.pool.query('SELECT id, name, invite_code, status FROM organizations WHERE id = $1', [orgId]);
+    if (!rows[0]) return null;
+    return { id: rows[0].id, name: rows[0].name, inviteCode: rows[0].invite_code, status: rows[0].status };
+  }
+
+  async isOrganizationMember(userId: string, orgId: string): Promise<boolean> {
+    const { rowCount } = await this.pool.query(
+      "SELECT 1 FROM identities WHERE user_id = $1 AND organization_id = $2 AND type = 'enterprise' AND status = 'active'",
+      [userId, orgId],
+    );
+    return (rowCount ?? 0) > 0;
+  }
 }

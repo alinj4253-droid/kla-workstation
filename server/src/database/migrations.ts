@@ -5,19 +5,25 @@ import type { Pool } from 'pg';
 
 export type MigrationFile = { id: string; sql: string };
 
-// 相对定位迁移目录：src/database/migrations.ts（tsx dev）与 dist/database/migrations.js（编译产物）
-// 深度一致，从模块文件向上三级即为 server/migrations。
-const defaultMigrationsDir = join(fileURLToPath(import.meta.url), '..', '..', '..', 'migrations');
+const MIGRATION_FILE_PATTERN = /^(\d{4,}_[a-z0-9_]+)\.sql$/i;
 
-/** 按文件名升序加载 .sql 迁移；拒绝空目录与重复编号。 */
-export async function loadMigrationFiles(dir: string = defaultMigrationsDir): Promise<MigrationFile[]> {
+const MIGRATIONS_DIR = fileURLToPath(new URL('../../migrations/', import.meta.url));
+
+export async function loadMigrationFiles(dir: string = MIGRATIONS_DIR): Promise<MigrationFile[]> {
   const entries = await readdir(dir);
-  const files = entries.filter((name) => name.endsWith('.sql')).sort();
-  if (files.length === 0) throw new Error(`迁移目录中未找到任何迁移文件：${dir}`);
-  const numbers = files.map((name) => name.slice(0, name.indexOf('_')));
-  const duplicated = numbers.find((number, index) => numbers.indexOf(number) !== index);
-  if (duplicated) throw new Error(`迁移编号重复：${duplicated}`);
-  return Promise.all(files.map(async (name) => ({ id: name.replace(/\.sql$/, ''), sql: await readFile(join(dir, name), 'utf8') })));
+  const fileNames = entries.filter((name) => MIGRATION_FILE_PATTERN.test(name)).sort();
+  if (fileNames.length === 0) {
+    throw new Error(`未在 ${dir} 找到任何迁移文件（命名形如 0004_identity_organizations.sql）`);
+  }
+  const migrations: MigrationFile[] = [];
+  const seen = new Set<string>();
+  for (const fileName of fileNames) {
+    const id = fileName.replace(/\.sql$/i, '').toLowerCase();
+    if (seen.has(id)) throw new Error(`迁移编号重复: ${id}`);
+    seen.add(id);
+    migrations.push({ id, sql: await readFile(join(dir, fileName), 'utf8') });
+  }
+  return migrations;
 }
 
 export async function runMigrations(pool: Pool, schema = 'kla'): Promise<void> {

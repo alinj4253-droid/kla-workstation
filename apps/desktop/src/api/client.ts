@@ -36,6 +36,8 @@ export class KlaApiClient {
   private async fetchWithToken(path: string, init: RequestInit): Promise<Response> {
     const token = sessionStorage.getItem(tokenKey);
     const headers = new Headers(init.headers);
+    // 仅在确有请求体时才声明 JSON：Fastify 对「带 application/json 头但 body 为空」的请求直接 400
+    // （曾导致身份切换、重试初始化、退出登录这类无 body 的 POST 全部失败）。
     if (init.body !== undefined && init.body !== null) headers.set('content-type', 'application/json');
     if (token) headers.set('authorization', `Bearer ${token}`);
     const requestedIdentity = headers.get('x-identity-id');
@@ -88,6 +90,14 @@ export class KlaApiClient {
   setIdentity(identityId: string | null) { if (identityId) sessionStorage.setItem(identityKey, identityId); else sessionStorage.removeItem(identityKey); }
   getIdentity() { return sessionStorage.getItem(identityKey); }
   clearAccessToken() { sessionStorage.removeItem(tokenKey); sessionStorage.removeItem(expiryKey); sessionStorage.removeItem(refreshKey); sessionStorage.removeItem(identityKey); }
+
+  /** §7.4：导出等非 JSON 响应；仍带 Bearer，绝不把凭据放进 URL。 */
+  async download(path: string): Promise<{ ok: true; blob: Blob } | { ok: false; code: string; message: string }> {
+    const token = sessionStorage.getItem(tokenKey);
+    const response = await fetch(`${this.baseUrl}${path}`, { headers: { ...(token ? { authorization: `Bearer ${token}` } : {}) } });
+    if (!response.ok) return { ok: false, code: `HTTP_${response.status}`, message: '导出失败，请稍后重试' };
+    return { ok: true, blob: await response.blob() };
+  }
 }
 
 export const klaApi = new KlaApiClient();
