@@ -28,9 +28,18 @@ Renderer 不得直接访问数据库、文件系统、模型密钥、OCR/Embeddi
 
 ```bash
 pnpm install
-pnpm dev              # Vite 浏览器开发模式
+pnpm dev              # Vite 浏览器开发模式（http://localhost:5173）
 pnpm build            # 类型检查 + 生产构建
-pnpm --filter @kla-workstation/desktop desktop   # 构建 + Electron 壳运行
+pnpm --filter @kla-workstation/desktop desktop   # 构建 + Electron 壳运行（加载 dist 产物）
 ```
 
-`pnpm package:win` 用于生成 Windows 安装包。当前页面业务仍使用旧桥接 API；在后端接口迁移完成前，独立桌面壳用于验证构建边界，不代表全部业务接口已经联通。
+开发时让 Electron 壳加载 Vite 热更新页面（免重复构建，需 Vite 已启动）：
+
+```bash
+# PowerShell
+$env:KLA_RENDERER_URL="http://localhost:5173"; pnpm --filter @kla-workstation/desktop exec electron .
+# bash
+KLA_RENDERER_URL=http://localhost:5173 pnpm --filter @kla-workstation/desktop exec electron .
+```
+
+`pnpm package:win` 用于生成 Windows 安装包（前端产物打进壳内 asar，服务端仅提供 API）。当前会话/登录/注册/身份等已切换 `src/api` HTTP 客户端；部分页面仍使用旧桥接 API（浏览器模式自动兜底为空数据），独立桌面壳用于验证构建边界与桌面能力。

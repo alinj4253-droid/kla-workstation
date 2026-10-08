@@ -20,15 +20,32 @@
 
 ```bash
 pnpm install
-pnpm dev:server   # 启动服务端（http://127.0.0.1:8787）
-pnpm dev          # 桌面客户端 Vite 开发模式（浏览器调试）
-pnpm dev:web      # 同上（根目录别名）
+pnpm dev:server   # 终端 1：服务端（http://127.0.0.1:8787，连接 server/.env 中的 PostgreSQL）
+pnpm dev          # 终端 2：前端 Vite 开发模式（http://localhost:5173，浏览器调试）
 ```
 
-Electron 桌面壳运行：
+首次使用在登录页注册账号（邮箱 + 至少 8 位密码 + 昵称），注册即自动登录。
+
+无数据库联调（mock 模式：内存存储，重启即清空）：
 
 ```bash
-pnpm --filter @kla-workstation/desktop desktop
+pnpm --filter @kla-workstation/server exec tsx src/mock/mock-server.ts
+# 预置演示账号：demo@kla.local / demo123456
+```
+
+Electron 桌面壳运行（加载壳内构建产物）：
+
+```bash
+pnpm --filter @kla-workstation/desktop desktop   # 构建 + Electron 壳运行
+```
+
+开发时让 Electron 壳加载 Vite 热更新页面（免重复构建，需 Vite 已启动）：
+
+```bash
+# PowerShell
+$env:KLA_RENDERER_URL="http://localhost:5173"; pnpm --filter @kla-workstation/desktop exec electron .
+# bash
+KLA_RENDERER_URL=http://localhost:5173 pnpm --filter @kla-workstation/desktop exec electron .
 ```
 
 ## 验证
@@ -43,8 +60,8 @@ pnpm package:win  # 客户端 Windows NSIS 安装包
 
 ## 当前实现状态
 
-- **服务端**为骨架：健康检查、注册/登录/登出、账号/身份、项目与会话/消息接口可用（内存存储）；其余接口返回 501 契约占位。PostgreSQL、Redis、对象存储、知识处理与 Agent Runtime 未接入。
-- **客户端** UI 从旧版 Renderer 迁移而来，页面业务仍通过旧版 `window.kunqing` 桥接运行；服务端 API 客户端位于 `apps/desktop/src/api/`，尚未接入业务页面。
+- **服务端**：PostgreSQL 持久化（启动时自动执行迁移），健康检查、注册/登录/登出、账号/身份/组织、项目与会话/消息、运行步骤、文件元数据、算力（sub2api）等 REST API 与服务端 Agent Loop 可用；Redis、对象存储、知识处理为占位实现。
+- **客户端**：会话/登录/注册/身份切换/bootstrap 已切换 `apps/desktop/src/api/` HTTP 客户端；部分页面仍调用旧版 `window.kunqing` 桥接（浏览器模式下自动兜底为空数据），待逐步收敛。
 - 迁移边界与计划见 `docs/CLIENT_SERVER_SPLIT.md` 与 `apps/desktop/README.md`。
 
 ## 文档索引
