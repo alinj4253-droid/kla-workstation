@@ -111,8 +111,8 @@ export function Workstation(): React.JSX.Element {
   const [signedIn, setSignedIn] = useState(() => Boolean(sessionStorage.getItem('kla.access-token')));
   const [authChecking, setAuthChecking] = useState(() => Boolean(sessionStorage.getItem('kla.access-token')));
   const [loginType, setLoginType] = useState<'personal' | 'enterprise'>('enterprise');
-  const [username, setUsername] = useState('KQ20248866');
-  const [password, setPassword] = useState('demo123456');
+  const [username, setUsername] = useState('laok@kla.dev');
+  const [password, setPassword] = useState('KlaDemo2026');
   const [showPassword, setShowPassword] = useState(false);
   const [section, setSection] = useState<Section>('home');
   const [computeView, setComputeView] = useState<ComputeView>('dashboard');
