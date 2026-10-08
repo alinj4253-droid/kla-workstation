@@ -15,9 +15,9 @@ describe('complete database initialization', () => {
       await runMigrations(pool, schema);
       await runMigrations(pool, schema);
       const tables = await pool.query('SELECT table_name FROM information_schema.tables WHERE table_schema=$1', [schema]);
-      expect(tables.rows.map((row) => row.table_name)).toEqual(expect.arrayContaining(['users', 'identities', 'projects', 'messages', 'conversation_runs', 'artifacts', 'compute_bindings', 'compute_keys', 'compute_model_pricing', 'outbox_events']));
+      expect(tables.rows.map((row) => row.table_name)).toEqual(expect.arrayContaining(['users', 'identities', 'projects', 'messages', 'conversation_runs', 'artifacts', 'compute_bindings', 'compute_keys', 'compute_model_pricing', 'outbox_events', 'knowledge_client_state']));
       const applied = await pool.query('SELECT id FROM schema_migrations ORDER BY id');
-      expect(applied.rows.map((row) => row.id)).toEqual(expect.arrayContaining(['0013_compute_sub2api', '0014_extend_compute_schema', '0015_compute_model_pricing', '0016_shared_upstream_account', '0017_system_role_business_permissions']));
+      expect(applied.rows.map((row) => row.id)).toEqual(expect.arrayContaining(['0013_compute_sub2api', '0014_extend_compute_schema', '0015_compute_model_pricing', '0016_shared_upstream_account', '0017_system_role_business_permissions', '0018_knowledge_client_state']));
       const permissions = await pool.query("SELECT p.code FROM roles r JOIN role_permissions rp ON rp.role_id=r.id JOIN permissions p ON p.id=rp.permission_id WHERE r.name='个人用户'");
       expect(permissions.rows.map((row) => row.code)).toEqual(expect.arrayContaining(['write', 'execute', 'compute.view', 'model.use']));
     } finally {

@@ -25,7 +25,7 @@ Workstation → apps/desktop/src/api/knowledge.ts → KLA /api/v1/knowledge-libr
 客户端不使用 window.kunqing，不直接访问文件系统、上游凭证或处理服务。既有 B 阅读契约在 HTTP 客户端边界复用，继续校验文档 ID、集合、计数和分页游标。
 
 ## 服务端状态
-- 0017_knowledge_client_state.sql：按 identity_id 隔离连接、目录、上传关联和未确认提交。
+- 0018_knowledge_client_state.sql：按 identity_id 隔离连接、目录、上传关联和未确认提交。
 - PostgreSQL 为实际运行的权威存储；客户端仅保留 React Query 缓存。
 - 原桌面模块的全局可变状态改为 AsyncLocalStorage 身份上下文，避免用户之间串用配置、文档和上传控制器。
 - API Key 用 AES-256-GCM 在服务端加密；配置响应不返回明文。

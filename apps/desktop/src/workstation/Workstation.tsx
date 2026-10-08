@@ -4,6 +4,7 @@ import logo from '../assets/kla-sidebar-logo.png';
 import type { IdentityDto } from '@kla-workstation/contracts';
 import { authExpiredEventName, klaApi } from '../api/client';
 import { ComputeSection, type ComputeView } from './ComputeSection';
+import { KnowledgeSection } from './KnowledgeSection';
 import { Badge, Chart, formatUsd, IconButton, Panel, Stat } from './ui';
 
 type Section = 'home' | 'projects' | 'knowledge' | 'agents' | 'memory' | 'compute' | 'chats' | 'settings';

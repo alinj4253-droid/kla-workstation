@@ -28,6 +28,7 @@ beforeEach(() => {
     const override = overrides[`${init.method ?? 'GET'} ${path}`];
     if (override) return override();
     if (path === '/v1/me') return { ok: true, data: { nickname: '测试用户' } };
+    if (path === '/v1/me/identities') return { ok: true, data: [{ id: 'identity-a', type: 'personal', displayName: '个人工作区', isDefault: true }] };
     if (path === '/v1/bootstrap') return { ok: true, data: { projects, conversations } };
     if (path.endsWith('/messages')) return { ok: true, data: [historicalReply] };
     return { ok: true, data: [] };

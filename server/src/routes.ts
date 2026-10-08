@@ -3,8 +3,6 @@ import { randomUUID } from 'node:crypto';
 import type { ApiErrorBody } from '@kla-workstation/contracts';
 import type { AccountRepository, Identity } from './repositories/types.js';
 import type { ComputeGateway } from './compute/gateway.js';
-import type { AccountRepository, Identity } from './repositories/types.js';
-import type { ComputeGateway } from './compute/gateway.js';
 import type { PostgresDatabase } from './database/postgres.js';
 import type { RedisDatabase } from './infrastructure/redis.js';
 import { PermissionDeniedError, requirePermission, type PermissionAction } from './auth/permission-service.js';
@@ -39,7 +37,6 @@ async function runConversation(accounts: AccountRepository, identity: Identity, 
     let artifactId: string | undefined;
     if (artifactRequest) {
       const title = prompt.slice(0, 24).replace(/[\\/:*?"<>|]/g, '').trim() || '协作成果';
-      const artifact = await accounts.createArtifact(identity.id, conversationId, `${title}.html`, 'text/html', htmlArtifactContent(title, answer));
       const artifact = await accounts.createArtifact(identity.id, conversationId, `${title}.html`, 'text/html', htmlArtifactContent(title, answer));
       artifactId = artifact.id;
       answer += `\n\n成果文件已生成：${artifact.name}，可在右侧预览。`;
