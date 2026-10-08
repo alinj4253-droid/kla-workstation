@@ -23,7 +23,7 @@ export function SliceDetailContent({ slice, source, onOpenSource, hideTitle = fa
 
       <h4>正文</h4>
       <SafeBody content={slice.content} />
-      <button type="button" onClick={() => onOpenSource({ docId: source.docId })}>
+      <button type="button" onClick={() => onOpenSource({ docId: source.docId, locateText: slice.content })}>
         查看来源正文
       </button>
     </div>

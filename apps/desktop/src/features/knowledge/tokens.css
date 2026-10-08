@@ -2,7 +2,6 @@
   color-scheme: light;
   font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
   color: #1a1c1f;
-  background: #f9f9fe;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   --kq-bg: #f9f9fe;
@@ -25,3 +24,4 @@
   --kq-header-height: 64px;
   --kq-global-sidebar-width: 240px;
 }
+:where(.kl-module) { background: var(--kq-bg); }

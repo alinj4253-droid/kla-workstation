@@ -62,4 +62,4 @@ export interface KnowledgeBApi {
   search(input: SearchRequest): Promise<RpcResult<SearchResponse>>;
 }
 export interface KnowledgeSource { docId: string; name: string; collection: string; searchSources: readonly string[]; version?: string }
-export interface OpenKnowledgeSource { docId: string; sliceIndex?: number }
+export interface OpenKnowledgeSource { docId: string; sliceIndex?: number; locateText?: string }

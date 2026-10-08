@@ -45,18 +45,19 @@ export async function submit(owner: number, input: UploadInput) {
             await confirmSubmission(input.clientUploadId);
             throw new KnowledgeError('RUN_CANCELLED', '上传已取消，未发送文件。');
         }
-        // Unique physical names avoid overwriting another original in the filename-based server.
+        // Preserve an upload token; display_name may become the upstream storage name.
         const form = new FormData();
         form.set('file', new Blob([input.bytes], { type: input.mime }), physicalName);
+        form.set('display_name', input.name);
         form.set('collection', input.collection);
         form.set('ingest', 'true');
         form.set('save_slices', 'true');
         form.set('fix_terms', 'false');
         sent = true;
         const response = await jsonRequest(owner, input.serviceInstanceId, '/v1/process/async', submitResponseSchema, { method: 'POST', body: form }, controller);
-        if (response.filename !== physicalName)
+        if (response.filename !== physicalName && response.filename !== input.name)
             throw new KnowledgeError('KNOWLEDGE_INGEST_FAILED', '服务返回的文件名与当前提交不一致，请核对提交记录。', false, { uncertainSubmission: true });
-        const binding = await saveBinding({ clientUploadId: input.clientUploadId, serviceInstanceId: input.serviceInstanceId, serverOrigin: connection.baseUrl, credentialRef: connection.secretRef, collection: input.collection, displayName: input.name, physicalName, jobId: response.job_id, storedPath: response.stored_path, submittedAt: new Date().toISOString() });
+        const binding = await saveBinding({ clientUploadId: input.clientUploadId, serviceInstanceId: input.serviceInstanceId, serverOrigin: connection.baseUrl, credentialRef: connection.secretRef, collection: input.collection, displayName: input.name, physicalName: response.filename, jobId: response.job_id, storedPath: response.stored_path, submittedAt: new Date().toISOString() });
         await confirmSubmission(input.clientUploadId);
         return binding;
     }

@@ -35,7 +35,7 @@ export const documentListSchema = z.object({
   count: z.number().int().nonnegative(), by_category: z.record(z.number()), pending: z.number(),
   documents: z.array(remoteDocumentSchema),
 });
-export interface SourceRef { docId: string; displayName: string; knowledgeBaseId?: string; sourceId?: string; version?: string }
+export interface SourceRef { docId: string; displayName: string; knowledgeBaseId?: string; sourceId?: string; version?: string; locateText?: string }
 export interface SourceJobBinding {
   clientUploadId: string; serviceInstanceId: string; collection: string;
   displayName: string; jobId: string; docId?: string; submittedAt: string; terminalAt?: string;

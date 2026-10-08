@@ -62,7 +62,7 @@ export function UploadDialog({ context, connection, onClose, onSubmitted }: {
           const item = waiting[next++]!;
           if (cancelled.current.has(item.id)) continue;
           active.current.add(item.id);
-          update(item.id, { state: 'uploading' });
+          update(item.id, { state: 'uploading', error: undefined, errorCode: undefined });
           let sent = false;
           try {
             const bytes = await item.file.arrayBuffer();
@@ -80,6 +80,7 @@ export function UploadDialog({ context, connection, onClose, onSubmitted }: {
             const uncertain = sent && !rejected && (!(failure instanceof KnowledgeApiError) || Boolean(details?.uncertainSubmission) || ['INTERNAL_ERROR', 'FILE_OPERATION_FAILED', 'KNOWLEDGE_INGEST_FAILED', 'CONFLICT'].includes(failure.error.code));
             update(item.id, {
               state: uncertain ? 'uncertain' : cancelled.current.has(item.id) ? 'aborted' : 'failed',
+              errorCode: failure instanceof KnowledgeApiError ? failure.error.code : undefined,
               error: uncertain ? '请求已发送但未确认任务编号。请刷新任务记录并核对服务，勿直接重复上传。' : (failure as Error).message,
             });
           } finally { active.current.delete(item.id); }

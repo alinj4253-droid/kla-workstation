@@ -28,12 +28,14 @@ function SourceAction({
   collection,
   source,
   sliceIndex,
+  content,
   onOpenSource,
 }: {
   sources: readonly KnowledgeSource[];
   collection: string;
   source: string | null | undefined;
   sliceIndex: SearchHit['slice_index'];
+  content: string;
   onOpenSource: (source: OpenKnowledgeSource) => void;
 }): JSX.Element {
   const reasonId = useId();
@@ -60,7 +62,7 @@ function SourceAction({
   return (
     <div>
       <p className="kb-b-note">来源文件：{sourceInfo.name}</p>
-      <button type="button" onClick={() => onOpenSource(target)}>
+      <button type="button" onClick={() => onOpenSource({ ...target, locateText: content })}>
         打开来源正文{sliceIndex === null || sliceIndex === undefined ? '' : `（切片 ${sliceIndex}）`}
       </button>
     </div>
@@ -97,6 +99,7 @@ function SearchHitCard({
         collection={collection}
         source={hit.source}
         sliceIndex={hit.slice_index}
+        content={hit.content}
         onOpenSource={onOpenSource}
       />
 
@@ -112,6 +115,7 @@ function SearchHitCard({
                 collection={collection}
                 source={hit.source}
                 sliceIndex={slice.slice_index}
+                content={slice.content}
                 onOpenSource={onOpenSource}
               />
             </div>
@@ -133,6 +137,7 @@ function SearchHitCard({
                 collection={collection}
                 source={hit.source}
                 sliceIndex={slice.slice_index}
+                content={slice.content}
                 onOpenSource={onOpenSource}
               />
             </div>
