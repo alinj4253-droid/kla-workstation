@@ -22,6 +22,8 @@ import { registerComputeRoutesB } from './compute/routes-b.js';
 import { registerComputeAccountRoutes } from './compute/routes-b-account.js';
 import { registerComputeKeyRoutes } from './compute/routes-b-keys.js';
 import { registerComputeGatewayRoutes } from './compute/routes-b-gateway.js';
+import { registerKnowledgeRoutes } from './knowledge-api/routes.js';
+import { PostgresKnowledgeStore } from './knowledge-api/context.js';
 import { ComputeGateway } from './compute/gateway.js';
 
 export async function createServer() {
@@ -52,6 +54,7 @@ export async function createServer() {
   });
 
   await registerRoutes(app, { accounts, database, redis, gateway });
+  await registerKnowledgeRoutes(app, { accounts, pool, store: new PostgresKnowledgeStore(pool), encryptionKey: process.env.KNOWLEDGE_SECRET_ENCRYPTION_KEY || config.compute.secretEncryptionKey });
   await registerComputeRoutes(app, { accounts, computeRepo, quota });
   await registerComputeRoutesB(app, { accounts, computeRepo });
   await registerComputeAccountRoutes(app, { accounts, computeRepo, sub2api, provisioning, quota });

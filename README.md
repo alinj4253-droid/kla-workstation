@@ -55,3 +55,6 @@ pnpm package:win  # 客户端 Windows NSIS 安装包
 - [下一版本 MVP：需求 / 技术设计 / 任务计划 / 项目计划](docs/NEXT_VERSION_MVP_REQUIREMENTS.md)
 - [KLA Workstation 账号、身份与权限管理设计](docs/KLA Workstation 账号、身份与权限管理设计.md)
 - [sub2api 算力平台设计](docs/DESIGN_SUB2API_COMPUTE_PLATFORM.md)
+
+## 知识库迁移
+知识库页面、上传任务、切片阅读和检索的 Workstation 接入方式见 [知识库迁移说明](docs/KNOWLEDGE_WORKSTATION_MIGRATION.md)。

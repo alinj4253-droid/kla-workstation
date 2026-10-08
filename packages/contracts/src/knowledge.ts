@@ -30,3 +30,7 @@ export const readKnowledgeDocumentResponseSchema = z.object({
 });
 
 export type ReadKnowledgeDocumentResponse = z.infer<typeof readKnowledgeDocumentResponseSchema>;
+export * from './knowledge-api.js';
+export * from './knowledge-b.js';
+export type { ErrorCode, RpcResult, RpcSuccess, RpcFailure } from './error-codes.js';
+export * from './knowledge-catalog.js';

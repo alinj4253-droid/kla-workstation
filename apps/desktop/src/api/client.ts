@@ -7,7 +7,7 @@ const refreshKey = 'kla.refresh-token';
 const identityKey = 'kla.identity-id';
 const authExpiredEvent = 'kla:auth-expired';
 
-export type ApiResult<T> = { ok: true; data: T; meta?: { requestId: string } } | { ok: false; code: string; message: string; error?: { code: string; message: string; retryable?: boolean }; meta?: { requestId: string } };
+export type ApiResult<T> = { ok: true; data: T; meta?: { requestId: string } } | { ok: false; code: string; message: string; error?: { code: string; message: string; retryable?: boolean; details?: Record<string, unknown> }; meta?: { requestId: string } };
 
 export type ApiError = ApiErrorEnvelope;
 
@@ -33,12 +33,18 @@ export class KlaApiClient {
     return body as ApiResult<T>;
   }
 
+  async stream(path: string, init: RequestInit = {}): Promise<Response> {
+    const response = await this.fetchWithToken(path, init);
+    if (response.status === 401 && await this.refresh()) return this.fetchWithToken(path, init);
+    return response;
+  }
+
   private async fetchWithToken(path: string, init: RequestInit): Promise<Response> {
     const token = sessionStorage.getItem(tokenKey);
     const headers = new Headers(init.headers);
     // 仅在确有请求体时才声明 JSON：Fastify 对「带 application/json 头但 body 为空」的请求直接 400
     // （曾导致身份切换、重试初始化、退出登录这类无 body 的 POST 全部失败）。
-    if (init.body !== undefined && init.body !== null) headers.set('content-type', 'application/json');
+    if (init.body !== undefined && init.body !== null && !headers.has('content-type') && !(init.body instanceof FormData)) headers.set('content-type', 'application/json');
     if (token) headers.set('authorization', `Bearer ${token}`);
     const requestedIdentity = headers.get('x-identity-id');
     if (requestedIdentity) headers.set('x-identity-id', requestedIdentity);
