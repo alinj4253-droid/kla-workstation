@@ -1,4 +1,5 @@
 import { readdir, readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Pool } from 'pg';
@@ -6,11 +7,10 @@ import type { Pool } from 'pg';
 export type MigrationFile = { id: string; sql: string };
 
 /**
- * Compatibility loader for the source migration directory. Runtime migration
- * execution uses the embedded list below so packaged builds remain portable,
- * while tooling and tests can still inspect the checked-in SQL files.
+ * Builds include the SQL directory under dist/migrations. Source development
+ * loads server/migrations; both use the same checked-in incremental migrations.
  */
-export async function loadMigrationFiles(directory = fileURLToPath(new URL('../../migrations/', import.meta.url))): Promise<MigrationFile[]> {
+export async function loadMigrationFiles(directory = fileURLToPath(new URL(existsSync(new URL('../migrations/', import.meta.url)) ? '../migrations/' : '../../migrations/', import.meta.url))): Promise<MigrationFile[]> {
   const entries = await readdir(directory, { withFileTypes: true });
   const files = entries
     .filter((entry) => entry.isFile() && /^\d+_[^/\\]+\.sql$/i.test(entry.name))
@@ -320,22 +320,30 @@ const migrations = [
 
 export async function runMigrations(pool: Pool, schema = 'kla'): Promise<void> {
   if (!/^[a-z_][a-z0-9_]*$/i.test(schema)) throw new Error('非法数据库 schema 名称');
-  // Migrations are embedded in this module so the packaged server does not
-  // depend on a source-only migrations directory.
+  // Retain historical embedded migrations (including IDs used by existing
+  // databases), then include the newly merged compute and permission migrations.
+  const embeddedIds = new Set(migrations.map((migration) => migration.id));
+  const runtimeMigrations = [...migrations, ...(await loadMigrationFiles()).filter((migration) => !embeddedIds.has(migration.id))]
+    .sort((a, b) => a.id.localeCompare(b.id, 'en'));
   await pool.query(`CREATE SCHEMA IF NOT EXISTS "${schema}" AUTHORIZATION CURRENT_USER`);
+  // pgcrypto may already belong to another schema in a shared development
+  // database. Make its functions visible without relocating that extension.
+  const extension = await pool.query<{ namespace: string }>("SELECT n.nspname AS namespace FROM pg_extension e JOIN pg_namespace n ON n.oid=e.extnamespace WHERE e.extname='pgcrypto'");
+  const searchPath = [schema, 'public', ...extension.rows.map((row) => row.namespace)]
+    .map((name) => `"${name.replaceAll('"', '""')}"`).join(', ');
   const setupClient = await pool.connect();
-  await setupClient.query(`SET search_path TO "${schema}", public`);
+  await setupClient.query(`SET search_path TO ${searchPath}`);
   await setupClient.query('CREATE TABLE IF NOT EXISTS schema_migrations (id text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())');
   setupClient.release();
-  for (const migration of migrations) {
+  for (const migration of runtimeMigrations) {
     const checkClient = await pool.connect();
-    await checkClient.query(`SET search_path TO "${schema}", public`);
+    await checkClient.query(`SET search_path TO ${searchPath}`);
     const existing = await checkClient.query('SELECT 1 FROM schema_migrations WHERE id = $1', [migration.id]);
     checkClient.release();
     if (existing.rowCount) continue;
     const client = await pool.connect();
     try {
-      await client.query(`SET search_path TO "${schema}", public`);
+      await client.query(`SET search_path TO ${searchPath}`);
       await client.query('BEGIN');
       await client.query(migration.sql);
       await client.query('INSERT INTO schema_migrations (id) VALUES ($1)', [migration.id]);

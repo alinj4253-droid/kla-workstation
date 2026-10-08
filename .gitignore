@@ -73,3 +73,7 @@ blob-report/
 
 # Local-only demonstration assets (product source and docs are tracked separately)
 演示材料/
+
+# Keep the local preview launcher and its helper in source control.
+!/start-local-preview.bat
+!/scripts/start-local-preview.ps1

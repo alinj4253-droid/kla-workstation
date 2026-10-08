@@ -1,7 +1,8 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { randomUUID } from 'node:crypto';
 import type { ApiErrorBody } from '@kla-workstation/contracts';
-import type { AccountRepository } from './repositories/types.js';
+import type { AccountRepository, Identity } from './repositories/types.js';
+import type { ComputeGateway } from './compute/gateway.js';
 import type { PostgresDatabase } from './database/postgres.js';
 import type { RedisDatabase } from './infrastructure/redis.js';
 import { PermissionDeniedError, requirePermission, type PermissionAction } from './auth/permission-service.js';
@@ -14,33 +15,29 @@ function bindRequestLog(request: FastifyRequest, bindings: Record<string, unknow
   log.setBindings?.(bindings);
 }
 
-async function runConversation(accounts: AccountRepository, identityId: string, conversationId: string, runId: string, prompt: string, allowModel = true): Promise<void> {
+async function runConversation(accounts: AccountRepository, identity: Identity, conversationId: string, runId: string, prompt: string, gateway?: Pick<ComputeGateway, 'completeChat'>, allowModel = true): Promise<void> {
   try {
     const agentName = '统筹智能体';
     let answer = `已收到你的需求：${prompt}\n\n我已将任务交给${agentName}，正在结合当前身份的项目工作区、知识和记忆进行处理。`;
-    const endpoint = process.env.MODEL_API_URL;
-    const apiKey = process.env.MODEL_API_KEY;
-    if (allowModel && endpoint && apiKey) {
+    if (allowModel) {
+      if (!gateway) throw new Error('算力网关尚未配置，请检查服务端算力配置');
       const history = (await accounts.listMessages(conversationId)).slice(-12).map((message) => ({ role: message.senderType === 'agent' ? 'assistant' : 'user', content: message.text }));
-      try {
-        const { payload } = await gateway.completeChat(identity, {
-          model: process.env.MODEL_ID ?? 'deepseek-v4-flash',
-          messages: [{ role: 'system', content: '你是鲲擎统筹智能体。只输出直接给用户的中文答复，不输出内部思考。根据对话上下文回答，不要重复用户原话。' }, ...history],
-          temperature: 0.2,
-          requestId: `run:${runId}`,
-          tags: { conversationId },
-        });
-        const content = (payload as { choices?: Array<{ message?: { content?: string } }> } | null)?.choices?.[0]?.message?.content?.trim();
-        if (content) answer = content;
-      } catch (error) {
-        answer = `模型调用失败：${error instanceof Error ? error.message : '服务暂时不可用'}。`;
-      }
+      const { payload } = await gateway.completeChat(identity, {
+        model: process.env.MODEL_ID ?? 'deepseek-v4-flash',
+        messages: [{ role: 'system', content: '你是鲲擎统筹智能体。只输出直接给用户的中文答复，不输出内部思考。根据对话上下文回答，不要重复用户原话。' }, ...history],
+        temperature: 0.2,
+        requestId: `run:${runId}`,
+        tags: { conversationId },
+      });
+      const content = (payload as { choices?: Array<{ message?: { content?: string } }> } | null)?.choices?.[0]?.message?.content?.trim();
+      if (!content) throw new Error('模型未返回有效答复，请重试');
+      answer = content;
     }
     const artifactRequest = /文件|报告|文档|html|导出|成果/.test(prompt);
     let artifactId: string | undefined;
     if (artifactRequest) {
       const title = prompt.slice(0, 24).replace(/[\\/:*?"<>|]/g, '').trim() || '协作成果';
-      const artifact = await accounts.createArtifact(identityId, conversationId, `${title}.html`, 'text/html', htmlArtifactContent(title, answer));
+      const artifact = await accounts.createArtifact(identity.id, conversationId, `${title}.html`, 'text/html', htmlArtifactContent(title, answer));
       artifactId = artifact.id;
       answer += `\n\n成果文件已生成：${artifact.name}，可在右侧预览。`;
     }
@@ -52,7 +49,7 @@ async function runConversation(accounts: AccountRepository, identityId: string, 
   }
 }
 
-export async function registerRoutes(app: FastifyInstance, deps: { accounts: AccountRepository; database?: PostgresDatabase; redis?: RedisDatabase; gateway?: ComputeGateway; mode?: 'postgres' | 'mock' }): Promise<void> {
+export async function registerRoutes(app: FastifyInstance, deps: { accounts: AccountRepository; database?: PostgresDatabase; redis?: RedisDatabase; gateway?: Pick<ComputeGateway, 'completeChat'>; mode?: 'postgres' | 'mock' }): Promise<void> {
   const auth = async (request: FastifyRequest, reply: FastifyReply) => {
     const raw = request.headers.authorization;
     const token = typeof raw === 'string' && raw.startsWith('Bearer ') ? raw.slice(7) : '';
@@ -353,7 +350,7 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
     if (!identity || !(await deps.accounts.listAllConversations(identity.id)).some((item) => item.id === params.conversationId)) return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: '群聊不存在或无权访问', retryable: false } });
     const userMessage = await deps.accounts.createMessage(params.conversationId, session.userId, body.text.trim());
     const run = await deps.accounts.createRun(params.conversationId, userMessage.id, body.mode ?? 'balanced');
-    void runConversation(deps.accounts, identity.id, params.conversationId, run.id, body.text.trim(), deps.mode !== 'mock');
+    void runConversation(deps.accounts, identity, params.conversationId, run.id, body.text.trim(), deps.gateway, deps.mode !== 'mock');
     return reply.send({ ok: true, data: { message: userMessage, run } });
   });
 

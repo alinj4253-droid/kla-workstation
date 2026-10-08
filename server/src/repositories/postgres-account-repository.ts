@@ -67,7 +67,7 @@ export class PostgresAccountRepository implements AccountRepository {
       const personalRole = await client.query("SELECT id FROM roles WHERE organization_id IS NULL AND name = '个人默认' LIMIT 1");
       const personalRoleId = personalRole.rows[0]?.id
         ?? (await client.query("INSERT INTO roles (organization_id, name, description, is_system) VALUES (NULL, '个人默认', '个人用户默认角色', true) RETURNING id")).rows[0].id;
-      await this.bindRolePermissions(client, personalRoleId, PERSONAL_DEFAULT_PERMISSIONS);
+      await this.bindRolePermissions(client, personalRoleId, [...PERSONAL_DEFAULT_PERMISSIONS, 'read', 'write', 'execute', 'manage', 'export']);
       await client.query('INSERT INTO identity_roles (identity_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [identityResult.rows[0].id, personalRoleId]);
       await client.query('COMMIT');
       return { user: { id: userRow.id, email: userRow.email, phone: userRow.phone, nickname: userRow.nickname, status: userRow.status }, identity: this.identity(identityResult.rows[0], 'personal') };
@@ -153,7 +153,7 @@ export class PostgresAccountRepository implements AccountRepository {
       const userEmailRow = await client.query('SELECT email FROM users WHERE id = $1', [userId]);
       const identity = await client.query("INSERT INTO identities (user_id, type, display_name, organization_id, is_default) VALUES ($1, 'enterprise', $2, $3, false) RETURNING id, user_id, type, display_name, organization_id, status, is_default", [userId, org.rows[0].name, org.rows[0].id]);
       const role = await client.query("INSERT INTO roles (organization_id, name, description, is_system) VALUES ($1, '成员', '企业成员', true) ON CONFLICT (organization_id, name) DO UPDATE SET name = EXCLUDED.name RETURNING id", [org.rows[0].id]);
-      await this.bindRolePermissions(client, role.rows[0].id, [...ENTERPRISE_MEMBER_PERMISSIONS, 'read']);
+      await this.bindRolePermissions(client, role.rows[0].id, [...ENTERPRISE_MEMBER_PERMISSIONS, 'read', 'write', 'execute', 'export']);
       await client.query('INSERT INTO identity_roles (identity_id, role_id) VALUES ($1, $2)', [identity.rows[0].id, role.rows[0].id]);
       await client.query("INSERT INTO workspaces (identity_id, type, name) VALUES ($1, 'enterprise', $2)", [identity.rows[0].id, `${org.rows[0].name}企业工作区`]);
       await client.query(

@@ -110,7 +110,7 @@ describe('authentication and identity permissions', () => {
         method: 'GET', url: '/api/v1/me/permissions', headers: { ...authB, 'x-identity-id': memberIdentity.id },
       });
       expect(memberPermissions.statusCode).toBe(200);
-      expect(memberPermissions.json().data.map((item: { code: string }) => item.code).sort()).toEqual(['execute', 'export', 'read', 'write']);
+      expect(memberPermissions.json().data.map((item: { code: string }) => item.code).sort()).toEqual([...ENTERPRISE_MEMBER_PERMISSIONS, 'execute', 'export', 'read', 'write'].sort());
       const memberCanCreate = await runtime.app.inject({ method: 'POST', url: '/api/v1/projects', headers: { ...authB, 'x-identity-id': memberIdentity.id }, payload: { name: '成员可创建的项目' } });
       expect(memberCanCreate.statusCode).toBe(200);
       const memberProject = memberCanCreate.json().data;

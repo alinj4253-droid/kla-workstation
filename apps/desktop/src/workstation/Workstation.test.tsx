@@ -3,10 +3,10 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Workstation } from './Workstation';
 
-const { request } = vi.hoisted(() => ({ request: vi.fn() }));
+const { request, setSession, setIdentity } = vi.hoisted(() => ({ request: vi.fn(), setSession: vi.fn(), setIdentity: vi.fn() }));
 vi.mock('../api/client', () => ({
   authExpiredEventName: 'kla:auth-expired',
-  klaApi: { request, getIdentity: () => sessionStorage.getItem('kla.identity-id'), clearAccessToken: () => sessionStorage.clear() },
+  klaApi: { request, setSession, setIdentity, getIdentity: () => sessionStorage.getItem('kla.identity-id'), clearAccessToken: () => sessionStorage.clear() },
 }));
 
 const projects = [{ id: 'project-a', name: '同名项目' }, { id: 'project-b', name: '同名项目' }];
@@ -21,6 +21,9 @@ beforeEach(() => {
   sessionStorage.setItem('kla.identity-id', 'identity-a');
   overrides = {};
   request.mockReset();
+  setSession.mockReset();
+  setIdentity.mockReset();
+  setIdentity.mockImplementation((id: string) => sessionStorage.setItem('kla.identity-id', id));
   request.mockImplementation(async (path: string, init: RequestInit = {}) => {
     const override = overrides[`${init.method ?? 'GET'} ${path}`];
     if (override) return override();
@@ -45,6 +48,81 @@ async function openChat() {
   await waitFor(() => expect(screen.getByRole('button', { name: '发送给群组' })).toBeEnabled());
   return user;
 }
+
+describe('登录与注册入口', () => {
+  it('未登录时显示空白凭据和卡片内的注册入口，注册表单可以打开并取消', async () => {
+    sessionStorage.clear();
+    const user = userEvent.setup();
+    render(<Workstation />);
+    expect(screen.getByPlaceholderText('请输入账号或邮箱')).toHaveValue('');
+    expect(screen.getByPlaceholderText('请输入密码')).toHaveValue('');
+    expect(screen.queryByRole('button', { name: '个人登录' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '企业登录' })).not.toBeInTheDocument();
+    const registerLink = screen.getByRole('button', { name: '注册鲲擎账号' });
+    expect(registerLink.closest('form')).toHaveClass('ws-login-card');
+    await user.click(registerLink);
+    expect(screen.getByPlaceholderText('设置登录账号，如 laok')).toBeVisible();
+    expect(screen.getByPlaceholderText('请输入 6 位验证码')).toBeVisible();
+    await user.click(screen.getByRole('button', { name: '取消' }));
+    expect(screen.queryByPlaceholderText('请输入 6 位验证码')).not.toBeInTheDocument();
+  });
+
+  it('注册先校验验证码和密码，再保存包含 refresh token 的会话并选择身份', async () => {
+    sessionStorage.clear();
+    const session = { accessToken: 'new-access', refreshToken: 'new-refresh', expiresAt: '2026-10-15T00:00:00Z' };
+    const identity = { id: 'personal-new', type: 'personal', displayName: '个人空间', isDefault: true };
+    overrides['POST /v1/auth/register'] = () => ({ ok: true, data: { session, identities: [identity] } });
+    const user = userEvent.setup();
+    render(<Workstation />);
+    await user.click(screen.getByRole('button', { name: '注册鲲擎账号' }));
+    await user.type(screen.getByPlaceholderText('设置登录账号，如 laok'), 'NewUser');
+    await user.type(screen.getByPlaceholderText('设置登录密码，至少 8 位'), 'weakpass');
+    await user.type(screen.getByPlaceholderText('用于接收验证码与找回密码'), 'new@example.test');
+    const code = screen.getByPlaceholderText('请输入 6 位验证码');
+    await user.type(code, '000000');
+    await user.click(screen.getByRole('button', { name: '注册' }));
+    expect(await screen.findByText('邮箱验证码错误，演示环境请输入 123456')).toBeVisible();
+    expect(request).not.toHaveBeenCalled();
+    await user.clear(code);
+    await user.type(code, '123456');
+    await user.click(screen.getByRole('button', { name: '注册' }));
+    expect(await screen.findByText('密码至少 8 位，且必须包含数字、大写字母和小写字母')).toBeVisible();
+    expect(request).not.toHaveBeenCalled();
+    const password = screen.getByPlaceholderText('设置登录密码，至少 8 位');
+    await user.clear(password);
+    await user.type(password, 'ValidPass2026');
+    await user.click(screen.getByRole('button', { name: '注册' }));
+    expect(await screen.findByText('选择进入身份')).toBeVisible();
+    expect(setSession).toHaveBeenCalledWith(session);
+    expect(setIdentity).toHaveBeenCalledWith(identity.id);
+    const submission = request.mock.calls.find(([path]) => path === '/v1/auth/register');
+    expect(JSON.parse(submission![1].body)).toEqual({ email: 'new@example.test', password: 'ValidPass2026', nickname: 'NewUser' });
+  });
+
+  it('登录后个人身份通过后端激活，失败时保留身份弹窗供重试', async () => {
+    sessionStorage.clear();
+    const session = { accessToken: 'login-access', refreshToken: 'login-refresh', expiresAt: '2026-10-15T00:00:00Z' };
+    const identity = { id: 'personal-login', type: 'personal', displayName: '个人工作区', isDefault: true };
+    overrides['POST /v1/auth/login'] = () => ({ ok: true, data: { session, identities: [identity] } });
+    overrides['POST /v1/me/identities/personal-login/activate'] = () => ({ ok: false, message: '身份激活暂不可用' });
+    const user = userEvent.setup();
+    render(<Workstation />);
+    await user.type(screen.getByPlaceholderText('请输入账号或邮箱'), 'MyAccount');
+    await user.type(screen.getByPlaceholderText('请输入密码'), 'MyPassword2026');
+    await user.click(screen.getByRole('button', { name: /立即登录并连接/ }));
+    expect(await screen.findByText('选择进入身份')).toBeVisible();
+    expect(setSession).toHaveBeenCalledWith(session);
+    await user.click(screen.getByRole('button', { name: /个人身份.*个人工作区/ }));
+    expect(await screen.findByText('身份激活暂不可用')).toBeVisible();
+    expect(screen.getByText('选择进入身份')).toBeVisible();
+    const activation = request.mock.calls.find(([path]) => path.endsWith('/activate'));
+    expect(activation![1].headers).toEqual({ 'x-identity-id': 'personal-login' });
+    overrides['POST /v1/me/identities/personal-login/activate'] = () => ({ ok: true, data: identity });
+    await user.click(screen.getByRole('button', { name: /个人身份.*个人工作区/ }));
+    await waitFor(() => expect(screen.queryByText('选择进入身份')).not.toBeInTheDocument());
+    expect(setIdentity).toHaveBeenLastCalledWith(identity.id);
+  });
+});
 
 describe('新版项目和群聊的真实接口交互', () => {
   it('项目或群聊创建失败时保留弹窗和输入，当前页面仍可使用', async () => {

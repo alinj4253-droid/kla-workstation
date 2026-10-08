@@ -26,6 +26,10 @@ pnpm dev          # 终端 2：前端 Vite 开发模式（http://localhost:5173�
 
 首次使用在登录页注册账号（邮箱 + 至少 8 位密码 + 昵称），注册即自动登录。
 
+Windows 可直接双击项目根目录的 `start-local-preview.bat`，启动当前目录的最新版前后端预览。需要 Node.js 22+、pnpm，以及已配置的 `server/.env`；依赖缺失时自动按锁文件安装，并构建最新共享契约。后端使用真实 PostgreSQL，启动时按原有逻辑执行数据库迁移。脚本等待前后端就绪后打开 `http://127.0.0.1:5173/`，后台日志位于 `.runtime/preview/`。关闭启动窗口不会停止服务，重复运行会复用当前项目的服务，端口被其他项目占用时会报错。启动脚本及 PowerShell 辅助脚本均可提交 Git，配置和运行日志保持忽略。
+
+终端中可执行 `start-local-preview.bat -NoBrowser` 仅启动服务；需要调整端口时可追加 `-FrontendPort 5179 -BackendPort 8788`，前端会自动使用对应的后端 API 地址。
+
 无数据库联调（mock 模式：内存存储，重启即清空）：
 
 ```bash

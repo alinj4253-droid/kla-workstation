@@ -7,6 +7,7 @@ import type {
   ConversationRun,
   Identity,
   Message,
+  Organization,
   Project,
   Session,
   UserAccount,
@@ -120,7 +121,7 @@ export class MemoryAccountRepository implements AccountRepository {
     const current = [...this.sessions.values()].find((session) => session.refreshToken === refreshToken && new Date(session.expiresAt).getTime() > Date.now());
     if (!current) return null;
     this.sessions.delete(current.accessToken);
-    const next: Session = { id: current.id, userId: current.userId, accessToken: randomUUID(), refreshToken: randomUUID(), expiresAt: new Date(Date.now() + 7 * 24 * 3600_000).toISOString(), deviceId: metadata.deviceId ?? current.deviceId, deviceName: metadata.deviceName ?? current.deviceName, lastSeenAt: new Date().toISOString() };
+    const next: StoredSession = { id: current.id, userId: current.userId, accessToken: randomUUID(), refreshToken: randomUUID(), expiresAt: new Date(Date.now() + 7 * 24 * 3600_000).toISOString(), deviceId: metadata.deviceId ?? current.deviceId, deviceName: metadata.deviceName ?? current.deviceName, userAgent: metadata.userAgent ?? current.userAgent, ipAddress: metadata.ipAddress ?? current.ipAddress, lastSeenAt: new Date().toISOString() };
     this.sessions.set(next.accessToken, next);
     return next;
   }
@@ -128,7 +129,7 @@ export class MemoryAccountRepository implements AccountRepository {
   async listSessions(userId: string): Promise<Array<{ id: string; deviceId: string | null; deviceName: string | null; userAgent: string | null; ipAddress: string | null; expiresAt: string; lastSeenAt: string; current: boolean }>> {
     return [...this.sessions.values()]
       .filter((session) => session.userId === userId && new Date(session.expiresAt).getTime() > Date.now())
-      .map((session) => ({ id: session.id, deviceId: session.deviceId ?? null, deviceName: session.deviceName ?? null, userAgent: session.userAgent ?? null, ipAddress: null, expiresAt: session.expiresAt, lastSeenAt: session.lastSeenAt ?? session.expiresAt, current: false }));
+      .map((session) => ({ id: session.id, deviceId: session.deviceId ?? null, deviceName: session.deviceName ?? null, userAgent: session.userAgent ?? null, ipAddress: session.ipAddress ?? null, expiresAt: session.expiresAt, lastSeenAt: session.lastSeenAt ?? session.expiresAt, current: false }));
   }
 
   async revokeAllSessions(userId: string, exceptSessionId?: string): Promise<void> {
@@ -235,6 +236,7 @@ export class MemoryAccountRepository implements AccountRepository {
     const organization: StoredOrganization = { id: this.nextId('org'), name, inviteCode: randomUUID().slice(0, 8).toUpperCase(), status: 'active' };
     this.organizations.set(organization.id, organization);
     const identity = this.createIdentity(userId, 'enterprise', name, organization.id, false);
+    identity.role = 'admin';
     const role = this.createRoleRow(organization.id, '管理员', '企业管理员', true, ALL_PERMISSIONS);
     this.identityRoles.set(identity.id, new Set([role.id]));
     this.seedIdentityWorkspace(identity, `${name}企业工作区`, 'enterprise');
@@ -257,6 +259,15 @@ export class MemoryAccountRepository implements AccountRepository {
     if (!identity || identity.userId !== userId || identity.status !== 'active') return null;
     for (const item of this.identities.values()) if (item.userId === userId) item.isDefault = item.id === identityId;
     return identity;
+  }
+
+  async getOrganization(orgId: string): Promise<Organization | null> {
+    const organization = this.organizations.get(orgId);
+    return organization ? { ...organization } : null;
+  }
+
+  async isOrganizationMember(userId: string, orgId: string): Promise<boolean> {
+    return [...this.identities.values()].some(identity => identity.userId === userId && identity.organizationId === orgId && identity.type === 'enterprise' && identity.status === 'active');
   }
 
   /** 供 mock 联调与契约测试获取企业邀请码（真实系统由服务端另行分发）。 */
