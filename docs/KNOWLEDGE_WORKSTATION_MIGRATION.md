@@ -1,7 +1,7 @@
 # 知识库迁移到 Workstation
 
 ## 分支与来源
-- 基线：feature/kla-workstation（bb27f176）。
+- 基线：feature/kla-workstation（最初 bb27f176；交付前同步至 49b912fb）。
 - 开发分支：feature/zihaoxie-knowledge-workstation。
 - 来源：feature/zihaoxie-front（be975569）。
 - 保留新版客户端、认证、身份、权限、群组、项目、算力和服务端结构；只迁移知识库相关页面、契约与业务逻辑。
