@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { createServer } from '../server.js';
+import { ENTERPRISE_ADMIN_PERMISSIONS, ENTERPRISE_MEMBER_PERMISSIONS } from '../repositories/permission-sets.js';
 
 const testCase = process.env.DATABASE_URL ? it : it.skip;
 
@@ -72,7 +73,8 @@ describe('authentication and identity permissions', () => {
         method: 'GET', url: '/api/v1/me/permissions', headers: { ...authA, 'x-identity-id': enterpriseIdentity.id },
       });
       expect(adminPermissions.statusCode).toBe(200);
-      expect(adminPermissions.json().data.map((item: { code: string }) => item.code).sort()).toEqual(['execute', 'export', 'manage', 'read', 'write']);
+      // 管理员 = 基础权限 + 算力管理员权限集
+      expect(adminPermissions.json().data.map((item: { code: string }) => item.code).sort()).toEqual([...ENTERPRISE_ADMIN_PERMISSIONS, 'execute', 'export', 'manage', 'read', 'write'].sort());
       const organizationList = await runtime.app.inject({
         method: 'GET', url: '/api/v1/organizations', headers: { ...authA, 'x-identity-id': enterpriseIdentity.id },
       });
@@ -106,7 +108,8 @@ describe('authentication and identity permissions', () => {
         method: 'GET', url: '/api/v1/me/permissions', headers: { ...authB, 'x-identity-id': memberIdentity.id },
       });
       expect(memberPermissions.statusCode).toBe(200);
-      expect(memberPermissions.json().data.map((item: { code: string }) => item.code)).toEqual(['read']);
+      // 成员 = 基础读取权限 + 算力成员权限集
+      expect(memberPermissions.json().data.map((item: { code: string }) => item.code).sort()).toEqual([...ENTERPRISE_MEMBER_PERMISSIONS, 'read'].sort());
       const forbiddenWrite = await runtime.app.inject({ method: 'POST', url: '/api/v1/projects', headers: { ...authB, 'x-identity-id': memberIdentity.id }, payload: { name: '成员不应创建的项目' } });
       expect(forbiddenWrite.statusCode).toBe(403);
 

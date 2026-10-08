@@ -20,7 +20,7 @@ export type Identity = {
   role: 'personal' | 'admin' | 'member';
 };
 
-export type Session = { id: string; userId: string; accessToken: string; refreshToken: string; expiresAt: string };
+export type Session = { id: string; userId: string; accessToken: string; refreshToken: string; expiresAt: string; deviceId?: string | null; deviceName?: string | null; lastSeenAt?: string };
 
 export type Organization = {
   id: string;
@@ -40,9 +40,13 @@ export interface AccountRepository {
   listIdentities(userId: string): Promise<Identity[]>;
   register(input: { email?: string; phone?: string; password: string; nickname: string }): Promise<{ user: UserAccount; identity: Identity }>;
   authenticate(identifier: string, password: string): Promise<{ user: UserAccount; identity: Identity } | null>;
-  createSession(userId: string): Promise<Session>;
+  createSession(userId: string, metadata?: { deviceId?: string; deviceName?: string; userAgent?: string; ipAddress?: string }): Promise<Session>;
   getSession(token: string): Promise<Session | null>;
   revokeSession(token: string): Promise<void>;
+  revokeSessionByRefreshToken(refreshToken: string): Promise<void>;
+  rotateSession(refreshToken: string, metadata?: { deviceId?: string; deviceName?: string; userAgent?: string; ipAddress?: string }): Promise<Session | null>;
+  listSessions(userId: string): Promise<Array<{ id: string; deviceId: string | null; deviceName: string | null; userAgent: string | null; ipAddress: string | null; expiresAt: string; lastSeenAt: string; current: boolean }>>;
+  revokeAllSessions(userId: string, exceptSessionId?: string): Promise<void>;
   listProjects(identityId: string): Promise<Project[]>;
   listAllConversations(identityId: string): Promise<Array<Conversation & { projectName: string }>>;
   createProject(identityId: string, name: string): Promise<Project>;
