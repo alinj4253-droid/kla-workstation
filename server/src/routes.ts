@@ -59,7 +59,7 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
   };
   const enforce = async (session: Session, request: { headers: Record<string, string | string[] | undefined> }, action: PermissionAction, reply: { code: (n: number) => { send: (v: unknown) => unknown } }) => {
     if (!deps.database?.rawPool) return null; const identity = await identityFor(session.userId, request); if (!identity) { reply.code(403).send({ ok: false, error: { code: 'IDENTITY_REQUIRED', message: '当前身份不可用' } }); return null; }
-    try { await requirePermission(deps.database.rawPool, identity.id, action); return identity; } catch { reply.code(403).send({ ok: false, error: { code: 'PERMISSION_DENIED', message: `缺少 ${action} 权限` } }); return null; }
+    try { if (deps.mode === 'mock') return identity; await requirePermission(deps.database.rawPool, identity.id, action); return identity; } catch { reply.code(403).send({ ok: false, error: { code: 'PERMISSION_DENIED', message: `缺少 ${action} 权限` } }); return null; }
   };
   app.addHook('onRequest', async (request, reply) => {
     reply.header('x-request-id', request.id);

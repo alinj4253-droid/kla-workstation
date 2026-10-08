@@ -13,6 +13,7 @@ import type {
 } from '../repositories/types.js';
 
 type StoredUser = UserAccount & { password: string };
+type StoredSession = Session & { userAgent: string | null; ipAddress: string | null };
 type StoredProject = Project & { seq: number };
 type StoredConversation = Conversation & { seq: number };
 type StoredMessage = Message & { seq: number };
@@ -32,7 +33,7 @@ export class MemoryAccountRepository implements AccountRepository {
   private seq = 0;
   private readonly users = new Map<string, StoredUser>();
   private readonly identities = new Map<string, Identity>();
-  private readonly sessions = new Map<string, Session>();
+  private readonly sessions = new Map<string, StoredSession>();
   private readonly organizations = new Map<string, StoredOrganization>();
   private readonly projects: StoredProject[] = [];
   private readonly conversations: StoredConversation[] = [];
@@ -87,8 +88,8 @@ export class MemoryAccountRepository implements AccountRepository {
     return identity ? { user: this.toUser(user), identity } : null;
   }
 
-  async createSession(userId: string): Promise<Session> {
-    const session: Session = { id: this.nextId('ses'), userId, accessToken: randomUUID(), refreshToken: randomUUID(), expiresAt: new Date(Date.now() + 7 * 24 * 3600_000).toISOString() };
+  async createSession(userId: string, metadata: { deviceId?: string; deviceName?: string; userAgent?: string; ipAddress?: string } = {}): Promise<Session> {
+    const session: StoredSession = { id: this.nextId('ses'), userId, accessToken: randomUUID(), refreshToken: randomUUID(), expiresAt: new Date(Date.now() + 7 * 24 * 3600_000).toISOString(), deviceId: metadata.deviceId ?? null, deviceName: metadata.deviceName ?? null, userAgent: metadata.userAgent ?? null, ipAddress: metadata.ipAddress ?? null, lastSeenAt: new Date().toISOString() };
     this.sessions.set(session.accessToken, session);
     return session;
   }
@@ -101,6 +102,31 @@ export class MemoryAccountRepository implements AccountRepository {
   }
 
   async revokeSession(token: string): Promise<void> { this.sessions.delete(token); }
+
+  async revokeSessionByRefreshToken(refreshToken: string): Promise<void> {
+    const session = [...this.sessions.values()].find((item) => item.refreshToken === refreshToken);
+    if (session) this.sessions.delete(session.accessToken);
+  }
+
+  async rotateSession(refreshToken: string, metadata: { deviceId?: string; deviceName?: string; userAgent?: string; ipAddress?: string } = {}): Promise<Session | null> {
+    const session = [...this.sessions.values()].find((item) => item.refreshToken === refreshToken);
+    if (!session || new Date(session.expiresAt).getTime() <= Date.now()) return null;
+    this.sessions.delete(session.accessToken);
+    const rotated: StoredSession = { ...session, accessToken: randomUUID(), refreshToken: randomUUID(), expiresAt: new Date(Date.now() + 7 * 24 * 3600_000).toISOString(), deviceId: metadata.deviceId ?? session.deviceId ?? null, deviceName: metadata.deviceName ?? session.deviceName ?? null, userAgent: metadata.userAgent ?? session.userAgent, ipAddress: metadata.ipAddress ?? session.ipAddress, lastSeenAt: new Date().toISOString() };
+    this.sessions.set(rotated.accessToken, rotated);
+    return rotated;
+  }
+
+  async listSessions(userId: string): Promise<Array<{ id: string; deviceId: string | null; deviceName: string | null; userAgent: string | null; ipAddress: string | null; expiresAt: string; lastSeenAt: string; current: boolean }>> {
+    return [...this.sessions.values()]
+      .filter((item) => item.userId === userId && new Date(item.expiresAt).getTime() > Date.now())
+      .sort((a, b) => new Date(b.lastSeenAt ?? b.expiresAt).getTime() - new Date(a.lastSeenAt ?? a.expiresAt).getTime())
+      .map((item) => ({ id: item.id, deviceId: item.deviceId ?? null, deviceName: item.deviceName ?? null, userAgent: item.userAgent, ipAddress: item.ipAddress, expiresAt: item.expiresAt, lastSeenAt: item.lastSeenAt ?? item.expiresAt, current: false }));
+  }
+
+  async revokeAllSessions(userId: string, exceptSessionId?: string): Promise<void> {
+    for (const session of this.sessions.values()) if (session.userId === userId && session.id !== exceptSessionId) this.sessions.delete(session.accessToken);
+  }
 
   async listProjects(identityId: string): Promise<Project[]> {
     return this.projects.filter((project) => project.ownerIdentityId === identityId).sort((a, b) => b.seq - a.seq);

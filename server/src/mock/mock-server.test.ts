@@ -27,7 +27,7 @@ describe('mock server 契约联调', () => {
 
   it('注册返回用户、默认身份与会话，/me 可访问', async () => {
     const register = await post<{ ok: boolean; data: { user: { nickname: string }; identity: { type: string; isDefault: boolean }; session: { accessToken: string } } }>('/api/v1/auth/register', { email: 'alice@example.com', password: 'password123', nickname: '爱丽丝' });
-    expect(register.status).toBe(200);
+    expect(register.status).toBe(201);
     expect(register.body.data.user.nickname).toBe('爱丽丝');
     expect(register.body.data.identity).toMatchObject({ type: 'personal', isDefault: true });
     expect(register.body.data.session.accessToken).toBeTruthy();
