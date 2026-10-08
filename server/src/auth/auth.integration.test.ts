@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { createServer } from '../server.js';
+import { ENTERPRISE_ADMIN_PERMISSIONS, ENTERPRISE_MEMBER_PERMISSIONS } from '../repositories/permission-sets.js';
 
 const testCase = process.env.DATABASE_URL ? it : it.skip;
 
@@ -74,7 +75,8 @@ describe('authentication and identity permissions', () => {
         method: 'GET', url: '/api/v1/me/permissions', headers: { ...authA, 'x-identity-id': enterpriseIdentity.id },
       });
       expect(adminPermissions.statusCode).toBe(200);
-      expect(adminPermissions.json().data.map((item: { code: string }) => item.code).sort()).toEqual(['execute', 'export', 'manage', 'read', 'write']);
+      // 管理员 = 基础权限 + 算力管理员权限集
+      expect(adminPermissions.json().data.map((item: { code: string }) => item.code).sort()).toEqual([...ENTERPRISE_ADMIN_PERMISSIONS, 'execute', 'export', 'manage', 'read', 'write'].sort());
       const organizationList = await runtime.app.inject({
         method: 'GET', url: '/api/v1/organizations', headers: { ...authA, 'x-identity-id': enterpriseIdentity.id },
       });

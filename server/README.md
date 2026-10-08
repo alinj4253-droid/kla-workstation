@@ -1,38 +1,31 @@
 # KLA Workstation Backend
 
-TypeScript + Fastify 服务端。提供健康检查、认证/身份、项目/群聊/消息、模型目录与测速、运行记录与成果文件等 REST API（契约见 `packages/contracts` 与 `docs/API_CONTRACTS.md`），持久化使用 PostgreSQL，启动时自动执行 `migrations/`。
+独立的 TypeScript + Node.js 服务端（Fastify + PostgreSQL）。提供健康检查、认证/账号/身份/组织、项目与会话/消息、运行步骤、文件元数据、算力（sub2api）等 REST API 与服务端 Agent Loop；Redis、对象存储、知识处理为占位实现，后续接入。
 
 ## 开发
 
+在仓库根目录使用 pnpm（workspace 管理）：
+
 ```bash
 pnpm install
-pnpm dev:server        # 真实服务，需 PostgreSQL（配置见 .env.example）
-pnpm db:migrate        # 手动执行迁移
+pnpm dev:server   # 等价：pnpm --filter @kla-workstation/server dev
 ```
 
-默认监听 `http://127.0.0.1:8787`。
+默认监听 `http://127.0.0.1:8787`。启动依赖 `.env` 中 `DATABASE_URL` 指向的 PostgreSQL（连接不可达会启动失败，迁移在启动时自动执行）。
 
-## Mock 模式（无数据库联调）
-
-无需 PostgreSQL/Redis，数据保存在内存、重启即重置，复用与真实服务完全一致的路由和响应契约；内置官方模型目录种子和演示账号（`demo@kla.local` / `demo123456`）。
+无 PostgreSQL 环境可用内存 mock 模式联调（数据重启即清空）：
 
 ```bash
-pnpm dev:mock          # 开发热重载
-pnpm build && pnpm start:mock
+pnpm --filter @kla-workstation/server exec tsx src/mock/mock-server.ts
+# 预置演示账号：demo@kla.local / demo123456
 ```
 
-桌面端默认指向 `http://127.0.0.1:8787/api`（`VITE_API_BASE_URL` 可覆盖），因此 mock 与真实服务可互换。记忆、文件、会议等未接消费方的接口在 mock 下返回空列表。
+## 当前目录
 
-## 目录
+- `src/server.ts`：Fastify 服务入口。
+- `src/routes.ts`：占位 API。
+- `src/repositories/`：数据访问接口和内存占位实现。
+- `migrations/`：PostgreSQL 初始结构占位。
+- `.env.example`：数据库、Redis 和对象存储配置预留。
 
-- `src/server.ts`：Fastify 服务入口（PostgreSQL + Redis + Agent Loop Worker）。
-- `src/routes.ts`：REST API 路由。
-- `src/mock/`：mock server（内存账号仓库、目录池、契约冒烟测试）。
-- `src/observability/`：可观测性基础（结构化日志、requestId 生成/复用），规范见 `docs/OBSERVABILITY_SPEC.md`。
-- `src/repositories/`：数据访问接口与 PostgreSQL 实现。
-- `src/database/`：连接池与迁移执行器；`migrations/` 为 SQL 迁移。
-- `src/infrastructure/`：Redis、对象存储占位、智能体循环 worker。
-
-## 构建与发布
-
-`pnpm build` 产物在 `dist/`（`migrations/` 需与 `dist/` 同级部署）。生产镜像用仓库根目录 `Dockerfile`（构建上下文为仓库根）：`docker build -t kla-server .`，容器内监听 `0.0.0.0` 并带 `/api/health` HEALTHCHECK。
+接口契约和存储实现均保持可替换，后续接入 PostgreSQL、Redis、对象存储和认证中间件时不需要改变前端目录结构。

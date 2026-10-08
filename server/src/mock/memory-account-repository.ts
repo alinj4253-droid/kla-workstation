@@ -13,6 +13,7 @@ import type {
 } from '../repositories/types.js';
 
 type StoredUser = UserAccount & { password: string };
+type StoredSession = Session & { userAgent: string | null; ipAddress: string | null };
 type StoredProject = Project & { seq: number };
 type StoredConversation = Conversation & { seq: number };
 type StoredMessage = Message & { seq: number };
@@ -36,7 +37,7 @@ export class MemoryAccountRepository implements AccountRepository {
   private seq = 0;
   private readonly users = new Map<string, StoredUser>();
   private readonly identities = new Map<string, Identity>();
-  private readonly sessions = new Map<string, Session>();
+  private readonly sessions = new Map<string, StoredSession>();
   private readonly organizations = new Map<string, StoredOrganization>();
   private readonly identityPermissions = new Map<string, Set<MockPermissionCode>>();
   private readonly roles = new Map<string, StoredRole>();
@@ -94,8 +95,8 @@ export class MemoryAccountRepository implements AccountRepository {
     return identity ? { user: this.toUser(user), identity } : null;
   }
 
-  async createSession(userId: string): Promise<Session> {
-    const session: Session = { id: this.nextId('ses'), userId, accessToken: randomUUID(), refreshToken: randomUUID(), expiresAt: new Date(Date.now() + 7 * 24 * 3600_000).toISOString() };
+  async createSession(userId: string, metadata: { deviceId?: string; deviceName?: string; userAgent?: string; ipAddress?: string } = {}): Promise<Session> {
+    const session: StoredSession = { id: this.nextId('ses'), userId, accessToken: randomUUID(), refreshToken: randomUUID(), expiresAt: new Date(Date.now() + 7 * 24 * 3600_000).toISOString(), deviceId: metadata.deviceId ?? null, deviceName: metadata.deviceName ?? null, userAgent: metadata.userAgent ?? null, ipAddress: metadata.ipAddress ?? null, lastSeenAt: new Date().toISOString() };
     this.sessions.set(session.accessToken, session);
     return session;
   }
@@ -382,7 +383,8 @@ export class MemoryAccountRepository implements AccountRepository {
   private workspaces: Array<{ id: string; identityId: string; type: 'personal' | 'enterprise'; name: string; projectId: string | null }> = [];
 
   private createIdentity(userId: string, type: Identity['type'], displayName: string, organizationId: string | null, isDefault: boolean): Identity {
-    const identity: Identity = { id: this.nextId('idy'), userId, type, displayName, organizationId, status: 'active', isDefault };
+    const role: Identity['role'] = type === 'personal' ? 'personal' : 'member';
+    const identity: Identity = { id: this.nextId('idy'), userId, type, displayName, organizationId, status: 'active', isDefault, role };
     if (isDefault) for (const item of this.identities.values()) if (item.userId === userId) item.isDefault = false;
     this.identities.set(identity.id, identity);
     if (type === 'personal') this.identityPermissions.set(identity.id, new Set(ALL_PERMISSIONS));

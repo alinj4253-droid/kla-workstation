@@ -16,9 +16,18 @@ export type Identity = {
   organizationId: string | null;
   status: 'active' | 'disabled';
   isDefault: boolean;
+  /** 角色：个人身份为 personal；企业身份为 admin（管理员）或 member（企业员工） */
+  role: 'personal' | 'admin' | 'member';
 };
 
-export type Session = { id: string; userId: string; accessToken: string; refreshToken: string; expiresAt: string; deviceId?: string | null; deviceName?: string | null; userAgent?: string | null; ipAddress?: string | null; lastSeenAt?: string };
+export type Session = { id: string; userId: string; accessToken: string; refreshToken: string; expiresAt: string; deviceId?: string | null; deviceName?: string | null; lastSeenAt?: string };
+
+export type Organization = {
+  id: string;
+  name: string;
+  inviteCode: string;
+  status: 'active' | 'disabled';
+};
 export type Project = { id: string; name: string; ownerIdentityId: string; createdAt: string };
 export type Conversation = { id: string; projectId: string; name: string; createdAt: string };
 export type Message = { id: string; conversationId: string; senderId: string; senderType: 'user' | 'agent' | 'system'; senderName?: string | null; kind: string; text: string; metadata?: Record<string, unknown>; createdAt: string };
@@ -56,4 +65,7 @@ export interface AccountRepository {
   createOrganization(userId: string, name: string, licenseNumber: string): Promise<Identity>;
   joinOrganization(userId: string, inviteCode: string): Promise<Identity | null>;
   activateIdentity(userId: string, identityId: string): Promise<Identity | null>;
+  getOrganization(orgId: string): Promise<Organization | null>;
+  /** 用户是否拥有该企业的 active 企业身份（成员/管理员均算） */
+  isOrganizationMember(userId: string, orgId: string): Promise<boolean>;
 }

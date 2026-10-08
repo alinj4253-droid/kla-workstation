@@ -22,8 +22,19 @@ async function runConversation(accounts: AccountRepository, identityId: string, 
     const apiKey = process.env.MODEL_API_KEY;
     if (allowModel && endpoint && apiKey) {
       const history = (await accounts.listMessages(conversationId)).slice(-12).map((message) => ({ role: message.senderType === 'agent' ? 'assistant' : 'user', content: message.text }));
-      const response = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` }, body: JSON.stringify({ model: process.env.MODEL_ID ?? 'deepseek-v4-flash', messages: [{ role: 'system', content: '你是鲲擎统筹智能体。只输出直接给用户的中文答复，不输出内部思考。根据对话上下文回答，不要重复用户原话。' }, ...history], temperature: 0.2 }) });
-      if (response.ok) { const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> }; const content = payload.choices?.[0]?.message?.content?.trim(); if (content) answer = content; }
+      try {
+        const { payload } = await gateway.completeChat(identity, {
+          model: process.env.MODEL_ID ?? 'deepseek-v4-flash',
+          messages: [{ role: 'system', content: '你是鲲擎统筹智能体。只输出直接给用户的中文答复，不输出内部思考。根据对话上下文回答，不要重复用户原话。' }, ...history],
+          temperature: 0.2,
+          requestId: `run:${runId}`,
+          tags: { conversationId },
+        });
+        const content = (payload as { choices?: Array<{ message?: { content?: string } }> } | null)?.choices?.[0]?.message?.content?.trim();
+        if (content) answer = content;
+      } catch (error) {
+        answer = `模型调用失败：${error instanceof Error ? error.message : '服务暂时不可用'}。`;
+      }
     }
     const artifactRequest = /文件|报告|文档|html|导出|成果/.test(prompt);
     let artifactId: string | undefined;
@@ -41,7 +52,7 @@ async function runConversation(accounts: AccountRepository, identityId: string, 
   }
 }
 
-export async function registerRoutes(app: FastifyInstance, deps: { accounts: AccountRepository; database?: PostgresDatabase; redis?: RedisDatabase; mode?: 'postgres' | 'mock' }): Promise<void> {
+export async function registerRoutes(app: FastifyInstance, deps: { accounts: AccountRepository; database?: PostgresDatabase; redis?: RedisDatabase; gateway?: ComputeGateway; mode?: 'postgres' | 'mock' }): Promise<void> {
   const auth = async (request: FastifyRequest, reply: FastifyReply) => {
     const raw = request.headers.authorization;
     const token = typeof raw === 'string' && raw.startsWith('Bearer ') ? raw.slice(7) : '';
@@ -156,7 +167,9 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
     return reply.send({ ok: true, data: identity });
   });
   app.put('/api/v1/me/identities/:identityId/default', async (request, reply) => {
-    const session = await auth(request, reply); if (!session) return; const params = request.params as { identityId: string }; const identity = await deps.accounts.activateIdentity(session.userId, params.identityId); if (!identity) return reply.code(404).send({ ok: false, error: { code: 'IDENTITY_NOT_FOUND', message: '身份不存在或已停用' } }); return reply.send({ ok: true, data: identity });
+    const session = await auth(request, reply); if (!session) return; const params = request.params as { identityId: string }; const identity = await deps.accounts.activateIdentity(session.userId, params.identityId); if (!identity) return reply.code(404).send({ ok: false, error: { code: 'IDENTITY_NOT_FOUND', message: '身份不存在或已停用' } });
+    const org = identity.organizationId ? await deps.accounts.getOrganization(identity.organizationId) : null;
+    return reply.send({ ok: true, data: { ...identity, inviteCode: org?.inviteCode ?? null } });
   });
 
   // Enterprise administration is scoped by both the authenticated identity and organization id.
@@ -181,6 +194,18 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
       FROM identities i JOIN organizations o ON o.id=i.organization_id
       WHERE i.user_id=$1 AND i.type='enterprise' ORDER BY o.created_at DESC`, [session.userId]);
     return reply.send({ ok: true, data: result.rows.map((row) => ({ id: row.id, name: row.name, licenseNumber: row.license_number, inviteCode: row.invite_code, status: row.status, createdAt: row.created_at, identityId: row.identity_id, identityName: row.identity_name })) });
+  });
+
+  // 企业基本信息（含邀请码）：仅本企业成员可查
+  app.get('/api/v1/organizations/:orgId', async (request, reply) => {
+    const session = await auth(request, reply); if (!session) return;
+    const { orgId } = request.params as { orgId: string };
+    if (!(await deps.accounts.isOrganizationMember(session.userId, orgId))) {
+      return reply.code(403).send({ ok: false, error: { code: 'FORBIDDEN', message: '无权查看该企业信息' } });
+    }
+    const org = await deps.accounts.getOrganization(orgId);
+    if (!org) return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: '企业不存在' } });
+    return reply.send({ ok: true, data: { id: org.id, name: org.name, inviteCode: org.inviteCode, status: org.status } });
   });
 
   app.get('/api/v1/organizations/:organizationId/members', async (request, reply) => {
