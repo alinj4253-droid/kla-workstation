@@ -13,22 +13,6 @@
 | `user.ts` `auth.ts` `identity.ts` | 用户/身份/会话 DTO、注册/登录/刷新/会话列表、`/me`、身份激活与默认、权限响应 |
 | `organizations.ts` | 企业创建、角色、成员、邀请骨架（C 组 M1 范围） |
 | `projects.ts` | 项目/群聊/消息 DTO 与请求（现有已实现接口） |
-| `health.ts` | 服务健康与 PostgreSQL/Redis 依赖健康响应 |
-| `workspaces.ts` `agents.ts` | 工作区行、智能体目录行、群聊成员智能体与添加请求（现有实现，snake_case 原始行） |
-| `models.ts` | 模型目录行（含 `configured` 标记）与测速结果 |
-| `runs.ts` | 运行记录（repository 形态）、取消运行原始行、运行步骤行与批量替换请求 |
-| `artifacts.ts` | 成果文件 DTO |
-| `memories.ts` | 记忆视图/原始行/检索命中与增改查请求 |
-| `files.ts` | 文件视图、上传会话原始行与创建请求 |
-| `knowledge.ts` | 知识检索请求/透传结果、分段读取请求/响应 |
-| `operations.ts` | 运营平台/技能/执行任务请求与响应 |
-| `meetings.ts` | 会议、转写片段、会议详情与请求 |
-| `skills.ts` | 智能体技能行、`/me/permissions` 权限行 |
-| `bootstrap.ts` | `/v1/bootstrap` 聚合响应（含模型摘要与任务摘要） |
-
-> 契约补全约定：以上自 M0 契约补全批次加入的模块**忠实记录当前线上格式**。schema 内带 `TODO(M1)` 注释的字段表示数据库原始行（snake_case），归一为 camelCase 时必须与 server/desktop 三同步；knowledge 检索结果为知识服务响应透传，其结构以知识服务契约为准。
->
-> 已知漂移（M1 收口时三同步修复）：`/v1/agents` 返回 `model_id`，而 desktop `Workstation.tsx` 按 `modelId` 读取；`/memories` POST/PATCH 返回原始行而 GET 返回 camelCase 视图。
 
 ## 2. 统一约定
 
