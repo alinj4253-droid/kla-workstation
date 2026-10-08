@@ -67,6 +67,16 @@ export class MemoryAccountRepository implements AccountRepository {
     return user ? { id: user.id, email: user.email, phone: user.phone, nickname: user.nickname, status: user.status } : null;
   }
 
+  async getOrganization(orgId: string) {
+    const organization = this.organizations.get(orgId);
+    return organization ? { ...organization } : null;
+  }
+
+  async isOrganizationMember(userId: string, orgId: string): Promise<boolean> {
+    return [...this.identities.values()].some(identity => identity.userId === userId
+      && identity.organizationId === orgId && identity.type === 'enterprise' && identity.status === 'active');
+  }
+
   async listIdentities(userId: string): Promise<Identity[]> {
     return [...this.identities.values()]
       .filter((identity) => identity.userId === userId)

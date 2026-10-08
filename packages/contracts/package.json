@@ -9,6 +9,10 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./dist/index.js"
+    },
+    "./knowledge": {
+      "types": "./src/knowledge.ts",
+      "default": "./dist/knowledge.js"
     }
   },
   "files": [

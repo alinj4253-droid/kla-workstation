@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import type { PostgresDatabase } from '../database/postgres.js';
 import { loadConfig } from '../config.js';
+import { registerKnowledgeRoutes } from '../knowledge-api/routes.js';
+import { MemoryKnowledgeStore } from '../knowledge-api/context.js';
 import { registerRoutes } from '../routes.js';
 import { buildLoggerOptions, createRequestIdGenerator } from '../observability/logger.js';
 import { CatalogPool } from './catalog-pool.js';
@@ -30,6 +32,7 @@ export async function createMockServer(options: { seedDemoAccount?: boolean; log
     check: async () => ({ configured: false, connected: false, error: 'mock 模式不连接 PostgreSQL' }),
   } as unknown as PostgresDatabase;
   await registerRoutes(app, { accounts, database, mode: 'mock' });
+  await registerKnowledgeRoutes(app, { accounts, store: new MemoryKnowledgeStore(), mock: true });
   return { app, config, accounts };
 }
 

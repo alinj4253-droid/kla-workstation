@@ -1,0 +1,27 @@
+.kl-module, .kl-modal-overlay, .kl-drawer-overlay {
+  color-scheme: light;
+  font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+  color: #1a1c1f;
+  background: #f9f9fe;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  --kq-bg: #f9f9fe;
+  --kq-surface: #ffffff;
+  --kq-surface-muted: #f3f3f8;
+  --kq-surface-subtle: #ededf2;
+  --kq-text: #1a1c1f;
+  --kq-text-secondary: #464554;
+  --kq-text-tertiary: #777586;
+  --kq-primary: #4441cc;
+  --kq-primary-hover: #5e5ce6;
+  --kq-border: #e2e2e7;
+  --kq-border-strong: #c7c4d7;
+  --kq-success: #006424;
+  --kq-success-bg: #d9f8df;
+  --kq-danger: #ba1a1a;
+  --kq-danger-bg: #fff1f0;
+  --kq-info: #005572;
+  --kq-info-bg: #e4f5fb;
+  --kq-header-height: 64px;
+  --kq-global-sidebar-width: 240px;
+}
