@@ -39,9 +39,9 @@
 | P1-05 | 部署模型健康检查和容量监控 | P1-02、P1-03、P1-04 | 模型监控面板、健康 API | 能发现模型不可用、显存不足、超时和队列堆积 | 未开始 |
 | P1-06 | 部署 sub2api 算力中台 | P0-01 | sub2api 服务、upstream 账号（移动云）、《Admin API Key 签发/存放/轮换与网络隔离规范》 | 关闭注册/支付/验证码；upstream 接移动云真实调用通过；连通验证报告（含用量明细粒度） | 未开始 |
 | P1-07 | 梳理 sub2api 管理、调用、用量接口 | P1-06 | 《sub2api 接口适配说明》（接口清单 + 错误码映射 + 幂等语义 + 分组规划表） | 管理面/用户面接口逐条验证；验证码关闭确认；用量明细粒度确认 | 未开始 |
-| P1-08 | 开发 KLA Model Gateway（服务端化） | P1-06、P1-07 | 服务端网关服务（抽自 model-core，含代理登录与会话缓存） | 按服务端重建的工作身份选 key；流式、超时、有限重试和错误码映射通过；工作站内端到端真实调用 | 进行中（模型目录与按 provider key 注入的服务端直连测速 /v1/models/:modelId/test 已实现；网关服务化、流式与用量采集未开始） |
-| P1-09 | 建立模型用量采集和结算事件 | P1-08 | `model_usage` 事件、usage_sync 定时任务与查询接口 | 用量按用户、项目、群聊、智能体和任务查询；水位线增量拉取、明细幂等去重、`token_used` 回流 | 未开始 |
-| P1-10 | 开发算力账号同步器 | P1-06、P2-02 | 同步器 worker（Outbox 模式）、`compute_binding`/`entitlement_ledger` 表 | 企业/个人身份建号、额度发放、停用、清退、漂移检测全链路演练通过，outbox 无积压 | 未开始 |
+| P1-08 | 开发 KLA Model Gateway（服务端化） | P1-06、P1-07 | 服务端网关服务（抽自 model-core，含代理登录与会话缓存） | 按服务端重建的工作身份选 key；流式、超时、有限重试和错误码映射通过；工作站内端到端真实调用 | 进行中（ComputeGateway 已服务端化：completeChat/配额预扣/按身份选 key/超时与错误映射，统筹智能体 runConversation 已改走网关；流式与端到端真实调用验证未完成） |
+| P1-09 | 建立模型用量采集和结算事件 | P1-08 | `model_usage` 事件、usage_sync 定时任务与查询接口 | 用量按用户、项目、群聊、智能体和任务查询；水位线增量拉取、明细幂等去重、`token_used` 回流 | 进行中（usage_records 表与 UsageSyncWorker 已落地；水位线/幂等去重/查询接口与对账未完成） |
+| P1-10 | 开发算力账号同步器 | P1-06、P2-02 | 同步器 worker（Outbox 模式）、`compute_binding`/`entitlement_ledger` 表 | 企业/个人身份建号、额度发放、停用、清退、漂移检测全链路演练通过，outbox 无积压 | 进行中（OutboxWorker/ProvisioningService/sub2api client 已落地，register/建企业/加企业时写 provision 事件；全链路演练未做） |
 
 ## 四、P2：服务端基础能力
 
@@ -89,7 +89,7 @@
 | P5-05 | 调整群聊为项目树结构 | P2-02 | Project/Group UI | 项目可进入看板，群聊可进入会话且权限正确 | 进行中（新 Workstation UI 的项目/群聊/消息流已接服务端，消息轮询与成果预览占位；看板视图与权限展示未做） |
 | P5-06 | 新增知识库页面 | P3、P2-03 | Knowledge UI | 支持作用域切换、文件状态、检索、全文和权限信息 | 进行中（Workstation 知识库 UI 壳已建：目录/详情、个人/企业/项目作用域切换、来源与切片视图、上传入口；数据为前端预览未接服务端；服务端已有 knowledge/search 与 read-document 代理端点） |
 | P5-07 | 新增智能体市场页面 | P6-01 | Agent Market UI | 支持智能体、技能和 MCP 的查看、安装、启停 | 未开始 |
-| P5-08 | 新增算力模块 | P1-07-P1-09 | Compute UI | 展示模型、路由、用量、配额和管理员权限 | 进行中（算力 UI 壳已建：模型广场接 /v1/models、测速接 /v1/models/:modelId/test；余额/密钥/用量为前端预览数据，方案见 COMPUTE_SUB2API_CURRENT_IMPLEMENTATION_PLAN.md） |
+| P5-08 | 新增算力模块 | P1-07-P1-09 | Compute UI | 展示模型、路由、用量、配额和管理员权限 | 进行中（ComputeSection 算力 UI 与 api/compute.ts 客户端已建，compute 契约进 packages/contracts；接服务端 compute 路由，余额/用量细节联调与审批闭环未做，方案见 COMPUTE_MODULE_HANDOVER.md） |
 
 ## 八、P6：智能体、技能和 MCP
 
