@@ -22,6 +22,10 @@ type StoredRun = ConversationRun;
 type StoredArtifact = Artifact & { identityId: string; seq: number };
 
 type StoredOrganization = { id: string; name: string; inviteCode: string; status: 'active' | 'disabled' };
+type MockPermissionCode = 'read' | 'write' | 'execute' | 'manage' | 'export';
+type StoredRole = { id: string; organizationId: string; name: string; description: string; isSystem: boolean; permissions: Set<MockPermissionCode> };
+
+const ALL_PERMISSIONS: MockPermissionCode[] = ['read', 'write', 'execute', 'manage', 'export'];
 
 export const DEMO_ACCOUNT = { identifier: 'demo@kla.local', password: 'demo123456' } as const;
 
@@ -35,6 +39,9 @@ export class MemoryAccountRepository implements AccountRepository {
   private readonly identities = new Map<string, Identity>();
   private readonly sessions = new Map<string, StoredSession>();
   private readonly organizations = new Map<string, StoredOrganization>();
+  private readonly identityPermissions = new Map<string, Set<MockPermissionCode>>();
+  private readonly roles = new Map<string, StoredRole>();
+  private readonly identityRoles = new Map<string, Set<string>>();
   private readonly projects: StoredProject[] = [];
   private readonly conversations: StoredConversation[] = [];
   private readonly messages: StoredMessage[] = [];
@@ -57,6 +64,16 @@ export class MemoryAccountRepository implements AccountRepository {
   async getUser(id: string): Promise<UserAccount | null> {
     const user = this.users.get(id);
     return user ? { id: user.id, email: user.email, phone: user.phone, nickname: user.nickname, status: user.status } : null;
+  }
+
+  async getOrganization(orgId: string) {
+    const organization = this.organizations.get(orgId);
+    return organization ? { ...organization } : null;
+  }
+
+  async isOrganizationMember(userId: string, orgId: string): Promise<boolean> {
+    return [...this.identities.values()].some(identity => identity.userId === userId
+      && identity.organizationId === orgId && identity.type === 'enterprise' && identity.status === 'active');
   }
 
   async listIdentities(userId: string): Promise<Identity[]> {
@@ -104,28 +121,30 @@ export class MemoryAccountRepository implements AccountRepository {
   async revokeSession(token: string): Promise<void> { this.sessions.delete(token); }
 
   async revokeSessionByRefreshToken(refreshToken: string): Promise<void> {
-    const session = [...this.sessions.values()].find((item) => item.refreshToken === refreshToken);
-    if (session) this.sessions.delete(session.accessToken);
+    for (const [accessToken, session] of this.sessions) {
+      if (session.refreshToken === refreshToken) this.sessions.delete(accessToken);
+    }
   }
 
   async rotateSession(refreshToken: string, metadata: { deviceId?: string; deviceName?: string; userAgent?: string; ipAddress?: string } = {}): Promise<Session | null> {
-    const session = [...this.sessions.values()].find((item) => item.refreshToken === refreshToken);
-    if (!session || new Date(session.expiresAt).getTime() <= Date.now()) return null;
-    this.sessions.delete(session.accessToken);
-    const rotated: StoredSession = { ...session, accessToken: randomUUID(), refreshToken: randomUUID(), expiresAt: new Date(Date.now() + 7 * 24 * 3600_000).toISOString(), deviceId: metadata.deviceId ?? session.deviceId ?? null, deviceName: metadata.deviceName ?? session.deviceName ?? null, userAgent: metadata.userAgent ?? session.userAgent, ipAddress: metadata.ipAddress ?? session.ipAddress, lastSeenAt: new Date().toISOString() };
-    this.sessions.set(rotated.accessToken, rotated);
-    return rotated;
+    const current = [...this.sessions.values()].find((session) => session.refreshToken === refreshToken && new Date(session.expiresAt).getTime() > Date.now());
+    if (!current) return null;
+    this.sessions.delete(current.accessToken);
+    const next: StoredSession = { userAgent: metadata.userAgent ?? current.userAgent, ipAddress: metadata.ipAddress ?? current.ipAddress, id: current.id, userId: current.userId, accessToken: randomUUID(), refreshToken: randomUUID(), expiresAt: new Date(Date.now() + 7 * 24 * 3600_000).toISOString(), deviceId: metadata.deviceId ?? current.deviceId, deviceName: metadata.deviceName ?? current.deviceName, lastSeenAt: new Date().toISOString() };
+    this.sessions.set(next.accessToken, next);
+    return next;
   }
 
   async listSessions(userId: string): Promise<Array<{ id: string; deviceId: string | null; deviceName: string | null; userAgent: string | null; ipAddress: string | null; expiresAt: string; lastSeenAt: string; current: boolean }>> {
     return [...this.sessions.values()]
-      .filter((item) => item.userId === userId && new Date(item.expiresAt).getTime() > Date.now())
-      .sort((a, b) => new Date(b.lastSeenAt ?? b.expiresAt).getTime() - new Date(a.lastSeenAt ?? a.expiresAt).getTime())
-      .map((item) => ({ id: item.id, deviceId: item.deviceId ?? null, deviceName: item.deviceName ?? null, userAgent: item.userAgent, ipAddress: item.ipAddress, expiresAt: item.expiresAt, lastSeenAt: item.lastSeenAt ?? item.expiresAt, current: false }));
+      .filter((session) => session.userId === userId && new Date(session.expiresAt).getTime() > Date.now())
+      .map((session) => ({ id: session.id, deviceId: session.deviceId ?? null, deviceName: session.deviceName ?? null, userAgent: session.userAgent ?? null, ipAddress: null, expiresAt: session.expiresAt, lastSeenAt: session.lastSeenAt ?? session.expiresAt, current: false }));
   }
 
   async revokeAllSessions(userId: string, exceptSessionId?: string): Promise<void> {
-    for (const session of this.sessions.values()) if (session.userId === userId && session.id !== exceptSessionId) this.sessions.delete(session.accessToken);
+    for (const [accessToken, session] of this.sessions) {
+      if (session.userId === userId && session.id !== exceptSessionId) this.sessions.delete(accessToken);
+    }
   }
 
   async listProjects(identityId: string): Promise<Project[]> {
@@ -226,7 +245,8 @@ export class MemoryAccountRepository implements AccountRepository {
     const organization: StoredOrganization = { id: this.nextId('org'), name, inviteCode: randomUUID().slice(0, 8).toUpperCase(), status: 'active' };
     this.organizations.set(organization.id, organization);
     const identity = this.createIdentity(userId, 'enterprise', name, organization.id, false);
-    identity.role = 'admin';
+    const role = this.createRoleRow(organization.id, '管理员', '企业管理员', true, ALL_PERMISSIONS);
+    this.identityRoles.set(identity.id, new Set([role.id]));
     this.seedIdentityWorkspace(identity, `${name}企业工作区`, 'enterprise');
     return identity;
   }
@@ -235,6 +255,9 @@ export class MemoryAccountRepository implements AccountRepository {
     const organization = [...this.organizations.values()].find((item) => item.inviteCode === inviteCode.trim().toUpperCase() && item.status === 'active');
     if (!organization) return null;
     const identity = this.createIdentity(userId, 'enterprise', organization.name, organization.id, false);
+    const role = [...this.roles.values()].find((item) => item.organizationId === organization.id && item.name === '成员')
+      ?? this.createRoleRow(organization.id, '成员', '企业成员', true, ['read', 'write', 'execute', 'export']);
+    this.identityRoles.set(identity.id, new Set([role.id]));
     this.seedIdentityWorkspace(identity, `${organization.name}企业工作区`, 'enterprise');
     return identity;
   }
@@ -249,6 +272,108 @@ export class MemoryAccountRepository implements AccountRepository {
   /** 供 mock 联调与契约测试获取企业邀请码（真实系统由服务端另行分发）。 */
   getInviteCodeByName(name: string): string | null {
     return [...this.organizations.values()].find((item) => item.name === name)?.inviteCode ?? null;
+  }
+
+  /** Mock 权限与 PostgreSQL 权限迁移保持一致，供 CatalogPool 和契约测试使用。 */
+  getPermissionCodes(identityId: string): MockPermissionCode[] {
+    const identity = this.identities.get(identityId);
+    if (!identity || identity.status !== 'active') return [];
+    if (identity.type === 'personal') return [...ALL_PERMISSIONS];
+    const roleIds = this.identityRoles.get(identityId) ?? new Set<string>();
+    const codes = new Set<MockPermissionCode>();
+    for (const roleId of roleIds) for (const code of this.roles.get(roleId)?.permissions ?? []) codes.add(code);
+    return [...codes];
+  }
+
+  getOrganizationRow(id: string): { id: string; name: string; invite_code: string; status: string } | null {
+    const organization = this.organizations.get(id);
+    return organization ? { id: organization.id, name: organization.name, invite_code: organization.inviteCode, status: organization.status } : null;
+  }
+
+  getOrganizationRowsForUser(userId: string): Array<Record<string, unknown>> {
+    return [...this.identities.values()]
+      .filter((identity) => identity.userId === userId && identity.type === 'enterprise' && identity.organizationId)
+      .flatMap((identity) => {
+        const organization = this.organizations.get(identity.organizationId!);
+        return organization ? [{ id: organization.id, name: organization.name, license_number: null, invite_code: organization.inviteCode, status: organization.status, created_at: new Date(0).toISOString(), identity_id: identity.id, identity_name: identity.displayName }] : [];
+      });
+  }
+
+  getMemberRows(organizationId: string): Array<Record<string, unknown>> {
+    return [...this.identities.values()]
+      .filter((identity) => identity.organizationId === organizationId && identity.type === 'enterprise')
+      .map((identity) => {
+        const user = this.users.get(identity.userId);
+        const roles = [...(this.identityRoles.get(identity.id) ?? [])].map((roleId) => {
+          const role = this.roles.get(roleId);
+          return role ? { id: role.id, name: role.name, description: role.description, isSystem: role.isSystem } : null;
+        }).filter(Boolean);
+        return { identity_id: identity.id, user_id: identity.userId, display_name: identity.displayName, status: identity.status, is_default: identity.isDefault, email: user?.email ?? null, phone: user?.phone ?? null, nickname: user?.nickname ?? null, roles };
+      });
+  }
+
+  getRoleRows(organizationId: string): Array<Record<string, unknown>> {
+    return [...this.roles.values()]
+      .filter((role) => role.organizationId === organizationId)
+      .map((role) => ({ id: role.id, name: role.name, description: role.description, is_system: role.isSystem, permissions: [...role.permissions].map((code) => ({ code, description: code })) }));
+  }
+
+  getPermissionRows(codes?: string[]): Array<Record<string, unknown>> {
+    const selected = codes === undefined ? ALL_PERMISSIONS : ALL_PERMISSIONS.filter((code) => codes.includes(code));
+    return selected.map((code) => ({ code, description: code }));
+  }
+
+  createMockRole(organizationId: string, name: string, description: string, permissions: string[]): StoredRole {
+    const role = this.createRoleRow(organizationId, name, description, false, permissions.filter((code): code is MockPermissionCode => ALL_PERMISSIONS.includes(code as MockPermissionCode)));
+    return role;
+  }
+
+  getRole(organizationId: string, roleId: string): StoredRole | null {
+    const role = this.roles.get(roleId);
+    return role?.organizationId === organizationId ? role : null;
+  }
+
+  updateMockRole(organizationId: string, roleId: string, update: { name?: string | null; description?: string | null }): StoredRole | null {
+    const role = this.getRole(organizationId, roleId);
+    if (!role) return null;
+    if (update.name) role.name = update.name;
+    if (update.description !== null && update.description !== undefined) role.description = update.description;
+    return role;
+  }
+
+  deleteMockRole(organizationId: string, roleId: string): boolean {
+    const role = this.getRole(organizationId, roleId);
+    if (!role || role.isSystem || this.isMockRoleAssigned(roleId)) return false;
+    this.roles.delete(roleId);
+    return true;
+  }
+
+  isMockRoleAssigned(roleId: string): boolean {
+    return [...this.identityRoles.values()].some((roleIds) => roleIds.has(roleId));
+  }
+
+  setRolePermissions(roleId: string, permissions: string[]): boolean {
+    const role = this.roles.get(roleId);
+    if (!role) return false;
+    role.permissions = new Set(permissions.filter((code): code is MockPermissionCode => ALL_PERMISSIONS.includes(code as MockPermissionCode)));
+    return true;
+  }
+
+  findAgentRowAny(agentId: string): { id: string; name: string; role: string; type: string; model_id: string | null; enabled: boolean } | null {
+    const agent = this.agents.find((item) => item.id === agentId && item.enabled);
+    return agent ? { id: agent.id, name: agent.name, role: agent.role, type: agent.type, model_id: agent.modelId, enabled: agent.enabled } : null;
+  }
+
+  setIdentityRoles(identityId: string, organizationId: string, roleIds: string[]): boolean {
+    const identity = this.identities.get(identityId);
+    if (!identity || identity.organizationId !== organizationId || identity.type !== 'enterprise' || identity.status !== 'active') return false;
+    if (roleIds.some((roleId) => this.roles.get(roleId)?.organizationId !== organizationId)) return false;
+    this.identityRoles.set(identityId, new Set(roleIds));
+    return true;
+  }
+
+  clearIdentityRoles(identityId: string): void {
+    this.identityRoles.delete(identityId);
   }
 
   /** 供 CatalogPool 查询的只读视图。 */
@@ -272,16 +397,14 @@ export class MemoryAccountRepository implements AccountRepository {
     const identity: Identity = { id: this.nextId('idy'), userId, type, displayName, organizationId, status: 'active', isDefault, role };
     if (isDefault) for (const item of this.identities.values()) if (item.userId === userId) item.isDefault = false;
     this.identities.set(identity.id, identity);
+    if (type === 'personal') this.identityPermissions.set(identity.id, new Set(ALL_PERMISSIONS));
     return identity;
   }
 
-  getOrganization(orgId: string): Promise<{ id: string; name: string; inviteCode: string; status: 'active' | 'disabled' } | null> {
-    const organization = this.organizations.get(orgId);
-    return Promise.resolve(organization ? { id: organization.id, name: organization.name, inviteCode: organization.inviteCode, status: organization.status } : null);
-  }
-
-  async isOrganizationMember(userId: string, orgId: string): Promise<boolean> {
-    return [...this.identities.values()].some((identity) => identity.userId === userId && identity.organizationId === orgId && identity.type === 'enterprise' && identity.status === 'active');
+  private createRoleRow(organizationId: string, name: string, description: string, isSystem: boolean, permissions: readonly string[]): StoredRole {
+    const role: StoredRole = { id: this.nextId('role'), organizationId, name, description, isSystem, permissions: new Set(permissions.filter((code): code is MockPermissionCode => ALL_PERMISSIONS.includes(code as MockPermissionCode))) };
+    this.roles.set(role.id, role);
+    return role;
   }
 
   private seedIdentityWorkspace(identity: Identity, name = `${identity.displayName}的个人工作区`, type: 'personal' | 'enterprise' = 'personal'): void {

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { DEMO_ACCOUNT, MemoryAccountRepository } from './memory-account-repository.js';
 import { createMockServer } from './mock-server.js';
+import { CatalogPool } from './catalog-pool.js';
 
 describe('mock server 契约联调', () => {
   let app: FastifyInstance;
@@ -60,11 +61,11 @@ describe('mock server 契约联调', () => {
     expect(bootstrap.body.data.tasks).toEqual([]);
   });
 
-  it('模型广场返回官方目录且 configured=false', async () => {
+  it('模型广场返回官方目录并标记服务端配置状态', async () => {
     const models = await get<{ ok: boolean; data: Array<{ id: string; is_official: boolean; configured: boolean }> }>('/api/v1/models');
     expect(models.status).toBe(200);
     expect(models.body.data.some((model) => model.id === 'deepseek-v4-flash')).toBe(true);
-    expect(models.body.data.every((model) => model.configured === false)).toBe(true);
+    expect(models.body.data.every((model) => typeof model.configured === 'boolean')).toBe(true);
   });
 
   it('群聊消息触发智能体回复并生成成果文件', async () => {
@@ -129,6 +130,40 @@ describe('mock server 契约联调', () => {
     const activated = await post<{ ok: boolean; data: { isDefault: boolean } }>(`/api/v1/me/identities/${enterprise!.id}/activate`);
     expect(activated.status).toBe(200);
     expect(activated.body.data.isDefault).toBe(true);
+  });
+
+  it('实际缺少权限返回 403，数据库故障返回 500', async () => {
+    const permission = vi.spyOn(CatalogPool.prototype, 'hasPermission');
+    try {
+      permission.mockReturnValue(false);
+      const denied = await post<{ error: { code: string } }>('/api/v1/projects', { name: '无权限项目' });
+      expect(denied.status).toBe(403);
+      expect(denied.body.error.code).toBe('PERMISSION_DENIED');
+      permission.mockImplementation(() => { throw new Error('database connection unavailable'); });
+      const unavailable = await post<{ error: string }>('/api/v1/projects', { name: '故障项目' });
+      expect(unavailable.status).toBe(500);
+      expect(unavailable.body.error).not.toBe('PERMISSION_DENIED');
+    } finally { permission.mockRestore(); }
+  });
+
+  it('显式选择非默认身份时，成果保存在该身份下', async () => {
+    const identityResponse = await get<{ data: Array<{ id: string; type: string; isDefault: boolean }> }>('/api/v1/me/identities');
+    const personal = identityResponse.body.data.find(item => item.type === 'personal')!;
+    expect(personal.isDefault).toBe(false);
+    const headers = { authorization: `Bearer ${token}`, 'x-identity-id': personal.id };
+    const created = await app.inject({ method: 'POST', url: '/api/v1/projects', headers, payload: { name: '非默认身份项目' } });
+    expect(created.statusCode).toBe(200);
+    const conversation = await app.inject({ method: 'POST', url: '/api/v1/conversations', headers, payload: { name: '非默认身份群聊', projectId: created.json().data.id } });
+    expect(conversation.statusCode).toBe(200);
+    const id = conversation.json().data.id;
+    const sent = await app.inject({ method: 'POST', url: `/api/v1/conversations/${id}/messages`, headers, payload: { text: '请生成测试报告文件' } });
+    expect(sent.statusCode).toBe(200);
+    await vi.waitFor(async () => {
+      const artifacts = await app.inject({ method: 'GET', url: `/api/v1/conversations/${id}/artifacts`, headers });
+      expect(artifacts.json().data).toHaveLength(1);
+      const artifact = await app.inject({ method: 'GET', url: `/api/v1/artifacts/${artifacts.json().data[0].id}`, headers });
+      expect(artifact.statusCode).toBe(200);
+    });
   });
 
   it('登出后会话失效', async () => {

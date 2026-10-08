@@ -5,30 +5,323 @@ import type { Pool } from 'pg';
 
 export type MigrationFile = { id: string; sql: string };
 
-const MIGRATION_FILE_PATTERN = /^(\d{4,}_[a-z0-9_]+)\.sql$/i;
-
-const MIGRATIONS_DIR = fileURLToPath(new URL('../../migrations/', import.meta.url));
-
-export async function loadMigrationFiles(dir: string = MIGRATIONS_DIR): Promise<MigrationFile[]> {
-  const entries = await readdir(dir);
-  const fileNames = entries.filter((name) => MIGRATION_FILE_PATTERN.test(name)).sort();
-  if (fileNames.length === 0) {
-    throw new Error(`未在 ${dir} 找到任何迁移文件（命名形如 0004_identity_organizations.sql）`);
+/**
+ * Compatibility loader for the source migration directory. Runtime migration
+ * execution uses the embedded list below so packaged builds remain portable,
+ * while tooling and tests can still inspect the checked-in SQL files.
+ */
+export async function loadMigrationFiles(directory = fileURLToPath(new URL('../../migrations/', import.meta.url))): Promise<MigrationFile[]> {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const files = entries
+    .filter((entry) => entry.isFile() && /^\d+_[^/\\]+\.sql$/i.test(entry.name))
+    .map((entry) => entry.name)
+    .sort((a, b) => a.localeCompare(b, 'en'));
+  if (!files.length) throw new Error('未找到任何迁移文件');
+  const seenNumbers = new Set<string>();
+  const result: MigrationFile[] = [];
+  for (const file of files) {
+    const match = /^(\d+)_.*\.sql$/i.exec(file);
+    const number = match?.[1] ?? file;
+    if (seenNumbers.has(number)) throw new Error(`迁移编号重复: ${number}`);
+    seenNumbers.add(number);
+    result.push({ id: file.slice(0, -4), sql: await readFile(join(directory, file), 'utf8') });
   }
-  const migrations: MigrationFile[] = [];
-  const seen = new Set<string>();
-  for (const fileName of fileNames) {
-    const id = fileName.replace(/\.sql$/i, '').toLowerCase();
-    if (seen.has(id)) throw new Error(`迁移编号重复: ${id}`);
-    seen.add(id);
-    migrations.push({ id, sql: await readFile(join(dir, fileName), 'utf8') });
-  }
-  return migrations;
+  return result;
 }
+
+const migrations = [
+  {
+    id: '0004_identity_organizations',
+    sql: `
+      CREATE EXTENSION IF NOT EXISTS pgcrypto;
+      CREATE TABLE IF NOT EXISTS schema_migrations (id text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now());
+      CREATE TABLE IF NOT EXISTS organizations (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL, license_number text,
+        invite_code text UNIQUE NOT NULL DEFAULT upper(substr(encode(gen_random_bytes(8), 'hex'), 1, 8)),
+        status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','disabled')),
+        created_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS users (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(), email text UNIQUE, phone text UNIQUE,
+        nickname text NOT NULL, status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','disabled')),
+        created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
+        CHECK (email IS NOT NULL OR phone IS NOT NULL)
+      );
+      CREATE TABLE IF NOT EXISTS user_credentials (
+        user_id uuid PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, password_hash text NOT NULL,
+        updated_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS identities (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(), user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        type text NOT NULL CHECK (type IN ('personal','enterprise')), display_name text NOT NULL,
+        organization_id uuid REFERENCES organizations(id) ON DELETE RESTRICT,
+        status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','disabled')),
+        is_default boolean NOT NULL DEFAULT false, created_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS identities_one_default_per_user ON identities(user_id) WHERE is_default;
+      CREATE TABLE IF NOT EXISTS roles (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(), organization_id uuid REFERENCES organizations(id) ON DELETE CASCADE,
+        name text NOT NULL, description text NOT NULL DEFAULT '', is_system boolean NOT NULL DEFAULT false,
+        UNIQUE (organization_id, name)
+      );
+      CREATE TABLE IF NOT EXISTS permissions (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), code text UNIQUE NOT NULL, description text NOT NULL DEFAULT '');
+      CREATE TABLE IF NOT EXISTS identity_roles (identity_id uuid REFERENCES identities(id) ON DELETE CASCADE, role_id uuid REFERENCES roles(id) ON DELETE CASCADE, PRIMARY KEY(identity_id, role_id));
+      CREATE TABLE IF NOT EXISTS role_permissions (role_id uuid REFERENCES roles(id) ON DELETE CASCADE, permission_id uuid REFERENCES permissions(id) ON DELETE CASCADE, PRIMARY KEY(role_id, permission_id));
+      CREATE TABLE IF NOT EXISTS sessions (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(), user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        access_token_hash text UNIQUE NOT NULL, refresh_token_hash text UNIQUE NOT NULL,
+        expires_at timestamptz NOT NULL, revoked_at timestamptz, created_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS sessions_user_idx ON sessions(user_id) WHERE revoked_at IS NULL;
+      CREATE TABLE IF NOT EXISTS projects (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(), owner_identity_id uuid NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
+        name text NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS conversations (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(), project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        name text NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS messages (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(), conversation_id uuid NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        sender_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT, text text NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS messages_conversation_time_idx ON messages(conversation_id, created_at);
+      CREATE TABLE IF NOT EXISTS workspaces (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(), identity_id uuid NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
+        type text NOT NULL CHECK (type IN ('enterprise','project','personal')), project_id uuid REFERENCES projects(id) ON DELETE CASCADE,
+        name text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(identity_id, type, project_id)
+      );
+      CREATE TABLE IF NOT EXISTS agents (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(), identity_id uuid REFERENCES identities(id) ON DELETE CASCADE,
+        name text NOT NULL, role text NOT NULL DEFAULT '', model_id text, type text NOT NULL DEFAULT 'custom',
+        enabled boolean NOT NULL DEFAULT true, version integer NOT NULL DEFAULT 1, created_at timestamptz NOT NULL DEFAULT now(),
+        UNIQUE(identity_id, name)
+      );
+      CREATE TABLE IF NOT EXISTS skills (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(), agent_id uuid REFERENCES agents(id) ON DELETE CASCADE,
+        name text NOT NULL, description text NOT NULL DEFAULT '', definition jsonb NOT NULL DEFAULT '{}'::jsonb,
+        enabled boolean NOT NULL DEFAULT true, version integer NOT NULL DEFAULT 1, created_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS files (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(), workspace_id uuid REFERENCES workspaces(id) ON DELETE CASCADE,
+        name text NOT NULL, storage_key text NOT NULL, checksum text, content_type text, size_bytes bigint NOT NULL DEFAULT 0,
+        status text NOT NULL DEFAULT 'uploaded', created_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS memories (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(), workspace_id uuid REFERENCES workspaces(id) ON DELETE CASCADE,
+        content text NOT NULL, kind text NOT NULL DEFAULT 'long_term', metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+        created_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS tasks (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(), identity_id uuid REFERENCES identities(id) ON DELETE CASCADE,
+        title text NOT NULL, status text NOT NULL DEFAULT 'pending', result jsonb, created_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS models (
+        id text PRIMARY KEY, name text NOT NULL, provider text NOT NULL, capabilities jsonb NOT NULL DEFAULT '{}'::jsonb,
+        enabled boolean NOT NULL DEFAULT true, created_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS usage_records (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(), identity_id uuid REFERENCES identities(id) ON DELETE SET NULL,
+        model_id text REFERENCES models(id) ON DELETE SET NULL, input_tokens integer NOT NULL DEFAULT 0, output_tokens integer NOT NULL DEFAULT 0,
+        cost numeric(18,8) NOT NULL DEFAULT 0, created_at timestamptz NOT NULL DEFAULT now()
+      );
+      INSERT INTO models (id, name, provider, capabilities) VALUES
+        ('deepseek-v4-flash', 'DeepSeek V4 Flash', 'deepseek', '{"thinking":false,"streaming":true}'),
+        ('zhipu/glm-5.3-flash', 'GLM 5.3 Flash', 'zhipu', '{"vision":true,"streaming":true}')
+      ON CONFLICT (id) DO NOTHING;
+    `,
+  },
+  {
+    id: '0005_collaboration_runtime',
+    sql: `
+      ALTER TABLE messages ADD COLUMN IF NOT EXISTS sender_type text NOT NULL DEFAULT 'user';
+      ALTER TABLE messages ADD COLUMN IF NOT EXISTS sender_name text;
+      ALTER TABLE messages ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'text';
+      ALTER TABLE messages ADD COLUMN IF NOT EXISTS metadata jsonb NOT NULL DEFAULT '{}'::jsonb;
+      CREATE INDEX IF NOT EXISTS messages_conversation_created_idx ON messages(conversation_id, created_at, id);
+      CREATE TABLE IF NOT EXISTS conversation_agents (
+        conversation_id uuid NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        agent_id uuid NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+        role text NOT NULL DEFAULT 'member',
+        created_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (conversation_id, agent_id)
+      );
+      CREATE TABLE IF NOT EXISTS artifacts (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        identity_id uuid NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
+        conversation_id uuid REFERENCES conversations(id) ON DELETE SET NULL,
+        name text NOT NULL,
+        mime_type text NOT NULL DEFAULT 'text/plain',
+        content text NOT NULL DEFAULT '',
+        size_bytes bigint NOT NULL DEFAULT 0,
+        created_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS artifacts_identity_created_idx ON artifacts(identity_id, created_at DESC);
+      CREATE TABLE IF NOT EXISTS conversation_runs (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        conversation_id uuid NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        trigger_message_id uuid REFERENCES messages(id) ON DELETE SET NULL,
+        status text NOT NULL DEFAULT 'running' CHECK(status IN ('running','completed','failed')),
+        mode text NOT NULL DEFAULT 'balanced',
+        current_agent text,
+        result jsonb NOT NULL DEFAULT '{}'::jsonb,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS conversation_runs_conversation_idx ON conversation_runs(conversation_id, updated_at DESC);
+    `,
+  },
+  {
+    id: '0006_official_model_catalog',
+    sql: `
+      ALTER TABLE models ADD COLUMN IF NOT EXISTS base_url text;
+      ALTER TABLE models ADD COLUMN IF NOT EXISTS is_official boolean NOT NULL DEFAULT false;
+      INSERT INTO models (id, name, provider, base_url, is_official, capabilities) VALUES
+        ('deepseek-v4-flash', 'DeepSeek V4 Flash', 'deepseek', 'https://zhenze-huhehaote.cmecloud.cn/v1', true, '{"thinking":false,"streaming":true,"context":128000}'),
+        ('deepseek-chat', 'DeepSeek Chat', 'deepseek', 'https://api.deepseek.com/v1', true, '{"thinking":false,"streaming":true,"context":64000}'),
+        ('deepseek-reasoner', 'DeepSeek Reasoner', 'deepseek', 'https://api.deepseek.com/v1', true, '{"thinking":true,"streaming":true,"context":64000}'),
+        ('zhipu/glm-5.3-flash', 'GLM 5.3 Flash', 'zhipu', 'https://moma.cmecloud.cn/v1', true, '{"vision":true,"thinking":false,"streaming":true,"context":128000}'),
+        ('glm-4-air', 'GLM 4 Air', 'zhipu', 'https://open.bigmodel.cn/api/paas/v4', true, '{"thinking":false,"streaming":true,"context":128000}'),
+        ('qwen-plus', 'Qwen Plus', 'qwen', 'https://dashscope.aliyuncs.com/compatible-mode/v1', true, '{"thinking":true,"streaming":true,"context":128000}'),
+        ('qwen-turbo', 'Qwen Turbo', 'qwen', 'https://dashscope.aliyuncs.com/compatible-mode/v1', true, '{"thinking":false,"streaming":true,"context":128000}'),
+        ('gpt-4o', 'GPT-4o', 'openai', 'https://api.openai.com/v1', true, '{"vision":true,"streaming":true,"context":128000}'),
+        ('claude-3-5-sonnet', 'Claude 3.5 Sonnet', 'anthropic', 'https://api.anthropic.com/v1', true, '{"vision":true,"thinking":true,"streaming":true,"context":200000}')
+      ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, provider=EXCLUDED.provider, base_url=EXCLUDED.base_url, is_official=true, capabilities=EXCLUDED.capabilities;
+    `,
+  },
+  {
+    id: '0007_rest_migration_support',
+    sql: `
+      ALTER TABLE memories ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+      ALTER TABLE memories ADD COLUMN IF NOT EXISTS expires_at timestamptz;
+      CREATE INDEX IF NOT EXISTS memories_workspace_kind_idx ON memories(workspace_id, kind, created_at DESC);
+      CREATE TABLE IF NOT EXISTS upload_sessions (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(), identity_id uuid NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
+        workspace_id uuid REFERENCES workspaces(id) ON DELETE CASCADE, file_name text NOT NULL, content_type text,
+        size_bytes bigint NOT NULL DEFAULT 0, checksum text, status text NOT NULL DEFAULT 'created' CHECK(status IN ('created','uploaded','processing','completed','failed','cancelled')),
+        storage_key text, created_at timestamptz NOT NULL DEFAULT now(), expires_at timestamptz NOT NULL DEFAULT now() + interval '1 hour'
+      );
+      CREATE INDEX IF NOT EXISTS upload_sessions_identity_idx ON upload_sessions(identity_id, created_at DESC);
+    `,
+  },
+  {
+    id: '0008_agent_loop_steps',
+    sql: `
+      CREATE TABLE IF NOT EXISTS conversation_run_steps (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(), run_id uuid NOT NULL REFERENCES conversation_runs(id) ON DELETE CASCADE,
+        step_index integer NOT NULL, title text NOT NULL, instruction text NOT NULL DEFAULT '', assigned_agent_id uuid REFERENCES agents(id) ON DELETE SET NULL,
+        status text NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','running','completed','failed','cancelled')),
+        result jsonb NOT NULL DEFAULT '{}'::jsonb, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
+        UNIQUE(run_id, step_index)
+      );
+      CREATE INDEX IF NOT EXISTS conversation_run_steps_run_idx ON conversation_run_steps(run_id, step_index);
+    `,
+  },
+  {
+    id: '0009_operations_meetings_rest',
+    sql: `
+      CREATE TABLE IF NOT EXISTS operation_platforms (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(), identity_id uuid NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
+        name text NOT NULL, base_url text NOT NULL DEFAULT '', description text NOT NULL DEFAULT '', status text NOT NULL DEFAULT 'active',
+        metadata jsonb NOT NULL DEFAULT '{}'::jsonb, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), UNIQUE(identity_id,name)
+      );
+      CREATE TABLE IF NOT EXISTS operation_skills (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(), platform_id uuid NOT NULL REFERENCES operation_platforms(id) ON DELETE CASCADE,
+        name text NOT NULL, description text NOT NULL DEFAULT '', definition jsonb NOT NULL DEFAULT '{}'::jsonb, enabled boolean NOT NULL DEFAULT true,
+        version integer NOT NULL DEFAULT 1, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS meetings (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(), identity_id uuid NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
+        project_id uuid REFERENCES projects(id) ON DELETE SET NULL, name text NOT NULL, description text NOT NULL DEFAULT '',
+        input_type text NOT NULL CHECK(input_type IN ('audio_upload','realtime')), status text NOT NULL DEFAULT 'created',
+        transcript text NOT NULL DEFAULT '', summary text NOT NULL DEFAULT '', minutes text NOT NULL DEFAULT '', metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+        created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS meeting_segments (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(), meeting_id uuid NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+        speaker text NOT NULL DEFAULT '未识别说话人', content text NOT NULL, start_ms integer, end_ms integer, confidence numeric(5,4), created_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS meetings_identity_created_idx ON meetings(identity_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS meeting_segments_meeting_idx ON meeting_segments(meeting_id, created_at);
+    `,
+  },
+  {
+    id: '0010_auth_sessions_permissions',
+    sql: `
+      ALTER TABLE sessions ADD COLUMN IF NOT EXISTS device_id text;
+      ALTER TABLE sessions ADD COLUMN IF NOT EXISTS device_name text;
+      ALTER TABLE sessions ADD COLUMN IF NOT EXISTS user_agent text;
+      ALTER TABLE sessions ADD COLUMN IF NOT EXISTS ip_address inet;
+      ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_seen_at timestamptz NOT NULL DEFAULT now();
+      CREATE INDEX IF NOT EXISTS sessions_device_idx ON sessions(user_id, device_id) WHERE revoked_at IS NULL;
+      INSERT INTO permissions (code, description) VALUES
+        ('read','读取资源'),('write','创建或修改资源'),('execute','执行智能体、操作或任务'),('manage','管理成员、资源和技能'),('export','导出文件和数据')
+      ON CONFLICT (code) DO NOTHING;
+    `,
+  },
+  {
+    id: '0011_organization_invite_code_backfill',
+    sql: `
+      ALTER TABLE organizations ADD COLUMN IF NOT EXISTS invite_code text;
+      UPDATE organizations
+      SET invite_code = upper(substr(encode(gen_random_bytes(8), 'hex'), 1, 8))
+      WHERE invite_code IS NULL OR invite_code = '';
+      ALTER TABLE organizations ALTER COLUMN invite_code SET DEFAULT upper(substr(encode(gen_random_bytes(8), 'hex'), 1, 8));
+      ALTER TABLE organizations ALTER COLUMN invite_code SET NOT NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS organizations_invite_code_idx ON organizations(invite_code);
+    `,
+  },
+  {
+    id: '0012_personal_identity_default_permissions',
+    sql: `
+      INSERT INTO roles (organization_id, name, description, is_system)
+      SELECT NULL, '个人用户', '个人身份默认权限', true
+      WHERE NOT EXISTS (SELECT 1 FROM roles WHERE organization_id IS NULL AND name = '个人用户');
+      INSERT INTO identity_roles (identity_id, role_id)
+      SELECT i.id, r.id
+      FROM identities i CROSS JOIN roles r
+      WHERE i.type='personal' AND i.status='active' AND r.organization_id IS NULL AND r.name='个人用户'
+        AND NOT EXISTS (SELECT 1 FROM identity_roles ir WHERE ir.identity_id=i.id AND ir.role_id=r.id);
+      INSERT INTO role_permissions (role_id, permission_id)
+      SELECT r.id, p.id FROM roles r CROSS JOIN permissions p
+      WHERE r.organization_id IS NULL AND r.name='个人用户' AND p.code IN ('read','write','execute','manage','export')
+        AND NOT EXISTS (SELECT 1 FROM role_permissions rp WHERE rp.role_id=r.id AND rp.permission_id=p.id);
+    `,
+  },
+  {
+    id: '0013_enterprise_collaboration_permissions',
+    sql: `
+      -- Older enterprise roles were created with compute-only permissions.
+      -- Preserve existing grants and add permissions required by collaboration APIs.
+      INSERT INTO role_permissions (role_id, permission_id)
+      SELECT r.id, p.id
+      FROM roles r CROSS JOIN permissions p
+      WHERE r.organization_id IS NOT NULL
+        AND r.name = '管理员'
+        AND p.code IN ('read','write','execute','manage','export')
+        AND NOT EXISTS (
+          SELECT 1 FROM role_permissions rp
+          WHERE rp.role_id = r.id AND rp.permission_id = p.id
+        );
+      INSERT INTO role_permissions (role_id, permission_id)
+      SELECT r.id, p.id
+      FROM roles r CROSS JOIN permissions p
+      WHERE r.organization_id IS NOT NULL
+        AND r.name = '成员'
+        AND p.code IN ('read','write','execute','export')
+        AND NOT EXISTS (
+          SELECT 1 FROM role_permissions rp
+          WHERE rp.role_id = r.id AND rp.permission_id = p.id
+        );
+    `,
+  },
+];
 
 export async function runMigrations(pool: Pool, schema = 'kla'): Promise<void> {
   if (!/^[a-z_][a-z0-9_]*$/i.test(schema)) throw new Error('非法数据库 schema 名称');
-  const migrations = await loadMigrationFiles();
+  // Migrations are embedded in this module so the packaged server does not
+  // depend on a source-only migrations directory.
   await pool.query(`CREATE SCHEMA IF NOT EXISTS "${schema}" AUTHORIZATION CURRENT_USER`);
   const setupClient = await pool.connect();
   await setupClient.query(`SET search_path TO "${schema}", public`);
