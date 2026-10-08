@@ -1,15 +1,16 @@
 import { jobSnapshotSchema } from '@kla-workstation/contracts/knowledge';
 import type { KnowledgeLibraryBridge, RpcResult, ErrorCode, JobEvent } from '@kla-workstation/contracts/knowledge';
 import { klaApi } from './client';
+import { v4 as randomUUID } from 'uuid';
 const listeners = new Set<(event: JobEvent) => void>();
 const subscriptions = new Map<string, AbortController>();
 async function rpc<T>(operation: string, input: unknown = {}, init?: RequestInit): Promise<RpcResult<T>> {
   try {
     const result = await klaApi.request<T>('/v1/knowledge-library/' + operation, init ?? { method: 'POST', body: JSON.stringify(input) });
-    const requestId = result.meta?.requestId ?? crypto.randomUUID();
+    const requestId = result.meta?.requestId ?? randomUUID();
     if (result.ok) return { ok: true, requestId, data: result.data };
     return { ok: false, requestId, error: { code: result.code as ErrorCode, message: result.message, retryable: result.error?.retryable ?? false, details: result.error?.details } };
-  } catch { return { ok: false, requestId: crypto.randomUUID(), error: { code: 'CHANNEL_CONNECTION_FAILED', message: '无法连接 Workstation 服务端，请检查连接。', retryable: true } }; }
+  } catch { return { ok: false, requestId: randomUUID(), error: { code: 'CHANNEL_CONNECTION_FAILED', message: '无法连接 Workstation 服务端，请检查连接。', retryable: true } }; }
 }
 async function watch(input: { serviceInstanceId: string; jobId: string; subscriptionId: string }, controller: AbortController) {
   try {
@@ -51,8 +52,8 @@ export const knowledgeClient: KnowledgeLibraryBridge = {
   cancelJob: input => rpc('cancelJob', input),
   deleteJobRecord: input => rpc('deleteJobRecord', input),
   contentRequest: input => rpc('contentRequest', input),
-  subscribeJob: async input => { subscriptions.get(input.subscriptionId)?.abort(); const controller = new AbortController(); subscriptions.set(input.subscriptionId, controller); void watch(input, controller); return { ok: true, requestId: crypto.randomUUID(), data: true }; },
-  unsubscribeJob: async ({ subscriptionId }) => { subscriptions.get(subscriptionId)?.abort(); subscriptions.delete(subscriptionId); return { ok: true, requestId: crypto.randomUUID(), data: true }; },
+  subscribeJob: async input => { subscriptions.get(input.subscriptionId)?.abort(); const controller = new AbortController(); subscriptions.set(input.subscriptionId, controller); void watch(input, controller); return { ok: true, requestId: randomUUID(), data: true }; },
+  unsubscribeJob: async ({ subscriptionId }) => { subscriptions.get(subscriptionId)?.abort(); subscriptions.delete(subscriptionId); return { ok: true, requestId: randomUUID(), data: true }; },
   onJobEvent: listener => { listeners.add(listener); return () => { listeners.delete(listener); }; },
 };
 export const knowledgeCatalogApi = {

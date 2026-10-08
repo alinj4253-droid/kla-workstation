@@ -8,7 +8,15 @@
     <title>KLA Workstation</title>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div id="startup-status" role="status" style="max-width:480px;margin:18vh auto;padding:28px;font:16px/1.7 system-ui,sans-serif;color:#334155;background:#f1f7fc;border-radius:12px">
+        <strong id="startup-title">正在加载鲲擎工作站…</strong>
+        <p id="startup-detail">请稍候，正在载入页面。</p>
+        <button id="startup-retry" hidden type="button">重新加载</button>
+      </div>
+    </div>
+    <noscript>请启用浏览器 JavaScript 后重新加载鲲擎工作站。</noscript>
+    <script src="/startup-status.js"></script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

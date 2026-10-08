@@ -4,6 +4,7 @@ packages:
   - server
 
 allowBuilds:
+  core-js: false
   electron: true
   electron-winstaller: true
   esbuild: true

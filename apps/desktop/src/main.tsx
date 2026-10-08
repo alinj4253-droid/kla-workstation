@@ -1,3 +1,5 @@
+import 'core-js/actual/array/at';
+import 'core-js/actual/object/has-own';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { Workstation } from './workstation/Workstation';

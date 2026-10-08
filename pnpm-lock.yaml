@@ -56,6 +56,9 @@ importers:
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
+      core-js:
+        specifier: ^3.45.1
+        version: 3.50.0
       cytoscape:
         specifier: ^3.34.0
         version: 3.34.3
@@ -98,6 +101,9 @@ importers:
       ulid:
         specifier: ^3.0.2
         version: 3.0.2
+      uuid:
+        specifier: ^11.1.0
+        version: 11.1.1
       zod:
         specifier: ^3.25.76
         version: 3.25.76
@@ -1763,6 +1769,9 @@ packages:
   cookie@1.0.1:
     resolution: {integrity: sha512-Xd8lFX4LM9QEEwxQpF9J9NTUh8pmdJO0cyRJhFiDoLTk2eH8FXlRv2IFGYVadZpqI3j8fhNrSdKCeYPxiAhLXw==}
     engines: {node: '>=18'}
+
+  core-js@3.50.0:
+    resolution: {integrity: sha512-BRWgOLKkFeCgRudR6zrs8p9XJZcE14grzKMMssoYrk6krtuEZ7MTKPIY5RzOnqsEKIR9kst7wNzphttraT+Yqw==}
 
   core-util-is@1.0.3:
     resolution: {integrity: sha512-ZQBvi1DcpJ4GDqanjucZ2Hj3wEO5pZDS89BWbkcrvdxksJorwUDDZamX9ldFkp9aw2lmBDLgkObEA4DWNJ9FYQ==}
@@ -3597,6 +3606,10 @@ packages:
     resolution: {integrity: sha512-8XkAphELsDnEGrDxUOHB3RGvXz6TeuYSGEZBOjtTtPm2lwhGBjLgOzLHB63IUWfBpNucQjND6d3AOudO+H3RWQ==}
     hasBin: true
 
+  uuid@11.1.1:
+    resolution: {integrity: sha512-vIYxrBCC/N/K+Js3qSN88go7kIfNPssr/hHCesKCQNAjmgvYS2oqr69kIufEG+O4+PfezOH4EbIeHCfFov8ZgQ==}
+    hasBin: true
+
   vary@1.1.2:
     resolution: {integrity: sha512-BNGbWLfd0eUPabhkXUVm0j8uuvREyTh5ovRa/dyow/BqAbZJyC+5fU+IzQOzmAKzYqYRAISoRhdQr3eIZ/PXqg==}
     engines: {node: '>= 0.8'}
@@ -5306,6 +5319,8 @@ snapshots:
   convert-source-map@2.0.0: {}
 
   cookie@1.0.1: {}
+
+  core-js@3.50.0: {}
 
   core-util-is@1.0.3: {}
 
@@ -7486,6 +7501,8 @@ snapshots:
   util-deprecate@1.0.2: {}
 
   uuid@10.0.0: {}
+
+  uuid@11.1.1: {}
 
   vary@1.1.2: {}
 

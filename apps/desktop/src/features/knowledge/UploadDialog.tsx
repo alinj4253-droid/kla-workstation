@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { v4 as randomUUID } from 'uuid';
 import { useQueryClient } from '@tanstack/react-query';
 import * as Dialog from '@radix-ui/react-dialog';
 import { CloudUpload, X } from 'lucide-react';
@@ -38,7 +39,7 @@ export function UploadDialog({ context, connection, onClose, onSubmitted }: {
     const incoming: UploadItem[] = files.map(file => {
       const ext = file.name.split('.').pop()?.toLowerCase();
       const invalid = !file.size ? '文件为空' : file.size > KNOWLEDGE_UPLOAD_LIMIT ? '超过单文件 50MiB 限制' : !ext || !(KNOWLEDGE_UPLOAD_EXTENSIONS as readonly string[]).includes(ext) ? '当前服务不支持此格式' : undefined;
-      return { id: crypto.randomUUID(), file, state: invalid ? 'failed' : connection.hasUploadConsent ? 'waiting' : 'waiting-for-consent', ...(invalid ? { error: invalid } : {}) };
+      return { id: randomUUID(), file, state: invalid ? 'failed' : connection.hasUploadConsent ? 'waiting' : 'waiting-for-consent', ...(invalid ? { error: invalid } : {}) };
     });
     setItems(old => [...old, ...incoming]);
   }

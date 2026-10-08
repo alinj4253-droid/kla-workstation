@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { v4 as randomUUID } from 'uuid';
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { KnowledgeContext, SourceJobBinding, JobSnapshot } from '@kla-workstation/contracts/knowledge';
 import { bridge, knowledgeApi, knowledgeKeys, unwrap, KnowledgeApiError } from '../api';
@@ -40,7 +41,7 @@ export function useJobs(context: KnowledgeContext, bindings: SourceJobBinding[],
   useEffect(() => {
     const service = context.serviceInstanceId;
     const collection = context.collection;
-    const subscriptions = new Map<string, string>(ids.map(id => [crypto.randomUUID(), id]));
+    const subscriptions = new Map<string, string>(ids.map(id => [randomUUID(), id]));
     const remove = bridge().onJobEvent(event => {
       if (event.serviceInstanceId !== service || subscriptions.get(event.subscriptionId) !== event.jobId) return;
       if (event.snapshot) {

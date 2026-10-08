@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { v4 as randomUUID } from 'uuid';
 import * as Dialog from '@radix-ui/react-dialog';
 import { X } from 'lucide-react';
 import { defaultCollection, KNOWLEDGE_SERVICE_URL, type LibraryEntry } from './catalog';
@@ -9,7 +10,7 @@ export function LibraryDialog({ entry, onClose, onSave }: { entry?: LibraryEntry
   const [name, setName] = useState(entry?.name ?? '');
   const [description, setDescription] = useState(entry?.description ?? '');
   const [scope, setScope] = useState<LibraryEntry['scope']>(entry?.scope ?? 'company');
-  const [id] = useState(() => entry?.id ?? crypto.randomUUID());
+  const [id] = useState(() => entry?.id ?? randomUUID());
   const [collection, setCollection] = useState(entry?.collection ?? defaultCollection({ id, name: '' }));
   const [error, setError] = useState('');
   return <Dialog.Root open onOpenChange={open => { if (!open) onClose(); }}><Dialog.Portal><Dialog.Overlay className="kl-modal-overlay"/><Dialog.Content className="kl-connection-dialog kl-module">
