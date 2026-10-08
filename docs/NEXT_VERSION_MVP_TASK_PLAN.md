@@ -47,9 +47,9 @@
 
 | 编号 | 任务 | 依赖 | 交付物 | 完成标准 | 状态 |
 |---|---|---|---|---|---|
-| P2-01 | 实现身份认证、会话和设备令牌 | P0-02、P0-04 | Auth API | 登录、刷新、退出和设备失效可用 | 进行中（注册/登录/登出、scrypt 口令哈希、会话哈希入库与吊销已接 PostgreSQL；refresh 轮换与设备失效未实现） |
+| P2-01 | 实现身份认证、会话和设备令牌 | P0-02、P0-04 | Auth API | 登录、刷新、退出和设备失效可用 | 已完成（注册/登录/登出、scrypt 口令哈希、refresh 一次性轮换与重放拒绝、设备信息存储、会话列表/单个/全部撤销已接 PostgreSQL；桌面端 client 自动刷新与身份隔离已接；集成测试 auth.integration.test.ts 覆盖） |
 | P2-02 | 实现租户、用户、项目、群聊元数据 | P2-01 | 元数据表和 CRUD API | 数据有租户隔离和完整审计字段 | 进行中（users/identities/organizations/projects/conversations/messages 表与 CRUD 已接 PostgreSQL，身份切换、企业创建/加入可用；审计字段与隔离测试未做） |
-| P2-03 | 实现 RBAC/策略权限服务 | P2-01、P2-02 | Permission Service | 支持 `read/write/execute/manage/export`，服务端强制判权 | 未开始 |
+| P2-03 | 实现 RBAC/策略权限服务 | P2-01、P2-02 | Permission Service | 支持 `read/write/execute/manage/export`，服务端强制判权 | 已完成（permission-service.ts 五种动作判权，RBAC 走 identity_roles/role_permissions/permissions 表；routes.ts enforce 助手在业务路由上服务端强制判权并返回 403；集成测试覆盖成员权限控制） |
 | P2-04 | 实现对象存储适配和文件元数据 | P0-03、P2-03 | File Service | 文件上传、下载、版本、哈希和软删除可用 | 未开始 |
 | P2-05 | 实现任务队列、幂等和失败重试 | P0-03、P0-05 | Queue/Job Service | 任务可重试、有上限、失败进入死信且不重复执行 | 未开始 |
 | P2-06 | 实现统一审计事件 | P0-05、P2-03 | Audit Service | 关键读写和工具调用均有审计记录 | 未开始 |
