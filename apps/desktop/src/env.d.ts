@@ -10,6 +10,11 @@ declare global {
     klaPlatform?: {
       runtime: 'electron';
       apiBaseUrl: string;
+      agentRuntime: {
+        connect(session: {accessToken:string;identityId:string}):Promise<{connected:boolean;deviceId:string|null;error:string|null}>;
+        disconnect():Promise<void>;
+        status():Promise<{connected:boolean;deviceId:string|null;error:string|null}>;
+      };
     };
   }
 }

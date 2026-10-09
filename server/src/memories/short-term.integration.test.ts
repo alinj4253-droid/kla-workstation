@@ -6,6 +6,7 @@ import { loadConfig } from '../config.js';
 import { PostgresDatabase } from '../database/postgres.js';
 import { PostgresAccountRepository } from '../repositories/index.js';
 import { registerRoutes } from '../routes.js';
+import { AgentLoopWorker } from '../infrastructure/agent-loop.js';
 import { rankShortTerm, ShortTermMemoryService } from './short-term.js';
 
 const config = loadConfig();
@@ -24,6 +25,7 @@ describe('short-term recall and retention', () => {
     const database = new PostgresDatabase(config.databaseUrl, schema);
     const pool = database.rawPool!;
     const app = Fastify({ logger: false });
+    let loopWorker: AgentLoopWorker | undefined;
     try {
       await database.migrate(schema);
       const accounts = new PostgresAccountRepository(pool);
@@ -67,7 +69,9 @@ describe('short-term recall and retention', () => {
       expect((await pool.query("SELECT count(*)::int AS count FROM memories WHERE metadata->>'runId'=$1", [capture.runId])).rows[0].count).toBe(1);
 
       const completeChat = vi.fn().mockResolvedValue({ payload: { choices: [{ message: { content: '依据短期记忆，小林是负责人。' } }] } });
-      await registerRoutes(app, { accounts, database, shortTermMemory: memory, gateway: { completeChat } });
+      loopWorker = new AgentLoopWorker(pool, accounts, { completeChat }, memory);
+      await registerRoutes(app, { accounts, database, shortTermMemory: memory, gateway: { completeChat }, loopWorker });
+      loopWorker.start(100);
       const session = await accounts.createSession(owner.user.id);
       const headers = { authorization: `Bearer ${session.accessToken}`, 'x-identity-id': owner.identity.id };
       const response = await app.inject({ method: 'POST', url: `/api/v1/conversations/${chat.id}/messages`, headers, payload: { text: 'bluewhale 谁负责？' } });
@@ -98,6 +102,7 @@ describe('short-term recall and retention', () => {
       expect((await pool.query('SELECT id FROM memories WHERE id=ANY($1::uuid[])', [[fixed.id, zero.id]])).rows).toHaveLength(2);
       expect((await accounts.listMessages(chat.id)).length).toBe(messagesBefore);
     } finally {
+      await loopWorker?.stop();
       await app.close();
       await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
       await database.close();

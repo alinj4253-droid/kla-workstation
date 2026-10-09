@@ -10,6 +10,7 @@ import { PostgresAccountRepository } from './repositories/index.js';
 import { PostgresDatabase } from './database/postgres.js';
 import { RedisDatabase } from './infrastructure/redis.js';
 import { AgentLoopWorker } from './infrastructure/agent-loop.js';
+import { registerRuntimeRoutes } from './runtime/routes.js';
 import { buildLoggerOptions, createRequestIdGenerator } from './observability/logger.js';
 import { Sub2ApiClient } from './compute/sub2api-client.js';
 import { ComputeRepository } from './compute/compute-repository.js';
@@ -56,7 +57,9 @@ export async function createServer() {
 
   const shortTermMemory = new ShortTermMemoryService(pool);
   const memoryRetention = new MemoryRetentionWorker(shortTermMemory, error => app.log.error({ err: error }, 'Memory retention failed'));
-  await registerRoutes(app, { accounts, database, redis, gateway, shortTermMemory });
+  const loopWorker = new AgentLoopWorker(pool, accounts, gateway, shortTermMemory, process.env.KNOWLEDGE_SECRET_ENCRYPTION_KEY || config.compute.secretEncryptionKey, error => app.log.error({err:error}, 'Agent loop failed'));
+  await registerRoutes(app, { accounts, database, redis, gateway, shortTermMemory, loopWorker });
+  await registerRuntimeRoutes(app, {pool, accounts, worker:loopWorker});
   await registerKnowledgeRoutes(app, { accounts, pool, store: new PostgresKnowledgeStore(pool), encryptionKey: process.env.KNOWLEDGE_SECRET_ENCRYPTION_KEY || config.compute.secretEncryptionKey });
   await registerComputeRoutes(app, { accounts, computeRepo, quota });
   await registerComputeRoutesB(app, { accounts, computeRepo });
@@ -70,7 +73,6 @@ export async function createServer() {
   });
   await registerComputeGatewayRoutes(app, { accounts, computeRepo, gateway });
 
-  const loopWorker = new AgentLoopWorker(pool, accounts);
   const outboxWorker = new OutboxWorker(computeRepo, provisioning, config.compute.outboxIntervalMs);
   const usageSyncWorker = new UsageSyncWorker(computeRepo, sub2api, config.compute.usageSyncIntervalMs);
   loopWorker.start();
@@ -79,7 +81,7 @@ export async function createServer() {
   memoryRetention.start();
 
   app.addHook('onClose', async () => {
-    loopWorker.stop();
+    await loopWorker.stop();
     outboxWorker.stop();
     usageSyncWorker.stop();
     await memoryRetention.stop();
