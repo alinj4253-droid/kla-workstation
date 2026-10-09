@@ -25,6 +25,7 @@ import { registerComputeGatewayRoutes } from './compute/routes-b-gateway.js';
 import { registerKnowledgeRoutes } from './knowledge-api/routes.js';
 import { PostgresKnowledgeStore } from './knowledge-api/context.js';
 import { ComputeGateway } from './compute/gateway.js';
+import { MemoryRetentionWorker, ShortTermMemoryService } from './memories/short-term.js';
 
 export async function createServer() {
   const config = loadConfig();
@@ -53,7 +54,9 @@ export async function createServer() {
     timeoutMs: config.sub2api.timeoutMs,
   });
 
-  await registerRoutes(app, { accounts, database, redis, gateway });
+  const shortTermMemory = new ShortTermMemoryService(pool);
+  const memoryRetention = new MemoryRetentionWorker(shortTermMemory, error => app.log.error({ err: error }, 'Memory retention failed'));
+  await registerRoutes(app, { accounts, database, redis, gateway, shortTermMemory });
   await registerKnowledgeRoutes(app, { accounts, pool, store: new PostgresKnowledgeStore(pool), encryptionKey: process.env.KNOWLEDGE_SECRET_ENCRYPTION_KEY || config.compute.secretEncryptionKey });
   await registerComputeRoutes(app, { accounts, computeRepo, quota });
   await registerComputeRoutesB(app, { accounts, computeRepo });
@@ -73,11 +76,13 @@ export async function createServer() {
   loopWorker.start();
   outboxWorker.start();
   usageSyncWorker.start();
+  memoryRetention.start();
 
   app.addHook('onClose', async () => {
     loopWorker.stop();
     outboxWorker.stop();
     usageSyncWorker.stop();
+    await memoryRetention.stop();
     await database.close();
     await redis.close();
   });

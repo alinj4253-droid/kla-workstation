@@ -62,3 +62,51 @@ export const searchMemoriesRequestSchema = z.object({
 });
 
 export type SearchMemoriesRequest = z.infer<typeof searchMemoriesRequestSchema>;
+
+/** Read-only browser; separate from memory extraction and mutation APIs. */
+export const memoryBrowserQuerySchema = z.object({
+  projectId: z.string().uuid().optional(),
+  conversationId: z.string().uuid().optional(),
+  agentKey: z.string().min(1).max(200).optional(),
+  term: z.enum(['long_term', 'short_term']).default('long_term'),
+  page: z.coerce.number().int().min(1).max(100000).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
+}).refine(value => !value.from || !value.to || Date.parse(value.from) <= Date.parse(value.to), {
+  message: 'from must be before to', path: ['to'],
+});
+export type MemoryBrowserQuery = z.infer<typeof memoryBrowserQuerySchema>;
+
+export const memoryBrowserAgentSchema = z.object({ key: z.string(), name: z.string() });
+export type MemoryBrowserAgent = z.infer<typeof memoryBrowserAgentSchema>;
+export const memoryBrowserScopesSchema = z.object({
+  projects: z.array(z.object({ id: z.string(), name: z.string(), agents: z.array(memoryBrowserAgentSchema) })),
+  conversations: z.array(z.object({
+    id: z.string(), projectId: z.string(), name: z.string(), agents: z.array(memoryBrowserAgentSchema),
+  })),
+  agents: z.array(memoryBrowserAgentSchema),
+  counts: z.object({ longTerm: z.number().int().nonnegative(), shortTerm: z.number().int().nonnegative() }),
+  latestUpdatedAt: z.string().datetime().nullable(),
+});
+export type MemoryBrowserScopes = z.infer<typeof memoryBrowserScopesSchema>;
+
+export const memoryBrowserEntrySchema = z.object({
+  id: z.string(), content: z.string(), term: z.enum(['long_term', 'short_term']),
+  kind: z.string(), source: z.enum(['stored_memory', 'conversation_context']),
+  projectId: z.string().nullable(), projectName: z.string().nullable(),
+  conversationId: z.string().nullable(), conversationName: z.string().nullable(),
+  agentKey: z.string(), agentName: z.string(), shared: z.boolean(),
+  sourceMessageId: z.string().nullable(), createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(), expiresAt: z.string().datetime().nullable(),
+  reinforcedAt: z.string().datetime().optional(),
+  retainedUntil: z.string().datetime().nullable().optional(),
+  /** null for fixed long-term memory; zero-weight short-term history remains viewable. */
+  timeWeight: z.number().min(0).max(1).nullable().optional(),
+});
+export type MemoryBrowserEntry = z.infer<typeof memoryBrowserEntrySchema>;
+export const memoryBrowserPageSchema = z.object({
+  items: z.array(memoryBrowserEntrySchema),
+  page: z.object({ page: z.number().int(), pageSize: z.number().int(), total: z.number().int().nonnegative() }),
+});
+export type MemoryBrowserPage = z.infer<typeof memoryBrowserPageSchema>;

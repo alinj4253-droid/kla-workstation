@@ -40,8 +40,8 @@
     "tailwind-merge": "^3.3.0",
     "ulid": "^3.0.2",
     "uuid": "^11.1.0",
-    "zustand": "^5.0.14",
-    "zod": "^3.25.76"
+    "zod": "^3.25.76",
+    "zustand": "^5.0.14"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
@@ -53,6 +53,7 @@
     "@vitejs/plugin-react": "^6.0.3",
     "electron": "^43.1.1",
     "electron-builder": "^26.15.3",
+    "fake-indexeddb": "^6.2.5",
     "jsdom": "^29.1.1",
     "tailwindcss": "^4.3.3",
     "typescript": "^6.0.3",
