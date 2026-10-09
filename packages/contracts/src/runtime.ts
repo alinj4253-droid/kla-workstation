@@ -43,5 +43,6 @@ export const toolArguments = {
 export const deviceRegistrationSchema = z.object({ installationId: z.string().uuid(), name: z.string().min(1).max(100), platform: z.string().max(50), capabilities: z.array(z.enum(['local_read','local_list','local_write','local_code','local_bat','local_cli'])).max(6) });
 export const toolReceiptSchema = z.object({
   receiptId: z.string().uuid(), status: z.enum(['completed','failed']), result: z.record(z.unknown()),
+  approval: z.object({ approved: z.boolean(), decidedAt: z.string().datetime() }),
   artifact: z.object({ fileName: z.string().min(1).max(255).refine(s => !/[\\/]/.test(s)), content: z.string().max(1_000_000), mimeType: z.string().max(100).default('text/plain'), checksum: z.string().regex(/^[a-f0-9]{64}$/) }).optional(),
 });

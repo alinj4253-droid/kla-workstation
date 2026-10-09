@@ -6,6 +6,30 @@ const { createHash } = require('node:crypto');
 const capabilities = ['local_read','local_list','local_write','local_code','local_bat','local_cli'];
 function absolute(value) { if (typeof value !== 'string' || !path.isAbsolute(value)) throw new Error('本地路径必须是绝对路径'); return path.resolve(value); }
 function filename(value) { if (typeof value !== 'string' || !value || value === '.' || value === '..' || /[\\/:*?"<>|\x00-\x1f]/.test(value)) throw new Error('文件名无效'); return value; }
+function within(target, root) { const relative = path.relative(root, target); return relative === '' || (relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative)); }
+async function existingParent(target) {
+  let candidate = target;
+  for (;;) {
+    try { return await fs.realpath(candidate); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; const parent = path.dirname(candidate); if (parent === candidate) throw error; candidate = parent; }
+  }
+}
+async function allowedPath(target, taskRoot, writing = false) {
+  const roots = [taskRoot, ...(process.env.KLA_LOCAL_ALLOWED_ROOTS || '').split(path.delimiter).filter(Boolean)];
+  const resolvedRoots = await Promise.all(roots.map(root => fs.realpath(path.resolve(root))));
+  let real;
+  if (writing) {
+    try { real = await fs.realpath(target); }
+    catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      try { if ((await fs.lstat(target)).isSymbolicLink()) throw new Error('不允许写入符号链接', { cause: error }); }
+      catch (linkError) { if (linkError.code !== 'ENOENT') throw linkError; }
+      real = await existingParent(path.dirname(target));
+    }
+  } else real = await fs.realpath(target);
+  if (!resolvedRoots.some(root => within(real, root))) throw new Error('路径不在本地允许目录内');
+  return target;
+}
 function kill(child) {
   if (!child.pid) return;
   if (process.platform === 'win32') { const killer=spawn('taskkill.exe',['/PID',String(child.pid),'/T','/F'],{windowsHide:true,stdio:'ignore'}); killer.on('error',()=>child.kill()); }
@@ -27,17 +51,18 @@ function command(executable,args,cwd,timeoutMs,signal) {
 async function executeLocal(call,root,signal) {
   if(!capabilities.includes(call.tool))throw new Error('不支持的本地技能');signal.throwIfAborted();
   const a=call.arguments;const folder=path.join(root,call.runId,call.stepId);await fs.mkdir(folder,{recursive:true});
-  if(call.tool==='local_read'){const target=absolute(a.path);const stat=await fs.stat(target);if(stat.size>10_000_000)throw new Error('文本读取限 10 MB，请用 CLI 分段处理');const text=await fs.readFile(target,'utf8');return{result:{content:text.slice(a.offset??0,(a.offset??0)+(a.maxChars??20000)),sizeBytes:stat.size,truncated:text.length>(a.offset??0)+(a.maxChars??20000)}};}
-  if(call.tool==='local_list'){const entries=await fs.readdir(absolute(a.path),{withFileTypes:true});return{result:{entries:entries.slice(0,2000).map(e=>({name:e.name,directory:e.isDirectory()})),truncated:entries.length>2000}};}
+  if(call.tool==='local_read'){const target=await allowedPath(absolute(a.path),root);const stat=await fs.stat(target);if(stat.size>10_000_000)throw new Error('文本读取限 10 MB，请用 CLI 分段处理');const text=await fs.readFile(target,'utf8');return{result:{content:text.slice(a.offset??0,(a.offset??0)+(a.maxChars??20000)),sizeBytes:stat.size,truncated:text.length>(a.offset??0)+(a.maxChars??20000)}};}
+  if(call.tool==='local_list'){const target=await allowedPath(absolute(a.path),root);const entries=await fs.readdir(target,{withFileTypes:true});return{result:{entries:entries.slice(0,2000).map(e=>({name:e.name,directory:e.isDirectory()})),truncated:entries.length>2000}};}
   if(call.tool==='local_write'||call.tool==='local_code'){
-    const name=filename(a.fileName);if(typeof a.content!=='string'||a.content.length>1_000_000)throw new Error('文件内容过大或无效');const target=a.path?absolute(a.path):path.join(folder,name);
+    const name=filename(a.fileName);if(typeof a.content!=='string'||a.content.length>1_000_000)throw new Error('文件内容过大或无效');const target=await allowedPath(a.path?absolute(a.path):path.join(folder,name),root,true);
     signal.throwIfAborted();await fs.mkdir(path.dirname(target),{recursive:true});await fs.writeFile(target,a.content,'utf8');
     const content=await fs.readFile(target,'utf8');const checksum=createHash('sha256').update(content).digest('hex');
     const mimeType=path.extname(name).toLowerCase()==='.html'?'text/html':'text/plain';
     // Local absolute paths stay in the device journal; only the stable file name goes back to the server.
-    return{result:{fileName:name,sizeBytes:Buffer.byteLength(content),stored:true},artifact:{fileName:name,content,mimeType,checksum}};
+    const artifact = process.env.KLA_LOCAL_ARTIFACT_UPLOAD === 'false' ? undefined : {fileName:name,content,mimeType,checksum};
+    return{result:{fileName:name,sizeBytes:Buffer.byteLength(content),checksum,stored:true,uploaded:Boolean(artifact)},...(artifact?{artifact}:{})};
   }
-  const cwd=a.cwd?absolute(a.cwd):folder;const timeout=Math.max(1000,Math.min(Number(a.timeoutMs)||60000,300000));
+  const cwd=await allowedPath(a.cwd?absolute(a.cwd):folder,root);const timeout=Math.max(1000,Math.min(Number(a.timeoutMs)||60000,300000));
   if(call.tool==='local_bat'){
     if(process.platform!=='win32')throw new Error('BAT 仅支持 Windows 设备');
     const script=path.join(folder,`command-${filename(call.id)}.bat`);await fs.writeFile(script,'@echo off\r\nchcp 65001 >nul\r\n'+a.script,'utf8');

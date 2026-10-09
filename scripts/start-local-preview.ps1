@@ -57,7 +57,10 @@ function Test-PreviewReady([string]$Url, [string]$Service) {
 function Start-PreviewService([string]$Service, [string]$Filter, [string[]]$DevArguments) {
     $logFile = Join-Path $logDirectory "$Service.log"
     $environment = if ($Service -eq 'backend') {
-        "`$env:HOST = '127.0.0.1'; `$env:PORT = '$BackendPort'; "
+        "`$env:HOST = '127.0.0.1'; `$env:PORT = '$BackendPort'; " +
+        "Remove-Item Env:SUB2API_SHARED_ACCOUNT_EMAIL, Env:SUB2API_SHARED_ACCOUNT_PASSWORD -ErrorAction SilentlyContinue; " +
+        "`$env:DOTENV_CONFIG_PATH = $(ConvertTo-ShellLiteral (Join-Path $projectRoot 'server\.env')); " +
+        "`$env:DOTENV_CONFIG_OVERRIDE = 'true'; "
     } else {
         "`$env:VITE_API_BASE_URL = 'http://127.0.0.1:$BackendPort/api'; "
     }

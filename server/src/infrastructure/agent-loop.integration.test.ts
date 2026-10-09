@@ -26,10 +26,12 @@ describe('persisted multi-agent loop', () => {
       const executor = registry.find(agent => agent.name === '本地执行智能体')!;
       const trigger = await accounts.createMessage(room.id, registered.user.id, '先写大纲，再检查内容');
       const calls: string[] = [];
-      const completeChat = vi.fn(async (_identity, request: { requestId: string; tags: { taskId?: string; conversationId: string } }) => {
+      const modelRequests: Array<{ requestId: string; messages: unknown[] }> = [];
+      const completeChat = vi.fn(async (_identity, request: { requestId: string; messages: unknown[]; tags: { taskId?: string; conversationId: string } }) => {
         expect(request.tags.taskId).toBeUndefined();
         expect(request.tags.conversationId).toBe(room.id);
         calls.push(request.requestId);
+        modelRequests.push({ requestId: request.requestId, messages: request.messages });
         let message: unknown;
         if (request.requestId.endsWith(':plan')) message = { tool_calls: [{ id: 'plan-1', type: 'function', function: { name: 'delegate_tasks', arguments: JSON.stringify({ tasks: [
           { title: '撰写大纲', instruction: '写入 outline.md', agentId: executor.id, dependsOn: [] },
@@ -59,6 +61,18 @@ describe('persisted multi-agent loop', () => {
       expect(messages.at(-1)?.text).toContain('大纲已完成并通过检查');
       expect(messages.at(-1)?.metadata?.artifactIds).toEqual([artifact[0].id]);
       expect(calls.at(-1)).toMatch(/:summary$/);
+      const captured = await pool.query("SELECT content FROM memories WHERE metadata->>'conversationId'=$1 AND metadata->>'agentId'=$2", [room.id, executor.id]);
+      expect(captured.rows.some(row => String(row.content).includes('大纲已写入成果文件'))).toBe(true);
+      const nextTrigger = await accounts.createMessage(room.id, registered.user.id, '继续按上次的大纲处理');
+      const nextRun = await accounts.createRun(room.id, nextTrigger.id, 'balanced');
+      worker.kick();
+      await vi.waitFor(async () => {
+        expect((await accounts.listConversationRuns(room.id)).find(item => item.id === nextRun.id)?.status).toBe('completed');
+      }, { timeout: 15_000, interval: 100 });
+      const followUpContext = modelRequests.find(request => request.requestId === `run:${nextRun.id}:plan`);
+      expect(JSON.stringify(followUpContext?.messages)).toContain('大纲已完成并通过检查');
+      const memoryEvents = (await pool.query("SELECT kind FROM runtime_events WHERE run_id=$1 AND kind LIKE 'memory.%'", [nextRun.id])).rows.map(row => row.kind);
+      expect(memoryEvents).toContain('memory.recalled');
     } finally {
       await worker?.stop();
       await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
