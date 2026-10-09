@@ -66,7 +66,10 @@ export async function registerRuntimeRoutes(app: FastifyInstance, deps: {pool:Po
       AND NOT EXISTS(SELECT 1 FROM runtime_tool_calls busy WHERE busy.device_id=$1 AND busy.status='running') ORDER BY t.created_at,t.id FOR UPDATE OF t SKIP LOCKED LIMIT 1)
       UPDATE runtime_tool_calls t SET status='running',dispatched_at=now() FROM next WHERE t.id=next.id RETURNING t.*`,[s.device.id,s.identity.id,s.device.capabilities])).rows[0];
     if(call){call.arguments=parseToolArguments(call.tool_name,call.arguments);const st=(await client.query('SELECT run_id FROM conversation_run_steps WHERE id=$1',[call.step_id])).rows[0];await client.query('COMMIT');return{ok:true,data:{call:{id:call.id,tool:call.tool_name,arguments:call.arguments,stepId:call.step_id,runId:st.run_id},cancelled}};}await client.query('COMMIT');return{ok:true,data:{call:null,cancelled}};
-    } catch(error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
+    // 该路由的请求日志被 observability/logger.ts 的 shouldQuietRequestLogging（logController.
+    // disableRequestLogging）降噪（本地运行时每 2 秒一次心跳，会淹没业务日志），
+    // 且降噪会连失败态的自动日志一起压掉，因此失败必须在这里显式补一条，否则故障会被静默。
+    } catch(error) { request.log.error({ err: error, deviceId: s.device.id }, 'runtime device poll failed'); await client.query('ROLLBACK'); throw error; } finally { client.release(); }
   });
   app.post('/api/v1/runtime/devices/:deviceId/calls/:callId/receipt',{bodyLimit:4*1024*1024},async(request,reply)=>{
     const s=await device(request,reply);if(!s)return;const callId=id((request.params as {callId:string}).callId);const b=toolReceiptSchema.parse(request.body);

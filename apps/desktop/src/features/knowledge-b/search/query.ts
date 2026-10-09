@@ -23,6 +23,11 @@ export function useKnowledgeSearch(context: QueryContext, request: SearchRequest
   return useQuery<SearchResponse, Error>({
     queryKey,
     enabled: request !== null,
+    // 检索是用户显式触发的动作，结果只依赖检索词与集合。任何缓存失效（任务轮询、
+    // 窗口聚焦等）都不应把它变成后台自动重取，否则会出现"循环检索"且拖慢知识服务。
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
     retry: false,
     queryFn: () => {
       if (request === null) throw new Error('Search is disabled until the user submits a request');

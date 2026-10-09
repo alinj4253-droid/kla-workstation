@@ -35,7 +35,6 @@ export function KnowledgePage({ view = 'overview', slots = {}, libraries, loadin
   const records = jobs.data?.jobs ?? [];
   const sliceData = useKnowledgeSlices(activeContext, sources.data?.documents ?? [], { enabled: sources.isSuccess && Boolean(activeCollection), processing: records.some(job => ['queued', 'running'].includes(job.state)), pollIntervalMs: config?.settings.pollIntervalMs ?? 4000 });
   const sliceCount = sliceData.count;
-  const chunkNotice = sliceData.complete ? '当前集合已确认关联文件的切片' : sliceCount !== undefined ? `已读取 ${sliceData.loadedCount}/${sources.data?.documents.length ?? 0} 个来源，数量暂不完整` : sliceData.pending ? '正在读取切片数量……' : '切片读取失败或尚未生成，请刷新重试';
   const names = new Map(sources.data?.bindings.map(binding => [binding.docId, binding.displayName]));
   const localBases: KnowledgeBase[] = catalog.entries.map(entry => {
     const current = Boolean(entry.collection && entry.collection === activeCollection);
@@ -44,7 +43,7 @@ export function KnowledgePage({ view = 'overview', slots = {}, libraries, loadin
       ...(current && sources.isSuccess ? { fileCount: sources.data.documents.length, sourceNames: sources.data.documents.map(doc => names.get(doc.doc_id) ?? doc.name) } : {}), ...(current && sliceCount !== undefined ? { chunkCount: sliceCount } : {}),
     };
   });
-  const overview = libraries ?? { bases: localBases, localCatalog: true, collection: activeCollection, stats: { chunkNotice, libraries: localBases.length, ...(sources.isSuccess && activeCollection ? { files: sources.data.documents.length } : {}), ...(sliceCount !== undefined && activeCollection ? { chunks: sliceCount } : {}), ...(jobs.isSuccess && activeCollection ? { processing24h: `${records.filter(job => ['queued', 'running'].includes(job.state)).length} 处理中 · ${records.filter(job => ['failed', 'interrupted'].includes(job.state)).length} 异常` } : {}) } };
+  const overview = libraries ?? { bases: localBases, localCatalog: true, collection: activeCollection, stats: { libraries: localBases.length, ...(sources.isSuccess && activeCollection ? { files: sources.data.documents.length } : {}), ...(sliceCount !== undefined && activeCollection ? { chunks: sliceCount } : {}), ...(jobs.isSuccess && activeCollection ? { processing24h: `${records.filter(job => ['queued', 'running'].includes(job.state)).length} 处理中 · ${records.filter(job => ['failed', 'interrupted'].includes(job.state)).length} 异常` } : {}) } };
   const base = overview.bases.find(item => item.id === id);
   const selectedEntry = catalog.entries.find(entry => entry.id === id);
   const targetCollection = view === 'detail' ? base?.context.collection : view === 'uploads' ? config?.collection || catalog.entries[0]?.collection : listedCollection ? config?.collection : catalog.entries[0]?.collection;
@@ -63,7 +62,6 @@ export function KnowledgePage({ view = 'overview', slots = {}, libraries, loadin
   const deleteEntry = (entryId: string) => { const entry = catalog.entries.find(item => item.id === entryId); if (entry && !autoConnection.connecting) setDeleting(entry); };
   const refresh = () => { void client.invalidateQueries({ queryKey: knowledgeKeys.all }); void catalog.refresh(); onRetryLibraries?.(); };
   return <main className="kl-module kl-page">
-    <div className="kl-connection-status"><span className={`kl-dot ${health.data?.status === 'ok' ? 'kl-online' : ''}`}/>{health.isPending && config ? '正在连接知识服务……' : health.data?.status === 'ok' ? '知识服务已连接' : '服务连接待确认'} <span>{config?.baseUrl}{config?.collection ? ` · ${config.collection}` : ''}</span><button onClick={() => void health.refetch()} disabled={!config || health.isFetching}>检查连接</button></div>
     {connection.error && <div className="kl-notice kl-error-text" role="alert">{connection.error.message}<button onClick={() => setConfiguring(true)}>配置连接</button></div>}
     {health.error && <div className="kl-notice kl-error-text" role="alert">{health.error.message}</div>}
     {catalog.error && <div className="kl-notice kl-error-text" role="alert">{catalog.error}</div>}

@@ -47,21 +47,22 @@ function SourceAction({
   );
 
   if (!source) return unavailable('检索服务没有返回来源标识，无法定位源文件。');
-  const matches = sources.filter(item => item.collection === collection && item.searchSources.includes(source));
-  if (matches.length === 0) return unavailable('来源标识未映射到当前知识库的文件，无法打开来源。');
-  if (matches.length > 1) return unavailable('来源未映射或映射不唯一：该标识匹配多个文件，无法唯一定位。');
+  // 命中标识 → 来源文件的映射按需补齐（见 KnowledgeSearchContent）。映射未就绪时不能
+  // 直接禁用按钮：集合里几十个文件时预先全量核对会拖慢检索，因此先用已知的候选文件打开，
+  // 由宿主侧按 docId 精确定位；映射只用于"该标识唯一对应哪个文件"的兜底判定。
+  const matched = resolveSource(sources, collection, source);
+  const candidates = sources.filter(item => item.collection === collection);
+  const target: OpenKnowledgeSource | undefined = matched
+    ? { ...matched, ...(sliceIndex === null || sliceIndex === undefined ? {} : { sliceIndex }) }
+    : candidates.length === 1
+      ? { docId: candidates[0]!.docId, ...(sliceIndex === null || sliceIndex === undefined ? {} : { sliceIndex }) }
+      : undefined;
 
-  const sourceInfo = matches[0];
-  if (!sourceInfo) return unavailable('来源映射无效，无法定位源文件。');
-  const mapped = resolveSource(sources, collection, source);
-  if (!mapped || mapped.docId !== sourceInfo.docId) return unavailable('来源映射无效，无法定位源文件。');
-  const target: OpenKnowledgeSource = sliceIndex === null || sliceIndex === undefined
-    ? mapped
-    : { ...mapped, sliceIndex };
+  if (!target) return unavailable('来源标识未映射到当前知识库的文件，暂时无法定位源文件。可在切片列表确认该文件的标识。');
 
   return (
     <div>
-      <p className="kb-b-note">来源文件：{sourceInfo.name}</p>
+      <p className="kb-b-note">来源文件：{candidates.find(item => item.docId === target.docId)?.name ?? '当前集合'}</p>
       <button type="button" onClick={() => onOpenSource({ ...target, locateText: content })}>
         打开来源正文{sliceIndex === null || sliceIndex === undefined ? '' : `（切片 ${sliceIndex}）`}
       </button>
@@ -116,7 +117,7 @@ function SearchHitCard({
                 source={hit.source}
                 sliceIndex={slice.slice_index}
                 content={slice.content}
-                onOpenSource={onOpenSource}
+                        onOpenSource={onOpenSource}
               />
             </div>
           ))}
@@ -138,7 +139,7 @@ function SearchHitCard({
                 source={hit.source}
                 sliceIndex={slice.slice_index}
                 content={slice.content}
-                onOpenSource={onOpenSource}
+                        onOpenSource={onOpenSource}
               />
             </div>
           ))}
@@ -268,6 +269,7 @@ export function SearchContent({ context, collection, sources, onOpenSource }: Se
         {query.isError && !query.data && (
           <div role="alert">
             <p>搜索失败：{query.error.message}</p>
+            <p className="kb-b-note">知识服务响应较慢时可稍后重试；若反复失败，请检查知识服务状态与检索模式。</p>
             <button type="button" onClick={() => void query.refetch()} disabled={query.isFetching}>重试搜索</button>
           </div>
         )}
@@ -297,7 +299,7 @@ export function SearchContent({ context, collection, sources, onOpenSource }: Se
             hit={hit}
             collection={collection}
             sources={sources}
-            onOpenSource={onOpenSource}
+                onOpenSource={onOpenSource}
           />
         ))}
       </section>

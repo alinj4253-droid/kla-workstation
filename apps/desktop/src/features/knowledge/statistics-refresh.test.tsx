@@ -51,14 +51,15 @@ function mountDetail() {
 function stat(label: string) {
   const article = Array.from(document.querySelectorAll('.kl-detail-stats article')).find(item => item.querySelector('span')?.textContent === label);
   if (!article) throw new Error('Missing statistic: ' + label);
-  return { value: article.querySelector('strong')?.textContent, note: article.querySelector('small')?.textContent };
+  // 统计卡只保留标题与数值（口径小字已按产品要求移除），这里同步不再读 <small>。
+  return { value: article.querySelector('strong')?.textContent };
 }
 
 describe('knowledge statistics refresh (local fixtures only)', () => {
   it('uses valid slices when an expired job query has stale cached data', () => {
     expect(summarizeKnowledgeFiles([doc], [binding], new Map([[done.job_id, done]]), new Set([done.job_id]), [{ data: slices(2), isSuccess: true }])).toEqual({ done: 1, processing: 0, failed: 0, unknown: 0 });
   });
-  it('shows confirmed zero counts and an explicit pending-state notice for unknown files', async () => {
+  it('shows confirmed zero counts for files whose state is unknown', async () => {
     mock.bindings.mockResolvedValue([]);
     mock.sources.mockResolvedValue({ documents: [doc], bindings: [], totalWorkspaceCount: 1 });
     mock.slices.mockRejectedValue(new BQueryError('slices_pending'));
@@ -66,7 +67,8 @@ describe('knowledge statistics refresh (local fixtures only)', () => {
     await waitFor(() => expect(stat('已处理文件').value).toBe('0'));
     expect(stat('处理中').value).toBe('0');
     expect(stat('异常文件').value).toBe('0');
-    expect(stat('已处理文件').note).toContain('1 个文件待确认');
+    // 口径小字已移除，改为直接校验底层口径：状态未确认的文件既不计入已完成，也不臆造为处理中/异常。
+    expect(summarizeKnowledgeFiles([doc], [], new Map(), new Set(), [{ data: undefined, isSuccess: false }])).toEqual({ done: 0, processing: 0, failed: 0, unknown: 1 });
   });
   it('keeps confirmed file counts when another source has no job or slices', () => {
     const second = { ...doc, doc_id: 'doc-2' };
@@ -131,14 +133,15 @@ describe('knowledge statistics refresh (local fixtures only)', () => {
     fireEvent.click(screen.getByRole('button', { name: '刷新任务' }));
     await waitFor(() => expect(stat('知识切片').value).toBe('3'));
   });
-  it('shows known counts and labels the unresolved file instead of blanking all cards', async () => {
+  it('shows known counts and keeps unresolved files out of the confirmed buckets', async () => {
     const second = { ...doc, doc_id: 'doc-2', name: 'unresolved.txt' };
     mock.sources.mockResolvedValue({ documents: [doc, second], bindings: [binding], totalWorkspaceCount: 2 });
     mock.slices.mockImplementation((_context, source) => source.docId === doc.doc_id ? Promise.resolve(slices(2)) : Promise.reject(new BQueryError('slices_pending')));
     mountDetail();
     await waitFor(() => expect(stat('原始文件').value).toBe('2'));
     await waitFor(() => expect(stat('已处理文件').value).toBe('1'));
-    expect(stat('已处理文件').note).toContain('1 个文件待确认');
+    // 同上：未确认文件只体现在 unknown 口径，已处理数保持为已确认的 1。
+    expect(summarizeKnowledgeFiles([doc, second], [binding], new Map([[done.job_id, done]]), new Set(), [{ data: slices(2), isSuccess: true }, { data: undefined, isSuccess: false }])).toEqual({ done: 1, processing: 0, failed: 0, unknown: 1 });
     expect(stat('处理中').value).toBe('0');
     expect(stat('知识切片').value).toBe('2');
   });

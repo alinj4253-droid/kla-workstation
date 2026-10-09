@@ -1,4 +1,4 @@
-import Fastify from 'fastify';
+import Fastify, { LogController } from 'fastify';
 import cors from '@fastify/cors';
 import sensible from '@fastify/sensible';
 import { fileURLToPath } from 'node:url';
@@ -8,7 +8,7 @@ import { loadConfig } from '../config.js';
 import { registerKnowledgeRoutes } from '../knowledge-api/routes.js';
 import { MemoryKnowledgeStore } from '../knowledge-api/context.js';
 import { registerRoutes } from '../routes.js';
-import { buildLoggerOptions, createRequestIdGenerator } from '../observability/logger.js';
+import { buildLoggerOptions, createRequestIdGenerator, shouldQuietRequestLogging } from '../observability/logger.js';
 import { CatalogPool } from './catalog-pool.js';
 import { MemoryAccountRepository } from './memory-account-repository.js';
 
@@ -22,6 +22,7 @@ export async function createMockServer(options: { seedDemoAccount?: boolean; log
   const app = Fastify({
     logger: options.logger ?? buildLoggerOptions(config),
     genReqId: createRequestIdGenerator(),
+    logController: new LogController({ disableRequestLogging: shouldQuietRequestLogging }),
   });
   await app.register(cors, { origin: true });
   await app.register(sensible);

@@ -152,9 +152,15 @@ function SliceList({
   const fetchingCount = queries.filter(query => query.isFetching).length;
   const selectedSourceIndex = selectedSourceFilter ? querySources.findIndex(source => source.docId === selectedSourceFilter) : -1;
   const selectedSourceHasNoSlices = selectedSourceIndex >= 0 && queries[selectedSourceIndex]?.data?.count === 0;
+  // 「完整」只看是否已成功取到数据，不看 isFetching。此前把 isFetching 也算作不完整，
+  // 结果后台任意一个来源刷新，计数就从「共 N 个切片」跳成「已加载 N · M/K 个来源」并弹出
+  // 「当前统计暂不完整」，来源逐个返回时反复闪动（用户看到一条一条往外跳）。
+  // 刷新期间沿用上次结果即可，统计数字本身不会因此出错。
   const complete = mismatchedSourceCount === 0
-    && queries.every(query => query.isSuccess && !query.isError && !query.isFetching);
-  const queryStateSignature = queries.map(query => `${query.status}:${query.isFetching ? 'fetching' : 'idle'}:${query.data?.count ?? ''}`).join('|');
+    && queries.every(query => query.data !== undefined && !query.isError);
+  // 只用「是否已取到数据 + 数量」做签名：把 isFetching 计入会让每次后台刷新都重新
+  // 上报一次切片统计，上层卡片跟着反复变化。
+  const queryStateSignature = queries.map(query => `${query.data === undefined ? 'pending' : 'ready'}:${query.data?.count ?? ''}`).join('|');
 
   useEffect(() => {
     if (!onChunkCount || !scope || sourceVersion === undefined) return;
@@ -224,7 +230,7 @@ function SliceList({
       </div>
 
       {mismatchedSourceCount > 0 && <p role="alert">有 {mismatchedSourceCount} 个来源不属于当前知识集合，已跳过。</p>}
-      {fetchingCount > 0 && rows.length > 0 && <p role="status">正在刷新部分来源切片；当前统计暂不完整。</p>}
+      {fetchingCount > 0 && rows.length === 0 && <p role="status">正在加载知识切片…</p>}
       {failedQueries.length > 0 && <div className="kb-b-slices__errors" aria-label="来源切片错误">
         {failedQueries.map(({ query, source }) => (
           <div role="alert" key={source.docId}>
@@ -260,7 +266,7 @@ function SliceList({
                             <tr>
                               <th scope="col">标题</th>
                               <th scope="col">来源文件</th>
-                              <th scope="col">切片编号与分组</th>
+                              <th scope="col">切片编号</th>
                               <th scope="col">正文预览</th>
                               <th scope="col">操作</th>
                             </tr>
@@ -283,10 +289,7 @@ function SliceList({
                                   </button>
                                 </td>
                                 <td><div className="kb-b-slice__source" title={source.name}>{sourceLabel}</div></td>
-                                <td>
-                                  <span>#{slice.id}</span>
-                                  {slice.group !== undefined && slice.group !== null && <small>分组 {slice.group}</small>}
-                                </td>
+                                <td><span>#{slice.id}</span></td>
                                 <td><div className="kb-b-slice__preview">{previewContent(slice.content)}</div></td>
                                 <td><button type="button" aria-haspopup="dialog" aria-label={`查看切片：${slice.title || slice.id} · ${sourceLabel}`} onClick={event => { onOpenSliceTrigger?.(event.currentTarget); onOpenSlice({ slice, source }); }}>查看</button></td>
                               </tr>
@@ -296,9 +299,7 @@ function SliceList({
                       </div>}
 
       <footer className="kb-b-slices__footer">
-        <span>{mode === 'single' && querySources[0]
-          ? `筛选与分页仅作用于当前文档已返回的 ${loadedCount} 个切片，不代表知识库总量。`
-          : `仅统计当前范围中已加载的 ${loadedSources}/${querySources.length} 个来源，共 ${loadedCount} 个切片；分页和筛选作用于这些已返回结果，不代表服务端知识库总量。`}</span>
+        {/* 计数已在工具栏右侧展示，页脚只留分页控制，避免同一数字在两处跳动 */}
         {visibleRows.length > 0 && <div role="group" aria-label="切片分页">
           <button type="button" onClick={() => changeView({ page: displayedPage - 1 })} disabled={displayedPage <= 1}>上一页</button>
           <span aria-live="polite">第 {displayedPage} / {pageCount} 页</span>
