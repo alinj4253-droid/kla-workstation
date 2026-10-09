@@ -7,6 +7,7 @@ const refreshKey = 'kla.refresh-token';
 const identityKey = 'kla.identity-id';
 const accountKey = 'kla.account-id';
 const authExpiredEvent = 'kla:auth-expired';
+const sessionChangedEvent = 'kla:session-changed';
 
 export type ApiResult<T> = { ok: true; data: T; meta?: { requestId: string } } | { ok: false; code: string; message: string; error?: { code: string; message: string; retryable?: boolean; details?: Record<string, unknown> }; meta?: { requestId: string } };
 
@@ -87,6 +88,7 @@ export class KlaApiClient {
   setAccessToken(token: string | null, expiresAt?: string) {
     if (token) { sessionStorage.setItem(tokenKey, token); if (expiresAt) sessionStorage.setItem(expiryKey, String(new Date(expiresAt).getTime())); }
     else this.clearAccessToken();
+    if (token) window.dispatchEvent(new Event(sessionChangedEvent));
   }
   setSession(session: { accessToken: string; refreshToken?: string; expiresAt: string; deviceId?: string | null }) {
     this.setAccessToken(session.accessToken, session.expiresAt);
@@ -94,8 +96,13 @@ export class KlaApiClient {
     if (session.deviceId) sessionStorage.setItem('kla.device-id', session.deviceId);
   }
   getRefreshToken() { return sessionStorage.getItem(refreshKey); }
-  setIdentity(identityId: string | null) { if (identityId) sessionStorage.setItem(identityKey, identityId); else sessionStorage.removeItem(identityKey); }
+  setIdentity(identityId: string | null) { if (identityId) sessionStorage.setItem(identityKey, identityId); else sessionStorage.removeItem(identityKey); window.dispatchEvent(new Event(sessionChangedEvent)); }
   getIdentity() { return sessionStorage.getItem(identityKey); }
+  getRuntimeSession() {
+    const accessToken = sessionStorage.getItem(tokenKey);
+    const identityId = sessionStorage.getItem(identityKey);
+    return accessToken && identityId ? { accessToken, identityId } : null;
+  }
   setAccount(accountId: string) {
     const previous = this.getAccount();
     if (previous && previous !== accountId) window.dispatchEvent(new CustomEvent('kla:memory-cache-clear', { detail: previous }));
@@ -107,12 +114,14 @@ export class KlaApiClient {
     const accountId = this.getAccount();
     sessionStorage.removeItem(tokenKey); sessionStorage.removeItem(expiryKey); sessionStorage.removeItem(refreshKey); sessionStorage.removeItem(identityKey); sessionStorage.removeItem(accountKey);
     if (accountId) window.dispatchEvent(new CustomEvent('kla:memory-cache-clear', { detail: accountId }));
+    window.dispatchEvent(new Event(sessionChangedEvent));
   }
 
   /** §7.4：导出等非 JSON 响应；仍带 Bearer，绝不把凭据放进 URL。 */
   async download(path: string): Promise<{ ok: true; blob: Blob } | { ok: false; code: string; message: string }> {
     const token = sessionStorage.getItem(tokenKey);
-    const response = await fetch(`${this.baseUrl}${path}`, { headers: { ...(token ? { authorization: `Bearer ${token}` } : {}) } });
+    const identityId = sessionStorage.getItem(identityKey);
+    const response = await fetch(`${this.baseUrl}${path}`, { headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(identityId ? { 'x-identity-id': identityId } : {}) } });
     if (!response.ok) return { ok: false, code: `HTTP_${response.status}`, message: '导出失败，请稍后重试' };
     return { ok: true, blob: await response.blob() };
   }
@@ -120,3 +129,4 @@ export class KlaApiClient {
 
 export const klaApi = new KlaApiClient();
 export const authExpiredEventName = authExpiredEvent;
+export const sessionChangedEventName = sessionChangedEvent;

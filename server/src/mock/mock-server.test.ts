@@ -68,22 +68,17 @@ describe('mock server 契约联调', () => {
     expect(models.body.data.every((model) => typeof model.configured === 'boolean')).toBe(true);
   });
 
-  it('群聊消息触发智能体回复并生成成果文件', async () => {
+  it('无执行器时群聊消息保留，且不会伪造成果文件', async () => {
     const conversations = await get<{ data: Array<{ id: string }> }>('/api/v1/conversations');
     const conversationId = conversations.body.data[0]!.id;
     const sent = await post<{ ok: boolean; data: { message: { id: string }; run: { id: string; status: string } } }>(`/api/v1/conversations/${conversationId}/messages`, { text: '请生成一份项目周报文档', mode: 'balanced' });
     expect(sent.status).toBe(200);
-    expect(sent.body.data.run.status).toBe('running');
-
-    await vi.waitFor(async () => {
-      const messages = await get<{ data: Array<{ senderType: string; metadata?: { artifactId?: string } }> }>(`/api/v1/conversations/${conversationId}/messages`);
-      const agentMessage = messages.body.data.find((message) => message.senderType === 'agent');
-      expect(agentMessage).toBeDefined();
-      expect(agentMessage?.metadata?.artifactId).toBeTruthy();
-    }, { timeout: 3000 });
+    expect(sent.body.data.run.status).toBe('failed');
+    const messages = await get<{ data: Array<{ senderType: string }> }>(`/api/v1/conversations/${conversationId}/messages`);
+    expect(messages.body.data.at(-1)?.senderType).toBe('user');
 
     const runs = await get<{ data: Array<{ status: string }> }>(`/api/v1/conversations/${conversationId}/runs`);
-    expect(runs.body.data[0]?.status).toBe('completed');
+    expect(runs.body.data[0]?.status).toBe('failed');
   });
 
   it('模型测速能按 id 查到目录模型，未知 id 返回 404', async () => {
@@ -146,7 +141,7 @@ describe('mock server 契约联调', () => {
     } finally { permission.mockRestore(); }
   });
 
-  it('显式选择非默认身份时，成果保存在该身份下', async () => {
+  it('显式选择非默认身份时，群聊消息保存在该身份下', async () => {
     const identityResponse = await get<{ data: Array<{ id: string; type: string; isDefault: boolean }> }>('/api/v1/me/identities');
     const personal = identityResponse.body.data.find(item => item.type === 'personal')!;
     expect(personal.isDefault).toBe(false);
@@ -158,12 +153,10 @@ describe('mock server 契约联调', () => {
     const id = conversation.json().data.id;
     const sent = await app.inject({ method: 'POST', url: `/api/v1/conversations/${id}/messages`, headers, payload: { text: '请生成测试报告文件' } });
     expect(sent.statusCode).toBe(200);
-    await vi.waitFor(async () => {
-      const artifacts = await app.inject({ method: 'GET', url: `/api/v1/conversations/${id}/artifacts`, headers });
-      expect(artifacts.json().data).toHaveLength(1);
-      const artifact = await app.inject({ method: 'GET', url: `/api/v1/artifacts/${artifacts.json().data[0].id}`, headers });
-      expect(artifact.statusCode).toBe(200);
-    });
+    const messages = await app.inject({ method: 'GET', url: `/api/v1/conversations/${id}/messages`, headers });
+    expect(messages.json().data.at(-1).text).toBe('请生成测试报告文件');
+    const artifacts = await app.inject({ method: 'GET', url: `/api/v1/conversations/${id}/artifacts`, headers });
+    expect(artifacts.json().data).toHaveLength(0);
   });
 
   it('登出后会话失效', async () => {

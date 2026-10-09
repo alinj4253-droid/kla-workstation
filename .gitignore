@@ -37,6 +37,8 @@ data/
 **/data/
 runtime/
 **/runtime/
+!server/src/runtime/
+!server/src/runtime/**
 uploads/
 **/uploads/
 storage/
