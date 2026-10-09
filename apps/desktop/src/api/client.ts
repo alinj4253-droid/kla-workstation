@@ -5,6 +5,7 @@ const tokenKey = 'kla.access-token';
 const expiryKey = 'kla.access-expiry';
 const refreshKey = 'kla.refresh-token';
 const identityKey = 'kla.identity-id';
+const accountKey = 'kla.account-id';
 const authExpiredEvent = 'kla:auth-expired';
 
 export type ApiResult<T> = { ok: true; data: T; meta?: { requestId: string } } | { ok: false; code: string; message: string; error?: { code: string; message: string; retryable?: boolean; details?: Record<string, unknown> }; meta?: { requestId: string } };
@@ -95,7 +96,18 @@ export class KlaApiClient {
   getRefreshToken() { return sessionStorage.getItem(refreshKey); }
   setIdentity(identityId: string | null) { if (identityId) sessionStorage.setItem(identityKey, identityId); else sessionStorage.removeItem(identityKey); }
   getIdentity() { return sessionStorage.getItem(identityKey); }
-  clearAccessToken() { sessionStorage.removeItem(tokenKey); sessionStorage.removeItem(expiryKey); sessionStorage.removeItem(refreshKey); sessionStorage.removeItem(identityKey); }
+  setAccount(accountId: string) {
+    const previous = this.getAccount();
+    if (previous && previous !== accountId) window.dispatchEvent(new CustomEvent('kla:memory-cache-clear', { detail: previous }));
+    sessionStorage.setItem(accountKey, accountId);
+  }
+  getAccount() { return sessionStorage.getItem(accountKey); }
+  getCacheOrigin() { return this.baseUrl; }
+  clearAccessToken() {
+    const accountId = this.getAccount();
+    sessionStorage.removeItem(tokenKey); sessionStorage.removeItem(expiryKey); sessionStorage.removeItem(refreshKey); sessionStorage.removeItem(identityKey); sessionStorage.removeItem(accountKey);
+    if (accountId) window.dispatchEvent(new CustomEvent('kla:memory-cache-clear', { detail: accountId }));
+  }
 
   /** §7.4：导出等非 JSON 响应；仍带 Bearer，绝不把凭据放进 URL。 */
   async download(path: string): Promise<{ ok: true; blob: Blob } | { ok: false; code: string; message: string }> {
