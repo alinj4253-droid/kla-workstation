@@ -2,7 +2,7 @@
 import { z } from 'zod';
 import { connectionInputSchema, jobInputSchema, serviceInputSchema, documentRequestSchema, searchRequestSchema, KNOWLEDGE_UPLOAD_NOTICE_VERSION, type UploadInput } from '@kla-workstation/contracts/knowledge';
 import { acceptUploadConsent, assertService, configureConnection, loadConnection, publicConnection } from './config.js';
-import { assertBoundResource, loadBindings, listSources, getBindings } from './documents.js';
+import { assertBoundResource, loadBindings, listSources, getBindings, verifyDocumentScope } from './documents.js';
 import { submit, cancelUpload, abortUploads } from './process.js';
 import { listJobs, getJob, cancelJob, deleteJobRecord } from './jobs.js';
 
@@ -54,7 +54,16 @@ function register(name: string, work: (owner: unknown, raw: unknown) => unknown)
     const config = assertService(input.serviceInstanceId);
     if (input.endpoint !== 'search') {
       if (!input.docId) throw new KnowledgeError('VALIDATION_FAILED', '缺少稳定文档引用。');
-      assertBoundResource(input.serviceInstanceId, { docId: input.docId });
+      try { assertBoundResource(input.serviceInstanceId, { docId: input.docId }); }
+      catch (error) {
+        // 只对「尚未确认归属」做实时补验：服务器上由其他端上传的文件不在本地绑定表，
+        // 原先仅靠 listSources 的 2 分钟验证窗口放行，窗口一过读取就整片 403。
+        // 这里按需向远端确认一次归属（确认属于当前集合才放行并延长缓存），
+        // 其他错误（服务未配置等）原样抛出。
+        if (!(error instanceof KnowledgeError) || error.code !== 'PERMISSION_DENIED' || error.details?.notSubmitted !== true) throw error;
+        const verified = await verifyDocumentScope(currentScope().ownerNumber, input.serviceInstanceId, input.docId);
+        if (!verified) throw error;
+      }
     }
     const transport: KnowledgeTransport = async request => {
       const query = request.query ? `?${new URLSearchParams({ para: String(request.query.para), limit: String(request.query.limit) })}` : '';

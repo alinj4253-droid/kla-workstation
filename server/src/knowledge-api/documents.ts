@@ -71,6 +71,33 @@ export function assertBoundResource(serviceId: string, resource: {
         throw new KnowledgeError('PERMISSION_DENIED', '此任务或文档尚未确认关联到当前服务和集合，请刷新文件列表。', false, { notSubmitted: true });
     }
 }
+
+/**
+ * 对不在本地绑定表的文档做实时归属校验（listSources 的 proof 扫描同款判定）：
+ * 远端 /slices 明确返回「本文档属于当前集合」才放行，并把结果写入 verifiedScope。
+ *
+ * 背景：已存在的服务器文件（如其他端上传的视频）不在 bindings.json 里，原先只能靠
+ * listSources 扫描时写入的 verifiedScope（内存态、约 2 分钟过期、server 重启即清空）
+ * 在窗口期内访问；一旦过期，/slices、/document 等读取全部 403，前端出现整片
+ * 「没有权限读取该来源的切片」红条。真正的授权依据是远端服务的归属确认，这里在
+ * 访问时按需补做一次，成功后延长缓存（10 分钟）以避免逐请求重复打远端。
+ */
+export async function verifyDocumentScope(owner: number, serviceId: string, docId: string): Promise<boolean> {
+    const config = assertService(serviceId);
+    try {
+        const proof = await jsonRequest(owner, serviceId, `/v1/documents/${encodeURIComponent(docId)}/slices`, sourceProofSchema);
+        if (proof.doc_id !== docId || proof.count !== proof.slices.length || proof.collection !== config.collection)
+            return false;
+        const previous = state().verifiedScope;
+        const ids = previous?.serviceId === serviceId && previous.collection === config.collection ? previous.ids : new Map<string, number>();
+        ids.set(docId, Date.now() + 600000);
+        state().verifiedScope = { serviceId, collection: config.collection, ids };
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
 export async function listSources(owner: number, serviceId: string, collection: string, origin: string, credentialRef: string | null): Promise<SourceList> {
     const result = await jsonRequest(owner, serviceId, '/v1/documents?category=' + encodeURIComponent('上传文档'), documentListSchema);
     // Only exact returned storage paths associate a remote source with a client submission.
