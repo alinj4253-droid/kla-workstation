@@ -29,6 +29,19 @@ export type ComputeConfig = {
   secretEncryptionKey: string;
   /** Model Gateway 预扣下限（美元）：调用前的软额度闸门金额（§4.2、§8.3） */
   minReserveUsd: number;
+  /**
+   * 算力点汇率：1 USD = pointsPerUsd 点（DESIGN_POINTS_BASED_BILLING.md §3）。
+   * MVP 恒定；调整视同重大变更（发版 + 存量重估迁移），不是运行时可改参数。
+   */
+  pointsPerUsd: number;
+};
+
+export type ToolsConfig = {
+  /**
+   * 博查 Web Search API Key：平台统一持有，仅服务端使用，绝不下发客户端。
+   * 见 docs/DESIGN_BOCHA_SEARCH_INTEGRATION.md §4。
+   */
+  bochaApiKey: string;
 };
 
 export type ServerConfig = {
@@ -41,6 +54,7 @@ export type ServerConfig = {
   databaseSchema: string;
   sub2api: Sub2ApiConfig;
   compute: ComputeConfig;
+  tools: ToolsConfig;
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
@@ -71,6 +85,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       reconciliationEnabled: env.COMPUTE_RECONCILIATION_ENABLED === 'true',
       secretEncryptionKey: env.COMPUTE_SECRET_ENCRYPTION_KEY ?? '',
       minReserveUsd: Number(env.COMPUTE_MIN_RESERVE_USD ?? 0.01),
+      pointsPerUsd: Number(env.POINTS_PER_USD ?? 1000),
+    },
+    tools: {
+      bochaApiKey: env.BOCHA_API_KEY ?? '',
     },
   };
 }
