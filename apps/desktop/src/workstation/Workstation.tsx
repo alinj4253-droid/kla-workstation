@@ -3,8 +3,10 @@ import { Activity, ArrowRight, Bell, BookOpen, Bot, BriefcaseBusiness, CalendarD
 import logo from '../assets/kla-sidebar-logo.png';
 import type { IdentityDto } from '@kla-workstation/contracts';
 import { authExpiredEventName, klaApi } from '../api/client';
+import { memoryApi } from '../api/memories';
 import { ComputeSection, type ComputeView } from './ComputeSection';
 import { KnowledgeSection } from './KnowledgeSection';
+import { MemorySection } from './MemorySection';
 import { Badge, Chart, formatUsd, IconButton, Panel, Stat } from './ui';
 
 type Section = 'home' | 'projects' | 'knowledge' | 'agents' | 'memory' | 'compute' | 'chats' | 'settings';
@@ -159,9 +161,6 @@ export function Workstation(): React.JSX.Element {
   const [agentFilter, setAgentFilter] = useState('全部');
   const [agentView, setAgentView] = useState<'mine' | 'market'>('mine');
   const [agentDraft, setAgentDraft] = useState<Agent | null>(null);
-  const [memoryGroup, setMemoryGroup] = useState('');
-  const [memoryAgent, setMemoryAgent] = useState('全部智能体');
-  const [memories, setMemories] = useState<Array<{ id: string; groupId: string; agent: string; text: string; source: string }>>([]);
   const [authNewName, setAuthNewName] = useState('');
   const [authNewEmail, setAuthNewEmail] = useState('');
   const [authNewEmailCode, setAuthNewEmailCode] = useState('');
@@ -223,8 +222,9 @@ export function Workstation(): React.JSX.Element {
     const expire = () => { klaApi.clearAccessToken(); setActiveIdentityId(''); setComputeReloadKey(key => key + 1); setSignedIn(false); setAuthChecking(false); notify('登录状态已失效，请重新登录'); };
     window.addEventListener(authExpiredEventName, expire);
     if (sessionStorage.getItem('kla.access-token')) {
-      void klaApi.request('/v1/me').then(async result => {
+      void klaApi.request<{ id: string }>('/v1/me').then(async result => {
         if (!result.ok) { expire(); return; }
+        klaApi.setAccount(result.data.id);
         const identityResult = await klaApi.request<typeof identities>('/v1/me/identities');
         if (!identityResult.ok) { expire(); return; }
         const current = identityResult.data.find(item => item.id === klaApi.getIdentity())
@@ -260,9 +260,6 @@ export function Workstation(): React.JSX.Element {
       const modelResult = await klaApi.request<Array<{ id: string; name: string; provider: string; base_url?: string; capabilities?: { thinking?: boolean; vision?: boolean; context?: number }; configured?: boolean }>>('/v1/models', { headers });
       if (cancelled) return;
       if (modelResult.ok && modelResult.data.length) setModels(modelResult.data.map((m, index) => ({ id: m.id, name: m.name, vendor: `${m.provider} / ${m.id}`, category: m.capabilities?.vision ? '视觉多模态' : m.capabilities?.thinking ? '深度思考' : '通用模型', context: m.capabilities?.context ? `${Math.round(m.capabilities.context / 1000)}K` : '128K', latency: '服务端探测', cost: m.configured ? '已配置' : '待配置密钥', icon: ['◈', '文', '✣', '◉'][index % 4] })));
-      const memoryResult = await klaApi.request<Array<{ id: string; workspaceId: string; content: string; kind: string; createdAt: string }>>('/v1/memories', { headers });
-      if (cancelled) return;
-      if (memoryResult.ok) setMemories(memoryResult.data.map(m => ({ id: m.id, groupId: m.workspaceId, agent: '智能体', text: m.content, source: `${m.kind} · ${new Date(m.createdAt).toLocaleString('zh-CN')}` })));
     })().catch(() => { if (!cancelled) notify('工作区加载失败，请检查后端连接'); }).finally(() => { if (!cancelled) setWorkspaceLoading(false); });
     return () => { cancelled = true; };
   }, [signedIn, activeIdentityId]);
@@ -283,6 +280,9 @@ export function Workstation(): React.JSX.Element {
     return () => { cancelled = true; };
   }, [signedIn, activeChat, activeIdentityId]);
   useEffect(() => {
+    if (signedIn && activeIdentityId) void memoryApi.warm(activeIdentityId);
+  }, [signedIn, activeIdentityId]);
+  useEffect(() => {
     if (!signedIn || !activeChat || !pendingRunId || pendingRunId === 'submitting') return;
     let cancelled = false;
     let timer: number | undefined;
@@ -297,7 +297,11 @@ export function Workstation(): React.JSX.Element {
         if (!result.ok) { notify(apiError(result)); clearPending(); return; }
         setChats(items => items.map(chat => chat.id === activeChat ? { ...chat, messages: mapChatMessages(result.data) } : chat));
         const run = runs.data.find(item => item.id === pendingRunId);
-        if (run && ['completed', 'failed', 'cancelled'].includes(run.status)) { clearPending(); return; }
+        if (run && ['completed', 'failed', 'cancelled'].includes(run.status)) {
+          clearPending();
+          void memoryApi.invalidate(activeIdentityId).then(() => memoryApi.warm(activeIdentityId));
+          return;
+        }
         timer = window.setTimeout(() => { void poll(); }, 1000);
       } catch {
         if (!cancelled) { clearPending(); notify('无法获取执行状态，重新进入群组可继续查看'); }
@@ -307,11 +311,12 @@ export function Workstation(): React.JSX.Element {
     return () => { cancelled = true; window.clearTimeout(timer); };
   }, [signedIn, activeChat, activeIdentityId, pendingRunId]);
   const login = async () => {
-    const result = await klaApi.request<{ session: { accessToken: string; refreshToken: string; expiresAt: string; deviceId?: string | null }; identities?: typeof identities }>('/v1/auth/login', {
+    const result = await klaApi.request<{ user: { id: string }; session: { accessToken: string; refreshToken: string; expiresAt: string; deviceId?: string | null }; identities?: typeof identities }>('/v1/auth/login', {
       method: 'POST', body: JSON.stringify({ identifier: username.trim(), password }),
     });
     if (!result.ok) { notify(apiError(result)); return; }
     klaApi.setSession(result.data.session);
+    klaApi.setAccount(result.data.user.id);
     setSignedIn(true);
     setAuthChecking(false);
     setIdentities(result.data.identities ?? []);
@@ -325,9 +330,10 @@ export function Workstation(): React.JSX.Element {
     if (!authNewEmail.trim()) { notify('请输入邮箱'); return; }
     if (authNewEmailCode.trim() !== '123456') { notify('邮箱验证码错误，演示环境请输入 123456'); return; }
     if (!passwordPattern.test(authNewPassword)) { notify('密码至少 8 位，且必须包含数字、大写字母和小写字母'); return; }
-    const result = await klaApi.request<{ session: { accessToken: string; refreshToken: string; expiresAt: string; deviceId?: string | null }; identities?: typeof identities }>('/v1/auth/register', { method: 'POST', body: JSON.stringify({ email: authNewEmail.trim(), password: authNewPassword, nickname: authNewName.trim() }) });
+    const result = await klaApi.request<{ user: { id: string }; session: { accessToken: string; refreshToken: string; expiresAt: string; deviceId?: string | null }; identities?: typeof identities }>('/v1/auth/register', { method: 'POST', body: JSON.stringify({ email: authNewEmail.trim(), password: authNewPassword, nickname: authNewName.trim() }) });
     if (!result.ok) { notify(apiError(result)); return; }
     setAuthNewEmailCode('');
+    klaApi.setAccount(result.data.user.id);
     klaApi.setSession(result.data.session); setIdentities(result.data.identities ?? []); const registerIdentity = result.data.identities?.find((item) => item.isDefault) ?? result.data.identities?.[0]; if (registerIdentity) { klaApi.setIdentity(registerIdentity.id); setActiveIdentityId(registerIdentity.id); } setSignedIn(true); setAuthChecking(false); setModal('identity');
   };
   const activateIdentity = async (identityId: string) => {
@@ -447,7 +453,7 @@ export function Workstation(): React.JSX.Element {
           <Panel title="快速协作模板推荐 · 多智能体群组" action={<button className="ws-text-button" onClick={() => navigate('chats')}>更多群组模板 →</button>}><div className="ws-proto-templates">{[['财务审计协同组 · 3 智能体','法务审合同 + 财务核票据 + 风险评级自动复核，输出审计结论与风险清单'],['市场调研小组 · 4 智能体','竞品爬取分析 + 舆情摘要 + 商业洞察报告编写，一次跑完调研到成稿'],['智能研发协作 · 2 智能体','架构设计评审 + API 自动化测试用例生成，评审意见与用例同步产出'],['创意营销工坊 · 3 智能体','新媒体文案裂变 + 分镜脚本 + 渠道分发策略，覆盖投放全链路']].map(([name, desc]) => <button key={name} onClick={() => { setModal('chat'); setNewName(name.split(' · ')[0]); }}><BriefcaseBusiness size={19} /><strong>{name}</strong><small>{desc}</small></button>)}</div></Panel>
         </div>}
         {section === 'projects' && <><div className="ws-page-heading"><div><h1>{currentProject.name}</h1><p>{currentProject.description}</p></div><button className="ws-primary" onClick={() => setModal('project')}><Plus size={16} /> 创建项目</button></div><div className="ws-stats four"><Stat icon={<Folder />} label="项目总数" value={`${projects.length}`} hint="当前工作空间" /><Stat icon={<CheckCircle2 />} label="总体完成率" value={`${projects.length ? Math.round(projects.reduce((n, p) => n + p.progress, 0) / projects.length) : 0}%`} hint="项目任务进度" color="green" /><Stat icon={<Users />} label="参与成员" value={`${currentProject.members} 人`} hint="含协作智能体" color="teal" /><Stat icon={<CalendarDays />} label="待办任务" value="8 项" hint="本周需跟进" color="orange" /></div><div className="ws-project-grid"><Panel title="项目进度概览" action={<Badge tone="green">进行中</Badge>}><div className="ws-project-progress"><div><strong>{currentProject.progress}%</strong><small>整体进度</small></div><div className="ws-progress-track"><i style={{ width: `${currentProject.progress}%` }} /></div><p>已完成 18 / 25 个任务节点</p></div><div className="ws-milestones">{['需求调研', '方案设计', '功能开发', '联调验收'].map((t, i) => <span key={t} className={i < 2 ? 'done' : ''}>{i < 2 ? '✓' : i + 1} {t}</span>)}</div></Panel><Panel title="近七日任务趋势" action={<span className="ws-muted">任务完成情况</span>}><Chart kind="bars" /></Panel></div><div className="ws-project-grid"><Panel title="项目成员与智能体"><div className="ws-people">{['老K', '统筹智能体', '本地执行智能体', '设计团队'].map(t => <span key={t}><span className="ws-avatar">{t.slice(0, 2)}</span>{t}</span>)}</div></Panel><Panel title="项目动态" action={<button className="ws-text-button" onClick={() => navigate('chats')}>进入群组 →</button>}><div className="ws-timeline"><p><b>今日 09:30</b> 统筹智能体更新项目阶段计划</p><p><b>昨日 16:20</b> 完成知识库资料归档</p><p><b>09月26日</b> 项目例会纪要已整理</p></div></Panel></div></>}
-        {section === 'memory' && <><div className="ws-page-heading"><div><h1>记忆</h1><p>管理由对话中提炼出的记忆与偏好模型。记忆按群组隔离，只在对应群组的对话与任务中生效。</p></div><button className="ws-primary" onClick={() => notify('新增该群组记忆')}>+ 新增记忆</button></div><div className="ws-stats three"><Stat icon={<Users />} label="可记忆群组" value={`${chats.length} 个`} hint="群组创建后自动开启独立记忆" /><Stat icon={<BrainIcon />} label="记忆条目总数" value={`${memories.length} 条`} hint="按群组分别统计，互不可见" color="teal" /><Stat icon={<Clock3 />} label="最近自动整理" value="8 分钟前" hint="每晚自动整理更新" color="orange" /></div><Panel title="选择群组" action={<span className="ws-muted">记忆只在本群组内生效，切换群组会读取该群组自己的记忆</span>}><div className="ws-memory-tabs">{chats.map(chat => <button key={chat.id} className={memoryGroup === chat.id ? 'active' : ''} onClick={() => { setMemoryGroup(chat.id); setMemoryAgent('全部智能体'); }}>{chat.name} · {memories.filter(m => m.groupId === chat.id).length} 条</button>)}</div></Panel><div className="ws-memory-layout"><Panel title={currentChat.name}><div className="ws-memory-filter"><span>按智能体查看</span>{['全部智能体', ...Array.from(new Set(memories.filter(m => m.groupId === memoryGroup).map(m => m.agent)))].map(agent => <button key={agent} className={memoryAgent === agent ? 'active' : ''} onClick={() => setMemoryAgent(agent)}>{agent}</button>)}</div><div className="ws-memory-list">{memories.filter(m => m.groupId === memoryGroup && (memoryAgent === '全部智能体' || m.agent === memoryAgent)).map(memory => <article key={memory.id}><div><p>{memory.text}</p><small>来源：{memory.source}</small></div><div><button onClick={() => notify('编辑该条记忆')}>编辑</button><button className="danger" onClick={() => setMemories(items => items.filter(item => item.id !== memory.id))}>删除</button></div></article>)}</div>{memories.filter(m => m.groupId === memoryGroup).length === 0 && <div className="ws-empty">当前群组暂无记忆</div>}</Panel><aside className="ws-memory-side"><h3>记忆使用说明</h3><p>群组内的智能体在回答时会带入本群组记忆，其他群组读不到。</p><p>每条记忆都标注来源智能体，可逐条核对与删除。</p><Badge tone="green">● 隔离策略正常</Badge></aside></div></>}
+        {section === 'memory' && <MemorySection key={activeIdentityId} identityId={activeIdentityId} />}
 {section === 'chats' && <div className="ws-chat"><header><div><span className="ws-avatar">{currentChat.name.slice(0, 2)}</span><span><strong>{currentChat.name}</strong><small>● {currentChat.project} · 2 个智能体协作中</small></span></div><div><IconButton title="邀请成员" onClick={() => notify('邀请成员将在成员接口接入后开放')}><Users size={17} /></IconButton><IconButton title="群组文件" onClick={() => notify('群组文件将在服务端存储接入后开放')}><Folder size={17} /></IconButton><IconButton title="更多" onClick={() => notify('群组设置即将开放')}><MoreHorizontal size={17} /></IconButton></div></header><div className="ws-chat-messages"><p className="ws-chat-date">{chatLoading ? '正在加载消息…' : '消息记录'}</p>{currentChat.messages.map((m, i) => <div className={`ws-message ${m.author === '我' ? 'self' : ''}`} key={m.id ?? `${m.time}-${i}`}><span className="ws-avatar">{m.author.slice(0, 2)}</span><div><small>{m.author} · {m.time}</small><p>{m.text}</p>{m.artifactId && <button className="ws-text-button" onClick={() => void openArtifact(m.artifactId!)}><FileText size={14} /> 打开成果文件</button>}</div></div>)}{chatSending && <div className="ws-message"><span className="ws-avatar">统筹</span><div><small>统筹智能体 · 正在处理</small><p className="ws-thinking"><span /> <span /> <span /></p></div></div>}</div><div className="ws-chat-compose"><textarea placeholder="发送消息给群组 (支持 @ 智能体)..." value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }} /><div><span><Paperclip size={16} /> 附件 <Bot size={16} /> 智能体</span><button className="ws-primary" disabled={chatSending || chatLoading || !currentChat.id} onClick={() => void send()}><Send size={15} />{chatSending ? '处理中…' : '发送给群组'}</button></div></div></div>}
         {section === 'knowledge' && <KnowledgeSection key={computeReloadKey} />}
         {section === 'compute' && <>

@@ -64,5 +64,30 @@
 .ws-panel-head{margin-bottom:14px}
 /* Keep the welcome text readable when the preview window is narrow. */
 .ws-proto-welcome-copy{flex:1 1 320px}
+/* Read-only memory browser: project/chat chips, agent filter and text lists. */
+.ws-memory-browser .ws-page-heading{gap:16px}
+.ws-memory-browser .ws-memory-layout{grid-template-columns:minmax(0,2fr) minmax(230px,1fr);align-items:start}
+.ws-memory-refresh,.ws-memory-pagination button,.ws-memory-error button{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:7px 12px;border:1px solid #e3eaf2;border-radius:6px;color:#64748b;font-size:11px;background:#fff;white-space:nowrap}
+.ws-memory-refresh:hover,.ws-memory-pagination button:enabled:hover,.ws-memory-error button:hover{color:#2563eb;border-color:#bfdbfe}
+.ws-memory-browser button:disabled{opacity:.45;cursor:default}
+.ws-memory-scope-row{display:flex;align-items:flex-start;gap:16px;margin:10px 0}
+.ws-memory-scope-row>span{display:flex;align-items:center;gap:5px;min-width:48px;margin-top:6px;color:#94a3b8;font-size:11px}
+.ws-memory-browser .ws-memory-filter{padding:0 0 14px;gap:8px;font-size:11px}
+.ws-memory-browser .ws-memory-filter button{padding:5px 10px;font-size:11px;border-radius:5px}
+.ws-memory-term-tabs{display:flex;gap:20px;margin:0 0 4px;border-bottom:1px solid #edf2f7}
+.ws-memory-term-tabs button{display:flex;align-items:center;gap:6px;padding:12px 3px 10px;border-bottom:2px solid transparent;font-size:12px;color:#94a3b8}
+.ws-memory-term-tabs button.active{color:#2563eb;border-bottom-color:#2563eb;font-weight:600}
+.ws-memory-browser .ws-memory-entry>div{display:block;min-width:0}
+.ws-memory-browser .ws-memory-entry p{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.8}
+.ws-memory-browser .ws-memory-entry small{font-size:10px;line-height:1.6}
+.ws-memory-pagination{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding-top:16px;font-size:10px;color:#94a3b8}
+.ws-memory-pagination>span{margin-right:auto}
+.ws-memory-info{display:grid;gap:14px}
+.ws-memory-help-item+.ws-memory-help-item{border-top:1px solid #edf2f7;margin-top:12px;padding-top:12px}
+.ws-memory-help-item h4{font-size:12px;color:#334155;font-weight:600;margin:0 0 6px}
+.ws-memory-help-item p{font-size:11px;color:#94a3b8;line-height:1.8;margin:0}
+.ws-memory-error{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:16px;margin-bottom:14px;background:#fff7f7;border:1px solid #fee2e2;border-radius:8px;font-size:12px;color:#b91c1c}
+@media(max-width:1000px){.ws-memory-browser .ws-memory-layout{grid-template-columns:1fr}.ws-memory-info{grid-template-columns:1fr 1fr}}
+@media(max-width:700px){.ws-memory-info{grid-template-columns:1fr}.ws-memory-scope-row{display:block}.ws-memory-scope-row>span{margin-bottom:8px}.ws-memory-browser .ws-page-heading{align-items:flex-start}}
 @media(max-width:1100px){.ws-cols-3-2,.ws-cols-2-1,.ws-card-grid-3{grid-template-columns:1fr}}
 @media(max-width:760px){.ws-stats.two,.ws-mini-grid{grid-template-columns:1fr 1fr}.ws-tool-row>.ws-right{margin-left:0}}

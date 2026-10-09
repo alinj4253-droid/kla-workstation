@@ -49,3 +49,11 @@ import type { ApiEnvelope, ApiErrorEnvelope } from '@kla-workstation/contracts';
 ```
 
 > 契约包 `exports.types` 直指 `src/index.ts`（internal package 模式），typecheck 无需先构建；`dist` 仅生产运行（`pnpm -r build` 拓扑序自动先建 contracts）。
+
+## 6. 记忆浏览与生命周期契约
+
+新增 `GET /api/v1/memories/browser/scopes` 与 `GET /api/v1/memories/browser`，提供按当前身份的项目、群组、来源智能体、长短期及 ISO 创建时间范围 `from/to` 筛选和分页。请求参数通过 `memoryBrowserQuerySchema` 校验，响应使用 `memoryBrowserScopesSchema` / `memoryBrowserPageSchema`；原有记忆读写接口保持兼容。
+
+浏览条目补充 `reinforcedAt`、`retainedUntil`、`timeWeight`。长期记忆无权重（`null`）；短期采用 72 小时半衰期、30 天归零，服务器保留 365 天，客户端缓存最近七天。共享规则由 `packages/contracts/src/memory-policy.ts` 定义。
+
+`POST /api/v1/memories/search` 当前只检索未过期且未归零的短期记录；长期记录只允许写入和浏览，不进入检索或对话上下文。对话使用身份 / 群组 / 智能体隔离的短期上下文和旧版有界评分召回。数据口径、身份隔离及只读边界详见 [MEMORY_BROWSER.md](./MEMORY_BROWSER.md)，实际缓存、清理与接入边界见 [MEMORY_LIFECYCLE.md](./MEMORY_LIFECYCLE.md)。

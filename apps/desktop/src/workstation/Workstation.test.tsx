@@ -3,11 +3,14 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Workstation } from './Workstation';
 
-const { request, setSession, setIdentity } = vi.hoisted(() => ({ request: vi.fn(), setSession: vi.fn(), setIdentity: vi.fn() }));
+const { request, setSession, setIdentity, setAccount, warm, invalidate } = vi.hoisted(() => ({
+  request: vi.fn(), setSession: vi.fn(), setIdentity: vi.fn(), setAccount: vi.fn(), warm: vi.fn(), invalidate: vi.fn(),
+}));
 vi.mock('../api/client', () => ({
   authExpiredEventName: 'kla:auth-expired',
-  klaApi: { request, setSession, setIdentity, getIdentity: () => sessionStorage.getItem('kla.identity-id'), clearAccessToken: () => sessionStorage.clear() },
+  klaApi: { request, setSession, setIdentity, setAccount, getIdentity: () => sessionStorage.getItem('kla.identity-id'), clearAccessToken: () => sessionStorage.clear() },
 }));
+vi.mock('../api/memories', () => ({ memoryApi: { warm, invalidate } }));
 
 const projects = [{ id: 'project-a', name: '同名项目' }, { id: 'project-b', name: '同名项目' }];
 const conversations = [{ id: 'chat-a', projectId: 'project-a', name: '已有群聊' }];
@@ -23,11 +26,15 @@ beforeEach(() => {
   request.mockReset();
   setSession.mockReset();
   setIdentity.mockReset();
+  setAccount.mockReset();
+  setAccount.mockImplementation((id: string) => sessionStorage.setItem('kla.account-id', id));
+  warm.mockReset(); warm.mockResolvedValue(undefined);
+  invalidate.mockReset(); invalidate.mockResolvedValue(undefined);
   setIdentity.mockImplementation((id: string) => sessionStorage.setItem('kla.identity-id', id));
   request.mockImplementation(async (path: string, init: RequestInit = {}) => {
     const override = overrides[`${init.method ?? 'GET'} ${path}`];
     if (override) return override();
-    if (path === '/v1/me') return { ok: true, data: { nickname: '测试用户' } };
+    if (path === '/v1/me') return { ok: true, data: { id: 'user-a', nickname: '测试用户' } };
     if (path === '/v1/me/identities') return { ok: true, data: [{ id: 'identity-a', type: 'personal', displayName: '个人工作区', isDefault: true }] };
     if (path === '/v1/bootstrap') return { ok: true, data: { projects, conversations } };
     if (path.endsWith('/messages')) return { ok: true, data: [historicalReply] };
@@ -72,7 +79,7 @@ describe('登录与注册入口', () => {
     sessionStorage.clear();
     const session = { accessToken: 'new-access', refreshToken: 'new-refresh', expiresAt: '2026-10-15T00:00:00Z' };
     const identity = { id: 'personal-new', type: 'personal', displayName: '个人空间', isDefault: true };
-    overrides['POST /v1/auth/register'] = () => ({ ok: true, data: { session, identities: [identity] } });
+    overrides['POST /v1/auth/register'] = () => ({ ok: true, data: { user: { id: 'user-new' }, session, identities: [identity] } });
     const user = userEvent.setup();
     render(<Workstation />);
     await user.click(screen.getByRole('button', { name: '注册鲲擎账号' }));
@@ -95,6 +102,7 @@ describe('登录与注册入口', () => {
     await user.click(screen.getByRole('button', { name: '注册' }));
     expect(await screen.findByText('选择进入身份')).toBeVisible();
     expect(setSession).toHaveBeenCalledWith(session);
+    expect(setAccount).toHaveBeenCalledWith('user-new');
     expect(setIdentity).toHaveBeenCalledWith(identity.id);
     const submission = request.mock.calls.find(([path]) => path === '/v1/auth/register');
     expect(JSON.parse(submission![1].body)).toEqual({ email: 'new@example.test', password: 'ValidPass2026', nickname: 'NewUser' });
@@ -104,7 +112,7 @@ describe('登录与注册入口', () => {
     sessionStorage.clear();
     const session = { accessToken: 'login-access', refreshToken: 'login-refresh', expiresAt: '2026-10-15T00:00:00Z' };
     const identity = { id: 'personal-login', type: 'personal', displayName: '个人工作区', isDefault: true };
-    overrides['POST /v1/auth/login'] = () => ({ ok: true, data: { session, identities: [identity] } });
+    overrides['POST /v1/auth/login'] = () => ({ ok: true, data: { user: { id: 'user-login' }, session, identities: [identity] } });
     overrides['POST /v1/me/identities/personal-login/activate'] = () => ({ ok: false, message: '身份激活暂不可用' });
     const user = userEvent.setup();
     render(<Workstation />);
@@ -113,6 +121,7 @@ describe('登录与注册入口', () => {
     await user.click(screen.getByRole('button', { name: /立即登录并连接/ }));
     expect(await screen.findByText('选择进入身份')).toBeVisible();
     expect(setSession).toHaveBeenCalledWith(session);
+    expect(setAccount).toHaveBeenCalledWith('user-login');
     await user.click(screen.getByRole('button', { name: /个人身份.*个人工作区/ }));
     expect(await screen.findByText('身份激活暂不可用')).toBeVisible();
     expect(screen.getByText('选择进入身份')).toBeVisible();
@@ -214,5 +223,6 @@ describe('新版项目和群聊的真实接口交互', () => {
     expect(await screen.findByText('本次答复', {}, { timeout: 3000 })).toBeVisible();
     expect(screen.getByRole('button', { name: '发送给群组' })).toBeEnabled();
     expect(screen.getAllByText('本次的问题', { selector: 'p' })).toHaveLength(1);
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith('identity-a'));
   });
 });
