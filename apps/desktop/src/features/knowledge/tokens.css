@@ -1,4 +1,7 @@
-.kl-module, .kl-modal-overlay, .kl-drawer-overlay {
+/* .kl-menu-scope 是卡片「⋯」菜单的 portal 包裹层：菜单被 Portal 挂到 body，
+   脱离了 .kl-module 的作用域，取不到 --kq-* 变量会导致 background/border 全条失效、
+   菜单变透明直接压在卡片文字上（看着像"被遮挡"）。故把它一起纳入 token 作用域。 */
+.kl-module, .kl-modal-overlay, .kl-drawer-overlay, .kl-menu-scope {
   color-scheme: light;
   font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
   color: #1a1c1f;
