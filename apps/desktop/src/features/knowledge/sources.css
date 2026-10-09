@@ -1,10 +1,17 @@
 .kl-back { display: inline-flex; gap: 6px; align-items: center; margin-bottom: 12px; text-decoration: none; color: var(--kq-text-tertiary); }
-.kl-detail-stats { grid-template-columns: repeat(5, minmax(0,1fr)); }
+/* 详情页 5 张统计卡固定同一行。需写 `.kl-stats.kl-detail-stats` 提权到 0,2,0：
+   overview.css 的 `.kl-stats` 是 4 列(0,1,0) 且加载顺序在后，会覆盖下面这条单类规则。 */
+.kl-stats.kl-detail-stats { grid-template-columns: repeat(5, minmax(0,1fr)); }
 .kl-detail-stats strong { font-size: 24px; }
-.kl-tabs { display: flex; gap: 24px; border-bottom: 1px solid var(--kq-border); margin-bottom: 20px; }
-.kl-tabs button { border: 0; background: transparent; border-radius: 0; padding: 12px 2px; font-weight: 600; border-bottom: 2px solid transparent; }
-.kl-tabs button[data-state="active"] { color: var(--kq-primary); border-bottom-color: var(--kq-primary); }
-.kl-tabs span { font-size: 11px; padding: 0 5px; border-radius: 4px; background: var(--kq-surface-muted); }
+@media (max-width: 1180px) { .kl-stats.kl-detail-stats { grid-template-columns: repeat(3, minmax(0,1fr)); } }
+@media (max-width: 760px) { .kl-stats.kl-detail-stats { grid-template-columns: repeat(2, minmax(0,1fr)); } }
+/* Tab 栏对齐原型（.tabs）：纯文字 + 激活下划线，不做药丸按钮。
+   需压过 overview.css 的 `.kl-module button`（同 specificity 0,1,1 但后加载会覆盖），故加重复类提权。 */
+.kl-module .kl-tabs { display: flex; gap: 20px; border-bottom: 1px solid var(--kq-border); margin-bottom: 20px; }
+.kl-module .kl-tabs button { display: inline-flex; align-items: center; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--kq-text-tertiary); font-size: 13px; font-weight: 500; min-height: 0; margin-bottom: -1px; padding: 12px 0; cursor: pointer; }
+.kl-module .kl-tabs button:hover:not(:disabled) { border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--kq-text-secondary); }
+.kl-module .kl-tabs button[data-state="active"] { color: var(--kq-primary); border-bottom-color: var(--kq-primary); font-weight: 600; }
+.kl-module .kl-tabs span { font-size: 11px; font-weight: 400; padding: 0; border-radius: 0; background: transparent; color: inherit; opacity: .7; }
 .kl-source-panel { background: var(--kq-surface); border: 1px solid var(--kq-border); border-radius: 12px; overflow: hidden; }
 .kl-source-panel .kl-toolbar { padding: 18px 20px; margin: 0; border-bottom: 1px solid var(--kq-border); }
 .kl-source-panel .kl-empty { border: 0; border-radius: 0; }

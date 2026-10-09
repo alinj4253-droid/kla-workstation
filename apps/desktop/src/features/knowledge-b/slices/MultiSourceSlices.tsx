@@ -36,7 +36,6 @@ interface ViewState {
   key: string;
   sourceId: string;
   filterText: string;
-  group: string;
   page: number;
 }
 
@@ -123,11 +122,10 @@ function SliceList({
     : sourcesInScope;
   const sourceSetKey = JSON.stringify(allSources.map(source => [source.docId, source.collection, source.version ?? null]));
   const viewKey = `${context.cacheScope}:${mode}:${sourceSetKey}:${mode === 'single' ? selectedDocId ?? '' : ''}`;
-  const [view, setView] = useState<ViewState>({ key: viewKey, sourceId: '', filterText: '', group: '', page: 1 });
+  const [view, setView] = useState<ViewState>({ key: viewKey, sourceId: '', filterText: '', page: 1 });
   const hasCurrentView = view.key === viewKey;
   const selectedSourceFilter = hasCurrentView ? view.sourceId : '';
   const filterText = hasCurrentView ? view.filterText : '';
-  const selectedGroup = hasCurrentView ? view.group : '';
   const currentPage = hasCurrentView ? view.page : 1;
 
   const queries = useQueries({ queries: querySources.map(source => {
@@ -143,11 +141,8 @@ function SliceList({
   const normalizedFilter = filterText.trim().toLocaleLowerCase('zh-CN');
   const visibleRows = rows.filter(row => {
     if (mode === 'all' && selectedSourceFilter && row.source.docId !== selectedSourceFilter) return false;
-    if (selectedGroup && String(row.slice.group ?? '') !== selectedGroup) return false;
     return !normalizedFilter || searchableText(row).includes(normalizedFilter);
   });
-  const groups = Array.from(new Set(rows.flatMap(row => row.slice.group === undefined || row.slice.group === null ? [] : [String(row.slice.group)])))
-    .sort((left, right) => left.localeCompare(right, 'zh-CN', { numeric: true }));
   const pageCount = Math.ceil(visibleRows.length / PAGE_SIZE);
   const displayedPage = Math.min(currentPage, Math.max(pageCount, 1));
   const pageRows = visibleRows.slice((displayedPage - 1) * PAGE_SIZE, displayedPage * PAGE_SIZE);
@@ -188,7 +183,6 @@ function SliceList({
       key: viewKey,
       sourceId: selectedSourceFilter,
       filterText,
-      group: selectedGroup,
       page: currentPage,
       ...patch,
     });
@@ -197,6 +191,16 @@ function SliceList({
   return (
     <section className="kb-b-slices" aria-label="知识切片列表">
       <div className="kb-b-slices__toolbar">
+        <label>
+          搜索切片
+          <input
+            type="search"
+            aria-label="搜索切片标题和正文"
+            placeholder="搜索知识切片"
+            value={filterText}
+            onChange={event => changeView({ filterText: event.currentTarget.value, page: 1 })}
+          />
+        </label>
         <label>
           来源文件
           <select
@@ -214,23 +218,6 @@ function SliceList({
             {sourcesInScope.map(source => <option value={source.docId} key={source.docId}>{sourceLabels.get(source.docId) ?? source.name}</option>)}
           </select>
         </label>
-        <label>
-          搜索切片
-          <input
-            type="search"
-            aria-label="搜索切片标题和正文"
-            placeholder="搜索标题、正文或来源"
-            value={filterText}
-            onChange={event => changeView({ filterText: event.currentTarget.value, page: 1 })}
-          />
-        </label>
-        {groups.length > 0 && <label>
-          分组
-          <select aria-label="按切片分组筛选" value={selectedGroup} onChange={event => changeView({ group: event.currentTarget.value, page: 1 })}>
-            <option value="">全部分组</option>
-            {groups.map(group => <option value={group} key={group}>分组 {group}</option>)}
-          </select>
-        </label>}
         <span className="kb-b-slices__count" aria-live="polite">
           {complete ? `共 ${loadedCount} 个切片` : `已加载 ${loadedCount} 个切片 · ${loadedSources}/${querySources.length} 个来源`}
         </span>

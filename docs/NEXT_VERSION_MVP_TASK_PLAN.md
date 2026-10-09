@@ -25,8 +25,8 @@
 | P0-01 | 确认服务端部署形态 | 无 | 部署架构决策记录 | 明确开发、测试、生产环境及网络边界 | 未开始 |
 | P0-02 | 确认租户、用户、项目和群聊资源模型 | 无 | 资源模型和权限矩阵 | 每种资源有唯一 ID、父级关系和作用域规则 | 已完成（见 FULL_STACK_IMPLEMENTATION_SPEC §4–§5） |
 | P0-03 | 选择对象存储、关系数据库、向量数据库和消息队列 | P0-01 | 组件选型及容量估算 | 完成可用性、备份、扩容和成本评估 | 已完成（PG/Redis/S3 兼容/Vector 已定稿，docker-compose.dev.yml 已落地；容量估算随 M4 收口） |
-| P0-04 | 建立服务端仓库、配置管理和 CI | P0-01 | 服务端工程骨架 | 能构建、启动、健康检查和发布 | 进行中（仓库重组、契约包 packages/contracts、pnpm ci-check、迁移执行器与 /health、/health/database、/health/redis 已就绪；CI 流水线与 mock server 未建） |
-| P0-05 | 建立日志、指标、链路追踪和审计规范 | P0-02 | 可观测性规范 | 可按用户、任务、文件和调用 ID 追踪一次请求 | 未开始 |
+| P0-04 | 建立服务端仓库、配置管理和 CI | P0-01 | 服务端工程骨架 | 能构建、启动、健康检查和发布 | 已完成（仓库重组、契约包 packages/contracts、pnpm ci-check、迁移执行器与 /health 系列已就绪；GitLab CI（check+package）与 Dockerfile、mock server 已建成；mock 不覆盖算力模块、无专用启动脚本） |
+| P0-05 | 建立日志、指标、链路追踪和审计规范 | P0-02 | 可观测性规范 | 可按用户、任务、文件和调用 ID 追踪一次请求 | 进行中（pino 结构化日志、敏感字段脱敏、请求 ID 生成与贯穿已实现（observability/logger.ts）；指标、分布式追踪、审计事件未开始） |
 
 ## 三、P1：算力服务器与模型服务
 
@@ -37,11 +37,11 @@
 | P1-03 | 部署 Embedding 模型与批量向量化服务 | P1-01 | Embedding 服务 | 输入文本批量转向量，记录模型版本和维度 | 未开始 |
 | P1-04 | 部署 Whisper 或等效语音转写服务 | P1-01 | ASR 服务 | 上传音频可返回带时间戳的转写结果 | 未开始 |
 | P1-05 | 部署模型健康检查和容量监控 | P1-02、P1-03、P1-04 | 模型监控面板、健康 API | 能发现模型不可用、显存不足、超时和队列堆积 | 未开始 |
-| P1-06 | 部署 sub2api 算力中台 | P0-01 | sub2api 服务、upstream 账号（移动云）、《Admin API Key 签发/存放/轮换与网络隔离规范》 | 关闭注册/支付/验证码；upstream 接移动云真实调用通过；连通验证报告（含用量明细粒度） | 未开始 |
-| P1-07 | 梳理 sub2api 管理、调用、用量接口 | P1-06 | 《sub2api 接口适配说明》（接口清单 + 错误码映射 + 幂等语义 + 分组规划表） | 管理面/用户面接口逐条验证；验证码关闭确认；用量明细粒度确认 | 未开始 |
-| P1-08 | 开发 KLA Model Gateway（服务端化） | P1-06、P1-07 | 服务端网关服务（抽自 model-core，含代理登录与会话缓存） | 按服务端重建的工作身份选 key；流式、超时、有限重试和错误码映射通过；工作站内端到端真实调用 | 进行中（ComputeGateway 已服务端化：completeChat/配额预扣/按身份选 key/超时与错误映射，统筹智能体 runConversation 已改走网关；流式与端到端真实调用验证未完成） |
-| P1-09 | 建立模型用量采集和结算事件 | P1-08 | `model_usage` 事件、usage_sync 定时任务与查询接口 | 用量按用户、项目、群聊、智能体和任务查询；水位线增量拉取、明细幂等去重、`token_used` 回流 | 进行中（usage_records 表与 UsageSyncWorker 已落地；水位线/幂等去重/查询接口与对账未完成） |
-| P1-10 | 开发算力账号同步器 | P1-06、P2-02 | 同步器 worker（Outbox 模式）、`compute_binding`/`entitlement_ledger` 表 | 企业/个人身份建号、额度发放、停用、清退、漂移检测全链路演练通过，outbox 无积压 | 进行中（OutboxWorker/ProvisioningService/sub2api client 已落地，register/建企业/加企业时写 provision 事件；全链路演练未做） |
+| P1-06 | 部署 sub2api 算力中台 | P0-01 | sub2api 服务、upstream 账号（移动云）、《Admin API Key 签发/存放/轮换与网络隔离规范》 | 关闭注册/支付/验证码；upstream 接移动云真实调用通过；连通验证报告（含用量明细粒度） | 已完成（sub2api 已部署并连通，部署类任务无需服务端代码；CM1 达成） |
+| P1-07 | 梳理 sub2api 管理、调用、用量接口 | P1-06 | 《sub2api 接口适配说明》（接口清单 + 错误码映射 + 幂等语义 + 分组规划表） | 管理面/用户面接口逐条验证；验证码关闭确认；用量明细粒度确认 | 已完成（接口适配落地于 compute/sub2api-client.ts：Admin/User API、超时与退避重试、错误码映射、信封解包；适配结论含于代码注释） |
+| P1-08 | 开发 KLA Model Gateway（服务端化） | P1-06、P1-07 | 服务端网关服务（抽自 model-core，含代理登录与会话缓存） | 按服务端重建的工作身份选 key；流式、超时、有限重试和错误码映射通过；工作站内端到端真实调用 | 进行中（completeChat 与流式 streamChat（SSE 透传路由 + usage 提取）、配额预扣、按身份选 key、超时与错误映射、网关级幂等去重均已实现，runConversation 已改走网关；工作站内端到端真实调用验收未做） |
+| P1-09 | 建立模型用量采集和结算事件 | P1-08 | `model_usage` 事件、usage_sync 定时任务与查询接口 | 用量按用户、项目、群聊、智能体和任务查询；水位线增量拉取、明细幂等去重、`token_used` 回流 | 进行中（compute_usage 表、UsageSyncWorker 定时增量拉取、sha256 幂等去重（ON CONFLICT）、用量查询/汇总/CSV 导出均已实现；水位线为内存变量需持久化；ReconciliationService 已写但未挂载，余额对账已挂到 /compute/summary） |
+| P1-10 | 开发算力账号同步器 | P1-06、P2-02 | 同步器 worker（Outbox 模式）、`compute_binding`/`entitlement_ledger` 表 | 企业/个人身份建号、额度发放、停用、清退、漂移检测全链路演练通过，outbox 无积压 | 进行中（OutboxWorker（SKIP LOCKED）、ProvisioningService 建号状态机（断点恢复、共享上游账号、冲突追加序号）、注册/建企业/加企业写 provision 事件均已落地；disable_identity_compute 事件缺生产者（停用/清退只有消费端）、漂移检测未实现、全链路演练未做） |
 
 ## 四、P2：服务端基础能力
 
@@ -50,7 +50,7 @@
 | P2-01 | 实现身份认证、会话和设备令牌 | P0-02、P0-04 | Auth API | 登录、刷新、退出和设备失效可用 | 已完成（注册/登录/登出、scrypt 口令哈希、refresh 一次性轮换与重放拒绝、设备信息存储、会话列表/单个/全部撤销已接 PostgreSQL；桌面端 client 自动刷新与身份隔离已接；集成测试 auth.integration.test.ts 覆盖） |
 | P2-02 | 实现租户、用户、项目、群聊元数据 | P2-01 | 元数据表和 CRUD API | 数据有租户隔离和完整审计字段 | 进行中（users/identities/organizations/projects/conversations/messages 表与 CRUD 已接 PostgreSQL，身份切换、企业创建/加入可用；workspaces/agents/skills/tasks/models/usage_records/artifacts/conversation_runs/meetings 等多模块表已随迁移落地；审计字段与隔离测试未做） |
 | P2-03 | 实现 RBAC/策略权限服务 | P2-01、P2-02 | Permission Service | 支持 `read/write/execute/manage/export`，服务端强制判权 | 已完成（permission-service.ts 五种动作判权，RBAC 走 identity_roles/role_permissions/permissions 表；routes.ts enforce 助手在业务路由上服务端强制判权并返回 403；集成测试覆盖成员权限控制） |
-| P2-04 | 实现对象存储适配和文件元数据 | P0-03、P2-03 | File Service | 文件上传、下载、版本、哈希和软删除可用 | 未开始（files/upload_sessions 表与 GET /api/v1/files 列表已有；对象存储适配为占位实现，上传/下载/版本/哈希/软删除未做） |
+| P2-04 | 实现对象存储适配和文件元数据 | P0-03、P2-03 | File Service | 文件上传、下载、版本、哈希和软删除可用 | 未开始（files/upload_sessions 表与 GET /api/v1/files 列表已有；upload-sessions 为占位（uploadUrl:null, mode=server-multipart-placeholder），object-storage-placeholder.ts 为死代码，上传/下载/版本/哈希/软删除未做） |
 | P2-05 | 实现任务队列、幂等和失败重试 | P0-03、P0-05 | Queue/Job Service | 任务可重试、有上限、失败进入死信且不重复执行 | 未开始 |
 | P2-06 | 实现统一审计事件 | P0-05、P2-03 | Audit Service | 关键读写和工具调用均有审计记录 | 未开始 |
 
@@ -58,16 +58,16 @@
 
 | 编号 | 任务 | 依赖 | 交付物 | 完成标准 | 状态 |
 |---|---|---|---|---|---|
-| P3-01 | 实现分片上传和上传完成接口 | P2-04 | Upload Session API | 支持断点续传、哈希校验和重复提交幂等 | 未开始 |
-| P3-02 | 实现原生文本/HTML/Word/PDF 解析 | P2-05 | Parser Worker | 可提取正文、页码、章节和元数据 | 未开始 |
-| P3-03 | 接入 OCR Worker | P1-02、P3-02 | OCR Pipeline | 图片型文件能生成可定位正文 | 未开始 |
-| P3-04 | 实现标准化全文生成 | P3-02、P3-03 | Normalized Text Worker | 服务端保存全文版本，处理中内容不进入检索 | 未开始 |
-| P3-05 | 实现知识切片和定位信息 | P3-04 | Chunk Worker | 每个切片含 offset、页码、章节、版本和权限标签 | 未开始 |
-| P3-06 | 实现 Embedding 批处理和向量索引 | P1-03、P3-05 | Embedding/Index Worker | 记录模型版本，支持失败重试和批量处理 | 未开始 |
-| P3-07 | 实现知识状态机和进度事件 | P2-05、P3-02-P3-06 | Knowledge Job API | 状态、错误、重试和完成进度可查询/推送 | 未开始 |
-| P3-08 | 实现权限过滤的语义检索 | P2-03、P3-06 | Search API | 先判权再召回，返回来源、位置和分数 | 未开始 |
-| P3-09 | 实现权限过滤的全文/分段读取 | P2-03、P3-04 | Fulltext Read API | 支持按页、offset、章节分段读取且覆盖全文 | 未开始 |
-| P3-10 | 实现内容哈希去重和知识版本 | P2-04、P3-04 | Dedup/Version Service | 相同文件复用处理结果，更新文件生成新版本 | 未开始 |
+| P3-01 | 实现分片上传和上传完成接口 | P2-04 | Upload Session API | 支持断点续传、哈希校验和重复提交幂等 | 未开始（upload-sessions 为占位；knowledge-library 路径为整文件转发上传（50MiB 上限），仅有 clientUploadId 提交幂等与崩溃恢复） |
+| P3-02 | 实现原生文本/HTML/Word/PDF 解析 | P2-05 | Parser Worker | 可提取正文、页码、章节和元数据 | 外部化（解析由外部知识服务承担，服务端 submit 以 ingest=true 转发；本仓库无解析器依赖） |
+| P3-03 | 接入 OCR Worker | P1-02、P3-02 | OCR Pipeline | 图片型文件能生成可定位正文 | 外部化（OCR 依赖外部知识服务，本仓库无 OCR 集成） |
+| P3-04 | 实现标准化全文生成 | P3-02、P3-03 | Normalized Text Worker | 服务端保存全文版本，处理中内容不进入检索 | 外部化（全文经外部服务 content 接口 ACL 分页代理读取；独立 /api/v1/knowledge/read-document 端点仍为内存切片占位） |
+| P3-05 | 实现知识切片和定位信息 | P3-04 | Chunk Worker | 每个切片含 offset、页码、章节、版本和权限标签 | 外部化（切片由外部知识服务生成（save_slices=true），服务端 /slices 带 ACL 只读） |
+| P3-06 | 实现 Embedding 批处理和向量索引 | P1-03、P3-05 | Embedding/Index Worker | 记录模型版本，支持失败重试和批量处理 | 外部化（Embedding/向量化/索引由外部知识服务完成，本仓库零 embedding 调用、无向量表） |
+| P3-07 | 实现知识状态机和进度事件 | P2-05、P3-02-P3-06 | Knowledge Job API | 状态、错误、重试和完成进度可查询/推送 | 进行中（代理形态已实现：job 查询/取消转发、SSE job-events、终态判定与提交恢复（submissions/recovery）；状态机本体在外部知识服务） |
+| P3-08 | 实现权限过滤的语义检索 | P2-03、P3-06 | Search API | 先判权再召回，返回来源、位置和分数 | 进行中（代理形态：/knowledge/search 经 enforce 判权后转发外部 /v1/search；knowledge-library 路径加绑定资源 ACL 后转发；本地语义召回不实现） |
+| P3-09 | 实现权限过滤的全文/分段读取 | P2-03、P3-04 | Fulltext Read API | 支持按页、offset、章节分段读取且覆盖全文 | 进行中（代理形态：content 读取经判权后按 para/limit 分页转发；read-document 端点为占位） |
+| P3-10 | 实现内容哈希去重和知识版本 | P2-04、P3-04 | Dedup/Version Service | 相同文件复用处理结果，更新文件生成新版本 | 未开始（仅有 clientUploadId 提交幂等，无内容哈希去重与知识版本） |
 
 ## 六、P4：记忆与成果服务
 
@@ -75,31 +75,31 @@
 |---|---|---|---|---|---|
 | P4-01 | 实现服务端长期记忆存储 | P2-03、P2-04 | Memory Service | 支持作用域、来源、置信度、权限和版本 | 进行中（memories 表与 list/create/update/delete/search API 已接 PostgreSQL 且走权限判权；表结构缺作用域/来源/置信度/版本字段，promote 语义未做） |
 | P4-02 | 实现短期记忆摘要上传 | P4-01 | Promote API | 支持幂等、脱敏、确认和失败重试 | 未开始 |
-| P4-03 | 实现成果文件服务 | P2-03、P2-04 | Artifact Service | 临时产物、成果、版本、预览和下载统一在服务端 | 未开始 |
+| P4-03 | 实现成果文件服务 | P2-03、P2-04 | Artifact Service | 临时产物、成果、版本、预览和下载统一在服务端 | 进行中（最小实现：artifacts 表与列表/详情 API、runConversation 自动生成 HTML 成果（artifacts/html-content.ts）；临时产物/成果区分、版本、预览/下载、发布/回滚未做） |
 | P4-04 | 实现成果发布和回滚 | P4-03 | Publish/Rollback API | 只有真实存在且满足权限的成果可发布 | 未开始 |
 
 ## 七、P5：桌面端和 UI 改造
 
 | 编号 | 任务 | 依赖 | 交付物 | 完成标准 | 状态 |
 |---|---|---|---|---|---|
-| P5-01 | 开发服务端客户端和会话管理 | P2-01、P2-04 | Main/Preload API | Renderer 不直接访问服务端凭据或 Node 能力 | 进行中（渲染层已切换 HTTP 客户端：token 会话存储、401 过期事件、登录/注册/身份切换/企业创建加入与 bootstrap 均已接服务端；旧 window.kunqing 桥调用与页面尚未清理） |
+| P5-01 | 开发服务端客户端和会话管理 | P2-01、P2-04 | Main/Preload API | Renderer 不直接访问服务端凭据或 Node 能力 | 进行中（渲染层已切换 HTTP 客户端：token 会话存储、401 过期事件、登录/注册/身份切换/企业创建加入与 bootstrap 均已接服务端；preload 已移除 window.kunqing（仅存 klaPlatform），21 个渲染层文件残留死调用待清理） |
 | P5-02 | 改造文件上传、知识处理和检索调用 | P3-01、P3-07-P3-09 | 前后端联调页面 | 上传、进度、失败重试、检索和全文读取均走服务端 | 进行中（已将 zihaoxie-front 知识库上传、任务取消/终态记录删除、恢复、HTTP/SSE、检索/全文接入 KLA 服务端适配；待真实 PostgreSQL 与文件上传闭环验收） |
 | P5-03 | 改造成果、预览和下载 | P4-03、P4-04 | Artifact UI | 文件来源、版本、权限和服务端状态可见 | 未开始 |
 | P5-04 | 新增概览页面 | P2-02、P3-07、P1-09 | Overview UI | 展示项目、任务、知识、算力和待办摘要 | 未开始 |
 | P5-05 | 调整群聊为项目树结构 | P2-02 | Project/Group UI | 项目可进入看板，群聊可进入会话且权限正确 | 进行中（新 Workstation UI 的项目/群聊/消息流已接服务端，消息轮询与成果预览占位；看板视图与权限展示未做） |
 | P5-06 | 新增知识库页面 | P3、P2-03 | Knowledge UI | 支持作用域切换、文件状态、检索、全文和权限信息 | 进行中（已迁移 zihaoxie-front 全部知识库页面、文件/切片筛选、统计刷新、切片查看与长段落分页；Workstation 导航已接入 HTTP 适配和身份隔离的服务端目录/关联记录；企业/项目业务 ACL、真实环境验收仍待完成） |
 | P5-07 | 新增智能体市场页面 | P6-01 | Agent Market UI | 支持智能体、技能和 MCP 的查看、安装、启停 | 未开始 |
-| P5-08 | 新增算力模块 | P1-07-P1-09 | Compute UI | 展示模型、路由、用量、配额和管理员权限 | 进行中（ComputeSection 算力 UI 与 api/compute.ts 客户端已建，compute 契约进 packages/contracts；接服务端 compute 路由，余额/用量细节联调与审批闭环未做，方案见 COMPUTE_MODULE_HANDOVER.md） |
+| P5-08 | 新增算力模块 | P1-07-P1-09 | Compute UI | 展示模型、路由、用量、配额和管理员权限 | 进行中（ComputeSection 算力 UI 与 api/compute.ts 客户端已建，compute 契约进 packages/contracts；已接服务端 compute 路由，覆盖账户/keys/用量/企业额度全接口；充值订单支付未接、审批闭环未做，方案见 COMPUTE_MODULE_HANDOVER.md） |
 
 ## 八、P6：智能体、技能和 MCP
 
 | 编号 | 任务 | 依赖 | 交付物 | 完成标准 | 状态 |
 |---|---|---|---|---|---|
-| P6-01 | 将本地执行智能体更名为文档编写智能体 | P5-01 | 新身份、注册表和兼容别名 | 新调度使用新名称，历史数据可兼容读取 | 未开始（服务端已有 agents 注册表 + GET /api/v1/agents 按身份隔离，agent-loop.ts 统筹循环已服务端化；更名与兼容别名未做） |
+| P6-01 | 将本地执行智能体更名为文档编写智能体 | P5-01 | 新身份、注册表和兼容别名 | 新调度使用新名称，历史数据可兼容读取 | 未开始（服务端已有 agents 注册表 + GET /api/v1/agents 按身份隔离；agent-loop.ts 为步骤执行占位 worker（模拟执行，不调模型/工具），统筹智能体为单轮 LLM 回复走网关 + 正则生成 HTML 产物；更名与兼容别名未做） |
 | P6-02 | 固化文档编写智能体默认技能 | P3、P4 | 检索、全文、调研、模板、编写、基础验收技能 | 能在自身 loop 中完成文档最小闭环 | 未开始 |
 | P6-03 | 开发 PPT 智能体和默认技能 | P3、P4 | PPT Agent | 能检索资料、套用模板并生成可预览文件 | 未开始 |
 | P6-04 | 开发数据分析智能体和沙箱边界 | P3、P4 | Data Agent | 能读取数据、分析、生成图表和来源说明 | 未开始 |
-| P6-05 | 实现默认技能安装和版本管理 | P2-03、P6-01-P6-04 | Skill Registry | 技能可安装、启用、停用、升级和回滚 | 未开始 |
+| P6-05 | 实现默认技能安装和版本管理 | P2-03、P6-01-P6-04 | Skill Registry | 技能可安装、启用、停用、升级和回滚 | 进行中（skills 表（definition jsonb/version/enabled）与只读 GET /api/v1/skills 按身份过滤已存在；安装/启用/停用/升级/回滚未做） |
 | P6-06 | 实现 MCP Server/Tool 注册 | P2-03、P2-06 | MCP Registry | 支持发现、授权、超时、撤销和审计 | 未开始 |
 | P6-07 | 实现智能体学习草稿和审批发布 | P4-01、P6-05 | Learning/Draft Service | 学习结果可对比、确认、发布和回滚，不直接改生产技能 | 未开始 |
 
@@ -164,4 +164,6 @@
 | CM5 对账与灰度 | P8-03 | 日对账上线；三方对账达开票级；故障演练（sub2api 宕机/上游 429/余额耗尽）；一家内部公司试点通过 |
 
 依赖说明：CM1 是整个算力链路的关键路径，三大硬前提（验证码可关、upstream 连通、明细粒度）在此确认；CM2 与 CM3 可并行开发，CM3 联调依赖 CM2 的 `compute_binding`；灰度顺序见设计文档 §16。
+
+> 状态核对（2026-10-08，对照代码）：CM1 已完成（sub2api 已部署连通）；CM2 进行中（身份/权益表、provision 事件与同步器已落地，停用事件生产者、漂移检测、全链路演练未做）；CM3 进行中（网关含流式、幂等去重、用量查询已实现，对账服务挂载、水位线持久化、端到端真实调用验收未做）；CM4、CM5 未开始。
 
