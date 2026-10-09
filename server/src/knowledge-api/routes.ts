@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { Pool } from 'pg';
 import { z } from 'zod';
-import { knowledgeCatalogSchema, initialKnowledgeCatalog, KNOWLEDGE_UPLOAD_LIMIT, jobInputSchema, jobSnapshotSchema, isTerminalJobState, type JobEvent } from '@kla-workstation/contracts/knowledge';
+import { knowledgeCatalogSchema, initialKnowledgeCatalog, normalizeKnowledgeCatalog, KNOWLEDGE_UPLOAD_LIMIT, jobInputSchema, jobSnapshotSchema, isTerminalJobState, type JobEvent } from '@kla-workstation/contracts/knowledge';
 import type { AccountRepository } from '../repositories/types.js';
 import { requirePermission } from '../auth/permission-service.js';
 import { createScope, inScope, readStored, atomicStored, type KnowledgeStore } from './context.js';
@@ -48,11 +48,16 @@ export async function registerKnowledgeRoutes(app: FastifyInstance, deps: { acco
       const scope = await auth(request, reply, !reads.has(operation)); if (!scope) return;
       const data = await inScope(scope, async () => {
         if (operation === 'getCatalog') {
-          try { return knowledgeCatalogSchema.parse(await readStored('catalog.json')); }
+          let entries;
+          try { entries = knowledgeCatalogSchema.parse(await readStored('catalog.json')); }
           catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; await atomicStored('catalog.json', initialKnowledgeCatalog); return initialKnowledgeCatalog; }
+          // 集合名规范化：存量目录里的旧集合名自动升级并回写（拉代码重启即生效）
+          const normalized = normalizeKnowledgeCatalog(entries);
+          if (normalized.changed) { await atomicStored('catalog.json', normalized.entries); console.log('[knowledge] catalog 集合名已自动升级为当前约定名'); }
+          return normalized.entries;
         }
         if (operation === 'saveCatalog') {
-          const entries = knowledgeCatalogSchema.parse(request.body);
+          const entries = normalizeKnowledgeCatalog(knowledgeCatalogSchema.parse(request.body)).entries;
           await atomicStored('catalog.json', entries); return entries;
         }
         let input = request.body;
