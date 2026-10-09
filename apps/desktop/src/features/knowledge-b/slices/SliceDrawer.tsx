@@ -18,7 +18,6 @@ export function SliceDetailContent({ slice, source, onOpenSource, hideTitle = fa
       <dl>
         <div><dt>来源文件</dt><dd>{source.name}</dd></div>
         <div><dt>切片 ID</dt><dd>{slice.id}</dd></div>
-        {slice.group !== undefined && slice.group !== null && <div><dt>分组</dt><dd>{slice.group}</dd></div>}
       </dl>
 
       <h4>正文</h4>

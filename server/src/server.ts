@@ -1,4 +1,4 @@
-import Fastify from 'fastify';
+import Fastify, { LogController } from 'fastify';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import cors from '@fastify/cors';
@@ -11,7 +11,7 @@ import { PostgresDatabase } from './database/postgres.js';
 import { RedisDatabase } from './infrastructure/redis.js';
 import { AgentLoopWorker } from './infrastructure/agent-loop.js';
 import { registerRuntimeRoutes } from './runtime/routes.js';
-import { buildLoggerOptions, createRequestIdGenerator } from './observability/logger.js';
+import { buildLoggerOptions, createRequestIdGenerator, shouldQuietRequestLogging } from './observability/logger.js';
 import { Sub2ApiClient } from './compute/sub2api-client.js';
 import { ComputeRepository } from './compute/compute-repository.js';
 import { ProvisioningService } from './compute/provisioning-service.js';
@@ -30,7 +30,13 @@ import { MemoryRetentionWorker, ShortTermMemoryService } from './memories/short-
 
 export async function createServer() {
   const config = loadConfig();
-  const app = Fastify({ logger: buildLoggerOptions(config), genReqId: createRequestIdGenerator() });
+  // logController 是 Fastify v5 的日志控制器（v6 将移除顶层 disableRequestLogging 选项）：
+  // 按路由压掉设备心跳 poll 的 incoming/completed 请求日志，见 observability/logger.ts
+  const app = Fastify({
+    logger: buildLoggerOptions(config),
+    genReqId: createRequestIdGenerator(),
+    logController: new LogController({ disableRequestLogging: shouldQuietRequestLogging }),
+  });
   await app.register(cors, { origin: true });
   await app.register(sensible);
   const database = new PostgresDatabase(config.databaseUrl, config.databaseSchema);

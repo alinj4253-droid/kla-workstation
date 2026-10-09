@@ -26,6 +26,20 @@ export type LoggerConfig = { nodeEnv: string; logLevel: string };
 
 export type FastifyLoggerOptions = { level: string; base: { service: string; env: string }; redact: { paths: string[]; censor: string } };
 
+/**
+ * 高频心跳路由：桌面端本地运行时每 2 秒轮询一次领取本地技能任务（见
+ * apps/desktop/desktop/local-runtime.cjs）。这类请求每分钟 30 条，会把真正的业务
+ * 日志淹没，但它本身是必要的在线心跳与任务分发通道，不能关掉，只能降噪。
+ * ⚠️ Fastify v5 已移除 autoLogging 选项，改用工厂选项
+ * logController: new LogController({ disableRequestLogging: shouldQuietRequestLogging })
+ * （布尔形态的顶层 disableRequestLogging 已标记 deprecated，fastify@6 移除）。
+ * 命中时静默 incoming/completed 等整组请求日志；poll 失败的 error 由
+ * runtime/routes.ts 的 catch 显式补一条，避免故障被静默。
+ */
+export function shouldQuietRequestLogging(req: { url?: string }): boolean {
+  return req.url?.includes('/api/v1/runtime/devices/') === true && req.url.includes('/poll') === true;
+}
+
 /** Fastify/pino 日志选项：结构化 JSON、注入服务上下文、脱敏敏感字段；test 环境关闭。 */
 export function buildLoggerOptions(config: LoggerConfig): false | FastifyLoggerOptions {
   if (config.nodeEnv === 'test') return false;

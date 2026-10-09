@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildLoggerOptions, createRequestIdGenerator } from './logger.js';
+import { buildLoggerOptions, createRequestIdGenerator, shouldQuietRequestLogging } from './logger.js';
 
 describe('buildLoggerOptions', () => {
   it('test 环境关闭日志', () => {
@@ -17,6 +17,19 @@ describe('buildLoggerOptions', () => {
     expect(redact.paths).toContain('req.headers.authorization');
     expect(redact.paths).toContain('*.password');
     expect(redact.paths).toContain('*.accessToken');
+  });
+
+  it('降噪只压设备心跳 poll，不误伤其他业务路由', () => {
+    // Fastify v5 已删 autoLogging；该函数经 logController 选项的 disableRequestLogging 生效
+    const ignore = shouldQuietRequestLogging;
+    // 本地运行时每 2 秒一次，属高频心跳，压掉
+    expect(ignore({ url: '/api/v1/runtime/devices/2f1c9a30-1111-4222-8333-444455556666/poll' })).toBe(true);
+    // 同前缀但不同操作，必须保留日志
+    expect(ignore({ url: '/api/v1/runtime/devices/2f1c9a30-1111-4222-8333-444455556666' })).toBe(false);
+    expect(ignore({ url: '/api/v1/runtime/devices/2f1c9a30-1111-4222-8333-444455556666/receipt' })).toBe(false);
+    expect(ignore({ url: '/api/v1/knowledge-library/contentRequest' })).toBe(false);
+    expect(ignore({ url: '/api/v1/knowledge-library/health' })).toBe(false);
+    expect(ignore({ url: undefined })).toBe(false);
   });
 });
 
