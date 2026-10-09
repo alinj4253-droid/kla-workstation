@@ -26,7 +26,9 @@ describe('persisted multi-agent loop', () => {
       const executor = registry.find(agent => agent.name === '本地执行智能体')!;
       const trigger = await accounts.createMessage(room.id, registered.user.id, '先写大纲，再检查内容');
       const calls: string[] = [];
-      const completeChat = vi.fn(async (_identity, request: { requestId: string }) => {
+      const completeChat = vi.fn(async (_identity, request: { requestId: string; tags: { taskId?: string; conversationId: string } }) => {
+        expect(request.tags.taskId).toBeUndefined();
+        expect(request.tags.conversationId).toBe(room.id);
         calls.push(request.requestId);
         let message: unknown;
         if (request.requestId.endsWith(':plan')) message = { tool_calls: [{ id: 'plan-1', type: 'function', function: { name: 'delegate_tasks', arguments: JSON.stringify({ tasks: [
