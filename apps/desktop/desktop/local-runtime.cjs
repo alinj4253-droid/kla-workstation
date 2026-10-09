@@ -29,14 +29,17 @@ class LocalRuntime {
       const folder=path.join(this.root,this.session.identityId);await fs.mkdir(folder,{recursive:true});
       for(const file of await fs.readdir(folder))if(file.endsWith('.json')){
         const journal=JSON.parse(await fs.readFile(path.join(folder,file),'utf8'));
-        if(journal.state==='running'&&this.active?.id!==journal.call.id){journal.state='receipt';journal.receipt={receiptId:randomUUID(),status:'failed',result:{error:'设备执行被中断，副作用结果未知；未重复执行'}};await this.save(path.join(folder,file),journal);}
-        if(journal.state==='receipt'){try{await this.api(`/v1/runtime/devices/${this.deviceId}/calls/${journal.call.id}/receipt`,journal.receipt);journal.state='acknowledged';await this.save(path.join(folder,file),journal);}catch(e){if(e.status===409||e.status===404){journal.state='discarded';await this.save(path.join(folder,file),journal);}else throw e;}}
+        if(journal.state==='running'&&this.active?.id!==journal.call.id){journal.state='receipt';journal.receipt={receiptId:randomUUID(),status:'failed',result:{error:'设备执行被中断，副作用结果未知；未重复执行'},approval:{approved:false,decidedAt:new Date().toISOString()}};await this.save(path.join(folder,file),journal);}
+        if(journal.state==='receipt'){
+          if(!journal.receipt.approval){journal.receipt={receiptId:journal.receipt.receiptId,status:'failed',result:{error:'旧版回执缺少审批记录，执行结果不确定；未重复执行'},approval:{approved:false,decidedAt:new Date().toISOString()}};await this.save(path.join(folder,file),journal);}
+          try{await this.api(`/v1/runtime/devices/${this.deviceId}/calls/${journal.call.id}/receipt`,journal.receipt);journal.state='acknowledged';await this.save(path.join(folder,file),journal);}catch(e){if(e.status===409||e.status===404){journal.state='discarded';await this.save(path.join(folder,file),journal);}else throw e;}
+        }
       }
       const response=await this.api(`/v1/runtime/devices/${this.deviceId}/poll`);
       if(this.active&&response.cancelled.includes(this.active.id))this.active.controller.abort();
       if(response.call&&!this.active){const call=response.call;const file=path.join(folder,call.id+'.json');let previous;try{previous=JSON.parse(await fs.readFile(file,'utf8'));}catch{/* New call. */}
         if(!previous){await this.save(file,{state:'running',call});const controller=new AbortController();const generation=this.generation;this.active={id:call.id,controller};
-          void (async()=>{let receipt;try{if(['local_write','local_code','local_bat','local_cli'].includes(call.tool)&&!(await this.approve(call)))throw new Error('用户拒绝本地操作');controller.signal.throwIfAborted();const outcome=await executeLocal(call,path.join(folder,'tasks'),controller.signal);receipt={receiptId:randomUUID(),status:outcome.result.error?'failed':'completed',...outcome};}catch(e){receipt={receiptId:randomUUID(),status:'failed',result:{error:e.message}};}
+          void (async()=>{let receipt;let approval={approved:false,decidedAt:new Date().toISOString()};try{const approved=await this.approve(call);approval={approved,decidedAt:new Date().toISOString()};if(!approved)throw new Error('用户拒绝本地操作');controller.signal.throwIfAborted();const outcome=await executeLocal(call,path.join(folder,'tasks'),controller.signal);receipt={receiptId:randomUUID(),status:outcome.result.error?'failed':'completed',...outcome,approval};}catch(e){receipt={receiptId:randomUUID(),status:'failed',result:{error:e.message},approval};}
             await this.save(file,{state:'receipt',call,receipt});if(this.active?.id===call.id)this.active=null;if(this.generation===generation)void this.poll();
           })().catch(e=>{this.error=e.message;this.active=null;});
         }

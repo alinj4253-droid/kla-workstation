@@ -1,4 +1,14 @@
-import 'dotenv/config';
+import { config as loadDotenv } from 'dotenv';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+if (process.env.NODE_ENV !== 'production') {
+  loadDotenv({
+    path: process.env.DOTENV_CONFIG_PATH || resolve(dirname(fileURLToPath(import.meta.url)), '../.env'),
+    override: true,
+    quiet: true,
+  });
+}
 
 const LOG_LEVELS = new Set(['trace', 'debug', 'info', 'warn', 'error', 'fatal']);
 

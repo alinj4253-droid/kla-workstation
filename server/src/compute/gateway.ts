@@ -233,7 +233,7 @@ export class ComputeGateway {
   async completeChat(identity: Identity, input: GatewayChatInput): Promise<{ payload: unknown; usage: GatewayUsage; amountUsd: number }> {
     const prepared = await this.prepare(identity, input);
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.deps.timeoutMs);
+    const timeout = setTimeout(() => controller.abort(), input.tools ? Math.max(this.deps.timeoutMs, 60_000) : this.deps.timeoutMs);
     try {
       const response = await this.deps.sub2api.chatCompletions(prepared.credential, buildUpstreamBody(input), controller.signal);
       if (!response.ok) {
@@ -268,7 +268,7 @@ export class ComputeGateway {
   ): Promise<{ usage: GatewayUsage; amountUsd: number }> {
     const prepared = await this.prepare(identity, input);
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.deps.timeoutMs);
+    const timeout = setTimeout(() => controller.abort(), input.tools ? Math.max(this.deps.timeoutMs, 60_000) : this.deps.timeoutMs);
     let buffer = '';
     try {
       const response = await this.deps.sub2api.chatCompletions(prepared.credential, buildUpstreamBody(input), controller.signal);

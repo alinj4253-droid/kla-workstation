@@ -50,13 +50,13 @@ ipcMain.handle('kla:operation-health', async () => ({ ok: true, runtime: 'electr
 
 app.whenReady().then(() => {
   localRuntime = new LocalRuntime(app.getPath('userData'), process.env.KLA_API_BASE_URL || 'http://127.0.0.1:8787/api', async call => {
-    const action = { local_write: '写入本地文件', local_code: '保存代码文件', local_bat: '运行 BAT 脚本', local_cli: '运行命令行程序' }[call.tool];
-    if (!action) return true;
-    const summary = call.tool === 'local_cli' ? String(call.arguments.executable) : call.tool === 'local_bat' ? String(call.arguments.script).slice(0, 400) : String(call.arguments.path || call.arguments.fileName);
+    const action = { local_read: '读取本地文件', local_list: '查看本地目录', local_write: '写入本地文件', local_code: '保存代码文件', local_bat: '运行 BAT 脚本', local_cli: '运行命令行程序' }[call.tool];
+    if (!action) return false;
+    const summary = call.tool === 'local_cli' ? `${String(call.arguments.executable)} ${(call.arguments.args || []).join(' ')}` : call.tool === 'local_bat' ? String(call.arguments.script).slice(0, 400) : String(call.arguments.path || call.arguments.fileName);
     const window = BrowserWindow.getAllWindows()[0];
     if (!window) return false;
     const choice = await dialog.showMessageBox(window, { type: 'warning', buttons: ['拒绝', '允许本次操作'], defaultId: 0, cancelId: 0,
-      title: '鲲擎本地执行审批', message: action, detail: `当前身份的智能体请求以本机用户权限执行：\n${summary}\n\n任务 ${call.runId}` });
+      title: '鲲擎本地执行审批', message: action, detail: `当前身份的智能体请求以本机用户权限执行：\n${summary}\n\n读取内容或命令输出会回传服务端供智能体继续处理；新建文件默认回传可预览副本。\n任务 ${call.runId}` });
     return choice.response === 1;
   });
   createWindow();

@@ -7,7 +7,7 @@ KLA Workstation 桌面客户端：React + Vite 渲染层 + 轻量 Electron 桌�
 - `src/`：React 页面、组件、状态和客户端交互。
 - `public/`：客户端静态资源。
 - `index.html`：Renderer 入口。
-- `desktop/`：只负责窗口和安全 Preload 的桌面壳，不承载数据库、知识或 Agent 后端逻辑。
+- `desktop/`：安全 Preload、本地执行器及窗口壳；不承载服务端数据库、知识或 Agent 编排逻辑。
 - `src/api/`：HTTP API 客户端占位，后续逐步替换 `window.kunqing`。
 
 ## 客户端边界
@@ -43,3 +43,11 @@ KLA_RENDERER_URL=http://localhost:5173 pnpm --filter @kla-workstation/desktop ex
 ```
 
 `pnpm package:win` 用于生成 Windows 安装包（前端产物打进壳内 asar，服务端仅提供 API）。当前会话/登录/注册/身份等已切换 `src/api` HTTP 客户端；部分页面仍使用旧桥接 API（浏览器模式自动兜底为空数据），独立桌面壳用于验证构建边界与桌面能力。
+
+## 本地执行边界
+
+浏览器预览只提供群聊界面；`local_*` 工具需要 Electron 桌面客户端登录同一身份并保持在线。本地执行器主动出站轮询服务端，不开放本机入站端口。每次调用均弹窗审批，读取内容、命令输出会回传服务端供智能体继续处理。
+
+默认只允许访问该身份的任务目录。需要读取或写入其他目录时，在启动 Electron 前设置 `KLA_LOCAL_ALLOWED_ROOTS` 为允许目录的绝对路径列表；Windows 用分号分隔，其他系统用冒号分隔。允许目录必须真实存在，符号链接不能用于越界。`local_bat` 和 `local_cli` 仍以当前系统用户权限运行，路径限制只约束工具参数中的文件路径与工作目录，不构成独立 OS 沙箱；对命令内容应逐次审查并审批。
+
+新建文件默认回传可预览副本；设置 `KLA_LOCAL_ARTIFACT_UPLOAD=false` 可只回传文件名、大小和 SHA-256，不回传内容。该设置不会阻止智能体通过已获批准的读取或命令工具返回文件内容。

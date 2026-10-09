@@ -38,6 +38,7 @@ function buildService(opts: { adminBalance: number; memberBalance: number; sameS
 
   const repo = {
     getLedgerByIdempotency: async () => null,
+    getLedger: async () => ({ id: 'led-1', status: 'pending', amount: 0.01 }),
     getOrCreateEntitlement: async (owner: { identityId?: string }) => find(owner),
     lockEntitlement: async (_client: unknown, owner: { identityId?: string }) => find(owner),
     updateEntitlementAmounts: async (_client: unknown, id: string, delta: { total?: number }) => {
@@ -67,6 +68,7 @@ function buildService(opts: { adminBalance: number; memberBalance: number; sameS
     connect: async () => ({
       query: vi.fn(async (sql: string) => {
         if (sql.startsWith('UPDATE compute_allocation_ledger')) deps.repo.calls.push('link-ledgers');
+        if (sql.startsWith('SELECT e.identity_id FROM compute_allocation_ledger')) return { rows: [{ identity_id: 'admin-i' }] };
         return { rows: [] };
       }),
       release: () => {},
@@ -78,6 +80,18 @@ function buildService(opts: { adminBalance: number; memberBalance: number; sameS
 }
 
 describe('QuotaService 企业额度转账', () => {
+  it('发放只向 Sub2API 同步本次增量，模型结算不重复加余额', async () => {
+    const { service, deps } = buildService({ adminBalance: 0, memberBalance: 0 });
+    await service.grant({ identityId: 'admin-i' }, 0.1, 'grant-1');
+    await service.grant({ identityId: 'admin-i' }, 0.2, 'grant-2');
+    expect(deps.sub2api.adjustments).toEqual([
+      { userId: 'sub-admin', delta: 0.1 },
+      { userId: 'sub-admin', delta: 0.2 },
+    ]);
+    await service.commit('led-1', 0.005);
+    expect(deps.sub2api.adjustments).toHaveLength(2);
+  });
+
   it('allocate：管理员减、成员加，两侧各落一条流水并同步 Sub2API', async () => {
     const { service, deps } = buildService({ adminBalance: 100, memberBalance: 0 });
     const result = await service.allocate('admin-i', 'org1', 'member-i', 30, 'req-1');

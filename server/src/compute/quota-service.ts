@@ -44,7 +44,7 @@ export class QuotaService {
         metadata: { source: 'platform_grant' },
       }, client as unknown as QueryClient);
       // 充值需同步到 Sub2API
-      await this.syncBalanceToSub2Api(client as unknown as QueryClient, ent.id, owner);
+      await this.syncBalanceToSub2Api(client as unknown as QueryClient, owner, amount);
       await client.query('COMMIT');
       return { entitlementId: ent.id, ledgerId: ledger.id };
     } catch (error) {
@@ -323,8 +323,7 @@ export class QuotaService {
       // reserved → used：先释放预扣，再增加已用
       await this.repo.updateEntitlementAmounts(client as unknown as QueryClient, ent.id, { reserved: -ledger.amount, used: amount });
       await this.repo.updateLedgerStatus(ledgerId, 'completed', false, client as unknown as QueryClient);
-      // 同步到 Sub2API
-      await this.syncBalanceToSub2Api(client as unknown as QueryClient, ent.id, { identityId: ent.identityId ?? undefined });
+      // 代理面已按本次模型调用扣费，不再向上游重复调整余额。
       await client.query('COMMIT');
     } catch (error) {
       await client.query('ROLLBACK');
@@ -356,15 +355,13 @@ export class QuotaService {
     }
   }
 
-  /** 同步余额到 Sub2API（commit / recharge 后调用） */
-  private async syncBalanceToSub2Api(client: QueryClient, entitlementId: string, owner: { identityId?: string; organizationId?: string }): Promise<void> {
+  /** 发放额度时同步本次增量；Sub2API 的余额接口不是设置绝对值。 */
+  private async syncBalanceToSub2Api(client: QueryClient, owner: { identityId?: string; organizationId?: string }, delta: number): Promise<void> {
     if (!owner.identityId) return; // 企业池不同步到 Sub2API
     const binding = await this.repo.getBinding(owner.identityId, client);
     if (!binding || !binding.sub2apiUserId) return;
     try {
-      const ent = await this.repo.getOrCreateEntitlement(owner, client);
-      const balance = availableBalance(ent);
-      await this.sub2api.adjustBalance(binding.sub2apiUserId, balance);
+      await this.sub2api.adjustBalance(binding.sub2apiUserId, delta);
     } catch (error) {
       // 同步失败仅记录，不影响主事务；后续由对账/重试修复
       await this.repo.insertSyncLog({

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Check, ChevronDown, Cpu, KeyRound, Link2, Plus, Search, Settings, Sparkles, Wrench, X, Cable, Gauge, ShieldCheck, Sun, UserCircle, Users } from 'lucide-react';
-import { runtimeApi, type RuntimeAgent, type RuntimeDevice, type RuntimeSkill } from '../api/runtime';
+import { runtimeApi, type RuntimeAgent, type RuntimeDevice, type RuntimeSkill, type RuntimeTool } from '../api/runtime';
 import { klaApi } from '../api/client';
 import { Badge, IconButton } from './ui';
 import type { ExecutionLocation } from '@kla-workstation/contracts';
@@ -20,15 +20,6 @@ const marketAgents = [
   { name: '舆情监测', category: '行业专业', description: '跟踪品牌与竞品的公开声量与情绪趋势，异常波动时给出预警。', tags: ['市场', '声量', '预警'], rating: '4.3', installs: '4.1k', tone: 'purple' },
   { name: '图像理解', category: '数据与检索', description: '读取截图与图表中的数值和界面元素，输出结构化数据。', tags: ['多模态', '读数', '结构化'], rating: '4.6', installs: '7.0k', tone: 'green' },
   { name: '流程自动化', category: '研发工具', description: '把重复操作编排成可复用的步骤流，支持定时触发与失败重试。', tags: ['自动化', '定时', '可回看'], rating: '4.4', installs: '3.8k', tone: 'orange' },
-];
-
-const toolCatalog = [
-  ['本地文档解析器', '解析 TXT、Markdown、HTML、JSON、CSV、PDF、DOCX 和 XLSX。', '解析'],
-  ['PaddleOCR', '识别图片与扫描件文字，常规解析无法获得正文时调用。', 'OCR'],
-  ['本地向量化引擎', '生成多语言离线向量，向量计算全部在本机完成。', '向量'],
-  ['混合检索与融合排序', '融合全文、向量、图谱和 Wiki，返回可溯源的来源证据。', '检索'],
-  ['图谱与 Wiki 生成器', '生成图谱、Wiki、JSON 索引及可交付 HTML 可视化。', '知识资产'],
-  ['本地文件读写', '在当前工作站白名单目录内读取和写入任务产物。', '本地执行'],
 ];
 
 function avatarTone(name: string): string {
@@ -119,8 +110,30 @@ export function RuntimeSkillManagement({ identityId, notify }: Props): React.JSX
 
 export function RuntimeToolManagement({ identityId, notify }: Props): React.JSX.Element {
   const [query, setQuery] = useState('');
-  const list = toolCatalog.filter(tool => !query || tool[0].toLowerCase().includes(query.toLowerCase()) || tool[2].includes(query));
-  return <div className="ws-agent-module"><div className="ws-agent-heading"><div><h1>工具</h1><p>管理本地基础工具与外部 MCP 工具。具体可用性以设备和服务端授权为准。</p></div></div><div className="ws-tool-stats"><article><strong>{toolCatalog.length}</strong><span>工具目录</span><small>展示可配置的工具类型</small></article><article><strong>待接入</strong><span>MCP Server</span><small>新版工具网关尚未提供管理接口</small></article></div><section className="ws-mcp-card"><div><span className="ws-agent-avatar is-purple"><Link2 size={17} /></span><div><h3>MCP Server</h3><p>标准化外部工具接入入口，需等待新版工具网关提供配置和授权接口。</p></div></div><Badge tone="muted">未接入</Badge></section><div className="ws-tool-controls"><label className="ws-agent-search"><Search size={15} /><input placeholder="搜索工具名称…" value={query} onChange={event => setQuery(event.target.value)} /></label><Badge tone="blue">工具目录 {list.length}</Badge></div><div className="ws-tool-grid">{list.map(tool => <article key={tool[0]}><div className="ws-tool-icon"><Wrench size={17} /></div><div><h3>{tool[0]}</h3><small>{tool[2]}</small></div><Badge tone="muted">按需授权</Badge><p>{tool[1]}</p></article>)}</div></div>;
+  const [tools, setTools] = useState<RuntimeTool[]>([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let live = true;
+    setLoading(true);
+    void runtimeApi.tools().then(result => {
+      if (!live) return;
+      if (result.ok) setTools(result.data);
+      else notify(result.message);
+    }).catch(() => { if (live) notify('工具目录加载失败'); }).finally(() => { if (live) setLoading(false); });
+    return () => { live = false; };
+  }, [identityId]);
+  const list = tools.filter(tool => !query || `${tool.name} ${tool.code} ${tool.description}`.toLowerCase().includes(query.toLowerCase()));
+  return <div className="ws-agent-module">
+    <div className="ws-agent-heading"><div><h1>工具</h1><p>查看已注册的服务端与本地工具，以及当前身份下的授权状态。</p></div></div>
+    <div className="ws-tool-stats"><article><strong>{tools.length}</strong><span>工具目录</span><small>服务端实际注册</small></article><article><strong>待接入</strong><span>MCP Server</span><small>尚无外部服务注册接口</small></article></div>
+    <section className="ws-mcp-card"><div><span className="ws-agent-avatar is-purple"><Link2 size={17} /></span><div><h3>MCP Server</h3><p>外部 MCP 工具尚未注册，不会加入智能体可调用目录。</p></div></div><Badge tone="muted">未接入</Badge></section>
+    <div className="ws-tool-controls"><label className="ws-agent-search"><Search size={15} /><input placeholder="搜索工具名称…" value={query} onChange={event => setQuery(event.target.value)} /></label><Badge tone="blue">工具目录 {list.length}</Badge></div>
+    {loading ? <p className="ws-empty-line">正在加载工具目录…</p> : <div className="ws-tool-grid">{list.map(tool => {
+      const active = tool.agents.filter(agent => agent.enabled);
+      const available = active.some(agent => tool.location === 'server' || agent.deviceOnline);
+      return <article key={tool.code}><div className="ws-tool-icon"><Wrench size={17} /></div><div><h3>{tool.name}</h3><small>{tool.code} · {tool.location === 'local' ? '本地设备' : '服务端'}</small></div><Badge tone={available ? 'green' : 'muted'}>{available ? '可调用' : tool.location === 'local' && !tool.deviceOnline ? '设备离线' : '未启用'}</Badge><p>{tool.description}</p><small>{active.length ? `已启用：${active.map(agent => agent.name).join('、')}` : '尚无智能体启用此工具'}</small></article>;
+    })}</div>}
+  </div>;
 }
 
 export function RuntimeRoomMembers({ room, identityId, notify, onClose }: Props & { room: string; onClose: () => void }): React.JSX.Element {

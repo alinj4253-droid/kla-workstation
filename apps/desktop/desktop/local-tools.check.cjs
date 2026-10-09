@@ -13,6 +13,8 @@ test('local file skills write, read, and list actual files', async () => {
     const target = path.join(root, 'result.py');
     const written = await executeLocal({ ...base, tool: 'local_code', arguments: { fileName: 'result.py', path: target, content: 'print(42)\n' } }, root, new AbortController().signal);
     assert.equal(written.result.stored, true);
+    assert.equal(written.result.uploaded, true);
+    assert.match(written.result.checksum, /^[a-f0-9]{64}$/);
     assert.equal(written.artifact.fileName, 'result.py');
     assert.equal(await fs.readFile(target, 'utf8'), 'print(42)\n');
     const read = await executeLocal({ ...base, tool: 'local_read', arguments: { path: target } }, root, new AbortController().signal);
@@ -20,6 +22,12 @@ test('local file skills write, read, and list actual files', async () => {
     const listed = await executeLocal({ ...base, tool: 'local_list', arguments: { path: root } }, root, new AbortController().signal);
     assert.ok(listed.result.entries.some(entry => entry.name === 'result.py'));
     await assert.rejects(executeLocal({ ...base, tool: 'local_write', arguments: { fileName: '../escape.txt', content: 'bad' } }, root, new AbortController().signal), /文件名无效/);
+    await assert.rejects(executeLocal({ ...base, tool: 'local_read', arguments: { path: __filename } }, root, new AbortController().signal), /允许目录/);
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'kla-outside-'));
+    try {
+      await fs.symlink(path.join(outside, 'redirect.py'), path.join(root, 'redirect.py'));
+      await assert.rejects(executeLocal({ ...base, tool: 'local_code', arguments: { fileName: 'redirect.py', path: path.join(root, 'redirect.py'), content: 'bad' } }, root, new AbortController().signal), /允许目录|符号链接/);
+    } finally { await fs.rm(outside, { recursive: true, force: true }); }
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
