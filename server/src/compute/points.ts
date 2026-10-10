@@ -26,7 +26,7 @@ export type PointsConverter = {
   rateAt: (at: Date | string | number) => number;
   /** USD 成本 → 算力点（毫积分精度，四舍五入到 0.001 点） */
   fromUsd: (usd: number) => number;
-  /** 算力点 → USD（NUMERIC(20,8) 精度），用于同步 Sub2API 余额 */
+  /** 算力点 → USD（NUMERIC(20,8) 精度），支持带符号增量（Sub2API 余额同步/转账） */
   toUsd: (points: number) => number;
 };
 
@@ -42,8 +42,22 @@ export function createPointsConverter(pointsPerUsd: number = DEFAULT_POINTS_PER_
   return {
     pointsPerUsd: rate,
     rateAt: () => rate,
-    // 先放大到毫积分再取整，消除浮点噪声（如 0.0042*1000=4.200000000000001）
-    fromUsd: (usd) => Math.round(assertNonNegativeFinite(usd, 'USD 成本') * rate * 1000) / 1000,
-    toUsd: (points) => Math.round(assertNonNegativeFinite(points, '算力点') / rate * 1e8) / 1e8,
+    fromUsd: (usd) => usdToPoints(assertNonNegativeFinite(usd, 'USD 成本'), rate),
+    toUsd: (points) => pointsToUsd(points, rate),
   };
+}
+
+/** USD 成本 → 算力点（毫积分精度，非负）。独立纯函数，供不便持有 converter 的调用方使用。 */
+export function usdToPoints(usd: number, pointsPerUsd: number): number {
+  if (!Number.isFinite(pointsPerUsd) || pointsPerUsd <= 0) throw new Error(`POINTS_PER_USD 必须是正有限数，收到 ${pointsPerUsd}`);
+  // 先放大到毫积分再取整，消除浮点噪声（如 0.0042*1000=4.200000000000001）
+  return Math.round(assertNonNegativeFinite(usd, 'USD 成本') * pointsPerUsd * 1000) / 1000;
+}
+
+/** 算力点 → USD（NUMERIC(20,8) 精度）。支持带符号增量（如 Sub2API 转账 -X/+X）。 */
+export function pointsToUsd(points: number, pointsPerUsd: number): number {
+  if (!Number.isFinite(points) || !Number.isFinite(pointsPerUsd) || pointsPerUsd <= 0) {
+    throw new Error(`POINTS_PER_USD 必须是正有限数，收到 ${pointsPerUsd}`);
+  }
+  return Math.round(points / pointsPerUsd * 1e8) / 1e8;
 }

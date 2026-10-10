@@ -23,6 +23,8 @@ export const COMPUTE_PERMISSION = {
   recharge: 'compute.recharge',
   modelUse: 'model.use',
   modelCatalogView: 'model.catalog.view',
+  /** 工具类计费项：联网搜索（docs/DESIGN_BOCHA_SEARCH_INTEGRATION.md §6） */
+  toolSearchUse: 'tool.search.use',
 } as const;
 
 const RETRYABLE_CODES: ReadonlySet<string> = new Set(['RATE_LIMITED', 'UNAVAILABLE', 'INTERNAL']);

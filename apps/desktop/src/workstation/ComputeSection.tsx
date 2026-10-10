@@ -2,21 +2,21 @@
 // - 数据全部来自服务端 API，不使用任何预览值或虚拟余额
 // - 完整 Secret 只在创建弹窗出现一次，且不写入 localStorage/URL/日志（§9.2、§12）
 // - 身份切换后清空并重新加载，禁止复用上一身份缓存（§12）
-// - 版式与文案对齐《鲲擎2.0 交互演示版》，计价单位保持 USD（§4.2）
+// - 版式与文案对齐《鲲擎2.0 交互演示版》，计价单位为算力点（P1-11，用户侧不显示 USD）
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Activity, Check, Clock3, Copy, CreditCard, Database, Download, FileText, Gauge, KeyRound, Layers, Pencil, Plus, RefreshCw, Search, Send, Trash2, Undo2, Users, Wallet } from 'lucide-react';
 import type { ComputeKey, ComputeLedgerEntry, ComputeModel, ComputeOrgMember, ComputeOrgOverview, ComputeSummary, ComputeUsageBucket, ComputeUsageRecord, ComputeUsageSummary } from '@kla-workstation/contracts';
 import { computeApi } from '../api/compute';
 import { klaApi } from '../api/client';
-import { apiErrorMessage, Badge, formatTime, formatTokens, formatUsd, Panel } from './ui';
+import { apiErrorMessage, Badge, formatTime, formatTokens, formatPoints, Panel } from './ui';
 
 export type ComputeView = 'dashboard' | 'keys' | 'usage' | 'market' | 'members';
 
 type Props = {
   view: ComputeView;
   onNotify: (message: string) => void;
-  onBalance: (availableUsd: number | null) => void;
+  onBalance: (availablePoints: number | null) => void;
   /** 上报当前身份是否具备企业管理员能力（用于决定侧栏是否展示「成员管理」） */
   onAdminCapability: (canManage: boolean) => void;
   /** 身份切换后由外层递增，强制清空并重新加载（§12） */
@@ -64,7 +64,7 @@ function TrendBars({ buckets }: { buckets: ComputeUsageBucket[] }) {
   if (buckets.length === 0) return <div className="ws-empty">所选范围内没有按天的用量记录</div>;
   const max = Math.max(...buckets.map((bucket) => bucket.totalTokens), 1);
   return <div className="ws-trend">{buckets.map((bucket) => (
-    <div className="ws-trend-col" key={bucket.key} title={`${bucket.key} · 请求 ${bucket.requestCount} 次 · Token ${bucket.totalTokens} · ${formatUsd(bucket.costUsd)}`}>
+    <div className="ws-trend-col" key={bucket.key} title={`${bucket.key} · 请求 ${bucket.requestCount} 次 · Token ${bucket.totalTokens} · ${formatPoints(bucket.costPoints)}`}>
       <i style={{ height: `${Math.max(2, Math.round((bucket.totalTokens / max) * 100))}%` }} />
       <small>{bucket.key.slice(5)}</small>
     </div>
@@ -204,8 +204,8 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
     setAllocAmount('');
     const verb = allocMode === 'allocate' ? '分配' : '回收';
     onNotify(result.data.sub2apiSynced === false
-      ? `已${verb} ${formatUsd(amount)}（KLA 台账已记账，Sub2API 余额等待对账同步）`
-      : `已向 ${target} ${verb} ${formatUsd(amount)}`);
+      ? `已${verb} ${formatPoints(amount)}（KLA 台账已记账，Sub2API 余额等待对账同步）`
+      : `已向 ${target} ${verb} ${formatPoints(amount)}`);
     setOrgToken((token) => token + 1);
   };
 
@@ -244,7 +244,7 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
     setEditKey(key);
     setEditForm({
       name: key.name,
-      quota: key.quotaUsd != null ? String(key.quotaUsd) : '',
+      quota: key.quotaPoints != null ? String(key.quotaPoints) : '',
       rpm: key.rpm != null ? String(key.rpm) : '',
       expiresAt: key.expiresAt ? key.expiresAt.slice(0, 16) : '',
     });
@@ -313,22 +313,22 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
     const matched = filteredModels.filter((model) => marketCategory === 'all' || model.capabilities[marketCategory]);
     return [...matched].sort((a, b) => marketSort === 'name'
       ? a.name.localeCompare(b.name)
-      : (a.inputPricePerMillionTokensUsd ?? Number.POSITIVE_INFINITY) - (b.inputPricePerMillionTokensUsd ?? Number.POSITIVE_INFINITY));
+      : (a.inputPricePerMillionTokensPoints ?? Number.POSITIVE_INFINITY) - (b.inputPricePerMillionTokensPoints ?? Number.POSITIVE_INFINITY));
   }, [filteredModels, marketCategory, marketSort]);
 
   /** 按 byModel 的真实用量，把平台维度聚合出来（平台取模型目录里的 provider）。 */
   const providerSplit = useMemo(() => {
-    const grouped = new Map<string, { requestCount: number; totalTokens: number; costUsd: number }>();
+    const grouped = new Map<string, { requestCount: number; totalTokens: number; costPoints: number }>();
     for (const bucket of usageSummary?.byModel ?? []) {
       const provider = modelById.get(bucket.key)?.provider ?? '未标注';
-      const prev = grouped.get(provider) ?? { requestCount: 0, totalTokens: 0, costUsd: 0 };
+      const prev = grouped.get(provider) ?? { requestCount: 0, totalTokens: 0, costPoints: 0 };
       grouped.set(provider, {
         requestCount: prev.requestCount + bucket.requestCount,
         totalTokens: prev.totalTokens + bucket.totalTokens,
-        costUsd: prev.costUsd + bucket.costUsd,
+        costPoints: prev.costPoints + bucket.costPoints,
       });
     }
-    return [...grouped.entries()].map(([provider, value]) => ({ provider, ...value })).sort((a, b) => b.costUsd - a.costUsd);
+    return [...grouped.entries()].map(([provider, value]) => ({ provider, ...value })).sort((a, b) => b.costPoints - a.costPoints);
   }, [usageSummary, modelById]);
 
   const periodLabel = range === '24h' ? '今日' : '所选范围';
@@ -336,7 +336,7 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
   const disabledKeyCount = keys.filter((key) => key.status === 'disabled').length;
   const totalQuota = summary ? summary.available + summary.used + summary.reserved : 0;
   const usedRatio = totalQuota > 0 && summary ? Math.min(100, Math.round((summary.used / totalQuota) * 100)) : 0;
-  const costShare = summary && totalQuota > 0 && usageSummary ? (usageSummary.costUsd / totalQuota) * 100 : null;
+  const costShare = summary && totalQuota > 0 && usageSummary ? (usageSummary.costPoints / totalQuota) * 100 : null;
   const successRate = usageSummary && usageSummary.requestCount > 0
     ? `${((usageSummary.successCount / usageSummary.requestCount) * 100).toFixed(1)}%`
     : '—';
@@ -387,10 +387,10 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
       </Panel>
 
       <div className="ws-stats four">
-        <Metric accent icon={<Wallet />} label="余额" value={formatUsd(summary.balance)} desc={`可用 ${formatUsd(summary.available)} ｜ 预扣 ${formatUsd(summary.reserved)}`} />
+        <Metric accent icon={<Wallet />} label="余额" value={formatPoints(summary.balance)} desc={`可用 ${formatPoints(summary.available)} ｜ 预扣 ${formatPoints(summary.reserved)}`} />
         <Metric icon={<KeyRound />} label="API 密钥" value={`${keys.length}`} desc={`● ${activeKeyCount} 启用 ｜ ${disabledKeyCount} 已停用`} />
         <Metric icon={<Send />} label={`${periodLabel}请求`} value={`${usageSummary?.requestCount ?? 0}`} desc={`成功 ${usageSummary?.successCount ?? 0} ｜ 失败 ${usageSummary?.failureCount ?? 0}`} />
-        <Metric icon={<CreditCard />} label={`${periodLabel}消费`} value={formatUsd(usageSummary?.costUsd)} desc={costShare == null ? '暂无额度基线' : `约占总额度 ${costShare.toFixed(2)}%`} />
+        <Metric icon={<CreditCard />} label={`${periodLabel}消费`} value={formatPoints(usageSummary?.costPoints)} desc={costShare == null ? '暂无额度基线' : `约占总额度 ${costShare.toFixed(2)}%`} />
       </div>
 
       <div className="ws-stats two">
@@ -423,10 +423,10 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
               {providerSplit.slice(0, 4).map((item) => <div className="ws-list-item" key={item.provider} style={{ marginBottom: 8 }}>
                 <span className="ws-avatar-sm">{item.provider.slice(0, 2)}</span>
                 <div className="ws-grow"><div className="t">{item.provider}</div><div className="s">请求 {item.requestCount} 次 · Token {formatTokens(item.totalTokens)}</div></div>
-                <div className="ws-amount"><div className="t">{formatUsd(item.costUsd)}</div><div className="s">{periodLabel}消费</div></div>
+                <div className="ws-amount"><div className="t">{formatPoints(item.costPoints)}</div><div className="s">{periodLabel}消费</div></div>
               </div>)}
-              <RatioBar value={providerSplit[0].costUsd} total={usageSummary?.costUsd ?? 0} />
-              <p className="ws-note" style={{ marginTop: 8 }}>首位平台占{periodLabel}全部消费的 {usageSummary && usageSummary.costUsd > 0 ? Math.round((providerSplit[0].costUsd / usageSummary.costUsd) * 100) : 0}%。</p>
+              <RatioBar value={providerSplit[0].costPoints} total={usageSummary?.costPoints ?? 0} />
+              <p className="ws-note" style={{ marginTop: 8 }}>首位平台占{periodLabel}全部消费的 {usageSummary && usageSummary.costPoints > 0 ? Math.round((providerSplit[0].costPoints / usageSummary.costPoints) * 100) : 0}%。</p>
             </>}
           </Panel>
           <Panel title="模型分布" subtitle={`${usageSummary?.byModel.length ?? 0} 个模型在${periodLabel}产生调用，按消费排序`}>
@@ -435,7 +435,7 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
                 <td>{modelById.get(bucket.key)?.name ?? bucket.key}<div className="ws-note">{modelById.get(bucket.key)?.provider ?? '未标注'}</div></td>
                 <td>{bucket.requestCount}</td>
                 <td>{formatTokens(bucket.totalTokens)}</td>
-                <td>{formatUsd(bucket.costUsd)}</td>
+                <td>{formatPoints(bucket.costPoints)}</td>
               </tr>)}
             </tbody></table>}
           </Panel>
@@ -444,7 +444,7 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
 
       <Panel title="余额水位" action={<span className="ws-muted">已用 {usedRatio}%</span>}>
         <div className="ws-progress-track"><i style={{ width: `${usedRatio}%` }} /></div>
-        <p className="ws-detail-copy">总额度 {formatUsd(totalQuota)} · 已用 {formatUsd(summary.used)} · 预扣 {formatUsd(summary.reserved)} · 可用 {formatUsd(summary.available)}</p>
+        <p className="ws-detail-copy">总额度 {formatPoints(totalQuota)} · 已用 {formatPoints(summary.used)} · 预扣 {formatPoints(summary.reserved)} · 可用 {formatPoints(summary.available)}</p>
         <div className="ws-inline">
           {summary.permissions.canRecharge && <button className="ws-text-button" onClick={() => onNotify('充值需先接入支付渠道，本期仅支持运维发放')}>充值与额度购买</button>}
           {!summary.permissions.canRecharge && summary.identityType === 'enterprise' && <span className="ws-muted">企业额度由企业管理员分配；如需充值请联系管理员</span>}
@@ -454,7 +454,7 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
 
       <Panel title="最近用量" subtitle="按当前身份与时间范围取最新的调用明细，完整记录见「使用记录」。">
         {usageRows.length === 0 ? <div className="ws-empty">暂无用量记录</div> : <table className="ws-table"><thead><tr><th>时间</th><th>模型</th><th>Token</th><th>消费</th><th>状态</th></tr></thead><tbody>
-          {usageRows.slice(0, 5).map((row) => <tr key={row.id}><td>{formatTime(row.usageAt)}</td><td>{row.modelId ?? '未标注'}</td><td>{formatTokens(row.totalTokens)}</td><td>{formatUsd(row.costUsd)}</td><td><Badge tone={row.status === 'success' ? 'green' : 'muted'}>{row.status === 'success' ? '成功' : '失败'}</Badge></td></tr>)}
+          {usageRows.slice(0, 5).map((row) => <tr key={row.id}><td>{formatTime(row.usageAt)}</td><td>{row.modelId ?? '未标注'}</td><td>{formatTokens(row.totalTokens)}</td><td>{formatPoints(row.costPoints)}</td><td><Badge tone={row.status === 'success' ? 'green' : 'muted'}>{row.status === 'success' ? '成功' : '失败'}</Badge></td></tr>)}
         </tbody></table>}
       </Panel>
 
@@ -496,11 +496,11 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
               <div className="ws-note" style={{ marginTop: 4 }}>分组由服务端模型目录维护</div>
             </td>
             <td>
-              <div>{key.quotaUsd != null ? formatUsd(key.quotaUsd) : '不限额'}</div>
+              <div>{key.quotaPoints != null ? formatPoints(key.quotaPoints) : '不限额'}</div>
               <div className="ws-note">{key.rpm != null ? `${key.rpm} RPM` : '未设速率上限'}</div>
             </td>
             <td>
-              <div>今日: {formatUsd(key.todayUsageUsd)}</div>
+              <div>今日: {formatPoints(key.todayUsagePoints)}</div>
               <div className="ws-note">30天: ——（服务端暂未提供该口径）</div>
             </td>
             <td>{key.expiresAt ? <span>{formatTime(key.expiresAt)}</span> : <Badge tone="green">永久有效</Badge>}</td>
@@ -553,7 +553,7 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
         <Metric icon={<FileText />} label="总请求数" value={`${usageSummary?.requestCount ?? 0}`} desc={`所选范围内 ｜ 成功率 ${successRate}，失败 ${usageSummary?.failureCount ?? 0} 次`} />
         <Metric icon={<Database />} label="总 Token" value={formatTokens(usageSummary?.totalTokens)}
           desc={`输入 ${formatTokens(usageSummary?.inputTokens)} / 输出 ${formatTokens(usageSummary?.outputTokens)} / 缓存 ——`} />
-        <Metric accent icon={<Wallet />} label="总消费" value={formatUsd(usageSummary?.costUsd)} desc="按实际结算价计入（USD）" />
+        <Metric accent icon={<Wallet />} label="总消费" value={formatPoints(usageSummary?.costPoints)} desc="按实际结算换算计入（算力点）" />
         <Metric icon={<Clock3 />} label="平均耗时" value={usageSummary?.avgLatencyMs != null ? `${Math.round(usageSummary.avgLatencyMs)}ms` : '—'} desc={`${usageSummary?.requestCount ?? 0} 次请求的端到端平均时延`} />
       </div>
 
@@ -568,7 +568,7 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
               </td>
               <td>{bucket.requestCount}</td>
               <td>{formatTokens(bucket.totalTokens)}</td>
-              <td>{formatUsd(bucket.costUsd)}</td>
+              <td>{formatPoints(bucket.costPoints)}</td>
             </tr>)}
           </tbody></table>
           <div>
@@ -616,7 +616,7 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
             <td>{row.modelId ?? '未标注'}</td>
             <td>{row.keyPrefix ? `${row.keyPrefix}…` : '—'}</td>
             <td>{formatTokens(row.inputTokens)} / {formatTokens(row.outputTokens)}</td>
-            <td>{formatUsd(row.costUsd)}</td>
+            <td>{formatPoints(row.costPoints)}</td>
             <td>{row.latencyMs != null ? `${row.latencyMs}ms` : '—'}</td>
             <td><Badge tone={row.status === 'success' ? 'green' : 'muted'}>{row.status === 'success' ? '成功' : '失败'}</Badge></td>
           </tr>)}
@@ -634,8 +634,8 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
       </div>
 
       <div className="ws-stats two">
-        <Metric accent icon={<Wallet />} label="账户余额" value={formatUsd(summary?.available)}
-          desc={summary ? `可用 ${formatUsd(summary.available)} ｜ 已用 ${formatUsd(summary.used)}` : '按当前身份计算'} />
+        <Metric accent icon={<Wallet />} label="账户余额" value={formatPoints(summary?.available)}
+          desc={summary ? `可用 ${formatPoints(summary.available)} ｜ 已用 ${formatPoints(summary.used)}` : '按当前身份计算'} />
         <Metric icon={<Layers />} label="已上架模型" value={`${models.length}`}
           desc={`覆盖 ${[...new Set(models.map((model) => model.provider))].slice(0, 4).join(' / ') || '—'}`} />
       </div>
@@ -651,7 +651,7 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
             </div>
           </div>
           <div className="ws-right">
-            <span className="ws-muted">可用余额 {formatUsd(summary?.available)}</span>
+            <span className="ws-muted">可用余额 {formatPoints(summary?.available)}</span>
           </div>
         </div>
         <div className="ws-chips" style={{ marginTop: 12 }}>
@@ -679,8 +679,8 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
           <div className="ws-chip-row">{model.capabilities.vision && <Badge>视觉</Badge>}{model.capabilities.reasoning && <Badge>推理</Badge>}{model.capabilities.tools && <Badge>工具调用</Badge>}{model.capabilities.streaming && <Badge>流式</Badge>}</div>
           <div className="ws-mini-grid">
             <div><div className="ws-t-micro">上下文窗口</div><b>{model.contextWindow ? `${Math.round(model.contextWindow / 1000)}K` : '—'}</b></div>
-            <div><div className="ws-t-micro">输入计费</div><b>{model.inputPricePerMillionTokensUsd != null ? `${formatUsd(model.inputPricePerMillionTokensUsd)}/M` : '待同步'}</b></div>
-            <div><div className="ws-t-micro">输出计费</div><b>{model.outputPricePerMillionTokensUsd != null ? `${formatUsd(model.outputPricePerMillionTokensUsd)}/M` : '待同步'}</b></div>
+            <div><div className="ws-t-micro">输入计费</div><b>{model.inputPricePerMillionTokensPoints != null ? `${formatPoints(model.inputPricePerMillionTokensPoints)}/M` : '待同步'}</b></div>
+            <div><div className="ws-t-micro">输出计费</div><b>{model.outputPricePerMillionTokensPoints != null ? `${formatPoints(model.outputPricePerMillionTokensPoints)}/M` : '待同步'}</b></div>
           </div>
           <div className="ws-inline" style={{ justifyContent: 'space-between' }}>
             <span className="ws-muted">可用分组</span>
@@ -709,10 +709,10 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
           </Panel>
 
           <div className="ws-stats four">
-            <Metric accent icon={<Wallet />} label="企业总额度" value={formatUsd(orgPool?.quotaTotal)} desc={`可用合计 ${formatUsd(orgPool?.available)} ｜ 已用 ${formatUsd(orgPool?.quotaUsed)}`} />
-            <Metric icon={<Database />} label="管理员持有" value={formatUsd(orgPool?.adminHeld)} desc="管理员上游账号中尚未分发的余额" />
-            <Metric icon={<Users />} label="成员持有 / 人数" value={formatUsd(orgPool?.memberHeld)} desc={`已分发到 ${orgMembers.filter((m) => m.role === 'member').length} 名成员`} />
-            <Metric icon={<Activity />} label="成员已用" value={formatUsd(orgPool?.quotaUsed)} desc={`预扣中 ${formatUsd(orgPool?.quotaReserved)}`} />
+            <Metric accent icon={<Wallet />} label="企业总额度" value={formatPoints(orgPool?.quotaTotal)} desc={`可用合计 ${formatPoints(orgPool?.available)} ｜ 已用 ${formatPoints(orgPool?.quotaUsed)}`} />
+            <Metric icon={<Database />} label="管理员持有" value={formatPoints(orgPool?.adminHeld)} desc="管理员上游账号中尚未分发的余额" />
+            <Metric icon={<Users />} label="成员持有 / 人数" value={formatPoints(orgPool?.memberHeld)} desc={`已分发到 ${orgMembers.filter((m) => m.role === 'member').length} 名成员`} />
+            <Metric icon={<Activity />} label="成员已用" value={formatPoints(orgPool?.quotaUsed)} desc={`预扣中 ${formatPoints(orgPool?.quotaReserved)}`} />
           </div>
 
           <Panel title="成员额度" subtitle="分发：管理员余额扣减、成员余额增加；回收反之。双方各自对应独立的算力上游账号。"
@@ -734,9 +734,9 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
                     <td>{ready
                       ? <Badge tone="green">已开通</Badge>
                       : <Badge tone="orange">{PROVISION_LABELS[member.provisionStatus ?? ''] ?? '初始化中'}</Badge>}</td>
-                    <td>{formatUsd(member.quotaTotal)}</td>
-                    <td>{formatUsd(member.quotaUsed)}</td>
-                    <td>{formatUsd(member.available)}</td>
+                    <td>{formatPoints(member.quotaTotal)}</td>
+                    <td>{formatPoints(member.quotaUsed)}</td>
+                    <td>{formatPoints(member.available)}</td>
                     <td>
                       {member.role === 'admin' || isSelf
                         ? <span className="ws-muted">—</span>
@@ -763,7 +763,7 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
                   <td>{formatTime(entry.createdAt)}</td>
                   <td><Badge tone={entry.operation === 'reclaim' ? 'orange' : 'blue'}>{LEDGER_LABELS[entry.operation] ?? entry.operation}</Badge></td>
                   <td>{(entry.metadata as { direction?: string } | null)?.direction === 'out' ? '划出' : (entry.metadata as { direction?: string } | null)?.direction === 'in' ? '划入' : '—'}</td>
-                  <td>{formatUsd(entry.amount)}</td>
+                  <td>{formatPoints(entry.amountPoints)}</td>
                   <td>{entry.status === 'completed' ? '已完成' : entry.status}</td>
                   <td>{entry.sub2apiSynced ? '是' : <Badge tone="orange">待同步</Badge>}</td>
                   <td><code>{entry.requestId ? `${entry.requestId.slice(0, 8)}…` : '—'}</code></td>
@@ -777,13 +777,13 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
       <div className="ws-modal">
         <header><h2>{allocMode === 'allocate' ? '分配额度' : '回收额度'} · {allocTarget.displayName}</h2><button className="ws-icon-button" aria-label="关闭" onClick={() => setAllocTarget(null)}>×</button></header>
         <form onSubmit={(event) => void submitAllocation(event)}>
-          <label>金额 USD<input autoFocus required type="number" min="0.01" step="0.01" value={allocAmount} onChange={(event) => setAllocAmount(event.target.value)} placeholder="请输入金额" /></label>
+          <label>金额（算力点）<input autoFocus required type="number" min="1" step="1" value={allocAmount} onChange={(event) => setAllocAmount(event.target.value)} placeholder="请输入点数" /></label>
           <p className="ws-detail-copy">
-            成员当前可用 {formatUsd(allocTarget.available)} ｜ 总额度 {formatUsd(allocTarget.quotaTotal)} ｜ 已用 {formatUsd(allocTarget.quotaUsed)}
-            {allocMode === 'reclaim' && <> ｜ 可回收上限 {formatUsd(allocTarget.available)}</>}
+            成员当前可用 {formatPoints(allocTarget.available)} ｜ 总额度 {formatPoints(allocTarget.quotaTotal)} ｜ 已用 {formatPoints(allocTarget.quotaUsed)}
+            {allocMode === 'reclaim' && <> ｜ 可回收上限 {formatPoints(allocTarget.available)}</>}
           </p>
           {allocMode === 'allocate'
-            ? <p className="ws-detail-copy">额度从管理员账户（企业池未分发部分）划出；管理员当前持有 {formatUsd(orgPool?.adminHeld)}，不足会被服务端拒绝。</p>
+            ? <p className="ws-detail-copy">额度从管理员账户（企业池未分发部分）划出；管理员当前持有 {formatPoints(orgPool?.adminHeld)}，不足会被服务端拒绝。</p>
             : <p className="ws-detail-copy">回收的额度退回管理员账户（企业池）。</p>}
           <footer><button type="button" onClick={() => setAllocTarget(null)}>取消</button><button className="ws-primary" disabled={allocSubmitting}>{allocSubmitting ? '提交中…' : allocMode === 'allocate' ? '确认分配' : '确认回收'}</button></footer>
         </form>
@@ -796,7 +796,7 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
         <form onSubmit={(event) => void createKey(event)}>
           <label>名称<input required value={keyForm.name} onChange={(event) => setKeyForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="请输入密钥名称" /></label>
           <label>模型分组（选填）<input value={keyForm.groupId} onChange={(event) => setKeyForm((prev) => ({ ...prev, groupId: event.target.value }))} placeholder="留空使用默认分组" /></label>
-          <label>限额 USD（选填）<input type="number" min="0" step="0.01" value={keyForm.quota} onChange={(event) => setKeyForm((prev) => ({ ...prev, quota: event.target.value }))} /></label>
+          <label>限额（算力点，选填）<input type="number" min="0" step="1" value={keyForm.quota} onChange={(event) => setKeyForm((prev) => ({ ...prev, quota: event.target.value }))} /></label>
           <label>速率 RPM（选填）<input type="number" min="1" step="1" value={keyForm.rpm} onChange={(event) => setKeyForm((prev) => ({ ...prev, rpm: event.target.value }))} /></label>
           <label>有效期（选填）<input type="datetime-local" value={keyForm.expiresAt} onChange={(event) => setKeyForm((prev) => ({ ...prev, expiresAt: event.target.value }))} /></label>
           <p className="ws-detail-copy">完整密钥仅在创建成功后展示一次，服务端只保存前缀与指纹。</p>
@@ -810,7 +810,7 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
         <header><h2>编辑密钥 · {editKey.name}</h2><button className="ws-icon-button" aria-label="关闭" onClick={() => setEditKey(null)}>×</button></header>
         <form onSubmit={(event) => void submitEdit(event)}>
           <label>名称<input required value={editForm.name} onChange={(event) => setEditForm((prev) => ({ ...prev, name: event.target.value }))} /></label>
-          <label>限额 USD<input type="number" min="0" step="0.01" value={editForm.quota} onChange={(event) => setEditForm((prev) => ({ ...prev, quota: event.target.value }))} placeholder="留空表示不限额" /></label>
+          <label>限额（算力点）<input type="number" min="0" step="1" value={editForm.quota} onChange={(event) => setEditForm((prev) => ({ ...prev, quota: event.target.value }))} placeholder="留空表示不限额" /></label>
           <label>速率 RPM<input type="number" min="1" step="1" value={editForm.rpm} onChange={(event) => setEditForm((prev) => ({ ...prev, rpm: event.target.value }))} placeholder="留空表示不设上限" /></label>
           <label>有效期<input type="datetime-local" value={editForm.expiresAt} onChange={(event) => setEditForm((prev) => ({ ...prev, expiresAt: event.target.value }))} /></label>
           <p className="ws-detail-copy">留空即清除该限制；分组与完整密钥不可在此修改，{editKey.isDefault ? '默认 Key 不可删除。' : '如需更换密钥请删除后重建。'}</p>

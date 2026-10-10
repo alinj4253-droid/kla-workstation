@@ -50,8 +50,13 @@ describe('points converter', () => {
 
     expect(() => converter.fromUsd(-0.01)).toThrow(/USD 成本/);
     expect(() => converter.fromUsd(Number.NaN)).toThrow(/USD 成本/);
-    expect(() => converter.toUsd(-1)).toThrow(/算力点/);
-    expect(() => converter.toUsd(Number.POSITIVE_INFINITY)).toThrow(/算力点/);
+    expect(() => converter.toUsd(Number.POSITIVE_INFINITY)).toThrow(/POINTS_PER_USD/);
+  });
+
+  it('toUsd 支持带符号增量（Sub2API 转账 -X/+X 场景）', () => {
+    expect(converter.toUsd(-30000)).toBe(-30);
+    expect(converter.toUsd(12000)).toBe(12);
+    expect(converter.toUsd(0)).toBe(0);
   });
 
   it('自定义汇率按整数点规划', () => {

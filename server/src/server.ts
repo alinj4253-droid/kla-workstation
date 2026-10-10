@@ -16,6 +16,7 @@ import { Sub2ApiClient } from './compute/sub2api-client.js';
 import { ComputeRepository } from './compute/compute-repository.js';
 import { ProvisioningService } from './compute/provisioning-service.js';
 import { QuotaService } from './compute/quota-service.js';
+import { createPointsConverter } from './compute/points.js';
 import { OutboxWorker } from './compute/outbox-worker.js';
 import { UsageSyncWorker } from './compute/usage-sync-worker.js';
 import { registerComputeRoutes } from './compute/routes.js';
@@ -47,17 +48,19 @@ export async function createServer() {
   const accounts = new PostgresAccountRepository(pool);
 
   // 算力模块装配
+  const points = createPointsConverter(config.compute.pointsPerUsd);
   const sub2api = new Sub2ApiClient(config.sub2api, redis);
   const computeRepo = new ComputeRepository(pool);
   const provisioning = new ProvisioningService(computeRepo, sub2api, config.sub2api, config.compute.secretEncryptionKey);
-  const quota = new QuotaService(pool, computeRepo, sub2api);
+  const quota = new QuotaService(pool, computeRepo, sub2api, points);
   app.decorate('quotaService', quota);
   const gateway = new ComputeGateway({
     computeRepo,
     quota,
     sub2api,
     encryptionKey: config.compute.secretEncryptionKey,
-    minReserveUsd: config.compute.minReserveUsd,
+    points,
+    minReservePoints: config.compute.minReservePoints,
     timeoutMs: config.sub2api.timeoutMs,
   });
 
@@ -67,8 +70,8 @@ export async function createServer() {
   await registerRoutes(app, { accounts, database, redis, gateway, shortTermMemory, loopWorker });
   await registerRuntimeRoutes(app, {pool, accounts, worker:loopWorker});
   await registerKnowledgeRoutes(app, { accounts, pool, store: new PostgresKnowledgeStore(pool), encryptionKey: process.env.KNOWLEDGE_SECRET_ENCRYPTION_KEY || config.compute.secretEncryptionKey });
-  await registerComputeRoutes(app, { accounts, computeRepo, quota });
-  await registerComputeRoutesB(app, { accounts, computeRepo });
+  await registerComputeRoutes(app, { accounts, computeRepo, quota, points });
+  await registerComputeRoutesB(app, { accounts, computeRepo, points });
   await registerComputeAccountRoutes(app, { accounts, computeRepo, sub2api, provisioning, quota });
   await registerComputeKeyRoutes(app, {
     accounts,
@@ -76,11 +79,12 @@ export async function createServer() {
     sub2api,
     encryptionKey: config.compute.secretEncryptionKey,
     defaultGroupId: config.sub2api.defaultGroupId,
+    points,
   });
   await registerComputeGatewayRoutes(app, { accounts, computeRepo, gateway });
 
   const outboxWorker = new OutboxWorker(computeRepo, provisioning, config.compute.outboxIntervalMs);
-  const usageSyncWorker = new UsageSyncWorker(computeRepo, sub2api, config.compute.usageSyncIntervalMs);
+  const usageSyncWorker = new UsageSyncWorker(computeRepo, sub2api, config.compute.usageSyncIntervalMs, points);
   loopWorker.start();
   outboxWorker.start();
   usageSyncWorker.start();

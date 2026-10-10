@@ -12,6 +12,9 @@ import type { Sub2ApiClient } from './sub2api-client.js';
 import { COMPUTE_PERMISSION, errorBody, hasPermission, requireIdentity } from './permissions.js';
 import { availableBalance } from './types.js';
 
+/** 用户侧计价单位：算力点（P1-11）。与契约 COMPUTE_CURRENCY 对齐（硬编码原因见 compute/permissions.ts 头注释）。 */
+const CURRENCY = 'point' as const;
+
 export type ComputeAccountRouteDeps = {
   accounts: AccountRepository;
   computeRepo: ComputeRepository;
@@ -96,7 +99,7 @@ export async function registerComputeAccountRoutes(app: FastifyInstance, deps: C
       identityId: identity.id,
       identityType: identity.type,
       organizationId: identity.organizationId,
-      currency: 'usd',
+      currency: CURRENCY,
       balance: availableBalance(quota),
       used: quota.quotaUsed,
       reserved: quota.quotaReserved,
@@ -122,7 +125,7 @@ export async function registerComputeAccountRoutes(app: FastifyInstance, deps: C
       quotaReserved: entitlement?.quotaReserved ?? 0,
     });
     const data: ComputeBalance = {
-      currency: 'usd',
+      currency: CURRENCY,
       balance: available,
       used: entitlement?.quotaUsed ?? 0,
       reserved: entitlement?.quotaReserved ?? 0,

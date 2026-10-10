@@ -4,6 +4,7 @@ import type { AccountRepository, Identity, Session } from '../repositories/types
 import type { ComputeRepository } from './compute-repository.js';
 import type { QuotaService } from './quota-service.js';
 import type { Sub2ApiClient } from './sub2api-client.js';
+import { createPointsConverter } from './points.js';
 import { ComputeGateway, gatewayDedupeHash, parseUsage, parseUsageFromSse, buildUpstreamBody } from './gateway.js';
 import { registerComputeGatewayRoutes } from './routes-b-gateway.js';
 
@@ -57,7 +58,7 @@ function buildGateway(overrides: { chat?: Partial<Sub2ApiClient>; repo?: Partial
     },
     ...overrides.chat,
   } as unknown as Sub2ApiClient;
-  const gateway = new ComputeGateway({ computeRepo, quota, sub2api, encryptionKey: '', minReserveUsd: 0.01, timeoutMs: 5000 });
+  const gateway = new ComputeGateway({ computeRepo, quota, sub2api, encryptionKey: '', points: createPointsConverter(), minReservePoints: 10, timeoutMs: 5000 });
   return { gateway, calls, computeRepo };
 }
 
@@ -97,18 +98,18 @@ describe('Gateway 纯函数', () => {
 });
 
 describe('§8 ComputeGateway 结算', () => {
-  it('成功：预扣 → 调用 → 写 usage（带业务标签）→ 按上游金额扣减', async () => {
+  it('成功：预扣 → 调用 → 写 usage（双口径带业务标签）→ 按结算点数扣减', async () => {
     const { gateway, calls } = buildGateway();
     const result = await gateway.completeChat(identity({ organizationId: 'org1' }), { ...INPUT, tags: { projectId: 'p1', conversationId: 'c1', taskId: 't1', agentId: 'a1' } });
-    expect(calls.reserved).toEqual([{ amount: 0.01, requestId: 'req-1' }]);
+    expect(calls.reserved).toEqual([{ amount: 10, requestId: 'req-1' }]);
     expect(calls.usage).toHaveLength(1);
     expect(calls.usage[0]).toMatchObject({
-      identityId: 'i1', organizationId: 'org1', ledgerId: 'l1', model: 'm1', amountUsd: 1.25,
+      identityId: 'i1', organizationId: 'org1', ledgerId: 'l1', model: 'm1', amountUsd: 1.25, amountPoints: 1250, kind: 'model',
       promptTokens: 1_000_000, completionTokens: 500_000, keyId: 'k1', projectId: 'p1', conversationId: 'c1', taskId: 't1', status: 'success',
     });
-    expect(calls.committed).toEqual([{ ledgerId: 'l1', amount: 1.25 }]);
+    expect(calls.committed).toEqual([{ ledgerId: 'l1', amount: 1250 }]);
     expect(calls.released).toHaveLength(0);
-    expect(result.amountUsd).toBe(1.25);
+    expect(result.amountPoints).toBe(1250);
   });
 
   it('无上游金额时按模型费率 × Token 换算', async () => {
@@ -117,7 +118,7 @@ describe('§8 ComputeGateway 结算', () => {
       chat: { chatCompletions: async () => new Response(JSON.stringify({ usage: { prompt_tokens: 1_000_000, completion_tokens: 1_000_000 } }), { status: 200 }) },
     });
     await gateway.completeChat(identity(), INPUT);
-    expect(calls.committed[0]).toEqual({ ledgerId: 'l1', amount: 3 });
+    expect(calls.committed[0]).toEqual({ ledgerId: 'l1', amount: 3000 });
   });
 
   it('上游报错：释放预扣并抛 GatewayError，不扣减', async () => {
@@ -125,12 +126,12 @@ describe('§8 ComputeGateway 结算', () => {
     await expect(gateway.completeChat(identity(), INPUT)).rejects.toMatchObject({ code: 'UNAVAILABLE', httpStatus: 502 });
     expect(calls.committed).toHaveLength(0);
     expect(calls.released).toEqual(['l1']);
-    expect(calls.usage[0]).toMatchObject({ status: 'failure', amountUsd: 0 });
+    expect(calls.usage[0]).toMatchObject({ status: 'failure', amountUsd: 0, amountPoints: 0 });
   });
 
   it('额度不足：403 且不调用上游', async () => {
     let called = false;
-    const insufficient = Object.assign(new Error('额度不足：可用 0 USD，请求 0.01 USD'), { name: 'QuotaInsufficientError' });
+    const insufficient = Object.assign(new Error('算力点不足：可用 0 点，请求 10 点'), { name: 'QuotaInsufficientError' });
     const { gateway } = buildGateway({
       quota: { reserve: async () => { throw insufficient; } },
       chat: { chatCompletions: async () => { called = true; return new Response('{}', { status: 200 }); } },
@@ -159,7 +160,7 @@ describe('§8 ComputeGateway 结算', () => {
     const result = await gateway.streamChat(identity(), { ...INPUT, stream: true }, (chunk) => { chunks.push(Buffer.from(chunk).toString('utf8')); });
     expect(chunks.join('')).toContain('delta');
     expect(result.usage).toMatchObject({ promptTokens: 1, completionTokens: 1 });
-    expect(calls.committed).toEqual([{ ledgerId: 'l1', amount: 0.5 }]);
+    expect(calls.committed).toEqual([{ ledgerId: 'l1', amount: 500 }]);
   });
 });
 

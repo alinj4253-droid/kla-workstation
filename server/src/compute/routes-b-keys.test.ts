@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import Fastify from 'fastify';
 import type { AccountRepository, Identity, Session } from '../repositories/types.js';
 import type { ComputeKey } from './types.js';
+import { createPointsConverter } from './points.js';
 import type { ComputeRepository } from './compute-repository.js';
 import type { Sub2ApiClient } from './sub2api-client.js';
 import { encryptField, resolveManagedPassword } from './encryption.js';
@@ -47,6 +48,7 @@ async function buildApp(repo: ComputeRepository, sub2api: Partial<Sub2ApiClient>
     sub2api: sub2api as unknown as Sub2ApiClient,
     encryptionKey: '',
     defaultGroupId: 'group-default',
+    points: createPointsConverter(),
   });
   return app;
 }
@@ -71,9 +73,9 @@ describe('resolveManagedPassword', () => {
 });
 
 describe('toKeyDto', () => {
-  it('永不包含 secret 与指纹', () => {
-    const dto = toKeyDto(keyFixture(), 3.5);
-    expect(dto).toMatchObject({ keyPrefix: 'sk-kla-ab', todayUsageUsd: 3.5, quotaUsd: 12.5, rpm: 60, ipAllowList: ['10.0.0.0/8'] });
+  it('永不包含 secret 与指纹；上游 USD 限额换算为点下发', () => {
+    const dto = toKeyDto(keyFixture(), 3500, createPointsConverter());
+    expect(dto).toMatchObject({ keyPrefix: 'sk-kla-ab', todayUsagePoints: 3500, quotaPoints: 12500, rpm: 60, ipAllowList: ['10.0.0.0/8'] });
     const serialized = JSON.stringify(dto);
     expect(serialized).not.toContain('secret');
     expect(serialized).not.toContain('keyFingerprint');
@@ -85,15 +87,15 @@ describe('§7.2 GET /compute/keys', () => {
   it('返回当前身份 Key 与今日用量，且不含 secret', async () => {
     const repo = repoWith(grantPermissions(), {
       listKeys: async () => [keyFixture({ isDefault: true }), keyFixture({ id: 'k2', sub2apiKeyId: 'sk-2' })],
-      sumTodayUsageByKey: async () => new Map([['k1', 1.25]]),
+      sumTodayUsageByKey: async () => new Map([['k1', 1250]]),
     });
     const app = await buildApp(repo, {});
     const response = await app.inject({ method: 'GET', url: '/api/v1/compute/keys', headers: { authorization: 'Bearer t' } });
     expect(response.statusCode).toBe(200);
     const body = response.json();
     expect(body.data.items).toHaveLength(2);
-    expect(body.data.items[0]).toMatchObject({ todayUsageUsd: 1.25, isDefault: true });
-    expect(body.data.items[1]).toMatchObject({ todayUsageUsd: 0 });
+    expect(body.data.items[0]).toMatchObject({ todayUsagePoints: 1250, isDefault: true });
+    expect(body.data.items[1]).toMatchObject({ todayUsagePoints: 0 });
     expect(JSON.stringify(body.data)).not.toContain('secret');
     expect(JSON.stringify(body.data)).not.toContain('fp-1');
     await app.close();
@@ -124,12 +126,13 @@ describe('§7.2 POST /compute/keys', () => {
       method: 'POST',
       url: '/api/v1/compute/keys',
       headers: AUTH,
-      payload: { name: '生产 Key', quota: 12.5, rpm: 60, ipAllowList: ['10.0.0.0/8'], expiresAt: '2026-12-31T00:00:00Z' },
+      payload: { name: '生产 Key', quota: 12500, rpm: 60, ipAllowList: ['10.0.0.0/8'], expiresAt: '2026-12-31T00:00:00Z' },
     });
     expect(response.statusCode).toBe(201);
     const body = response.json();
     expect(body.data.secret).toBe('sk-kla-cd-FULL-SECRET');
-    expect(body.data.key).toMatchObject({ keyPrefix: 'sk-kla-cd', groupId: 'group-default', quotaUsd: 12.5, rpm: 60, ipAllowList: ['10.0.0.0/8'] });
+    expect(body.data.key).toMatchObject({ keyPrefix: 'sk-kla-cd', groupId: 'group-default', quotaPoints: 12500, rpm: 60, ipAllowList: ['10.0.0.0/8'] });
+    // 契约 quota（点）→ KLA quota 列与上游均为 USD：12500 点 = 12.5 USD
     expect(captured).toMatchObject({ identityId: 'i1', sub2apiKeyId: 'sk-new', quota: 12.5, rpm: 60, ipAllowList: ['10.0.0.0/8'], expiresAt: '2026-12-31T00:00:00.000Z' });
     await app.close();
   });

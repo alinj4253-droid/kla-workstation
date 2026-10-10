@@ -7,6 +7,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { ComputeKey as ComputeKeyDto, ComputeKeyList, CreateComputeKeyResponse, ErrorCode, UpdateComputeKeyRequest } from '@kla-workstation/contracts';
 import type { AccountRepository } from '../repositories/types.js';
 import { COMPUTE_READY_STATES, type ComputeBinding, type ComputeKey } from './types.js';
+import type { PointsConverter } from './points.js';
 import type { ComputeRepository } from './compute-repository.js';
 import type { Sub2ApiClient } from './sub2api-client.js';
 import { resolveManagedPassword } from './encryption.js';
@@ -20,10 +21,12 @@ export type ComputeKeyRouteDeps = {
   encryptionKey: string;
   /** 未指定分组时使用的默认 Sub2API 分组 */
   defaultGroupId: string;
+  /** 算力点换算器（P1-11）：契约 quota 为点，上游 Sub2API quota 为 USD */
+  points: PointsConverter;
 };
 
-/** 领域对象 → 契约 DTO；secret 永不在此出现。 */
-export function toKeyDto(key: ComputeKey, todayUsageUsd: number): ComputeKeyDto {
+/** 领域对象 → 契约 DTO；secret 永不在此出现。上游 quota（USD）换算为点下发。 */
+export function toKeyDto(key: ComputeKey, todayUsagePoints: number, points: PointsConverter): ComputeKeyDto {
   return {
     id: key.id,
     name: key.name,
@@ -31,13 +34,13 @@ export function toKeyDto(key: ComputeKey, todayUsageUsd: number): ComputeKeyDto 
     groupId: key.groupId,
     isDefault: key.isDefault,
     status: key.status,
-    quotaUsd: key.quotaUsd,
+    quotaPoints: key.quotaUsd != null ? points.fromUsd(key.quotaUsd) : null,
     rpm: key.rpm,
     ipAllowList: key.ipAllowList,
     expiresAt: key.expiresAt,
     createdAt: key.createdAt,
     lastSyncedAt: key.lastSyncedAt,
-    todayUsageUsd,
+    todayUsagePoints,
   };
 }
 
@@ -96,7 +99,7 @@ export async function registerComputeKeyRoutes(app: FastifyInstance, deps: Compu
       deps.computeRepo.listKeys(ctx.identity.id),
       deps.computeRepo.sumTodayUsageByKey(ctx.identity.id),
     ]);
-    const data: ComputeKeyList = { items: keys.map((key) => toKeyDto(key, todayUsage.get(key.id) ?? 0)) };
+    const data: ComputeKeyList = { items: keys.map((key) => toKeyDto(key, todayUsage.get(key.id) ?? 0, deps.points)) };
     return reply.send({ ok: true, data });
   });
 
@@ -122,10 +125,12 @@ export async function registerComputeKeyRoutes(app: FastifyInstance, deps: Compu
     if (!resolved.ok) return upstreamFailure(reply, resolved.code, resolved.message, request.id);
 
     const groupId = typeof body.groupId === 'string' && body.groupId.trim() !== '' ? body.groupId.trim() : deps.defaultGroupId;
+    // 契约 quota 语义为算力点；上游 Sub2API quota 与 KLA quota 列均为 USD，转换后使用
+    const quotaUsd = quota.value != null ? deps.points.toUsd(quota.value) : undefined;
     let upstream;
     try {
       upstream = await deps.sub2api.createApiKey(resolved.jwt, body.name.trim(), groupId, {
-        quota: quota.value,
+        quota: quotaUsd,
         rpm: rpm.value,
         ipAllowList: ipAllowList.value,
         expiresAt: expiresAt.value,
@@ -141,14 +146,14 @@ export async function registerComputeKeyRoutes(app: FastifyInstance, deps: Compu
       keyFingerprint: upstream.keyFingerprint,
       name: body.name.trim(),
       groupId: groupId || null,
-      quota: quota.value ?? null,
+      quota: quotaUsd ?? null,
       rpm: rpm.value ?? null,
       ipAllowList: ipAllowList.value ?? [],
       expiresAt: expiresAt.value ?? null,
       createdBy: ctx.identity.id,
     });
     const data: CreateComputeKeyResponse = {
-      key: toKeyDto(key, 0),
+      key: toKeyDto(key, 0, deps.points),
       ...(upstream.secret ? { secret: upstream.secret } : {}),
     };
     return reply.code(201).send({ ok: true, data });
@@ -176,7 +181,8 @@ export async function registerComputeKeyRoutes(app: FastifyInstance, deps: Compu
       else {
         const parsed = optionalPositiveNumber(body.quota, 'quota');
         if (!parsed.ok) return reply.code(400).send(errorBody('INVALID_ARGUMENT', parsed.message, request.id));
-        patch.quota = parsed.value ?? null;
+        // 契约 quota 为算力点；KLA quota 列与上游均为 USD
+        patch.quota = parsed.value != null ? deps.points.toUsd(parsed.value) : null;
       }
     }
     if (body.rpm !== undefined) {
@@ -212,7 +218,7 @@ export async function registerComputeKeyRoutes(app: FastifyInstance, deps: Compu
         // 上游改名失败不影响 KLA 元数据结果
       }
     }
-    return reply.send({ ok: true, data: toKeyDto(updated, 0) });
+    return reply.send({ ok: true, data: toKeyDto(updated, 0, deps.points) });
   });
 
   // §7.2 停用
@@ -224,7 +230,7 @@ export async function registerComputeKeyRoutes(app: FastifyInstance, deps: Compu
     const existing = await deps.computeRepo.getKey(keyId, ctx.identity.id);
     if (!existing) return reply.code(404).send(errorBody('NOT_FOUND', 'API Key 不存在或无权访问', request.id));
     if (existing.status === 'deleted') return reply.code(409).send(errorBody('CONFLICT', '已删除的 Key 不能停用', request.id));
-    if (existing.status === 'disabled') return reply.send({ ok: true, data: toKeyDto(existing, 0) });
+    if (existing.status === 'disabled') return reply.send({ ok: true, data: toKeyDto(existing, 0, deps.points) });
 
     const resolved = await resolveUserJwt(ctx.identity.id);
     if (!resolved.ok) return upstreamFailure(reply, resolved.code, resolved.message, request.id);
@@ -234,7 +240,7 @@ export async function registerComputeKeyRoutes(app: FastifyInstance, deps: Compu
       return upstreamFailure(reply, 'UNAVAILABLE', error instanceof Error ? error.message : 'Sub2API 停用 Key 失败', request.id);
     }
     const updated = await deps.computeRepo.setKeyStatus(keyId, ctx.identity.id, 'disabled');
-    return reply.send({ ok: true, data: toKeyDto(updated ?? existing, 0) });
+    return reply.send({ ok: true, data: toKeyDto(updated ?? existing, 0, deps.points) });
   });
 
   // §7.2 删除：默认 Key 不可删除（只能停用后重新生成）
@@ -248,7 +254,7 @@ export async function registerComputeKeyRoutes(app: FastifyInstance, deps: Compu
     if (existing.isDefault) {
       return reply.code(409).send(errorBody('CONFLICT', '默认 Key 不可删除，请先停用后重新生成', request.id));
     }
-    if (existing.status === 'deleted') return reply.send({ ok: true, data: toKeyDto(existing, 0) });
+    if (existing.status === 'deleted') return reply.send({ ok: true, data: toKeyDto(existing, 0, deps.points) });
 
     const resolved = await resolveUserJwt(ctx.identity.id);
     if (!resolved.ok) return upstreamFailure(reply, resolved.code, resolved.message, request.id);
@@ -258,6 +264,6 @@ export async function registerComputeKeyRoutes(app: FastifyInstance, deps: Compu
       return upstreamFailure(reply, 'UNAVAILABLE', error instanceof Error ? error.message : 'Sub2API 删除 Key 失败', request.id);
     }
     const updated = await deps.computeRepo.setKeyStatus(keyId, ctx.identity.id, 'deleted');
-    return reply.send({ ok: true, data: toKeyDto(updated ?? existing, 0) });
+    return reply.send({ ok: true, data: toKeyDto(updated ?? existing, 0, deps.points) });
   });
 }

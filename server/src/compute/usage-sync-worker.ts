@@ -2,6 +2,7 @@
 // 去重哈希 = sha256(id:userId:timestamp)。
 
 import { createHash } from 'node:crypto';
+import type { PointsConverter } from './points.js';
 import type { ComputeRepository } from './compute-repository.js';
 import type { Sub2ApiClient } from './sub2api-client.js';
 
@@ -14,6 +15,8 @@ export class UsageSyncWorker {
     private readonly repo: ComputeRepository,
     private readonly sub2api: Sub2ApiClient,
     private readonly intervalMs: number = 60_000,
+    /** 算力点换算器（P1-11）：上游 USD 用量 → amountPoints */
+    private readonly points: PointsConverter,
   ) {}
 
   start(): void {
@@ -50,6 +53,9 @@ export class UsageSyncWorker {
               sub2apiUsageId: item.id,
               model: item.model,
               amountUsd: item.amountUsd,
+              amountPoints: this.points.fromUsd(item.amountUsd),
+              kind: 'model',
+              toolId: null,
               promptTokens: item.promptTokens,
               completionTokens: item.completionTokens,
               metadata: {},

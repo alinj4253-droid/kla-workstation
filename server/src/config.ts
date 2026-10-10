@@ -27,8 +27,8 @@ export type ComputeConfig = {
   outboxIntervalMs: number;
   reconciliationEnabled: boolean;
   secretEncryptionKey: string;
-  /** Model Gateway 预扣下限（美元）：调用前的软额度闸门金额（§4.2、§8.3） */
-  minReserveUsd: number;
+  /** Model Gateway 预扣下限（算力点）：调用前的软额度闸门金额（§4.2、§8.3） */
+  minReservePoints: number;
   /**
    * 算力点汇率：1 USD = pointsPerUsd 点（DESIGN_POINTS_BASED_BILLING.md §3）。
    * MVP 恒定；调整视同重大变更（发版 + 存量重估迁移），不是运行时可改参数。
@@ -84,7 +84,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       outboxIntervalMs: Number(env.COMPUTE_OUTBOX_INTERVAL_MS ?? 5000),
       reconciliationEnabled: env.COMPUTE_RECONCILIATION_ENABLED === 'true',
       secretEncryptionKey: env.COMPUTE_SECRET_ENCRYPTION_KEY ?? '',
-      minReserveUsd: Number(env.COMPUTE_MIN_RESERVE_USD ?? 0.01),
+      minReservePoints: Number(env.COMPUTE_MIN_RESERVE_POINTS ?? 10),
       pointsPerUsd: Number(env.POINTS_PER_USD ?? 1000),
     },
     tools: {

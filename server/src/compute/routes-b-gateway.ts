@@ -75,10 +75,10 @@ export async function registerComputeGatewayRoutes(app: FastifyInstance, deps: C
       'x-accel-buffering': 'no',
     });
     try {
-      const { usage, amountUsd } = await deps.gateway.streamChat(ctx.identity, input, (chunk) => {
+      const { usage, amountPoints } = await deps.gateway.streamChat(ctx.identity, input, (chunk) => {
         reply.raw.write(Buffer.from(chunk));
       });
-      reply.raw.write(`data: ${JSON.stringify({ kla: { usage, amountUsd } })}\n\n`);
+      reply.raw.write(`data: ${JSON.stringify({ kla: { usage, amountPoints } })}\n\n`);
       reply.raw.end();
     } catch (error) {
       const payload = error instanceof GatewayError ? { code: error.code, message: error.message } : { code: 'INTERNAL', message: '模型流式调用失败' };

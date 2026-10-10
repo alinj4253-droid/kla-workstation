@@ -1,5 +1,8 @@
 // KLA 算力模块领域类型
-// 额度单位统一为 USD（与 Sub2API 计价一致）
+// 权威口径为"算力点"（1 USD = 1000 点，换算收敛在 points.ts）；USD 仅作为影子口径：
+// - Entitlement/OrgMemberQuota 的 quota* 字段单位均为算力点（DB 列 points_*）；
+// - ComputeKey.quotaUsd 是同步到 Sub2API 的上游口径（Key 级限额），展示层换算成点；
+// - ComputeUsage.amountUsd 是上游真实成本（对账/财务），用户侧只看 amountPoints。
 
 export type Usd = number;
 
@@ -35,10 +38,11 @@ export type Entitlement = {
   id: string;
   identityId: string | null;
   organizationId: string | null;
-  quotaTotal: Usd;
-  quotaGranted: Usd;
-  quotaUsed: Usd;
-  quotaReserved: Usd;
+  /** 算力点口径（DB 列 points_*）；USD 影子列仅由 Sub2API 同步路径写入 */
+  quotaTotal: number;
+  quotaGranted: number;
+  quotaUsed: number;
+  quotaReserved: number;
   version: number;
   createdAt: string;
   updatedAt: string;
@@ -52,7 +56,12 @@ export type AllocationLedger = {
   id: string;
   entitlementId: string;
   operation: LedgerOperation;
+  /** USD 影子口径（历史兼容 + 财务对账） */
   amount: Usd;
+  /** 算力点金额（权威口径） */
+  amountPoints: number;
+  /** 落账时的汇率快照（点/USD） */
+  rateSnapshot: number;
   status: LedgerStatus;
   idempotencyKey: string;
   requestId: string | null;
@@ -78,7 +87,7 @@ export type ComputeKey = {
   name: string;
   isDefault: boolean;
   status: ComputeKeyStatus;
-  /** 以下为 KLA 侧元数据（0011 增量列）；上游是否支持由 §16 联调确认 */
+  /** KLA 侧元数据（0011 增量列）；quotaUsd 为同步到上游的 USD 口径，展示层换算成点 */
   groupId: string | null;
   quotaUsd: number | null;
   rpm: number | null;
@@ -95,7 +104,13 @@ export type ComputeUsage = {
   ledgerId: string | null;
   sub2apiUsageId: string | null;
   model: string | null;
+  /** 上游真实成本（USD），对账/财务口径 */
   amountUsd: Usd;
+  /** 算力点实扣（权威口径） */
+  amountPoints: number;
+  /** 计费通道：model = 模型调用；tool = 工具调用（model 列存 toolId） */
+  kind: 'model' | 'tool';
+  toolId: string | null;
   promptTokens: number | null;
   completionTokens: number | null;
   metadata: Record<string, unknown>;
@@ -166,12 +181,12 @@ export type SyncLog = {
   createdAt: string;
 };
 
-/** 可用额度 = 总额度 + 已分配 - 已使用 - 预扣中 */
-export function availableBalance(e: Pick<Entitlement, 'quotaTotal' | 'quotaGranted' | 'quotaUsed' | 'quotaReserved'>): Usd {
+/** 可用额度（点）= 总额度 + 已分配 - 已使用 - 预扣中 */
+export function availableBalance(e: Pick<Entitlement, 'quotaTotal' | 'quotaGranted' | 'quotaUsed' | 'quotaReserved'>): number {
   return roundUsd(e.quotaTotal + e.quotaGranted - e.quotaUsed - e.quotaReserved);
 }
 
-/** 企业成员（企业身份）+ 角色 + 额度 + 算力账号状态，成员管理页聚合行。 */
+/** 企业成员（企业身份）+ 角色 + 额度 + 算力账号状态，成员管理页聚合行。额度单位为算力点。 */
 export type OrgMemberQuota = {
   identityId: string;
   displayName: string;
@@ -180,10 +195,10 @@ export type OrgMemberQuota = {
   userId: string;
   role: 'admin' | 'member';
   provisionStatus: string | null;
-  quotaTotal: Usd;
-  quotaGranted: Usd;
-  quotaUsed: Usd;
-  quotaReserved: Usd;
+  quotaTotal: number;
+  quotaGranted: number;
+  quotaUsed: number;
+  quotaReserved: number;
 };
 
 /** USD 精度：保留 8 位小数（与 NUMERIC(20,8) 对齐） */

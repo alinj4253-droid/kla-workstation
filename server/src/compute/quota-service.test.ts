@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Pool } from 'pg';
 import { QuotaService, QuotaInsufficientError } from './quota-service.js';
+import { createPointsConverter } from './points.js';
 import type { ComputeRepository } from './compute-repository.js';
 import type { Entitlement } from './types.js';
 
@@ -45,11 +46,13 @@ function buildService(opts: { adminBalance: number; memberBalance: number; sameS
       if (delta.total !== undefined) target.quotaTotal += delta.total;
       return target;
     },
-    createLedger: async (input: { entitlementId: string; operation: string; amount: number; idempotencyKey: string; requestId?: string | null; operatorIdentityId?: string | null; relatedLedgerId?: string | null; metadata?: Record<string, unknown> }) => {
+    createLedger: async (input: { entitlementId: string; operation: string; amountPoints: number; rateSnapshot: number; amountUsd?: number; idempotencyKey: string; requestId?: string | null; operatorIdentityId?: string | null; relatedLedgerId?: string | null; metadata?: Record<string, unknown> }) => {
       deps.repo.ledgerSeq += 1;
       return {
         id: `led-${deps.repo.ledgerSeq}`,
-        entitlementId: input.entitlementId, operation: input.operation, amount: input.amount, status: 'completed',
+        entitlementId: input.entitlementId, operation: input.operation,
+        amount: input.amountUsd ?? input.amountPoints / input.rateSnapshot,
+        amountPoints: input.amountPoints, rateSnapshot: input.rateSnapshot, status: 'completed',
         idempotencyKey: input.idempotencyKey, requestId: input.requestId ?? null, relatedLedgerId: input.relatedLedgerId ?? null,
         sub2apiSynced: false, operatorIdentityId: input.operatorIdentityId ?? null, metadata: input.metadata ?? {}, createdAt: NOW, updatedAt: NOW,
       };
@@ -73,14 +76,14 @@ function buildService(opts: { adminBalance: number; memberBalance: number; sameS
     }),
   } as unknown as Pool;
 
-  const service = new QuotaService(pool, repo, sub2api as never);
+  const service = new QuotaService(pool, repo, sub2api as never, createPointsConverter());
   return { service, deps };
 }
 
-describe('QuotaService 企业额度转账', () => {
-  it('allocate：管理员减、成员加，两侧各落一条流水并同步 Sub2API', async () => {
-    const { service, deps } = buildService({ adminBalance: 100, memberBalance: 0 });
-    const result = await service.allocate('admin-i', 'org1', 'member-i', 30, 'req-1');
+describe('QuotaService 企业额度转账（算力点口径，1 USD = 1000 点）', () => {
+  it('allocate：管理员减、成员加（点数换算为 USD 同步），两侧各落一条流水', async () => {
+    const { service, deps } = buildService({ adminBalance: 100_000, memberBalance: 0 });
+    const result = await service.allocate('admin-i', 'org1', 'member-i', 30_000, 'req-1');
 
     expect(result.sub2apiSynced).toBe(true);
     expect(result.counterpartyLedgerId).toBeTruthy();
@@ -95,21 +98,21 @@ describe('QuotaService 企业额度转账', () => {
   });
 
   it('allocate：管理员余额不足抛 QuotaInsufficientError', async () => {
-    const { service, deps } = buildService({ adminBalance: 5, memberBalance: 0 });
-    await expect(service.allocate('admin-i', 'org1', 'member-i', 10, 'req-2')).rejects.toBeInstanceOf(QuotaInsufficientError);
+    const { service, deps } = buildService({ adminBalance: 5_000, memberBalance: 0 });
+    await expect(service.allocate('admin-i', 'org1', 'member-i', 10_000, 'req-2')).rejects.toBeInstanceOf(QuotaInsufficientError);
     expect(deps.sub2api.adjustments).toHaveLength(0);
   });
 
   it('allocate：双方映射同一 Sub2API 账号时跳过转账，台账仍成功（sub2apiSynced=false）', async () => {
-    const { service, deps } = buildService({ adminBalance: 50, memberBalance: 0, sameSub2apiUser: true });
-    const result = await service.allocate('admin-i', 'org1', 'member-i', 20, 'req-3');
+    const { service, deps } = buildService({ adminBalance: 50_000, memberBalance: 0, sameSub2apiUser: true });
+    const result = await service.allocate('admin-i', 'org1', 'member-i', 20_000, 'req-3');
     expect(result.sub2apiSynced).toBe(false);
     expect(deps.sub2api.adjustments).toHaveLength(0);
   });
 
   it('reclaim：成员减、管理员加，上限为成员可用额度', async () => {
-    const { service, deps } = buildService({ adminBalance: 80, memberBalance: 20 });
-    const result = await service.reclaim('admin-i', 'org1', 'member-i', 12, 'req-4');
+    const { service, deps } = buildService({ adminBalance: 80_000, memberBalance: 20_000 });
+    const result = await service.reclaim('admin-i', 'org1', 'member-i', 12_000, 'req-4');
     expect(result.sub2apiSynced).toBe(true);
     expect(deps.sub2api.adjustments).toEqual([
       { userId: 'sub-member', delta: -12 },
@@ -118,13 +121,13 @@ describe('QuotaService 企业额度转账', () => {
   });
 
   it('reclaim：成员可用不足抛 QuotaInsufficientError', async () => {
-    const { service } = buildService({ adminBalance: 100, memberBalance: 3 });
-    await expect(service.reclaim('admin-i', 'org1', 'member-i', 5, 'req-5')).rejects.toBeInstanceOf(QuotaInsufficientError);
+    const { service } = buildService({ adminBalance: 100_000, memberBalance: 3_000 });
+    await expect(service.reclaim('admin-i', 'org1', 'member-i', 5_000, 'req-5')).rejects.toBeInstanceOf(QuotaInsufficientError);
   });
 
   it('不能向/从管理员本人划转', async () => {
-    const { service } = buildService({ adminBalance: 100, memberBalance: 0 });
-    await expect(service.allocate('admin-i', 'org1', 'admin-i', 1, 'req-6')).rejects.toThrow('管理员本人');
-    await expect(service.reclaim('admin-i', 'org1', 'admin-i', 1, 'req-7')).rejects.toThrow('管理员本人');
+    const { service } = buildService({ adminBalance: 100_000, memberBalance: 0 });
+    await expect(service.allocate('admin-i', 'org1', 'admin-i', 1_000, 'req-6')).rejects.toThrow('管理员本人');
+    await expect(service.reclaim('admin-i', 'org1', 'admin-i', 1_000, 'req-7')).rejects.toThrow('管理员本人');
   });
 });

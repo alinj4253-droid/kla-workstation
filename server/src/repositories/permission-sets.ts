@@ -5,7 +5,7 @@
 // createOrganization / joinOrganization 时自动绑定，避免 repositories → compute 反向依赖。
 // compute/permissions.ts 维护了同名常量副本，原因见其文件头注释（契约包运行时入口问题）。
 
-/** 个人默认角色：可查看余额、管理本人 Key、查看本人用量、调用模型、浏览模型广场。 */
+/** 个人默认角色：可查看余额、管理本人 Key、查看本人用量、调用模型、浏览模型广场、使用按次计费工具。 */
 export const PERSONAL_DEFAULT_PERMISSIONS = [
   'compute.view',
   'compute.key.view',
@@ -15,6 +15,7 @@ export const PERSONAL_DEFAULT_PERMISSIONS = [
   'compute.usage.view',
   'model.use',
   'model.catalog.view',
+  'tool.search.use',
 ] as const;
 
 /** 企业管理员角色：个人默认全部权限 + 查看企业汇总 + 分配/回收成员额度。 */

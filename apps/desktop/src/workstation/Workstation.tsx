@@ -8,7 +8,7 @@ import { memoryApi } from '../api/memories';
 import { ComputeSection, type ComputeView } from './ComputeSection';
 import { KnowledgeSection } from './KnowledgeSection';
 import { MemorySection } from './MemorySection';
-import { Badge, Chart, formatUsd, IconButton, Panel, Stat } from './ui';
+import { Badge, Chart, formatPoints, IconButton, Panel, Stat } from './ui';
 
 type Section = 'home' | 'projects' | 'knowledge' | 'agents' | 'memory' | 'compute' | 'chats' | 'settings';
 type LoginIdentity = IdentityDto & { role?: 'personal' | 'admin' | 'member' };
@@ -141,7 +141,7 @@ export function Workstation(): React.JSX.Element {
   const [knowledgeFiles, setKnowledgeFiles] = useState<File[]>([]);
   const [knowledgeScopeChoice, setKnowledgeScopeChoice] = useState<KnowledgeScope>('personal');
   const [models, setModels] = useState(initialModels);
-  const [computeBalanceUsd, setComputeBalanceUsd] = useState<number | null>(null);
+  const [computeBalancePoints, setComputeBalancePoints] = useState<number | null>(null);
   /** 当前身份是否具备企业管理员能力；由算力模块按服务端权限标志上报，仅用于决定侧栏是否展示「成员管理」 */
   const [computeAdmin, setComputeAdmin] = useState(false);
   /** §12：身份切换后强制算力模块清空缓存并重新加载 */
@@ -357,7 +357,7 @@ export function Workstation(): React.JSX.Element {
     if (!result.ok) { notify(apiError(result)); return; }
     klaApi.setIdentity(result.data.id);
     setActiveIdentityId(result.data.id);
-    setComputeBalanceUsd(null);
+    setComputeBalancePoints(null);
     setComputeAdmin(false);
     setComputeReloadKey(key => key + 1);
     setIdentities(items => items.map(item => ({ ...item, isDefault: item.id === result.data.id })));
@@ -450,7 +450,7 @@ export function Workstation(): React.JSX.Element {
     <main className={`ws-main ${(section === 'projects' || section === 'chats' || section === 'compute' || section === 'agents' || section === 'settings') ? 'has-subnav' : 'wide'}`}>
     {(section === 'projects' || section === 'chats' || section === 'compute' || section === 'agents' || section === 'settings') && <aside className="ws-subnav">
         {(section === 'projects' || section === 'chats') && <><header className="ws-panel-heading"><span className="ws-panel-heading-icon"><Folder size={17} /></span><span><strong>项目与群组</strong><small>{projects.length} 个项目 · {chats.length} 个群组</small></span><IconButton title="新建项目" onClick={() => setModal('project')}><Plus size={17} /></IconButton></header><div className="ws-sub-list ws-project-tree"><div className="ws-tree-label">项目 <button title="新建项目" onClick={() => setModal('project')}><Plus size={14} /></button></div>{projects.map(p => <div key={p.id} className="ws-tree-project"><div className={`ws-tree-row ${p.id === activeProject ? 'active' : ''}`}><button className="ws-tree-toggle" onClick={() => setProjects(items => items.map(x => x.id === p.id ? { ...x, open: !x.open } : x))}>{p.open ? '▾' : '▸'}</button><button className="ws-tree-main" onClick={() => { setActiveProject(p.id); setSection('projects'); }}><span className="ws-avatar" style={{ background: p.color }}>{p.name.slice(0, 2)}</span><span>{p.name}<small>{p.description} · {p.groupIds?.length ?? 0} 个关联群组</small></span></button><button className="ws-tree-add" title="在此项目下新建群聊" onClick={() => { setNewProject(p.id); setNewName(''); setModal('chat'); }}>＋</button></div>{p.open && <div className="ws-tree-children">{(p.groupIds ?? []).map(id => { const chat = chats.find(c => c.id === id); return chat ? <button key={chat.id} className={activeChat === chat.id ? 'active' : ''} onClick={() => { setActiveChat(chat.id); setActiveProject(p.id); setSection('chats'); }}><span className="ws-tree-branch">└</span><span className="ws-avatar">{chat.name.slice(0, 2)}</span><span>{chat.name}<small>进行中 · {chat.messages.at(-1)?.time ?? '暂无消息'}</small></span></button> : null; })}</div>}</div>)}<div className="ws-tree-label ws-tree-orphans">群组 <button title="新建群聊" onClick={() => { setNewProject(''); setNewName(''); setModal('chat'); }}><Plus size={14} /></button></div>{chats.filter(c => !projects.some(p => p.groupIds?.includes(c.id))).map(chat => <button key={chat.id} className={activeChat === chat.id ? 'active' : ''} onClick={() => { setActiveChat(chat.id); setSection('chats'); }}><span className="ws-avatar">{chat.name.slice(0, 2)}</span><span>{chat.name}<small>进行中 · {chat.project}</small></span></button>)}</div></>}
-      {section === 'compute' && <><header className="ws-compute-title"><span className="ws-tiny-icon"><Activity size={18} /></span><span>算力与计费中心<small>Cluster Mesh v4.8</small></span></header><div className="ws-compute-links">{computeNav.filter(item => item.id !== 'members' || computeAdmin).map(({ id, label, Icon }) => <button key={id} className={computeView === id ? 'active' : ''} onClick={() => { setComputeView(id); setQuery(''); }}><Icon size={16} />{label}</button>)}</div><div className="ws-wallet"><small>账户可用算力余额 <b>{computeBalanceUsd === null ? '待加载' : computeBalanceUsd > 0 ? '可用' : '不足'}</b></small><strong>{formatUsd(computeBalanceUsd)}</strong><button className="ws-primary" onClick={() => setComputeView('dashboard')}>查看余额与额度</button></div></>}
+      {section === 'compute' && <><header className="ws-compute-title"><span className="ws-tiny-icon"><Activity size={18} /></span><span>算力与计费中心<small>Cluster Mesh v4.8</small></span></header><div className="ws-compute-links">{computeNav.filter(item => item.id !== 'members' || computeAdmin).map(({ id, label, Icon }) => <button key={id} className={computeView === id ? 'active' : ''} onClick={() => { setComputeView(id); setQuery(''); }}><Icon size={16} />{label}</button>)}</div><div className="ws-wallet"><small>账户可用算力余额 <b>{computeBalancePoints === null ? '待加载' : computeBalancePoints > 0 ? '可用' : '不足'}</b></small><strong>{formatPoints(computeBalancePoints)}</strong><button className="ws-primary" onClick={() => setComputeView('dashboard')}>查看余额与额度</button></div></>}
       {section === 'agents' && <><header className="ws-compute-title"><span className="ws-tiny-icon"><Bot size={18} /></span><span>智能体<small>Agent Control · 我的智能体与市场</small></span></header><div className="ws-settings-menu"><small>智能体</small><button className={agentView === 'manage' ? 'active' : ''} onClick={() => setAgentView('manage')}><Bot size={16} /> 智能体管理</button><button className={agentView === 'skills' ? 'active' : ''} onClick={() => setAgentView('skills')}><Sparkles size={16} /> 技能</button><button className={agentView === 'tools' ? 'active' : ''} onClick={() => setAgentView('tools')}><Wrench size={16} /> 工具</button></div></>}
       {section === 'settings' && <><header className="ws-compute-title"><span className="ws-tiny-icon"><Settings size={18} /></span><span>平台设置<small>v2.4.0</small></span></header><div className="ws-settings-menu"><small>AI 核心</small><button className={settingsView === 'channels' ? 'active' : ''} onClick={() => setSettingsView('channels')}><Route size={16} /> 渠道</button>{canManageMembers && <><small>企业治理</small><button className={settingsView === 'members' ? 'active' : ''} onClick={() => setSettingsView('members')}><Users size={16} /> 成员管理</button></>}<small>扩展设置</small><button className={settingsView === 'profile' ? 'active' : ''} onClick={() => setSettingsView('profile')}><UserCircle size={16} /> 个人</button><button className={settingsView === 'appearance' ? 'active' : ''} onClick={() => setSettingsView('appearance')}><Sparkles size={16} /> 外观</button><button className={settingsView === 'ops' ? 'active' : ''} onClick={() => setSettingsView('ops')}><ShieldCheck size={16} /> 运维管理</button></div></>}
     </aside>}
@@ -475,7 +475,7 @@ export function Workstation(): React.JSX.Element {
 <div className="ws-chat-compose"><textarea placeholder="发送消息给群组 (支持 @ 智能体)..." value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }} /><div><span><Paperclip size={16} /> 附件 <Bot size={16} /> 智能体</span><button className="ws-primary" disabled={chatSending || chatLoading || !currentChat.id} onClick={() => void send()}><Send size={15} />{chatSending ? '处理中…' : '发送给群组'}</button></div></div></div>}
         {section === 'knowledge' && <KnowledgeSection key={computeReloadKey} />}
         {section === 'compute' && <>
-          <ComputeSection view={computeView} onNotify={notify} onBalance={setComputeBalanceUsd} onAdminCapability={setComputeAdmin} reloadKey={computeReloadKey} projects={projects.map(project => ({ id: project.id, name: project.name }))} />
+          <ComputeSection view={computeView} onNotify={notify} onBalance={setComputeBalancePoints} onAdminCapability={setComputeAdmin} reloadKey={computeReloadKey} projects={projects.map(project => ({ id: project.id, name: project.name }))} />
         </>}
       </div>
     </main>

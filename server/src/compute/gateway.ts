@@ -8,6 +8,7 @@
 
 import { createHash } from 'node:crypto';
 import type { Identity } from '../repositories/types.js';
+import type { PointsConverter } from './points.js';
 import type { ComputeRepository } from './compute-repository.js';
 import type { QuotaService } from './quota-service.js';
 import type { Sub2ApiClient } from './sub2api-client.js';
@@ -46,8 +47,10 @@ export type ComputeGatewayDeps = {
   quota: QuotaService;
   sub2api: Sub2ApiClient;
   encryptionKey: string;
-  /** 预扣下限（美元） */
-  minReserveUsd: number;
+  /** 算力点换算器（P1-11）：结算时把 USD 成本换算为算力点入账 */
+  points: PointsConverter;
+  /** 预扣下限（算力点） */
+  minReservePoints: number;
   timeoutMs: number;
 };
 
@@ -145,10 +148,10 @@ export class ComputeGateway {
     const password = resolveManagedPassword(binding.managedPassword, this.deps.encryptionKey);
     if (!password) throw new GatewayError('CONFLICT', '托管凭据不可用，无法调用模型', 409);
 
-    // §8.3 锁定并预扣额度；并发下由 SELECT FOR UPDATE 行锁保证不超发
+    // §8.3 锁定并预扣额度（算力点）；并发下由 SELECT FOR UPDATE 行锁保证不超发
     let ledgerId: string;
     try {
-      ({ ledgerId } = await this.deps.quota.reserve(identity.id, this.deps.minReserveUsd, input.requestId));
+      ({ ledgerId } = await this.deps.quota.reserve(identity.id, this.deps.minReservePoints, input.requestId));
     } catch (error) {
       if (error instanceof Error && error.name === 'QuotaInsufficientError') throw new GatewayError('FORBIDDEN', error.message, 403);
       throw error;
@@ -182,9 +185,12 @@ export class ComputeGateway {
     return { identity, ledgerId, credential, keyId: key.id, modelId: catalogModel.id, startedAt: Date.now() };
   }
 
-  /** §8.7：写 compute_usage 并完成预扣转扣减 / 释放。返回实际结算金额（美元）。 */
+  /** §8.7：写 compute_usage（双口径）并完成预扣转扣减 / 释放。返回实际结算算力点。 */
   private async settle(prepared: Prepared, input: GatewayChatInput, usage: GatewayUsage, status: 'success' | 'failure'): Promise<number> {
     const amountUsd = status === 'success' ? await this.resolveAmountUsd(prepared.modelId, usage) : 0;
+    // 结算换算边界：USD 成本 → 算力点（快照取请求开始时的汇率，MVP 恒定）
+    const amountPoints = this.deps.points.fromUsd(amountUsd);
+    const rateSnapshot = this.deps.points.rateAt(prepared.startedAt);
     try {
       await this.deps.computeRepo.upsertUsage({
         identityId: prepared.identity.id,
@@ -193,9 +199,12 @@ export class ComputeGateway {
         sub2apiUsageId: null,
         model: prepared.modelId,
         amountUsd,
+        amountPoints,
+        kind: 'model',
+        toolId: null,
         promptTokens: usage.promptTokens,
         completionTokens: usage.completionTokens,
-        metadata: { requestId: input.requestId, agentId: input.tags?.agentId ?? null, status },
+        metadata: { requestId: input.requestId, agentId: input.tags?.agentId ?? null, status, rateSnapshot },
         dedupeHash: gatewayDedupeHash(prepared.identity.id, input.requestId),
         recordedAt: new Date().toISOString(),
         keyId: prepared.keyId,
@@ -209,12 +218,12 @@ export class ComputeGateway {
       // 用量写入失败不阻断响应；交由对账与 Usage Sync 补偿（§11.2）
     }
     try {
-      if (status === 'success') await this.deps.quota.commit(prepared.ledgerId, amountUsd);
+      if (status === 'success') await this.deps.quota.commit(prepared.ledgerId, amountPoints);
       else await this.deps.quota.release(prepared.ledgerId);
     } catch {
       // 结算失败由对账补偿；不覆盖已成功的模型响应
     }
-    return amountUsd;
+    return amountPoints;
   }
 
   /** 成本换算优先级：上游金额 > 模型费率 × Token > 预扣下限（§16 费率来源待联调确认）。 */
@@ -226,11 +235,12 @@ export class ComputeGateway {
       const outputCost = ((usage.completionTokens ?? 0) / 1_000_000) * (pricing.outputPricePerMtokUsd ?? 0);
       return roundUsd(inputCost + outputCost);
     }
-    return this.deps.minReserveUsd;
+    // USD 成本下限（0.01）仅在费率缺失时兜底，再由结算层换算为 10 点
+    return 0.01;
   }
 
   /** 普通（非流式）请求：透传响应体与 usage。 */
-  async completeChat(identity: Identity, input: GatewayChatInput): Promise<{ payload: unknown; usage: GatewayUsage; amountUsd: number }> {
+  async completeChat(identity: Identity, input: GatewayChatInput): Promise<{ payload: unknown; usage: GatewayUsage; amountPoints: number }> {
     const prepared = await this.prepare(identity, input);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.deps.timeoutMs);
@@ -248,8 +258,8 @@ export class ComputeGateway {
       }
       const payload = (await response.json()) as Record<string, unknown>;
       const usage = parseUsage(payload);
-      const amountUsd = await this.settle(prepared, input, usage, 'success');
-      return { payload, usage, amountUsd };
+      const amountPoints = await this.settle(prepared, input, usage, 'success');
+      return { payload, usage, amountPoints };
     } catch (error) {
       if (error instanceof GatewayError) throw error;
       await this.settle(prepared, input, EMPTY_USAGE, 'failure');
@@ -265,7 +275,7 @@ export class ComputeGateway {
     identity: Identity,
     input: GatewayChatInput,
     onChunk: (chunk: Uint8Array) => void | Promise<void>,
-  ): Promise<{ usage: GatewayUsage; amountUsd: number }> {
+  ): Promise<{ usage: GatewayUsage; amountPoints: number }> {
     const prepared = await this.prepare(identity, input);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.deps.timeoutMs);
@@ -291,8 +301,8 @@ export class ComputeGateway {
         await onChunk(value);
       }
       const usage = parseUsageFromSse(buffer);
-      const amountUsd = await this.settle(prepared, input, usage, 'success');
-      return { usage, amountUsd };
+      const amountPoints = await this.settle(prepared, input, usage, 'success');
+      return { usage, amountPoints };
     } catch (error) {
       if (error instanceof GatewayError) throw error;
       await this.settle(prepared, input, EMPTY_USAGE, 'failure');
