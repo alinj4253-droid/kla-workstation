@@ -38,6 +38,7 @@ export const documentListSchema = z.object({
 export interface SourceRef { docId: string; displayName: string; knowledgeBaseId?: string; sourceId?: string; version?: string; locateText?: string }
 export interface SourceJobBinding {
   clientUploadId: string; serviceInstanceId: string; collection: string;
+  knowledgeBaseId?: string;
   displayName: string; jobId: string; docId?: string; submittedAt: string; terminalAt?: string;
   /** Removed from the local task history; source attribution is retained. */
   taskRecordDeletedAt?: string;
@@ -80,7 +81,7 @@ export interface UploadInput {
 }
 export const submitResponseSchema = z.object({ job_id: z.string().min(1), state: jobStateSchema, filename: z.string(), stored_path: z.string().min(1), scope_accepted: z.literal(true) });
 export interface SourceList { documents: RemoteDocument[]; bindings: SourceJobBinding[]; totalWorkspaceCount: number; verifiedServerDocIds?: string[]; unclassifiedCount?: number }
-export interface UnconfirmedSubmission { clientUploadId: string; displayName: string; physicalName: string; collection: string; submittedAt: string }
+export interface UnconfirmedSubmission { clientUploadId: string; displayName: string; physicalName: string; collection: string; submittedAt: string; knowledgeBaseId?: string }
 export interface SubmissionRecovery { recovered: number; unresolved: number }
 export interface JobEvent { serviceInstanceId: string; subscriptionId: string; jobId: string; snapshot?: JobSnapshot; disconnected?: boolean }
 export interface ContentRequest {
@@ -95,9 +96,9 @@ export interface KnowledgeLibraryBridge {
   acceptUploadConsent(input: { serviceInstanceId: string; noticeVersion: typeof KNOWLEDGE_UPLOAD_NOTICE_VERSION }): Promise<RpcResult<KnowledgeConnection>>;
   health(input: { serviceInstanceId: string }): Promise<RpcResult<{ status: string; jobs_running?: number }>>;
   listSources(input: { serviceInstanceId: string; collection: string; knowledgeBaseId?: string }): Promise<RpcResult<SourceList>>;
-  getBindings(input: { serviceInstanceId: string; collection: string }): Promise<RpcResult<SourceJobBinding[]>>;
-  getUnconfirmed(input: { serviceInstanceId: string; collection: string }): Promise<RpcResult<UnconfirmedSubmission[]>>;
-  recoverSubmissions(input: { serviceInstanceId: string; collection: string }): Promise<RpcResult<SubmissionRecovery>>;
+  getBindings(input: { serviceInstanceId: string; collection: string; knowledgeBaseId?: string }): Promise<RpcResult<SourceJobBinding[]>>;
+  getUnconfirmed(input: { serviceInstanceId: string; collection: string; knowledgeBaseId?: string }): Promise<RpcResult<UnconfirmedSubmission[]>>;
+  recoverSubmissions(input: { serviceInstanceId: string; collection: string; knowledgeBaseId?: string }): Promise<RpcResult<SubmissionRecovery>>;
   submit(input: UploadInput): Promise<RpcResult<SourceJobBinding>>;
   cancelUpload(input: { clientUploadId: string }): Promise<RpcResult<boolean>>;
   listJobs(input: { serviceInstanceId: string }): Promise<RpcResult<{ count: number; jobs: JobSnapshot[] }>>;

@@ -67,4 +67,34 @@ describe('scoped library statistics', () => {
     await expect(scopedLibraryStatistics(1, 'fixture-service', catalogEntries.slice(0, 1)))
       .rejects.toThrow('统计范围与授权知识库不一致');
   });
+
+  it('keeps uploaded files and empty libraries visible before their vector collection exists', async () => {
+    mock.request.mockResolvedValue({ permission_filtered: true, collections: catalogEntries.map((entry, index) => ({
+      knowledge_base_id: entry.id, collection: index < 2 ? '' : entry.collection,
+      file_count: index === 0 ? 4 : 0, chunk_count: 0,
+      source_names: index === 0 ? ['通知.pdf', '管理办法.pdf', '绩效办法.pdf', '政策.pdf'] : [],
+    })) });
+    const result = await scopedLibraryStatistics(1, 'fixture-service', catalogEntries);
+    expect(result.collections).toEqual(catalogEntries.map((entry, index) => ({
+      knowledgeBaseId: entry.id, collection: entry.collection, fileCount: index === 0 ? 4 : 0,
+      chunkCount: 0, sourceNames: index === 0 ? ['通知.pdf', '管理办法.pdf', '绩效办法.pdf', '政策.pdf'] : [],
+    })));
+  });
+
+  it.each([
+    { knowledge_base_id: catalogEntries[0]!.id, collection: '其他集合', chunk_count: 0 },
+    { knowledge_base_id: catalogEntries[0]!.id, collection: '', chunk_count: 1 },
+    { knowledge_base_id: '00000000-0000-4000-8000-000000000099', collection: '', chunk_count: 0 },
+  ])('still rejects inconsistent or unauthorized statistics: %j', async item => {
+    mock.request.mockResolvedValue({ permission_filtered: true, collections: [{ ...item, file_count: 1, source_names: ['private.pdf'] }] });
+    await expect(scopedLibraryStatistics(1, 'fixture-service', catalogEntries.slice(0, 1)))
+      .rejects.toThrow('统计范围与授权知识库不一致');
+  });
+
+  it('rejects duplicate library IDs even when their collection names are empty', async () => {
+    const row = { knowledge_base_id: catalogEntries[0]!.id, collection: '', file_count: 0, chunk_count: 0, source_names: [] };
+    mock.request.mockResolvedValue({ permission_filtered: true, collections: [row, row] });
+    await expect(scopedLibraryStatistics(1, 'fixture-service', catalogEntries.slice(0, 2)))
+      .rejects.toThrow('重复的知识库统计');
+  });
 });

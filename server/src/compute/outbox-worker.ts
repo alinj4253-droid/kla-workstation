@@ -6,7 +6,7 @@ import type { ProvisioningService } from './provisioning-service.js';
 
 export class OutboxWorker {
   private timer: ReturnType<typeof setInterval> | null = null;
-  private running = false;
+  private running: Promise<void> | null = null;
 
   constructor(
     private readonly repo: ComputeRepository,
@@ -16,20 +16,24 @@ export class OutboxWorker {
 
   start(): void {
     if (this.timer) return;
-    this.timer = setInterval(() => { void this.tick(); }, this.intervalMs);
-    void this.tick(); // 立即执行一次
+    this.timer = setInterval(() => this.tick(), this.intervalMs);
+    this.tick(); // 立即执行一次
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
     }
+    await this.running;
   }
 
-  private async tick(): Promise<void> {
+  private tick(): void {
     if (this.running) return;
-    this.running = true;
+    this.running = this.processEvents().finally(() => { this.running = null; });
+  }
+
+  private async processEvents(): Promise<void> {
     try {
       const client = await this.repo.pool.connect();
       try {
@@ -47,8 +51,6 @@ export class OutboxWorker {
       }
     } catch {
       // 连接失败等，下次重试
-    } finally {
-      this.running = false;
     }
   }
 

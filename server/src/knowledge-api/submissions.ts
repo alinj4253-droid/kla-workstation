@@ -3,7 +3,7 @@ function state() { return moduleState('submissions', () => ({submissions: [] as 
 import { z } from 'zod';
 import type { UnconfirmedSubmission } from '@kla-workstation/contracts/knowledge';
 import { atomicJson } from './config.js';
-const schema = z.object({ clientUploadId: z.string(), displayName: z.string(), physicalName: z.string(), collection: z.string(), submittedAt: z.string(), serverOrigin: z.string(), credentialRef: z.string().nullable() });
+const schema = z.object({ clientUploadId: z.string(), displayName: z.string(), physicalName: z.string(), collection: z.string(), submittedAt: z.string(), serverOrigin: z.string(), credentialRef: z.string().nullable(), knowledgeBaseId: z.string().uuid().optional() });
 type Submission = z.infer<typeof schema>;
 export async function loadSubmissions(): Promise<void> {
     try {

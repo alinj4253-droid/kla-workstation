@@ -97,8 +97,7 @@ export async function createServer() {
 
   app.addHook('onClose', async () => {
     await loopWorker.stop();
-    outboxWorker.stop();
-    usageSyncWorker.stop();
+    await Promise.all([outboxWorker.stop(), usageSyncWorker.stop()]);
     await memoryRetention.stop();
     await database.close();
     await redis.close();

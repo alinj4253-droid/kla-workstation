@@ -21,8 +21,8 @@ import './sources.css';
 
 export function KnowledgeDetail({ context, connection, base, slots = {}, onConfigure, onEdit, onDelete }: { context: KnowledgeContext; connection: KnowledgeConnection; base?: KnowledgeBase | undefined; slots?: KnowledgeSlots; onConfigure: () => void; onEdit?: (() => void) | undefined; onDelete?: (() => void) | undefined }): React.JSX.Element {
   const client = useQueryClient(); const sourceQuery = useSources(context);
-  const savedBindings = useQuery({ queryKey: knowledgeKeys.bindings(context.serviceInstanceId, context.collection), queryFn: () => knowledgeApi.bindings(context.serviceInstanceId, context.collection), enabled: Boolean(context.collection), retry: false });
-  const unconfirmed = useQuery({ queryKey: knowledgeKeys.unconfirmed(context.serviceInstanceId, context.collection), queryFn: () => knowledgeApi.unconfirmed(context.serviceInstanceId, context.collection), enabled: Boolean(context.collection), retry: false, refetchInterval: 10000 });
+  const savedBindings = useQuery({ queryKey: knowledgeKeys.bindings(context.serviceInstanceId, context.collection, context.knowledgeBaseId), queryFn: () => knowledgeApi.bindings(context.serviceInstanceId, context.collection, context.knowledgeBaseId), enabled: Boolean(context.collection), retry: false });
+  const unconfirmed = useQuery({ queryKey: knowledgeKeys.unconfirmed(context.serviceInstanceId, context.collection, context.knowledgeBaseId), queryFn: () => knowledgeApi.unconfirmed(context.serviceInstanceId, context.collection, context.knowledgeBaseId), enabled: Boolean(context.collection), retry: false, refetchInterval: 10000 });
   const [newBindings, setNewBindings] = useState<SourceJobBinding[]>([]);
   const [recordToDelete, setRecordToDelete] = useState<SourceJobBinding | null>(null);
   const [deletedRecordKeys, setDeletedRecordKeys] = useState(new Set<string>());
@@ -111,14 +111,14 @@ export function KnowledgeDetail({ context, connection, base, slots = {}, onConfi
     setDeletedRecordKeys(old => new Set(old).add(JSON.stringify([deleted.serviceInstanceId, deleted.collection, deleted.jobId])));
     const updateBinding = (binding: SourceJobBinding) => binding.jobId === deleted.jobId && deleted.taskRecordDeletedAt ? { ...binding, taskRecordDeletedAt: deleted.taskRecordDeletedAt } : binding;
     setNewBindings(old => old.map(updateBinding));
-    client.setQueryData<SourceJobBinding[]>(knowledgeKeys.bindings(deleted.serviceInstanceId, deleted.collection), current => current?.map(updateBinding));
-    client.setQueryData<SourceListData>(knowledgeKeys.sources(deleted.serviceInstanceId, deleted.collection), current => current ? { ...current, bindings: current.bindings.map(updateBinding) } : current);
+    client.setQueryData<SourceJobBinding[]>(knowledgeKeys.bindings(deleted.serviceInstanceId, deleted.collection, context.knowledgeBaseId), current => current?.map(updateBinding));
+    client.setQueryData<SourceListData>(knowledgeKeys.sources(deleted.serviceInstanceId, deleted.collection, context.knowledgeBaseId), current => current ? { ...current, bindings: current.bindings.map(updateBinding) } : current);
   }
   async function recover() {
     if (recovering) return;
     setRecovering(true); setActionError(''); setRecoveryNotice('');
     try {
-      const result = await knowledgeApi.recoverSubmissions(context.serviceInstanceId, context.collection);
+      const result = await knowledgeApi.recoverSubmissions(context.serviceInstanceId, context.collection, context.knowledgeBaseId);
       setRecoveryNotice(`已核对并恢复 ${result.recovered} 条提交记录，${result.unresolved} 条仍待确认。无法匹配的记录不会自动重传。`);
       refresh();
     } catch (error) { setActionError((error as Error).message); }

@@ -21,13 +21,20 @@ export async function scopedLibraryStatistics(owner: number, serviceId: string, 
     body: JSON.stringify({ knowledge_base_ids: entries.map(entry => entry.id) }),
   });
   const expected = new Map(entries.map(entry => [entry.id, entry.collection]));
-  if (result.collections.length !== expected.size || result.collections.some(item => expected.get(item.knowledge_base_id) !== item.collection)) {
+  const inconsistent = result.collections.some(item => {
+    const collection = expected.get(item.knowledge_base_id);
+    // The upstream reports an empty vector collection before any chunks are indexed.
+    // Only an authorized library ID with zero chunks can use this placeholder.
+    const unindexedCollection = item.collection === '' && item.chunk_count === 0;
+    return collection === undefined || (!unindexedCollection && item.collection !== collection);
+  });
+  if (result.collections.length !== expected.size || inconsistent) {
     throw new KnowledgeError('KNOWLEDGE_INGEST_FAILED', '知识服务返回的统计范围与授权知识库不一致。');
   }
   const seen = new Set(result.collections.map(item => item.knowledge_base_id));
   if (seen.size !== expected.size) throw new KnowledgeError('KNOWLEDGE_INGEST_FAILED', '知识服务返回了重复的知识库统计。');
   assertService(serviceId);
-  return { collections: result.collections.map(item => ({ knowledgeBaseId: item.knowledge_base_id, collection: item.collection,
+  return { collections: result.collections.map(item => ({ knowledgeBaseId: item.knowledge_base_id, collection: expected.get(item.knowledge_base_id)!,
     fileCount: item.file_count, chunkCount: item.chunk_count, sourceNames: item.source_names })), unclassifiedCount: 0 };
 }
 

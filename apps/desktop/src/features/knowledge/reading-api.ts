@@ -6,10 +6,10 @@ import type { QueryContext } from '../knowledge-b/shared';
 /** The sole reader boundary: preserve the existing RPC envelope, then validate it. */
 export function createReadingApi(serviceInstanceId: string, knowledgeBaseId?: string): KnowledgeBApi {
   return createKnowledgeBClient({
-    detail: ({ docId }) => bridge().contentRequest({ serviceInstanceId, endpoint: 'document', docId }),
-    meta: ({ docId }) => bridge().contentRequest({ serviceInstanceId, endpoint: 'meta', docId }),
-    content: ({ docId, para, limit }) => bridge().contentRequest({ serviceInstanceId, endpoint: 'content', docId, para, limit }),
-    slices: ({ docId }) => bridge().contentRequest({ serviceInstanceId, endpoint: 'slices', docId }),
+    detail: ({ docId }) => bridge().contentRequest({ serviceInstanceId, knowledgeBaseId, endpoint: 'document', docId }),
+    meta: ({ docId }) => bridge().contentRequest({ serviceInstanceId, knowledgeBaseId, endpoint: 'meta', docId }),
+    content: ({ docId, para, limit }) => bridge().contentRequest({ serviceInstanceId, knowledgeBaseId, endpoint: 'content', docId, para, limit }),
+    slices: ({ docId }) => bridge().contentRequest({ serviceInstanceId, knowledgeBaseId, endpoint: 'slices', docId }),
     search: search => bridge().contentRequest({ serviceInstanceId, endpoint: 'search', knowledgeBaseId, search }),
   });
 }

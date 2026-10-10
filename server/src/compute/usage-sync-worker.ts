@@ -6,7 +6,7 @@ type BindingRow = { identity_id: string; sub2api_user_id: string; key_id: string
 
 export class UsageSyncWorker {
   private timer: ReturnType<typeof setInterval> | null = null;
-  private running = false;
+  private running: Promise<void> | null = null;
   private cutoverAt: string | null = null;
 
   constructor(
@@ -18,15 +18,16 @@ export class UsageSyncWorker {
 
   start(): void {
     if (this.timer) return;
-    void this.tick();
-    this.timer = setInterval(() => { void this.tick(); }, this.intervalMs);
+    this.tick();
+    this.timer = setInterval(() => this.tick(), this.intervalMs);
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
     }
+    await this.running;
   }
 
   private async getCutoverAt(): Promise<string> {
@@ -38,9 +39,12 @@ export class UsageSyncWorker {
     return this.cutoverAt;
   }
 
-  private async tick(): Promise<void> {
+  private tick(): void {
     if (this.running) return;
-    this.running = true;
+    this.running = this.syncUsage().finally(() => { this.running = null; });
+  }
+
+  private async syncUsage(): Promise<void> {
     try {
       const since = await this.getCutoverAt();
       const { rows } = await this.repo.pool.query<BindingRow>(
@@ -67,8 +71,6 @@ export class UsageSyncWorker {
     } catch (error) {
       await this.repo.insertSyncLog({ syncType: 'usage', status: 'error',
         message: `用量同步失败：${error instanceof Error ? error.message : String(error)}` });
-    } finally {
-      this.running = false;
     }
   }
 }

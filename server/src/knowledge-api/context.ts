@@ -11,9 +11,9 @@ export class MemoryKnowledgeStore implements KnowledgeStore {
   async read(owner: string, name: string) { return this.data.get(owner + ':' + name); }
   async write(owner: string, name: string, value: unknown) { this.data.set(owner + ':' + name, structuredClone(value)); }
 }
-interface Scope { owner: string; ownerNumber: number; store: KnowledgeStore; encryptionKey: string; modules: Map<string, unknown> }
+interface Scope { owner: string; ownerNumber: number; store: KnowledgeStore; encryptionKey: string; modules: Map<string, unknown>; pool?: Pool }
 const contexts = new AsyncLocalStorage<Scope>();
-export function createScope(owner: string, ownerNumber: number, store: KnowledgeStore, encryptionKey: string): Scope { return { owner, ownerNumber, store, encryptionKey, modules: new Map() }; }
+export function createScope(owner: string, ownerNumber: number, store: KnowledgeStore, encryptionKey: string, pool?: Pool): Scope { return { owner, ownerNumber, store, encryptionKey, modules: new Map(), pool }; }
 export function inScope<T>(scope: Scope, work: () => T): T { return contexts.run(scope, work); }
 export function currentScope(): Scope { const scope = contexts.getStore(); if (!scope) throw new Error('Knowledge identity context missing'); return scope; }
 export function moduleState<T>(name: string, init: () => T): T { const scope = currentScope(); if (!scope.modules.has(name)) scope.modules.set(name, init()); return scope.modules.get(name) as T; }

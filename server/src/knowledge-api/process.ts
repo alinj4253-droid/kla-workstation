@@ -8,6 +8,7 @@ import { beginSubmission, confirmSubmission, hasSubmission } from './submissions
 import { jsonRequest, KnowledgeError } from './transport.js';
 import type { KnowledgeResourceScope } from '../auth/resource-scope.js';
 import { z } from 'zod';
+import { recordConfirmedUpload, recordUploadIntent } from './upload-records.js';
 export function isUploadActive(id: string): boolean { return Array.from(state().uploads.keys()).some(key => key.endsWith(`:${id}`)); }
 export function abortUploads(owner?: number): void {
     for (const [key, controller] of state().uploads)
@@ -48,7 +49,8 @@ export async function submit(owner: number, input: UploadInput & { resourceScope
     let sent = false;
     try {
         const physicalName = `upload-${randomUUID()}.${ext}`;
-        await beginSubmission({ clientUploadId: input.clientUploadId, displayName: input.name, physicalName, collection: input.collection, serverOrigin: connection.baseUrl, credentialRef: connection.secretRef, submittedAt: new Date().toISOString() });
+        await recordUploadIntent({ ...input, physicalName });
+        await beginSubmission({ clientUploadId: input.clientUploadId, knowledgeBaseId: input.knowledgeBaseId, displayName: input.name, physicalName, collection: input.collection, serverOrigin: connection.baseUrl, credentialRef: connection.secretRef, submittedAt: new Date().toISOString() });
         if (controller.signal.aborted) {
             await confirmSubmission(input.clientUploadId);
             throw new KnowledgeError('RUN_CANCELLED', '上传已取消，未发送文件。');
@@ -69,7 +71,9 @@ export async function submit(owner: number, input: UploadInput & { resourceScope
         const response = await jsonRequest(owner, input.serviceInstanceId, '/v1/process/async', submitResponseSchema, { method: 'POST', body: form }, controller);
         if (response.filename !== physicalName && response.filename !== input.name)
             throw new KnowledgeError('KNOWLEDGE_INGEST_FAILED', '服务返回的文件名与当前提交不一致，请核对提交记录。', false, { uncertainSubmission: true });
-        const binding = await saveBinding({ clientUploadId: input.clientUploadId, serviceInstanceId: input.serviceInstanceId, serverOrigin: connection.baseUrl, credentialRef: connection.secretRef, collection: input.collection, displayName: input.name, physicalName: response.filename, jobId: response.job_id, storedPath: response.stored_path, submittedAt: new Date().toISOString() });
+        const stored = { clientUploadId: input.clientUploadId, knowledgeBaseId: input.knowledgeBaseId, serviceInstanceId: input.serviceInstanceId, serverOrigin: connection.baseUrl, credentialRef: connection.secretRef, collection: input.collection, displayName: input.name, physicalName: response.filename, jobId: response.job_id, storedPath: response.stored_path, submittedAt: new Date().toISOString() };
+        const binding = await saveBinding(stored);
+        await recordConfirmedUpload(stored);
         await confirmSubmission(input.clientUploadId);
         return binding;
     }

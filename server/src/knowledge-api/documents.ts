@@ -26,8 +26,9 @@ const bindingSchema = z.object({
     displayName: z.string(), jobId: z.string(), storedPath: z.string(), docId: z.string().optional(),
     credentialRef: z.string().nullable(), physicalName: z.string().optional(),
     submittedAt: z.string(), terminalAt: z.string().optional(), taskRecordDeletedAt: z.string().optional(),
+    knowledgeBaseId: z.string().uuid().optional(),
 });
-type StoredBinding = z.infer<typeof bindingSchema>;
+export type StoredBinding = z.infer<typeof bindingSchema>;
 const sourceProofSchema = z.object({ doc_id: z.string(), source: z.string(), collection: z.string(), count: z.number().int().nonnegative(), slices: z.array(z.unknown()) });
 export async function loadBindings(): Promise<void> {
     try {
@@ -56,6 +57,32 @@ export function getBindings(serviceId: string, collection: string, origin: strin
     return state().bindings.filter(b => b.serverOrigin === origin && b.collection === collection && b.credentialRef === credentialRef).map(b => publicBinding(b, serviceId));
 }
 export function hasBinding(id: string): boolean { return state().bindings.some(b => b.clientUploadId === id); }
+export function storedBindings(serviceId: string, collection: string): StoredBinding[] {
+    const config = assertService(serviceId);
+    return state().bindings.filter(b => b.serverOrigin === config.baseUrl && b.collection === collection && b.credentialRef === config.secretRef);
+}
+
+/** Only a permission-filtered library listing and an exact path can repair an old binding. */
+export async function associateScopedDocuments(serviceId: string, collection: string, knowledgeBaseId: string, documents: Array<RemoteDocument & { abs_path: string }>) {
+    const work = state().writes.catch(() => undefined).then(async () => {
+        const allowed = new Set(storedBindings(serviceId, collection));
+        let changed = false;
+        const next = state().bindings.map(binding => {
+            if (!allowed.has(binding) || (binding.knowledgeBaseId && binding.knowledgeBaseId !== knowledgeBaseId)) return binding;
+            const name = binding.physicalName ?? binding.storedPath.split(/[\\/]/).pop();
+            const matches = documents.filter(doc => doc.abs_path === binding.storedPath && doc.name === name);
+            if (matches.length !== 1) return binding;
+            const docId = matches[0]!.doc_id;
+            if (binding.docId === docId && binding.knowledgeBaseId === knowledgeBaseId) return binding;
+            changed = true;
+            return { ...binding, docId, knowledgeBaseId };
+        });
+        if (changed) { await atomicJson('bindings.json', next); state().bindings = next; }
+        return storedBindings(serviceId, collection).filter(binding => binding.knowledgeBaseId === knowledgeBaseId);
+    });
+    state().writes = work.then(() => undefined, () => undefined);
+    return work;
+}
 export async function markJobRecordDeleted(serviceId: string, jobId: string): Promise<SourceJobBinding> {
     const config = assertService(serviceId);
     const matches = (binding: StoredBinding) => binding.jobId === jobId && binding.serverOrigin === config.baseUrl && binding.collection === config.collection && binding.credentialRef === config.secretRef;

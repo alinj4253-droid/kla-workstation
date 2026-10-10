@@ -1,32 +1,37 @@
-import { moduleState } from './context.js';
+import { currentScope, moduleState } from './context.js';
 function state() { return moduleState('recovery', () => ({running: new Map<string, Promise<SubmissionRecovery>>()})); }
 import { documentListSchema, type SubmissionRecovery } from '@kla-workstation/contracts/knowledge';
 import { assertService } from './config.js';
 import { getUnconfirmed, confirmSubmission } from './submissions.js';
-import { saveBinding, hasBinding } from './documents.js';
+import { saveBinding, hasBinding, storedBindings } from './documents.js';
 import { listJobs } from './jobs.js';
 import { isUploadActive } from './process.js';
 import { jsonRequest, KnowledgeError } from './transport.js';
-export function recoverSubmissions(owner: number, serviceId: string, collection: string): Promise<SubmissionRecovery> {
+import { fetchScopedDocuments } from './scoped-resources.js';
+import { recordConfirmedUpload } from './upload-records.js';
+export function recoverSubmissions(owner: number, serviceId: string, collection: string, knowledgeBaseId?: string): Promise<SubmissionRecovery> {
     const current = assertService(serviceId);
     if (current.collection !== collection)
         throw new KnowledgeError('CONFLICT', '目标集合已变更。');
-    const key = `${owner}:${serviceId}`;
+    const key = `${owner}:${serviceId}:${knowledgeBaseId ?? ''}`;
     const pending = state().running.get(key);
     if (pending)
         return pending;
-    const work = reconcile(owner, serviceId, collection).finally(() => state().running.delete(key));
+    const work = reconcile(owner, serviceId, collection, knowledgeBaseId).finally(() => state().running.delete(key));
     state().running.set(key, work);
     return work;
 }
-async function reconcile(owner: number, serviceId: string, collection: string): Promise<SubmissionRecovery> {
+async function reconcile(owner: number, serviceId: string, collection: string, knowledgeBaseId?: string): Promise<SubmissionRecovery> {
     const current = assertService(serviceId);
-    const records = getUnconfirmed(current.baseUrl, collection, current.secretRef).filter(record => !isUploadActive(record.clientUploadId));
+    const pendingRecords = () => getUnconfirmed(current.baseUrl, collection, current.secretRef).filter(record => !knowledgeBaseId || record.knowledgeBaseId === knowledgeBaseId);
+    const records = pendingRecords().filter(record => !isUploadActive(record.clientUploadId));
     if (!records.length)
-        return { recovered: 0, unresolved: getUnconfirmed(current.baseUrl, collection, current.secretRef).length };
+        return { recovered: 0, unresolved: pendingRecords().length };
     const [history, files] = await Promise.all([
         listJobs(owner, serviceId),
-        jsonRequest(owner, serviceId, '/v1/documents?category=' + encodeURIComponent('上传文档'), documentListSchema),
+        knowledgeBaseId && currentScope().pool
+          ? fetchScopedDocuments(currentScope().pool!, { serviceInstanceId: serviceId, collection, knowledgeBaseId }).then(({ result }) => result)
+          : jsonRequest(owner, serviceId, '/v1/documents?category=' + encodeURIComponent('上传文档'), documentListSchema),
     ]);
     let recovered = 0;
     for (const record of records) {
@@ -34,6 +39,10 @@ async function reconcile(owner: number, serviceId: string, collection: string): 
         if (isUploadActive(record.clientUploadId))
             continue;
         if (hasBinding(record.clientUploadId)) {
+            const binding = storedBindings(serviceId, collection).find(item => item.clientUploadId === record.clientUploadId
+                && (!knowledgeBaseId || item.knowledgeBaseId === knowledgeBaseId));
+            if (!binding) continue;
+            await recordConfirmedUpload(binding);
             await confirmSubmission(record.clientUploadId);
             recovered++;
             continue;
@@ -50,10 +59,12 @@ async function reconcile(owner: number, serviceId: string, collection: string): 
         const original = originals[0]!;
         if (typeof job.artifacts?.stored_path === 'string' && job.artifacts.stored_path !== original.abs_path)
             continue;
-        await saveBinding({ clientUploadId: record.clientUploadId, displayName: record.displayName, physicalName: record.physicalName, submittedAt: record.submittedAt, collection, serviceInstanceId: serviceId, serverOrigin: current.baseUrl, credentialRef: current.secretRef, jobId: job.job_id, storedPath: original.abs_path, docId: original.doc_id });
+        const binding = { clientUploadId: record.clientUploadId, knowledgeBaseId, displayName: record.displayName, physicalName: record.physicalName, submittedAt: record.submittedAt, collection, serviceInstanceId: serviceId, serverOrigin: current.baseUrl, credentialRef: current.secretRef, jobId: job.job_id, storedPath: original.abs_path, docId: original.doc_id };
+        await saveBinding(binding);
+        await recordConfirmedUpload(binding);
         await confirmSubmission(record.clientUploadId);
         recovered++;
     }
     assertService(serviceId);
-    return { recovered, unresolved: getUnconfirmed(current.baseUrl, collection, current.secretRef).length };
+    return { recovered, unresolved: pendingRecords().length };
 }
