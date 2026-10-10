@@ -8,6 +8,7 @@ import type { AccountRepository } from '../repositories/types.js';
 import type { ComputeRepository } from './compute-repository.js';
 import type { ProvisioningService } from './provisioning-service.js';
 import type { Sub2ApiClient } from './sub2api-client.js';
+import type { QuotaService } from './quota-service.js';
 import { COMPUTE_PERMISSION, errorBody, hasPermission, requireIdentity } from './permissions.js';
 import { availableBalance } from './types.js';
 import { resolveManagedPassword } from './encryption.js';
@@ -19,6 +20,7 @@ export type ComputeAccountRouteDeps = {
   sub2api: Sub2ApiClient;
   provisioning: ProvisioningService;
   encryptionKey?: string;
+  quota: QuotaService;
 };
 
 const credentialError = '托管凭据无法解密，请恢复原 COMPUTE_SECRET_ENCRYPTION_KEY 或联系管理员重置上游账号凭据';
@@ -51,6 +53,8 @@ export async function registerComputeAccountRoutes(app: FastifyInstance, deps: C
     const ctx = await requireIdentity(deps.accounts, request, reply);
     if (!ctx) return;
     const identity = ctx.identity;
+    // 上游直接充值后，把差额补进 KLA（失败不阻塞）
+    await deps.quota.reconcileBalanceFromSub2api(identity.id).catch(() => {});
     const [entitlement, binding, keys, modelCount, health, canViewKeys, canCreateKey, canUpdateKey, canDisableKey, canViewUsage, canUseModel, canViewOrganizationUsage, canAllocate, canReclaim] = await Promise.all([
       deps.computeRepo.getEntitlement({ identityId: identity.id }),
       deps.computeRepo.getBinding(identity.id),
@@ -112,6 +116,8 @@ export async function registerComputeAccountRoutes(app: FastifyInstance, deps: C
   app.get('/api/v1/compute/balance', async (request: FastifyRequest, reply: FastifyReply) => {
     const ctx = await requireIdentity(deps.accounts, request, reply);
     if (!ctx) return;
+    // 上游直接充值后，把差额补进 KLA（失败不阻塞）
+    await deps.quota.reconcileBalanceFromSub2api(ctx.identity.id).catch(() => {});
     const entitlement = await deps.computeRepo.getEntitlement({ identityId: ctx.identity.id });
     const available = availableBalance({
       quotaTotal: entitlement?.quotaTotal ?? 0,

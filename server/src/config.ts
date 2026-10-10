@@ -41,7 +41,7 @@ export type ComputeConfig = {
   minReserveUsd: number;
   /**
    * 算力点汇率：1 USD = pointsPerUsd 点（DESIGN_POINTS_BASED_BILLING.md §3）。
-   * 当前 1 元 = 1 美元 = 10000 积分；调整必须与存量重估迁移及兼容触发器同时发布。
+   * 当前 1 元 = 1 美元 = 1000 积分；调整必须与存量重估迁移及兼容触发器同时发布。
    */
   pointsPerUsd: number;
 };
@@ -102,7 +102,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       modelTimeoutMs: positiveInterval(env.SUB2API_MODEL_TIMEOUT_MS, 60000),
       toolModelTimeoutMs: positiveInterval(env.SUB2API_TOOL_MODEL_TIMEOUT_MS, 300000),
       minReserveUsd: Number(env.COMPUTE_MIN_RESERVE_USD ?? 0.01),
-      pointsPerUsd: Number(env.POINTS_PER_USD ?? 10000),
+      pointsPerUsd: Number(env.POINTS_PER_USD ?? 1000),
     },
     tools: {
       bochaApiKey: env.BOCHA_API_KEY ?? '',

@@ -116,7 +116,7 @@ describe('§8 ComputeGateway 结算', () => {
   it('成功：预扣 → 调用 → 释放预扣，等待上游明细扣费', async () => {
     const { gateway, calls } = buildGateway();
     const result = await gateway.completeChat(identity({ organizationId: 'org1' }), { ...INPUT, tags: { projectId: 'p1', conversationId: 'c1', taskId: 't1', agentId: 'a1' } });
-    expect(calls.reserved).toEqual([{ amount: 100, requestId: 'req-1' }]);
+    expect(calls.reserved).toEqual([{ amount: 10, requestId: 'req-1' }]);
     expect(calls.usage).toHaveLength(0);
     expect(calls.committed).toHaveLength(0);
     expect(calls.released).toEqual(['l1']);
