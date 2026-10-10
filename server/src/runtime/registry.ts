@@ -1,18 +1,36 @@
 import type { Pool, PoolClient } from 'pg';
-import { runtimeSkillCatalog, type TaskPlan } from '@kla-workstation/contracts';
+import { runtimeSkillBundles, runtimeSkillCatalog, type TaskPlan } from '@kla-workstation/contracts';
 
-export type RegisteredAgent = { id: string; name: string; role: string; model_id: string | null; execution_location: 'server'|'local'; device_id: string|null; enabled: boolean; version: number; skills: string[] };
+export type RegisteredAgent = { id: string; name: string; role: string; model_id: string | null; model_key_id: string | null; execution_location: 'server'|'local'; device_id: string|null; enabled: boolean; version: number; skills: string[] };
+export const effectiveToolCodesSql = `
+  SELECT tool_code AS code FROM agent_tool_mounts WHERE agent_id=$1
+  UNION
+  SELECT unnest(c.tool_codes) AS code FROM agent_skill_mounts m
+  JOIN agents a ON a.id=m.agent_id
+  JOIN runtime_skill_catalog c ON c.identity_id=a.identity_id AND c.code=m.skill_code AND c.enabled
+  WHERE m.agent_id=$1`;
+
+export async function effectiveToolCodes(pool: Pool | PoolClient, agentId: string): Promise<string[]> {
+  return (await pool.query(effectiveToolCodesSql, [agentId])).rows.map(row => row.code);
+}
+
 export async function ensureRuntimeRegistry(pool: Pool | PoolClient, identityId: string): Promise<void> {
-  // Unique agent names and builtin skill codes make concurrent provisioning idempotent.
-  await pool.query(`INSERT INTO agents(identity_id,name,role,type) SELECT $1,v.name,v.role,'official' FROM
-    (VALUES ('统筹智能体','理解用户目标，规划任务依赖，协调智能体和设备，汇总成果'),
-    ('本地执行智能体','分析资料、编写文档和代码，调用技能完成完整任务')) v(name,role)
+  // Catalog entries exist independently of which agents mount them.
+  await pool.query(`INSERT INTO agents(identity_id,name,role,type,execution_location) SELECT $1,v.name,v.role,'official',v.execution_location FROM
+    (VALUES ('统筹智能体','理解用户目标，规划任务依赖，协调智能体和设备，汇总成果','server'),
+    ('本地执行智能体','分析资料、编写文档和代码，调用技能完成完整任务','local')) v(name,role,execution_location)
     WHERE NOT EXISTS(SELECT 1 FROM agents WHERE identity_id=$1 AND name=v.name) ON CONFLICT DO NOTHING`, [identityId]);
-  for (const skill of runtimeSkillCatalog) {
-    await pool.query(`INSERT INTO skills(agent_id,name,description,definition,enabled)
-      SELECT a.id,$2,$3,$4,true FROM agents a WHERE a.identity_id=$1 AND a.name<>'统筹智能体'
-      AND NOT EXISTS(SELECT 1 FROM skills s WHERE s.agent_id=a.id AND s.definition->>'code'=$5) ON CONFLICT DO NOTHING`,
-    [identityId, skill.name, skill.description, JSON.stringify({ code: skill.code, location: skill.location, permission: skill.location === 'local' ? 'full-current-user' : 'identity-scoped', builtin: true }), skill.code]);
+  for (const bundle of runtimeSkillBundles) {
+    await pool.query(`INSERT INTO runtime_skill_catalog(identity_id,code,name,description,tool_codes)
+      VALUES($1,$2,$3,$4,$5::text[]) ON CONFLICT(identity_id,code) DO NOTHING`,
+    [identityId, bundle.code, bundle.name, bundle.description, [...bundle.tools]]);
+  }
+  const uninitialized = await pool.query(`SELECT id FROM agents WHERE identity_id=$1 AND name='本地执行智能体' AND NOT capabilities_initialized`, [identityId]);
+  for (const agent of uninitialized.rows) {
+    for (const tool of runtimeSkillCatalog) {
+      await pool.query('INSERT INTO agent_tool_mounts(agent_id,tool_code) VALUES($1,$2) ON CONFLICT DO NOTHING', [agent.id, tool.code]);
+    }
+    await pool.query('UPDATE agents SET capabilities_initialized=true WHERE id=$1', [agent.id]);
   }
 }
 export async function roomRegistry(pool: Pool, conversationId: string): Promise<RegisteredAgent[]> {
@@ -24,7 +42,11 @@ export async function roomRegistry(pool: Pool, conversationId: string): Promise<
     SELECT $1,a.id,CASE WHEN a.name='统筹智能体' THEN 'coordinator' ELSE 'member' END FROM agents a
     WHERE a.identity_id=$2 AND a.enabled AND (a.name='统筹智能体' OR NOT EXISTS(SELECT 1 FROM conversation_agents WHERE conversation_id=$1))
     ON CONFLICT DO NOTHING`, [conversationId, scope.owner_identity_id]);
-  const agents = await pool.query(`SELECT a.*,COALESCE((SELECT jsonb_agg(s.definition->>'code') FROM skills s WHERE s.agent_id=a.id AND s.enabled AND s.definition ? 'code'),'[]') AS skills
+  const agents = await pool.query(`SELECT a.*,COALESCE((SELECT jsonb_agg(DISTINCT x.code) FROM (
+    SELECT tool_code AS code FROM agent_tool_mounts WHERE agent_id=a.id
+    UNION SELECT unnest(c.tool_codes) AS code FROM agent_skill_mounts m
+    JOIN runtime_skill_catalog c ON c.identity_id=a.identity_id AND c.code=m.skill_code AND c.enabled
+    WHERE m.agent_id=a.id) x),'[]') AS skills
     FROM conversation_agents ca JOIN agents a ON a.id=ca.agent_id WHERE ca.conversation_id=$1 AND a.identity_id=$2 AND a.enabled ORDER BY ca.created_at,a.name`, [conversationId, scope.owner_identity_id]);
   return agents.rows;
 }

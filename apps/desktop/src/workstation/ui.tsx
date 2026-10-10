@@ -28,7 +28,7 @@ export function apiErrorMessage(result: { message?: string; error?: { message?: 
 /** 算力点展示：千分位 + 最多 2 位小数（P1-11，用户侧只见点不见 USD）。运行时值来自 JSON 响应，非有限数字一律显示占位符。 */
 export function formatPoints(value: number | null | undefined): string {
   if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
-  return `${value.toLocaleString('zh-CN', { maximumFractionDigits: 2 })} 点`;
+  return `${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(value)} 点`;
 }
 
 export function formatTokens(value: number | null | undefined): string {

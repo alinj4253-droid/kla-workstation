@@ -12,10 +12,11 @@
 
 import { loadConfig } from '../src/config.js';
 import { PostgresDatabase } from '../src/database/postgres.js';
-import { usdToPoints } from '../src/compute/points.js';
+import { createPointsConverter } from '../src/compute/points.js';
 
 const config = loadConfig();
 const rate = config.compute.pointsPerUsd;
+const converter = createPointsConverter(rate);
 const dryRun = process.argv.includes('--dry-run');
 
 if (!config.databaseUrl) {
@@ -61,10 +62,10 @@ try {
       reserved: num(row.quota_reserved),
     };
     const points = {
-      total: usdToPoints(usd.total, rate),
-      granted: usdToPoints(usd.granted, rate),
-      used: usdToPoints(usd.used, rate),
-      reserved: usdToPoints(usd.reserved, rate),
+      total: converter.fromUsd(usd.total),
+      granted: converter.fromUsd(usd.granted),
+      used: converter.fromUsd(usd.used),
+      reserved: converter.fromUsd(usd.reserved),
     };
     const idempotencyKey = `migrate-points:${row.id}`;
     const hasZeroUsd = usd.total === 0 && usd.granted === 0 && usd.used === 0 && usd.reserved === 0;

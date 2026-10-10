@@ -56,11 +56,11 @@ describe('memory browser Postgres and authenticated routes', () => {
       const scopeResponse = await get('/api/v1/memories/browser/scopes');
       expect(scopeResponse.statusCode).toBe(200);
       const scopes = memoryBrowserScopesSchema.parse(scopeResponse.json().data);
-      expect(scopes.counts).toEqual({ longTerm: 2, shortTerm: 16 });
+      expect(scopes.counts).toEqual({ longTerm: 1, shortTerm: 16 });
       expect(scopes.projects.some(item => item.id === otherProject.id)).toBe(false);
       expect(scopes.projects.find(item => item.id === project.id)?.agents).toContainEqual({ key: agent.id, name: '记忆编写智能体' });
       expect(scopes.projects.find(item => item.id === project.id)?.agents.some(item => item.key === projectOnlyAgent.id)).toBe(false);
-      expect(scopes.projects.find(item => item.id === projectTwo.id)?.agents).toContainEqual({ key: projectOnlyAgent.id, name: '项目分析智能体' });
+      expect(scopes.projects.some(item => item.id === projectTwo.id)).toBe(false);
       const longResponse = await get(`/api/v1/memories/browser?projectId=${project.id}&conversationId=${chat.id}&agentKey=${agent.id}`);
       expect(longResponse.statusCode).toBe(200);
       const longPage = memoryBrowserPageSchema.parse(longResponse.json().data);

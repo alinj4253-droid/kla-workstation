@@ -1,11 +1,7 @@
-import { z } from 'zod';
+﻿import { z } from 'zod';
 import { pageQuerySchema } from './envelope.js';
 
-// 算力额度统一以"算力点"计价（P1-11 / docs/DESIGN_POINTS_BASED_BILLING.md §7）：
-// 1 USD = 1000 点（换算收敛在 server/src/compute/points.ts），本契约的字段名保持稳定、语义切换为算力点：
-// - summary/balance 的 balance/used/reserved/available、entitlement/org 的 quota*、allocation 的 amount 单位均为点；
-// - ledger.amount 为 USD 影子口径（历史兼容），权威口径是 amountPoints + rateSnapshot；
-// - USD 真实成本只保留在服务端（Sub2API 对账/财务），不再出现在任何用户侧契约中。
+// 面向用户的余额、额度、费用统一为算力点；Sub2API 的 USD 仅留在服务端成本边界。
 export const COMPUTE_CURRENCY = 'point' as const;
 
 /**
@@ -143,7 +139,6 @@ export const computeKeySchema = z.object({
   groupId: z.string().nullable(),
   isDefault: z.boolean(),
   status: computeKeyStatusSchema,
-  /** Key 级限额（点）；服务端换算成 USD 同步到上游，用户视角只有点 */
   quotaPoints: z.number().nullable(),
   rpm: z.number().int().nullable(),
   ipAllowList: z.array(z.string()),
@@ -209,7 +204,6 @@ export const computeModelSchema = z.object({
   provider: z.string(),
   capabilities: computeModelCapabilitiesSchema,
   contextWindow: z.number().int().positive().nullable(),
-  /** 单价（点 / 1M tokens），服务端按当前汇率从 USD 成本价换算下发 */
   inputPricePerMillionTokensPoints: z.number().nullable(),
   outputPricePerMillionTokensPoints: z.number().nullable(),
   available: z.boolean(),
@@ -252,11 +246,7 @@ export const computeUsageRecordSchema = z.object({
   requestCount: z.number().int().min(0),
   latencyMs: z.number().int().min(0).nullable(),
   status: z.string(),
-  /** 消耗算力点（权威口径）；USD 真实成本只在服务端留存 */
   costPoints: z.number(),
-  /** 计费通道：model = 模型调用（按 token）；tool = 工具调用（按次，如 bocha-web-search） */
-  kind: z.enum(['model', 'tool']),
-  toolId: z.string().min(1).nullable().optional(),
   usageAt: z.string().datetime(),
 });
 export type ComputeUsageRecord = z.infer<typeof computeUsageRecordSchema>;
@@ -272,7 +262,6 @@ export const computeUsageBucketSchema = z.object({
   key: z.string().min(1),
   requestCount: z.number().int().min(0),
   totalTokens: z.number().int().min(0),
-  /** 消耗算力点 */
   costPoints: z.number(),
 });
 export type ComputeUsageBucket = z.infer<typeof computeUsageBucketSchema>;
@@ -285,7 +274,6 @@ export const computeUsageSummarySchema = z.object({
   inputTokens: z.number().int().min(0),
   outputTokens: z.number().int().min(0),
   totalTokens: z.number().int().min(0),
-  /** 消耗算力点 */
   costPoints: z.number(),
   successCount: z.number().int().min(0),
   failureCount: z.number().int().min(0),
@@ -313,7 +301,7 @@ export type ComputeLedgerOperation = z.infer<typeof computeLedgerOperationSchema
 export const computeLedgerStatusSchema = z.enum(['pending', 'completed', 'failed', 'released']);
 export type ComputeLedgerStatus = z.infer<typeof computeLedgerStatusSchema>;
 
-/** 额度池（personal = identity 池；organization = 企业池）。quota 系列与 available 单位均为算力点。 */
+/** 额度池（personal = identity 池；organization = 企业池）。 */
 export const computeEntitlementSchema = z.object({
   id: z.string().min(1),
   identityId: z.string().nullable(),
@@ -333,12 +321,7 @@ export const computeLedgerEntrySchema = z.object({
   id: z.string().min(1),
   entitlementId: z.string().min(1),
   operation: computeLedgerOperationSchema,
-  /** USD 影子口径（历史兼容 + 财务对账）；权威口径是 amountPoints × rateSnapshot */
   amount: z.number(),
-  /** 算力点金额（权威口径） */
-  amountPoints: z.number(),
-  /** 落账时的汇率快照（点/USD），历史账自解释 */
-  rateSnapshot: z.number(),
   status: computeLedgerStatusSchema,
   idempotencyKey: z.string(),
   requestId: z.string().nullable(),
@@ -420,7 +403,7 @@ export type OrganizationInfo = z.infer<typeof organizationInfoSchema>;
 export const computeOrgLedgerSchema = z.object({ ledger: z.array(computeLedgerEntrySchema) });
 export type ComputeOrgLedger = z.infer<typeof computeOrgLedgerSchema>;
 
-/** POST /organizations/:orgId/compute/allocations（分配）与 .../:id/reclaim（回收）共用入参。amount 单位为算力点。 */
+/** POST /organizations/:orgId/compute/allocations（分配）与 .../:id/reclaim（回收）共用入参。 */
 export const computeAllocationRequestSchema = z.object({
   identityId: z.string().min(1),
   amount: z.number().positive(),

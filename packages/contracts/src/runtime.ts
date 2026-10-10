@@ -5,6 +5,7 @@ export type ExecutionLocation = z.infer<typeof executionLocationSchema>;
 export const agentDefinitionInputSchema = z.object({
   name: z.string().trim().min(1).max(80), role: z.string().trim().min(1).max(8000),
   modelId: z.string().max(200).nullable().optional(), executionLocation: executionLocationSchema.default('server'),
+  modelKeyId: z.string().uuid().nullable().optional(),
   deviceId: z.string().uuid().nullable().optional(), enabled: z.boolean().default(true),
 });
 export const agentDefinitionPatchSchema = agentDefinitionInputSchema.partial();
@@ -27,6 +28,14 @@ export const runtimeSkillCatalog = [
   { code: 'local_cli', name: '本地 CLI 执行', description: '运行本地命令行程序及参数，支持超时和取消', location: 'local' },
 ] as const;
 export type RuntimeSkillCode = typeof runtimeSkillCatalog[number]['code'];
+export const runtimeSkillBundles = [
+  { code: 'knowledge_research', name: '知识资料处理', description: '检索并读取当前身份已授权的知识内容', tools: ['knowledge_search', 'knowledge_read'] },
+  { code: 'memory_context', name: '短期记忆', description: '读取当前群聊和智能体的短期记忆', tools: ['memory_recall'] },
+  { code: 'artifact_management', name: '成果管理', description: '读取和保存群聊成果文件', tools: ['artifact_read', 'artifact_write'] },
+  { code: 'local_files', name: '本地文件处理', description: '查看、读取并写入当前设备的文件', tools: ['local_list', 'local_read', 'local_write'] },
+  { code: 'local_development', name: '本地代码开发', description: '编写代码并执行本地命令', tools: ['local_code', 'local_cli', 'local_bat'] },
+] as const satisfies ReadonlyArray<{ code: string; name: string; description: string; tools: readonly RuntimeSkillCode[] }>;
+export type RuntimeSkillBundleCode = typeof runtimeSkillBundles[number]['code'];
 export const toolArguments = {
   knowledge_search: z.object({ serviceInstanceId: z.string().min(1), query: z.string().min(1), topK: z.number().int().min(1).max(20).default(5) }),
   knowledge_read: z.object({ serviceInstanceId: z.string().min(1), docId: z.union([z.string(), z.number()]), offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(200).default(20) }),
@@ -43,5 +52,6 @@ export const toolArguments = {
 export const deviceRegistrationSchema = z.object({ installationId: z.string().uuid(), name: z.string().min(1).max(100), platform: z.string().max(50), capabilities: z.array(z.enum(['local_read','local_list','local_write','local_code','local_bat','local_cli'])).max(6) });
 export const toolReceiptSchema = z.object({
   receiptId: z.string().uuid(), status: z.enum(['completed','failed']), result: z.record(z.unknown()),
+  approval: z.object({ approved: z.boolean(), decidedAt: z.string().datetime() }),
   artifact: z.object({ fileName: z.string().min(1).max(255).refine(s => !/[\\/]/.test(s)), content: z.string().max(1_000_000), mimeType: z.string().max(100).default('text/plain'), checksum: z.string().regex(/^[a-f0-9]{64}$/) }).optional(),
 });

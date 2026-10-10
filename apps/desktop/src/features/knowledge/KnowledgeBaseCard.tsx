@@ -5,7 +5,7 @@ import { LibraryMenu } from './LibraryMenu';
 export const scopeLabels = { company: '公司知识库', project: '项目知识库', personal: '个人知识库' };
 export function KnowledgeBaseCard({ base, onEdit, onDelete }: { base: KnowledgeBase; onEdit?: (() => void) | undefined; onDelete?: (() => void) | undefined }): React.JSX.Element {
   const Icon = base.scope === 'company' ? Building2 : base.scope === 'project' ? FolderKanban : UserRound;
-  const status = base.status === 'ready' ? base.context.attribution !== 'confirmed-library' ? '服务可用' : '正常' : base.status === 'processing' ? '处理中' : base.status === 'pending' ? base.context.collection ? '连接待确认' : '待配置' : '异常';
+  const status = base.status === 'ready' ? base.context.attribution !== 'confirmed-library' ? '处理完成' : '正常' : base.status === 'processing' ? '处理中' : base.status === 'pending' ? base.context.collection ? '连接待确认' : '待配置' : '异常';
   return <article className={`kl-base-card kl-scope-${base.scope}`}>
     <div className="kl-card-top"><span className="kl-library-icon"><Icon size={22}/></span><div className="kl-card-heading"><h2>{base.name}</h2><span className="kl-scope">{scopeLabels[base.scope]}</span></div><LibraryMenu name={base.name} detailUrl={`/knowledge/bases/${encodeURIComponent(base.id)}`} onEdit={onEdit} onDelete={onDelete}/></div>
     <p>{base.description || '暂无说明'}</p>

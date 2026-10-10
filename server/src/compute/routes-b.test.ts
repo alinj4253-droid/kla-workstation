@@ -1,14 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import Fastify from 'fastify';
 import type { AccountRepository } from '../repositories/types.js';
-import { createPointsConverter } from './points.js';
 import type { ComputeRepository } from './compute-repository.js';
 import type { QuotaService } from './quota-service.js';
 import { registerRoutes } from '../routes.js';
 import { registerComputeRoutes } from './routes.js';
 import { buildUsageCsv, mapComputeModel, mapUsageRecord, parseUsageQuery, registerComputeRoutesB } from './routes-b.js';
-
-const points = createPointsConverter();
 
 function stubAccounts(): AccountRepository {
   return { getSession: async () => null, listIdentities: async () => [] } as unknown as AccountRepository;
@@ -19,7 +16,7 @@ function stubRepo(): ComputeRepository {
 }
 
 describe('mapComputeModel', () => {
-  it('映射能力、上下文与费率（USD 成本价换算为点），且不暴露上游配置', () => {
+  it('映射能力、上下文与费率，且不暴露上游配置', () => {
     const model = mapComputeModel({
       id: 'deepseek-v4-flash',
       name: 'DeepSeek V4 Flash',
@@ -29,7 +26,7 @@ describe('mapComputeModel', () => {
       input_price_per_mtok_usd: '0.50000000',
       output_price_per_mtok_usd: null,
       available_groups: ['group-chat', 3, 'group-personal'],
-    }, points);
+    });
     expect(model).toEqual({
       id: 'deepseek-v4-flash',
       name: 'DeepSeek V4 Flash',
@@ -56,7 +53,7 @@ describe('mapComputeModel', () => {
       input_price_per_mtok_usd: null,
       output_price_per_mtok_usd: null,
       available_groups: [],
-    }, points);
+    });
     expect(model.status).toBe('disabled');
     expect(model.available).toBe(false);
     expect(model.capabilities.streaming).toBe(false);
@@ -66,7 +63,7 @@ describe('mapComputeModel', () => {
 });
 
 describe('mapUsageRecord', () => {
-  it('按列映射：Token 求和、numeric 数值化、双口径与计费通道、时间转 ISO', () => {
+  it('按 A 侧列映射：Token 求和、numeric 数值化、时间转 ISO', () => {
     const record = mapUsageRecord({
       id: 'u1',
       identity_id: 'i1',
@@ -81,15 +78,11 @@ describe('mapUsageRecord', () => {
       latency_ms: 123,
       status: 'success',
       amount_usd: '0.00012345',
-      amount_points: '0.123',
-      kind: 'model',
-      tool_id: null,
+      amount_points: '0.12345',
       recorded_at: new Date('2026-10-07T00:00:00.000Z'),
     });
     expect(record.totalTokens).toBe(30);
-    expect(record.costPoints).toBeCloseTo(0.123);
-    expect(record.kind).toBe('model');
-    expect(record.toolId).toBeNull();
+    expect(record.costPoints).toBeCloseTo(0.12345);
     expect(record.usageAt).toBe('2026-10-07T00:00:00.000Z');
     expect(record.keyPrefix).toBe('sk-kla-ab');
     expect(record.requestCount).toBe(1);
@@ -111,15 +104,12 @@ describe('mapUsageRecord', () => {
       status: 'success',
       amount_usd: null,
       amount_points: null,
-      kind: null,
-      tool_id: null,
       recorded_at: '2026-10-07T00:00:00.000Z',
     });
     expect(record.modelId).toBeNull();
     expect(record.inputTokens).toBe(0);
     expect(record.totalTokens).toBe(0);
     expect(record.costPoints).toBe(0);
-    expect(record.kind).toBe('model');
   });
 });
 
@@ -142,12 +132,10 @@ describe('buildUsageCsv', () => {
         latencyMs: null,
         status: 'success',
         costPoints: 0,
-        kind: 'model',
-        toolId: null,
         usageAt: '2026-10-07T00:00:00.000Z',
       },
     ]);
-    expect(csv.startsWith('\uFEFF时间,模型/工具')).toBe(true);
+    expect(csv.startsWith('\uFEFF时间,模型')).toBe(true);
     expect(csv).toContain('"m,1"');
     expect(csv.trimEnd().split('\r\n')).toHaveLength(2);
   });
@@ -189,9 +177,8 @@ describe('A/B 路由合并注册', () => {
       accounts: stubAccounts(),
       computeRepo: stubRepo(),
       quota: {} as unknown as QuotaService,
-      points,
     });
-    await registerComputeRoutesB(app, { accounts: stubAccounts(), computeRepo: stubRepo(), points });
+    await registerComputeRoutesB(app, { accounts: stubAccounts(), computeRepo: stubRepo() });
     await app.ready();
     const routes = app.printRoutes({ commonPrefix: false });
     expect(routes).toContain('/api/v1/compute/models');
@@ -206,7 +193,7 @@ describe('A/B 路由合并注册', () => {
 
   it('B 侧接口未登录返回 401', async () => {
     const app = Fastify();
-    await registerComputeRoutesB(app, { accounts: stubAccounts(), computeRepo: stubRepo(), points });
+    await registerComputeRoutesB(app, { accounts: stubAccounts(), computeRepo: stubRepo() });
     const response = await app.inject({ method: 'GET', url: '/api/v1/compute/models' });
     expect(response.statusCode).toBe(401);
     expect(response.json()).toMatchObject({ ok: false, error: { code: 'UNAUTHENTICATED', retryable: false } });

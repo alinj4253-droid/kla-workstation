@@ -65,7 +65,7 @@ export class OutboxWorker {
         break;
       }
       case 'sync_balance_to_sub2api':
-        // 余额同步由 quota-service 在 commit 时直接调用，此事件类型预留
+        // 历史事件类型保留；实际发放和企业划转在 QuotaService 内同步。
         break;
       default:
         break;

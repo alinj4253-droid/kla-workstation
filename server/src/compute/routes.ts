@@ -1,4 +1,4 @@
-// 算力模块路由（A 侧）：企业额度管理（§7.5）+ 充值占位（§7.6）
+﻿// 算力模块路由（A 侧）：企业额度管理（§7.5）+ 充值占位（§7.6）
 // 不实现 B 侧路由（Model Gateway、Key 管理、模型广场、用量 API）。
 // 鉴权（§10、§12）：§7.5 仅该企业管理员或拥有显式权限的角色可调用；§7.6 仅个人身份可自助充值。
 
@@ -7,7 +7,6 @@ import { randomUUID } from 'node:crypto';
 import type { AccountRepository, Identity } from '../repositories/types.js';
 import type { ComputeRepository } from './compute-repository.js';
 import type { QuotaService } from './quota-service.js';
-import type { PointsConverter } from './points.js';
 import { COMPUTE_PERMISSION, errorBody, requireIdentity, requirePermission } from './permissions.js';
 import { availableBalance, type OrgMemberQuota } from './types.js';
 
@@ -53,7 +52,7 @@ function mapMember(m: OrgMemberQuota) {
 
 export async function registerComputeRoutes(
   app: FastifyInstance,
-  deps: { accounts: AccountRepository; computeRepo: ComputeRepository; quota: QuotaService; points: PointsConverter },
+  deps: { accounts: AccountRepository; computeRepo: ComputeRepository; quota: QuotaService },
 ): Promise<void> {
   const pool = deps.computeRepo.pool;
 
@@ -208,12 +207,10 @@ export async function registerComputeRoutes(
     }
     const orderId = randomUUID();
     const entitlement = await deps.computeRepo.getOrCreateEntitlement({ identityId: ctx.identity.id });
-    // §7.6 充值占位：入参 amount 语义为算力点（契约 COMPUTE_CURRENCY = 'point'）；amount 为 USD 影子
     const ledger = await deps.computeRepo.createLedger({
       entitlementId: entitlement.id,
       operation: 'recharge',
-      amountPoints: body.amount,
-      rateSnapshot: deps.points.pointsPerUsd,
+      amount: body.amount,
       status: 'pending',
       idempotencyKey: rechargeOrderKey(ctx.identity.id, orderId),
       requestId: orderId,

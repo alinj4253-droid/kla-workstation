@@ -1,11 +1,10 @@
-import { describe, expect, it } from 'vitest';
+﻿import { describe, expect, it } from 'vitest';
 import Fastify from 'fastify';
 import type { AccountRepository, Identity, Session } from '../repositories/types.js';
 import type { ComputeRepository } from './compute-repository.js';
 import type { ProvisioningService } from './provisioning-service.js';
 import type { QuotaService } from './quota-service.js';
 import type { Sub2ApiClient } from './sub2api-client.js';
-import { createPointsConverter } from './points.js';
 import { registerComputeRoutes } from './routes.js';
 import { buildProvisionSteps, registerComputeAccountRoutes } from './routes-b-account.js';
 
@@ -14,8 +13,6 @@ const NOW = '2026-10-07T00:00:00.000Z';
 function identity(overrides: Partial<Identity> = {}): Identity {
   return { id: 'i1', userId: 'u1', type: 'personal', displayName: '测试用户', organizationId: null, status: 'active', isDefault: true, role: 'personal', ...overrides };
 }
-
-const mockQuota = { reconcileBalanceFromSub2api: async () => ({ synced: false, driftPoints: 0, sub2apiBalance: 0, klaAvailablePoints: 0 }) } as unknown as QuotaService;
 
 function authedAccounts(target: Identity): AccountRepository {
   const session: Session = { id: 's1', userId: target.userId, accessToken: 't', refreshToken: 'r', expiresAt: NOW };
@@ -69,7 +66,6 @@ describe('§7.1 当前身份与余额', () => {
       computeRepo: repo,
       sub2api: { health: async () => ({ ok: true }) } as unknown as Sub2ApiClient,
       provisioning: {} as unknown as ProvisioningService,
-      quota: mockQuota,
     });
     const response = await app.inject({ method: 'GET', url: '/api/v1/compute/summary', headers: { authorization: 'Bearer t' } });
     expect(response.statusCode).toBe(200);
@@ -104,7 +100,6 @@ describe('§7.1 当前身份与余额', () => {
       computeRepo: repo,
       sub2api: { health: async () => ({ ok: true }) } as unknown as Sub2ApiClient,
       provisioning: {} as unknown as ProvisioningService,
-      quota: mockQuota,
     });
     const response = await app.inject({ method: 'GET', url: '/api/v1/compute/summary', headers: { authorization: 'Bearer t' } });
     expect(response.json().data.permissions).toMatchObject({
@@ -121,7 +116,6 @@ describe('§7.1 当前身份与余额', () => {
       computeRepo: repo,
       sub2api: { health: async () => { throw new Error('down'); } } as unknown as Sub2ApiClient,
       provisioning: {} as unknown as ProvisioningService,
-      quota: mockQuota,
     });
     const response = await app.inject({ method: 'GET', url: '/api/v1/compute/summary', headers: { authorization: 'Bearer t' } });
     expect(response.json().data).toMatchObject({ sub2apiHealth: 'unavailable', provisionState: 'pending', balance: 0, defaultKey: null });
@@ -133,7 +127,7 @@ describe('§7.6 充值占位', () => {
   it('企业身份不可自助充值', async () => {
     const app = Fastify();
     const me = identity({ id: 'org-i1', type: 'enterprise', organizationId: 'org1' });
-    await registerComputeRoutes(app, { accounts: authedAccounts(me), computeRepo: repoWith(() => undefined), quota: {} as unknown as QuotaService, points: createPointsConverter() });
+    await registerComputeRoutes(app, { accounts: authedAccounts(me), computeRepo: repoWith(() => undefined), quota: {} as unknown as QuotaService });
     const response = await app.inject({
       method: 'POST',
       url: '/api/v1/compute/recharge/orders',
@@ -150,22 +144,21 @@ describe('§7.6 充值占位', () => {
     const repo = repoWith((sql) => { executed.push(sql); return undefined; }, {
       getOrCreateEntitlement: async () => ({ id: 'e1', identityId: 'i1', organizationId: null, quotaTotal: 0, quotaGranted: 0, quotaUsed: 0, quotaReserved: 0, version: 0, createdAt: NOW, updatedAt: NOW }),
       createLedger: async (input) => ({
-        id: 'l1', entitlementId: input.entitlementId, operation: input.operation,
-        amount: input.amountUsd ?? input.amountPoints / input.rateSnapshot, amountPoints: input.amountPoints, rateSnapshot: input.rateSnapshot, status: input.status,
+        id: 'l1', entitlementId: input.entitlementId, operation: input.operation, amount: input.amount, status: input.status,
         idempotencyKey: input.idempotencyKey, requestId: input.requestId ?? null, relatedLedgerId: null, sub2apiSynced: false,
         operatorIdentityId: input.operatorIdentityId ?? null, metadata: input.metadata ?? {}, createdAt: NOW, updatedAt: NOW,
       }),
     });
-    await registerComputeRoutes(app, { accounts: authedAccounts(identity()), computeRepo: repo, quota: {} as unknown as QuotaService, points: createPointsConverter() });
+    await registerComputeRoutes(app, { accounts: authedAccounts(identity()), computeRepo: repo, quota: {} as unknown as QuotaService });
     const response = await app.inject({
       method: 'POST',
       url: '/api/v1/compute/recharge/orders',
       headers: { authorization: 'Bearer t', 'content-type': 'application/json' },
-      payload: { amount: 5000 },
+      payload: { amount: 5 },
     });
     expect(response.statusCode).toBe(201);
-    expect(response.json().data).toMatchObject({ status: 'pending', amount: 5000 });
-    expect(executed.some((sql) => /points_total\s*=\s*points_total\s*\+/.test(sql))).toBe(false);
+    expect(response.json().data).toMatchObject({ status: 'pending', amount: 5 });
+    expect(executed.some((sql) => /quota_total\s*=\s*quota_total\s*\+/.test(sql))).toBe(false);
     await app.close();
   });
 });
@@ -175,7 +168,7 @@ describe('§7.5 企业额度管理鉴权', () => {
     const app = Fastify();
     const me = identity({ id: 'admin-i1', type: 'enterprise', organizationId: 'org1' });
     const repo = repoWith((sql) => (/FROM identity_roles/.test(sql) ? { rows: [{}], rowCount: 1 } : { rows: [], rowCount: 0 }));
-    await registerComputeRoutes(app, { accounts: authedAccounts(me), computeRepo: repo, quota: {} as unknown as QuotaService, points: createPointsConverter() });
+    await registerComputeRoutes(app, { accounts: authedAccounts(me), computeRepo: repo, quota: {} as unknown as QuotaService });
     const response = await app.inject({
       method: 'POST',
       url: '/api/v1/organizations/org1/compute/allocations',
@@ -190,7 +183,7 @@ describe('§7.5 企业额度管理鉴权', () => {
   it('非本企业身份访问企业额度概览被拒', async () => {
     const app = Fastify();
     const me = identity({ id: 'outsider', type: 'enterprise', organizationId: 'org2' });
-    await registerComputeRoutes(app, { accounts: authedAccounts(me), computeRepo: repoWith(() => undefined), quota: {} as unknown as QuotaService, points: createPointsConverter() });
+    await registerComputeRoutes(app, { accounts: authedAccounts(me), computeRepo: repoWith(() => undefined), quota: {} as unknown as QuotaService });
     const response = await app.inject({ method: 'GET', url: '/api/v1/organizations/org1/compute/summary', headers: { authorization: 'Bearer t' } });
     expect(response.statusCode).toBe(403);
     await app.close();

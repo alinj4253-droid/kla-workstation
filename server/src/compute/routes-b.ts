@@ -12,15 +12,13 @@ import type {
   PagedData,
 } from '@kla-workstation/contracts';
 import type { AccountRepository, Identity } from '../repositories/types.js';
-import type { PointsConverter } from './points.js';
 import type { ComputeRepository } from './compute-repository.js';
 import { COMPUTE_PERMISSION, errorBody, hasPermission, requireIdentity } from './permissions.js';
+import { createPointsConverter } from './points.js';
 
 export type ComputeRouteBDeps = {
   accounts: AccountRepository;
   computeRepo: ComputeRepository;
-  /** 算力点换算器（P1-11）：模型 USD 成本单价 → 点单价下发 */
-  points: PointsConverter;
 };
 
 const PAGE_SIZE_MAX = 100;
@@ -47,13 +45,11 @@ export type ComputeModelRow = {
   available_groups: unknown;
 };
 
-/** §7.3：只读映射，不暴露 base_url、上游 Key 等任何供应商配置；单价按当前汇率换算为点下发。 */
-export function mapComputeModel(row: ComputeModelRow, points: PointsConverter): ComputeModel {
+/** §7.3：只读映射，不暴露 base_url、上游 Key 等任何供应商配置。 */
+export function mapComputeModel(row: ComputeModelRow): ComputeModel {
   const capabilities = (row.capabilities && typeof row.capabilities === 'object' ? row.capabilities : {}) as Record<string, unknown>;
   const context = typeof capabilities.context === 'number' ? capabilities.context : null;
   const status: ComputeModelStatus = row.enabled ? 'active' : 'disabled';
-  const inputUsd = toNumber(row.input_price_per_mtok_usd);
-  const outputUsd = toNumber(row.output_price_per_mtok_usd);
   return {
     id: row.id,
     name: row.name,
@@ -65,15 +61,15 @@ export function mapComputeModel(row: ComputeModelRow, points: PointsConverter): 
       streaming: capabilities.streaming === true,
     },
     contextWindow: context,
-    inputPricePerMillionTokensPoints: inputUsd != null ? points.fromUsd(inputUsd) : null,
-    outputPricePerMillionTokensPoints: outputUsd != null ? points.fromUsd(outputUsd) : null,
+    inputPricePerMillionTokensPoints: row.input_price_per_mtok_usd === null ? null : createPointsConverter().fromUsd(Number(row.input_price_per_mtok_usd)),
+    outputPricePerMillionTokensPoints: row.output_price_per_mtok_usd === null ? null : createPointsConverter().fromUsd(Number(row.output_price_per_mtok_usd)),
     available: row.enabled === true,
     availableGroups: Array.isArray(row.available_groups) ? row.available_groups.filter((group): group is string => typeof group === 'string') : [],
     status,
   };
 }
 
-/** 对齐 compute_usage 列：model / tokens / amount_usd（影子）/ amount_points（权威）/ kind / recorded_at。 */
+/** 对齐 A 侧 compute_usage 列：model / prompt_tokens / completion_tokens / amount_usd / recorded_at。 */
 export type ComputeUsageRow = {
   id: string;
   identity_id: string;
@@ -88,9 +84,7 @@ export type ComputeUsageRow = {
   latency_ms: number | null;
   status: string;
   amount_usd: string | number | null;
-  amount_points: string | number | null;
-  kind: string | null;
-  tool_id: string | null;
+  amount_points?: string | number | null;
   recorded_at: Date | string;
 };
 
@@ -113,13 +107,11 @@ export function mapUsageRecord(row: ComputeUsageRow): ComputeUsageRecord {
     latencyMs: row.latency_ms,
     status: row.status,
     costPoints: toNumber(row.amount_points) ?? 0,
-    kind: row.kind === 'tool' ? 'tool' : 'model',
-    toolId: row.tool_id,
     usageAt: new Date(row.recorded_at).toISOString(),
   };
 }
 
-const CSV_HEADERS = ['时间', '模型/工具', 'Key前缀', '项目', '输入Token', '输出Token', '总Token', '状态', '耗时ms', '消耗（点）'];
+const CSV_HEADERS = ['时间', '模型', 'Key前缀', '项目', '输入Token', '输出Token', '总Token', '状态', '耗时ms', '费用算力点'];
 
 function csvCell(value: string | number | null): string {
   const text = value === null ? '' : String(value);
@@ -250,7 +242,7 @@ export async function registerComputeRoutesB(app: FastifyInstance, deps: Compute
     const ctx = await requireIdentity(deps.accounts, request, reply);
     if (!ctx) return;
     const result = await pool().query<ComputeModelRow>(`${MODEL_SELECT} WHERE m.enabled = true ORDER BY m.is_official DESC, m.name`);
-    const data: ComputeModelList = { items: result.rows.map((row) => mapComputeModel(row, deps.points)) };
+    const data: ComputeModelList = { items: result.rows.map(mapComputeModel) };
     return reply.send({ ok: true, data });
   });
 
@@ -261,7 +253,7 @@ export async function registerComputeRoutesB(app: FastifyInstance, deps: Compute
     const result = await pool().query<ComputeModelRow>(`${MODEL_SELECT} WHERE m.id = $1`, [modelId]);
     const row = result.rows[0];
     if (!row) return reply.code(404).send(errorBody('NOT_FOUND', '模型不存在', request.id));
-    return reply.send({ ok: true, data: mapComputeModel(row, deps.points) });
+    return reply.send({ ok: true, data: mapComputeModel(row) });
   });
 
   // §7.4：FROM/JOIN 与 WHERE 复用；$1 为作用域（子句经白名单构造，非用户输入）。
@@ -284,7 +276,7 @@ export async function registerComputeRoutesB(app: FastifyInstance, deps: Compute
     filter.projectId,
   ];
   const USAGE_COLUMNS = `u.id, u.identity_id, u.model, u.key_id, k.key_prefix, u.project_id, u.conversation_id, u.task_id,
-              u.prompt_tokens, u.completion_tokens, u.latency_ms, u.status, u.amount_usd, u.amount_points, u.kind, u.tool_id, u.recorded_at`;
+              u.prompt_tokens, u.completion_tokens, u.latency_ms, u.status, u.amount_usd, u.amount_points, u.recorded_at`;
 
   app.get('/api/v1/compute/usage', async (request: FastifyRequest, reply: FastifyReply) => {
     const ctx = await requireIdentity(deps.accounts, request, reply);

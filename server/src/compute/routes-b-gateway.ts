@@ -75,10 +75,11 @@ export async function registerComputeGatewayRoutes(app: FastifyInstance, deps: C
       'x-accel-buffering': 'no',
     });
     try {
-      const { usage, amountPoints } = await deps.gateway.streamChat(ctx.identity, input, (chunk) => {
+      const { usage, amountUsd } = await deps.gateway.streamChat(ctx.identity, input, (chunk) => {
         reply.raw.write(Buffer.from(chunk));
       });
-      reply.raw.write(`data: ${JSON.stringify({ kla: { usage, amountPoints } })}\n\n`);
+      // 上游 usage 账本为真实扣费源（0028 计费切换后 settle 只释放预扣），amountUsd 恒为 0
+      reply.raw.write(`data: ${JSON.stringify({ kla: { usage, amountUsd } })}\n\n`);
       reply.raw.end();
     } catch (error) {
       const payload = error instanceof GatewayError ? { code: error.code, message: error.message } : { code: 'INTERNAL', message: '模型流式调用失败' };

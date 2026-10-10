@@ -74,12 +74,13 @@
 .kl-stats .kl-stat-text { font-size: 17px; padding: 7px 0; }
 .kl-connection-dialog form > label > textarea { font: inherit; border: 1px solid var(--kq-border); background: var(--kq-surface); color: var(--kq-text); border-radius: 6px; padding: 8px 10px; resize: vertical; }
 .kl-connection-dialog form > label > select { width: 100%; }
-.kl-library-menu { z-index: 1002; min-width: 168px; padding: 5px; border: 1px solid var(--kq-border); border-radius: 8px; background: var(--kq-surface); color: var(--kq-text-secondary); box-shadow: 0 8px 28px color-mix(in srgb, var(--kq-text) 12%, transparent); font-size: 12px; }
-.kl-library-menu [role="menuitem"] { display: flex; align-items: center; gap: 9px; padding: 9px 11px; cursor: pointer; border-radius: 5px; outline: none; text-decoration: none; color: inherit; }
+.kl-library-menu { z-index: 1002; min-width: 170px; padding: 4px; border: 1px solid var(--kq-border); border-radius: 8px; background: var(--kq-surface); color: var(--kq-text-secondary); box-shadow: 0 8px 28px color-mix(in srgb, var(--kq-text) 12%, transparent); font-size: 12px; }
+.kl-library-menu [role="menuitem"] { display: flex; align-items: center; gap: 9px; padding: 7px 12px; cursor: pointer; border-radius: 5px; outline: none; text-decoration: none; color: inherit; }
 .kl-library-menu [role="menuitem"][data-highlighted] { background: var(--kq-surface-muted); }
 .kl-library-menu [role="menuitem"][data-disabled] { opacity: .45; cursor: default; }
-.kl-library-menu [role="separator"] { height: 1px; background: var(--kq-border); margin: 5px; }
+.kl-library-menu [role="separator"] { height: 1px; background: var(--kq-border); margin: 4px 6px; }
 .kl-library-menu .kl-menu-danger { color: var(--kq-danger); }
+.kl-library-menu .kl-menu-danger[data-highlighted] { background: var(--kq-danger-bg); }
 .kl-module .kl-danger { background: var(--kq-danger); color: var(--kq-surface); border-color: var(--kq-danger); }
 .kl-module .kl-danger:hover { background: var(--kq-danger); color: var(--kq-surface); filter: brightness(.95); }
 .kl-delete-dialog h2 { display: flex; align-items: center; gap: 9px; }

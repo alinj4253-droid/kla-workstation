@@ -2,7 +2,6 @@
 // QueryClient = Pick<Pool, 'query'>，同时兼容 Pool 与 PoolClient。
 
 import type { Pool } from 'pg';
-import { pointsToUsd } from './points.js';
 import type {
   ComputeBinding,
   ComputeBindingStatus,
@@ -23,13 +22,23 @@ import type {
   SyncLogStatus,
   OrgMemberQuota,
 } from './types.js';
+import { createPointsConverter, type PointsConverter } from './points.js';
 
 export type QueryClient = Pick<Pool, 'query'>;
 
 export class ComputeRepository {
-  constructor(public readonly pool: Pool) {}
+  constructor(public readonly pool: Pool, private readonly points: PointsConverter = createPointsConverter()) {}
 
   // ---- compute_bindings ----
+
+  /** Legacy shared upstream users cannot enforce per-identity spending limits. */
+  async countBindingsForSub2apiUser(userId: string): Promise<number> {
+    const { rows } = await this.pool.query<{ count: number }>(
+      'SELECT count(*)::int AS count FROM compute_bindings WHERE sub2api_user_id = $1 AND sub2api_status IN ($2, $3)',
+      [userId, 'ready', 'default_key_created'],
+    );
+    return Number(rows[0]?.count ?? 0);
+  }
 
   async upsertBinding(input: {
     identityId: string;
@@ -122,7 +131,6 @@ export class ComputeRepository {
     return this.entitlement(rows[0]);
   }
 
-  /** 更新额度池（算力点口径，DB 列 points_*）；delta 为带符号增量。 */
   async updateEntitlementAmounts(
     client: QueryClient,
     entitlementId: string,
@@ -131,10 +139,13 @@ export class ComputeRepository {
     const sets: string[] = [];
     const vals: unknown[] = [];
     let idx = 1;
-    if (delta.total !== undefined) { sets.push(`points_total = points_total + $${idx++}`); vals.push(delta.total); }
-    if (delta.granted !== undefined) { sets.push(`points_granted = points_granted + $${idx++}`); vals.push(delta.granted); }
-    if (delta.used !== undefined) { sets.push(`points_used = points_used + $${idx++}`); vals.push(delta.used); }
-    if (delta.reserved !== undefined) { sets.push(`points_reserved = points_reserved + $${idx++}`); vals.push(delta.reserved); }
+    for (const [name, amount] of Object.entries(delta)) {
+      if (amount === undefined) continue;
+      const column = name === 'total' ? 'total' : name === 'granted' ? 'granted' : name === 'used' ? 'used' : 'reserved';
+      sets.push(`points_${column} = points_${column} + $${idx}, quota_${column} = quota_${column} + $${idx + 1}`);
+      vals.push(amount, this.points.toUsd(Math.abs(amount)) * Math.sign(amount));
+      idx += 2;
+    }
     sets.push(`version = version + 1`);
     sets.push(`updated_at = now()`);
     vals.push(entitlementId);
@@ -147,18 +158,10 @@ export class ComputeRepository {
 
   // ---- compute_allocation_ledger ----
 
-  /**
-   * 写入额度流水（算力点为权威口径）：
-   * - amount_points / rate_snapshot 为必填权威字段；
-   * - amount 为 USD 影子口径（历史兼容 + 财务对账），未显式提供时按 pointsToUsd 换算。
-   */
   async createLedger(input: {
     entitlementId: string;
     operation: LedgerOperation;
-    amountPoints: number;
-    rateSnapshot: number;
-    /** USD 影子口径；缺省时按 pointsToUsd(amountPoints, rateSnapshot) 计算 */
-    amountUsd?: number;
+    amount: number;
     status: LedgerStatus;
     idempotencyKey: string;
     requestId?: string | null;
@@ -167,12 +170,11 @@ export class ComputeRepository {
     metadata?: Record<string, unknown>;
   }, client?: QueryClient): Promise<AllocationLedger> {
     const c = client ?? this.pool;
-    const amountUsd = input.amountUsd ?? pointsToUsd(input.amountPoints, input.rateSnapshot);
     const { rows } = await c.query(
       `INSERT INTO compute_allocation_ledger
         (entitlement_id, operation, amount, amount_points, rate_snapshot, status, idempotency_key, request_id, related_ledger_id, operator_identity_id, metadata)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
-      [input.entitlementId, input.operation, amountUsd, input.amountPoints, input.rateSnapshot, input.status, input.idempotencyKey, input.requestId ?? null, input.relatedLedgerId ?? null, input.operatorIdentityId ?? null, input.metadata ?? {}],
+      [input.entitlementId, input.operation, this.points.toUsd(input.amount), input.amount, this.points.pointsPerUsd, input.status, input.idempotencyKey, input.requestId ?? null, input.relatedLedgerId ?? null, input.operatorIdentityId ?? null, input.metadata ?? {}],
     );
     return this.ledger(rows[0]);
   }
@@ -367,7 +369,7 @@ export class ComputeRepository {
     return rows[0] ? this.key(rows[0]) : null;
   }
 
-  /** §9.2：Key 列表的"今日用量"（算力点），按 key_id 聚合当日 compute_usage。 */
+  /** §9.2：Key 列表的"今日用量"（美元），按 key_id 聚合当日 compute_usage。 */
   async sumTodayUsageByKey(identityId: string, client?: QueryClient): Promise<Map<string, number>> {
     const c = client ?? this.pool;
     const { rows } = await c.query(
@@ -411,16 +413,13 @@ export class ComputeRepository {
     };
   }
 
-  /** §8：Gateway/工具通道写入用量，双口径落库（amountUsd 影子 + amountPoints 权威）。 */
+  /** §8：Gateway 写入用量时一并带上业务标签（0011 增量列）。 */
   async upsertUsage(input: {
     identityId: string | null;
     ledgerId: string | null;
     sub2apiUsageId: string | null;
     model: string | null;
     amountUsd: number;
-    amountPoints: number;
-    kind?: 'model' | 'tool';
-    toolId?: string | null;
     promptTokens: number | null;
     completionTokens: number | null;
     metadata?: Record<string, unknown>;
@@ -437,13 +436,12 @@ export class ComputeRepository {
     const c = client ?? this.pool;
     const { rows } = await c.query(
       `INSERT INTO compute_usage
-        (identity_id, ledger_id, sub2api_usage_id, model, amount_usd, amount_points, kind, tool_id, prompt_tokens, completion_tokens, metadata, dedupe_hash, recorded_at,
+        (identity_id, ledger_id, sub2api_usage_id, model, amount_usd, amount_points, prompt_tokens, completion_tokens, metadata, dedupe_hash, recorded_at,
          organization_id, key_id, project_id, conversation_id, task_id, latency_ms, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
        ON CONFLICT (dedupe_hash) DO NOTHING RETURNING *`,
       [
-        input.identityId, input.ledgerId, input.sub2apiUsageId, input.model, input.amountUsd, input.amountPoints, input.kind ?? 'model', input.toolId ?? null,
-        input.promptTokens, input.completionTokens,
+        input.identityId, input.ledgerId, input.sub2apiUsageId, input.model, input.amountUsd, this.points.fromUsd(input.amountUsd), input.promptTokens, input.completionTokens,
         input.metadata ?? {}, input.dedupeHash, input.recordedAt,
         input.organizationId ?? null, input.keyId ?? null, input.projectId ?? null, input.conversationId ?? null, input.taskId ?? null,
         input.latencyMs ?? null, input.status ?? 'success',
@@ -452,7 +450,6 @@ export class ComputeRepository {
     return rows[0] ? this.usage(rows[0]) : null;
   }
 
-  /** USD 成本对账口径（ReconciliationService 与 Sub2API 用量对账），保持 USD。 */
   async sumUsageByIdentity(identityId: string, client?: QueryClient): Promise<number> {
     const c = client ?? this.pool;
     const { rows } = await c.query(
@@ -602,7 +599,6 @@ export class ComputeRepository {
       id: r.id as string,
       identityId: (r.identity_id as string | null) ?? null,
       organizationId: (r.organization_id as string | null) ?? null,
-      // 算力点口径（points_* 列为权威）；quota_* USD 影子列仅由 Sub2API 同步路径维护
       quotaTotal: Number(r.points_total ?? 0),
       quotaGranted: Number(r.points_granted ?? 0),
       quotaUsed: Number(r.points_used ?? 0),
@@ -618,9 +614,7 @@ export class ComputeRepository {
       id: r.id as string,
       entitlementId: r.entitlement_id as string,
       operation: r.operation as LedgerOperation,
-      amount: Number(r.amount ?? 0),
-      amountPoints: Number(r.amount_points ?? 0),
-      rateSnapshot: Number(r.rate_snapshot ?? 0),
+      amount: Number(r.amount_points ?? 0),
       status: r.status as LedgerStatus,
       idempotencyKey: r.idempotency_key as string,
       requestId: (r.request_id as string | null) ?? null,
@@ -662,9 +656,6 @@ export class ComputeRepository {
       sub2apiUsageId: (r.sub2api_usage_id as string | null) ?? null,
       model: (r.model as string | null) ?? null,
       amountUsd: Number(r.amount_usd ?? 0),
-      amountPoints: Number(r.amount_points ?? 0),
-      kind: r.kind === 'tool' ? 'tool' : 'model',
-      toolId: (r.tool_id as string | null) ?? null,
       promptTokens: r.prompt_tokens != null ? Number(r.prompt_tokens) : null,
       completionTokens: r.completion_tokens != null ? Number(r.completion_tokens) : null,
       metadata: (r.metadata as Record<string, unknown>) ?? {},

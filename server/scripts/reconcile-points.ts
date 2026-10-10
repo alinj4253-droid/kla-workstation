@@ -11,10 +11,11 @@ import { loadConfig } from '../src/config.js';
 import { PostgresDatabase } from '../src/database/postgres.js';
 import { RedisDatabase } from '../src/infrastructure/redis.js';
 import { Sub2ApiClient } from '../src/compute/sub2api-client.js';
-import { pointsToUsd } from '../src/compute/points.js';
+import { createPointsConverter } from '../src/compute/points.js';
 import { roundUsd } from '../src/compute/types.js';
 
 const config = loadConfig();
+const converter = createPointsConverter(config.compute.pointsPerUsd);
 if (!config.databaseUrl) {
   console.error('DATABASE_URL 未配置');
   process.exit(2);
@@ -69,7 +70,7 @@ try {
   for (const row of rows) {
     const klaPoints =
       Number(row.points_total) + Number(row.points_granted) - Number(row.points_used) - Number(row.points_reserved);
-    const expectedUsd = pointsToUsd(klaPoints, config.compute.pointsPerUsd);
+    const expectedUsd = converter.toUsd(Math.max(klaPoints, 0));
     let actualUsd: number | null = null;
     let error: string | null = null;
     try {

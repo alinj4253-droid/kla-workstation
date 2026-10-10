@@ -26,6 +26,7 @@ describe('authenticated desktop execution protocol', () => {
       const project = await accounts.createProject(account.identity.id, '本地项目');
       const room = await accounts.createConversation(project.id, '本地群聊');
       const agent = (await roomRegistry(pool, room.id)).find(item => item.name === '本地执行智能体')!;
+      await pool.query("UPDATE agents SET execution_location='local' WHERE id=$1", [agent.id]);
       const trigger = await accounts.createMessage(room.id, account.user.id, '写入代码文件');
       const run = await accounts.createRun(room.id, trigger.id, 'balanced');
       const step = (await pool.query('INSERT INTO conversation_run_steps(run_id,step_index,title,instruction,assigned_agent_id) VALUES($1,1,$2,$3,$4) RETURNING id', [run.id, '写代码', '保存代码', agent.id])).rows[0];
@@ -37,6 +38,22 @@ describe('authenticated desktop execution protocol', () => {
       } });
       expect(registered.statusCode).toBe(200);
       const deviceId = registered.json().data.id;
+      const catalog = await app.inject({ method: 'GET', url: '/api/v1/runtime/tools', headers });
+      expect(catalog.statusCode, catalog.body).toBe(200);
+      expect(catalog.json().data.find((tool: { code: string }) => tool.code === 'local_code')).toMatchObject({ code: 'local_code', deviceOnline: true });
+      expect(catalog.json().data.find((tool: { code: string }) => tool.code === 'local_code').agents).toBeUndefined();
+      const capabilitiesUrl = `/api/v1/agents/${agent.id}/capabilities`;
+      const existingCapabilities = await app.inject({ method: 'GET', url: capabilitiesUrl, headers });
+      expect(existingCapabilities.statusCode, existingCapabilities.body).toBe(200);
+      expect(existingCapabilities.json().data.effectiveTools).toContain('local_code');
+      const mounted = await app.inject({ method: 'PUT', url: capabilitiesUrl, headers,
+        payload: { skillCodes: ['local_development'], toolCodes: ['local_read'] } });
+      expect(mounted.statusCode, mounted.body).toBe(200);
+      const savedCapabilities = await app.inject({ method: 'GET', url: capabilitiesUrl, headers });
+      expect(savedCapabilities.json().data.skills.find((item: { code: string }) => item.code === 'local_development').mounted).toBe(true);
+      expect(savedCapabilities.json().data.tools.find((item: { code: string }) => item.code === 'local_read').mounted).toBe(true);
+      expect(savedCapabilities.json().data.effectiveTools).toContain('local_code');
+      expect(savedCapabilities.json().data.effectiveTools).not.toContain('artifact_write');
       const call = (await pool.query("INSERT INTO runtime_tool_calls(step_id,identity_id,device_id,model_call_id,tool_name,arguments) VALUES($1,$2,$3,'call-1','local_code',$4) RETURNING id", [step.id, account.identity.id, deviceId, JSON.stringify({ fileName: 'app.py', content: 'print(1)' })])).rows[0];
       await pool.query("UPDATE conversation_runs SET status='waiting_tool' WHERE id=$1", [run.id]);
       const url = `/api/v1/runtime/devices/${deviceId}/poll`;
@@ -48,18 +65,30 @@ describe('authenticated desktop execution protocol', () => {
       const content = 'print(1)\n';
       const receiptId = randomUUID();
       const receiptUrl = `/api/v1/runtime/devices/${deviceId}/calls/${call.id}/receipt`;
-      const payload = { receiptId, status: 'completed', result: { stored: true }, artifact: { fileName: 'app.py', mimeType: 'text/plain', content, checksum: createHash('sha256').update(content).digest('hex') } };
+      const payload = { receiptId, status: 'completed', result: { stored: true }, approval: { approved: true, decidedAt: new Date().toISOString() }, artifact: { fileName: 'app.py', mimeType: 'text/plain', content, checksum: createHash('sha256').update(content).digest('hex') } };
+      const unapproved = await app.inject({ method: 'POST', url: receiptUrl, headers, payload: { ...payload, approval: { approved: false, decidedAt: new Date().toISOString() } } });
+      expect(unapproved.statusCode).toBe(400);
       const receipt = await app.inject({ method: 'POST', url: receiptUrl, headers, payload });
-      expect(receipt.statusCode).toBe(200);
+      expect(receipt.statusCode, receipt.body).toBe(200);
       expect(receipt.json().data.artifactId).toBeTruthy();
+      expect((await pool.query("SELECT conversation_id FROM runtime_events WHERE kind='tool.dispatched' AND run_id=(SELECT run_id FROM conversation_run_steps WHERE id=$1)", [step.id])).rows[0].conversation_id).toBe(room.id);
       expect((await app.inject({ method: 'POST', url: receiptUrl, headers, payload })).statusCode).toBe(200);
       const artifacts = await accounts.listArtifacts(account.identity.id, room.id);
       expect(artifacts).toHaveLength(1);
       expect(artifacts[0].content).toBe(content);
       const other = await accounts.register({ email: 'other-device@example.test', nickname: '其他身份', password: 'TestPass2026!' });
       const otherSession = await accounts.createSession(other.user.id);
+      const isolatedCapabilities = await app.inject({ method: 'GET', url: capabilitiesUrl,
+        headers: { authorization: `Bearer ${otherSession.accessToken}`, 'x-identity-id': other.identity.id } });
+      expect(isolatedCapabilities.statusCode).toBe(404);
       const denied = await app.inject({ method: 'POST', url, headers: { authorization: `Bearer ${otherSession.accessToken}`, 'x-identity-id': other.identity.id } });
       expect(denied.statusCode).toBe(404);
+      const next = (await pool.query("INSERT INTO runtime_tool_calls(step_id,identity_id,device_id,model_call_id,tool_name,arguments) VALUES($1,$2,$3,'call-2','local_code',$4) RETURNING id", [step.id, account.identity.id, deviceId, JSON.stringify({ fileName: 'next.py', content: 'print(2)' })])).rows[0];
+      await pool.query('UPDATE agents SET enabled=false WHERE id=$1', [agent.id]);
+      const revoked = await app.inject({ method: 'POST', url, headers });
+      expect(revoked.statusCode).toBe(200);
+      expect(revoked.json().data.call).toBeNull();
+      expect(revoked.json().data.cancelled).toContain(next.id);
     } finally {
       await app.close();
       await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);

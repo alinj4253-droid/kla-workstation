@@ -1,4 +1,15 @@
-import 'dotenv/config';
+﻿import { config as loadDotenv } from 'dotenv';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+loadDotenv({
+  path: process.env.DOTENV_CONFIG_PATH || resolve(dirname(fileURLToPath(import.meta.url)), '../.env'),
+  // The local preview launcher explicitly opts into its server/.env
+  // so an inherited shell value such as SUB2API_BASE_URL=/api cannot shadow the
+  // absolute upstream URL required by the compute gateway.
+  override: process.env.DOTENV_CONFIG_OVERRIDE === 'true' || process.env.NODE_ENV !== 'production',
+  quiet: true,
+});
 
 const LOG_LEVELS = new Set(['trace', 'debug', 'info', 'warn', 'error', 'fatal']);
 
@@ -27,11 +38,11 @@ export type ComputeConfig = {
   outboxIntervalMs: number;
   reconciliationEnabled: boolean;
   secretEncryptionKey: string;
-  /** Model Gateway 预扣下限（算力点）：调用前的软额度闸门金额（§4.2、§8.3） */
-  minReservePoints: number;
+  /** Model Gateway 预扣下限（美元）：调用前的软额度闸门金额（§4.2、§8.3） */
+  minReserveUsd: number;
   /**
    * 算力点汇率：1 USD = pointsPerUsd 点（DESIGN_POINTS_BASED_BILLING.md §3）。
-   * MVP 恒定；调整视同重大变更（发版 + 存量重估迁移），不是运行时可改参数。
+   * MVP 只接受 1000；调整必须与存量重估迁移及兼容触发器同时发布。
    */
   pointsPerUsd: number;
 };
@@ -60,6 +71,10 @@ export type ServerConfig = {
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const port = Number(env.PORT ?? 8787);
   const requestedLevel = env.LOG_LEVEL ?? 'info';
+  const sub2apiBaseUrl = env.SUB2API_BASE_URL?.trim() ?? '';
+  if (sub2apiBaseUrl && !/^https?:\/\/[^/]+/i.test(sub2apiBaseUrl)) {
+    throw new Error('SUB2API_BASE_URL 必须是完整的 http(s) 地址');
+  }
   return {
     nodeEnv: env.NODE_ENV ?? 'development',
     host: env.HOST ?? '127.0.0.1',
@@ -69,7 +84,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     redisUrl: env.REDIS_URL ?? '',
     databaseSchema: /^[a-z_][a-z0-9_]*$/i.test(env.DATABASE_SCHEMA ?? 'kla') ? (env.DATABASE_SCHEMA ?? 'kla') : 'kla',
     sub2api: {
-      baseUrl: env.SUB2API_BASE_URL ?? '',
+      baseUrl: sub2apiBaseUrl,
       adminApiKey: env.SUB2API_ADMIN_API_KEY ?? env.SUB2API_API_KEY ?? '',
       timeoutMs: Number(env.SUB2API_TIMEOUT_MS ?? 15000),
       defaultGroupId: env.SUB2API_DEFAULT_GROUP_ID ?? '',
@@ -80,11 +95,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       sharedAccountPassword: env.SUB2API_SHARED_ACCOUNT_PASSWORD ?? '',
     },
     compute: {
-      usageSyncIntervalMs: Number(env.COMPUTE_USAGE_SYNC_INTERVAL_MS ?? 60000),
+      usageSyncIntervalMs: Number(env.COMPUTE_USAGE_SYNC_INTERVAL_MS ?? 5000),
       outboxIntervalMs: Number(env.COMPUTE_OUTBOX_INTERVAL_MS ?? 5000),
       reconciliationEnabled: env.COMPUTE_RECONCILIATION_ENABLED === 'true',
       secretEncryptionKey: env.COMPUTE_SECRET_ENCRYPTION_KEY ?? '',
-      minReservePoints: Number(env.COMPUTE_MIN_RESERVE_POINTS ?? 10),
+      minReserveUsd: Number(env.COMPUTE_MIN_RESERVE_USD ?? 0.01),
       pointsPerUsd: Number(env.POINTS_PER_USD ?? 1000),
     },
     tools: {
