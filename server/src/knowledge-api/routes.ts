@@ -10,6 +10,8 @@ import { getJob, jobPath } from './jobs.js';
 import { publicKnowledgeData } from './public-data.js';
 import { KnowledgeError, withResponse } from './transport.js';
 import { publicConnection } from './config.js';
+import { libraryStatistics } from './statistics.js';
+import { serviceInputSchema } from '@kla-workstation/contracts/knowledge';
 export async function registerKnowledgeRoutes(app: FastifyInstance, deps: { accounts: AccountRepository; store: KnowledgeStore; pool?: Pool; encryptionKey?: string; mock?: boolean }) {
   const sessions = new Map<string, { scope: ReturnType<typeof createScope>; initialized: Promise<void> }>();
   let sequence = 0;
@@ -41,7 +43,7 @@ export async function registerKnowledgeRoutes(app: FastifyInstance, deps: { acco
     return reply.code(status).send({ ok: false, error: { code: mapped.code, message: mapped.message, retryable: mapped.retryable, details: mapped.details }, meta: { requestId: request.id } });
   };
   app.addContentTypeParser('application/octet-stream', { parseAs: 'buffer', bodyLimit: KNOWLEDGE_UPLOAD_LIMIT }, (_request, body, done) => done(null, body));
-  const reads = new Set(['getConnection', 'health', 'listSources', 'getBindings', 'getUnconfirmed', 'listJobs', 'getJob', 'contentRequest', 'getCatalog']);
+  const reads = new Set(['getConnection', 'health', 'listSources', 'getBindings', 'getUnconfirmed', 'listJobs', 'getJob', 'contentRequest', 'getCatalog', 'getStatistics']);
   app.post('/api/v1/knowledge-library/:operation', { bodyLimit: KNOWLEDGE_UPLOAD_LIMIT }, async (request, reply) => {
     try {
       const operation = (request.params as { operation: string }).operation;
@@ -55,6 +57,13 @@ export async function registerKnowledgeRoutes(app: FastifyInstance, deps: { acco
           const normalized = normalizeKnowledgeCatalog(entries);
           if (normalized.changed) { await atomicStored('catalog.json', normalized.entries); console.log('[knowledge] catalog 集合名已自动升级为当前约定名'); }
           return normalized.entries;
+        }
+        if (operation === 'getStatistics') {
+          const input = serviceInputSchema.parse(request.body);
+          let entries;
+          try { entries = knowledgeCatalogSchema.parse(await readStored('catalog.json')); }
+          catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; entries = initialKnowledgeCatalog; }
+          return libraryStatistics(scope.ownerNumber, input.serviceInstanceId, normalizeKnowledgeCatalog(entries).entries);
         }
         if (operation === 'saveCatalog') {
           const entries = normalizeKnowledgeCatalog(knowledgeCatalogSchema.parse(request.body)).entries;
