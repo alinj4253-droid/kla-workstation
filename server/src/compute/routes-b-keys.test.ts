@@ -73,7 +73,7 @@ describe('resolveManagedPassword', () => {
 describe('toKeyDto', () => {
   it('永不包含 secret 与指纹', () => {
     const dto = toKeyDto(keyFixture(), 3.5);
-    expect(dto).toMatchObject({ keyPrefix: 'sk-kla-ab', todayUsagePoints: 3.5, quotaPoints: 125000, rpm: 60, ipAllowList: ['10.0.0.0/8'] });
+    expect(dto).toMatchObject({ keyPrefix: 'sk-kla-ab', todayUsagePoints: 3.5, quotaPoints: 12500, rpm: 60, ipAllowList: ['10.0.0.0/8'] });
     const serialized = JSON.stringify(dto);
     expect(serialized).not.toContain('secret');
     expect(serialized).not.toContain('keyFingerprint');
@@ -147,8 +147,8 @@ describe('§7.2 POST /compute/keys', () => {
     expect(response.statusCode).toBe(201);
     const body = response.json();
     expect(body.data.secret).toBe('sk-kla-cd-FULL-SECRET');
-    expect(body.data.key).toMatchObject({ keyPrefix: 'sk-kla-cd', groupId: 'group-default', quotaPoints: 125000, rpm: 60, ipAllowList: ['10.0.0.0/8'] });
-    expect(captured).toMatchObject({ identityId: 'i1', sub2apiKeyId: 'sk-new', quota: 0.00125, rpm: 60, ipAllowList: ['10.0.0.0/8'], expiresAt: '2026-12-31T00:00:00.000Z' });
+    expect(body.data.key).toMatchObject({ keyPrefix: 'sk-kla-cd', groupId: 'group-default', quotaPoints: 12500, rpm: 60, ipAllowList: ['10.0.0.0/8'] });
+    expect(captured).toMatchObject({ identityId: 'i1', sub2apiKeyId: 'sk-new', quota: 0.0125, rpm: 60, ipAllowList: ['10.0.0.0/8'], expiresAt: '2026-12-31T00:00:00.000Z' });
     await app.close();
   });
 

@@ -25,10 +25,10 @@ export function apiErrorMessage(result: { message?: string; error?: { message?: 
   return result.error?.message ?? result.message ?? '请求失败';
 }
 
-/** 积分展示：千分位 + 最多 2 位小数（P1-11，用户侧只见积分不见 USD）。运行时值来自 JSON 响应，非有限数字一律显示占位符。 */
+/** 积分展示：千分位整数（不显示小数）。运行时值来自 JSON 响应，非有限数字一律显示占位符。 */
 export function formatPoints(value: number | null | undefined): string {
   if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
-  return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(value);
+  return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 }).format(Math.round(value));
 }
 
 export function formatTokens(value: number | null | undefined): string {

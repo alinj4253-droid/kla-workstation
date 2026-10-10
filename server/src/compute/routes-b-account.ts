@@ -8,6 +8,7 @@ import type { AccountRepository } from '../repositories/types.js';
 import type { ComputeRepository } from './compute-repository.js';
 import type { ProvisioningService } from './provisioning-service.js';
 import type { Sub2ApiClient } from './sub2api-client.js';
+import type { QuotaService } from './quota-service.js';
 import { COMPUTE_PERMISSION, errorBody, hasPermission, requireIdentity } from './permissions.js';
 import { availableBalance } from './types.js';
 
@@ -16,6 +17,7 @@ export type ComputeAccountRouteDeps = {
   computeRepo: ComputeRepository;
   sub2api: Sub2ApiClient;
   provisioning: ProvisioningService;
+  quota: QuotaService;
 };
 
 /** §5.3 建号状态机的正向顺序，用于生成进度步骤。 */
@@ -44,6 +46,8 @@ export async function registerComputeAccountRoutes(app: FastifyInstance, deps: C
     const ctx = await requireIdentity(deps.accounts, request, reply);
     if (!ctx) return;
     const identity = ctx.identity;
+    // 上游直接充值后，把差额补进 KLA（失败不阻塞）
+    await deps.quota.reconcileBalanceFromSub2api(identity.id).catch(() => {});
     const [entitlement, binding, keys, modelCount, health, canViewKeys, canCreateKey, canUpdateKey, canDisableKey, canViewUsage, canUseModel, canViewOrganizationUsage, canAllocate, canReclaim] = await Promise.all([
       deps.computeRepo.getEntitlement({ identityId: identity.id }),
       deps.computeRepo.getBinding(identity.id),
@@ -105,6 +109,8 @@ export async function registerComputeAccountRoutes(app: FastifyInstance, deps: C
   app.get('/api/v1/compute/balance', async (request: FastifyRequest, reply: FastifyReply) => {
     const ctx = await requireIdentity(deps.accounts, request, reply);
     if (!ctx) return;
+    // 上游直接充值后，把差额补进 KLA（失败不阻塞）
+    await deps.quota.reconcileBalanceFromSub2api(ctx.identity.id).catch(() => {});
     const entitlement = await deps.computeRepo.getEntitlement({ identityId: ctx.identity.id });
     const available = availableBalance({
       quotaTotal: entitlement?.quotaTotal ?? 0,

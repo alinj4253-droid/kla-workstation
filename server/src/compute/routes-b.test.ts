@@ -33,7 +33,7 @@ describe('mapComputeModel', () => {
       provider: 'deepseek',
       capabilities: { vision: false, reasoning: false, tools: false, streaming: true },
       contextWindow: 128000,
-      inputPricePerMillionTokensPoints: 5000,
+      inputPricePerMillionTokensPoints: 500,
       outputPricePerMillionTokensPoints: null,
       available: true,
       availableGroups: ['group-chat', 'group-personal'],

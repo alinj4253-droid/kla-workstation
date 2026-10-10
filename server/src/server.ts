@@ -74,7 +74,7 @@ export async function createServer() {
   await registerKnowledgeRoutes(app, { accounts, pool, store: new PostgresKnowledgeStore(pool), encryptionKey: process.env.KNOWLEDGE_SECRET_ENCRYPTION_KEY || config.compute.secretEncryptionKey });
   await registerComputeRoutes(app, { accounts, computeRepo, quota });
   await registerComputeRoutesB(app, { accounts, computeRepo });
-  await registerComputeAccountRoutes(app, { accounts, computeRepo, sub2api, provisioning });
+  await registerComputeAccountRoutes(app, { accounts, computeRepo, sub2api, provisioning, quota });
   await registerComputeKeyRoutes(app, {
     accounts,
     computeRepo,

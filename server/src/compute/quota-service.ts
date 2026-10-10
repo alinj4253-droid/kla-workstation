@@ -4,7 +4,7 @@
 import type { Pool } from 'pg';
 import type { ComputeRepository, QueryClient } from './compute-repository.js';
 import type { Sub2ApiClient } from './sub2api-client.js';
-import { availableBalance } from './types.js';
+import { availableBalance, roundUsd } from './types.js';
 import { createPointsConverter, type PointsConverter } from './points.js';
 import { createHash } from 'node:crypto';
 import type { Sub2ApiUsageItem } from './sub2api-client.js';
@@ -386,6 +386,84 @@ export class QuotaService {
         status: 'error',
         message: error instanceof Error ? error.message : 'Sub2API 余额同步失败',
       }, client);
+    }
+  }
+
+  /**
+   * Sub2API → KLA 余额对账：上游直接充值后，把差额补进 KLA 台账。
+   *
+   * 方向约束：仅当 Sub2API 实际余额 > KLA 已同步到上游的预期余额时才补记（充值方向）。
+   * 绝不从 KLA 扣减（KLA → Sub2API 的方向由 grant/allocate/reclaim 负责）。
+   *
+   * 防幽灵充值：用「已同步流水净额」而非 KLA 可用余额作为对比基准。
+   * 若某笔 grant 在 KLA 台账存在但未真正推送到 Sub2API（如手动 SQL 误设 synced=true），
+   * 它会被计入预期余额，从而避免把「KLA 多记」误判为「上游充值」。
+   *
+   * 幂等：idempotency_key 包含按百位取整的 Sub2API 积分余额，
+   * 同一上游余额不会重复入账；余额变化（再次充值）会生成新流水。
+   *
+   * 阈值：漂移需超过 100 积分（$0.01）才入账，避免浮点/舍入噪声产生幽灵流水。
+   * 失败不抛异常，仅记日志，不阻塞余额查询。
+   */
+  async reconcileBalanceFromSub2api(identityId: string): Promise<{ driftPoints: number; applied: boolean }> {
+    const THRESHOLD_POINTS = 100; // $0.01
+    const binding = await this.repo.getBinding(identityId);
+    if (!binding?.sub2apiUserId) return { driftPoints: 0, applied: false };
+
+    let sub2apiUsd: number;
+    try {
+      const user = await this.sub2api.getUser(binding.sub2apiUserId);
+      if (!user) return { driftPoints: 0, applied: false };
+      sub2apiUsd = user.balance;
+    } catch {
+      return { driftPoints: 0, applied: false };
+    }
+
+    // 用已同步流水净额作为 KLA 在 Sub2API 的预期余额，而非 KLA 可用余额。
+    // 这样未真正同步到上游的 grant 不会制造虚假漂移。
+    const entitlement = await this.repo.getEntitlement({ identityId });
+    if (!entitlement) return { driftPoints: 0, applied: false };
+    const expectedUsd = await this.repo.getSyncedSub2ApiBalanceUsd(entitlement.id);
+    const driftUsd = sub2apiUsd - expectedUsd;
+    const driftPoints = Math.round(driftUsd * this.points.pointsPerUsd * 1000) / 1000;
+    if (driftPoints <= THRESHOLD_POINTS) return { driftPoints, applied: false };
+
+    // 按百位取整上游余额作为幂等键，避免同余额重复入账
+    const sub2apiPoints = Math.round(sub2apiUsd * this.points.pointsPerUsd);
+    const roundedSub2api = Math.round(sub2apiPoints / 100) * 100;
+    const idempotencyKey = `sub2api-recharge:${identityId}:${roundedSub2api}`;
+
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      if (await this.repo.getLedgerByIdempotency(idempotencyKey, client)) {
+        await client.query('COMMIT');
+        return { driftPoints, applied: false };
+      }
+      const ent = await this.repo.lockEntitlement(client, { identityId });
+      await this.repo.updateEntitlementAmounts(client, ent.id, { total: driftPoints });
+      await this.repo.createLedger({
+        entitlementId: ent.id,
+        operation: 'recharge',
+        amount: driftPoints,
+        status: 'completed',
+        idempotencyKey,
+        requestId: `balance-sync:${roundedSub2api}`,
+        metadata: { source: 'sub2api_reconcile', sub2apiBalanceUsd: roundUsd(sub2apiUsd), sub2apiUserId: binding.sub2apiUserId },
+      }, client);
+      await client.query('COMMIT');
+      return { driftPoints, applied: true };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      await this.repo.insertSyncLog({
+        syncType: 'balance',
+        identityId,
+        status: 'error',
+        message: `Sub2API→KLA 余额对账失败：${error instanceof Error ? error.message : 'unknown'}`,
+      });
+      return { driftPoints, applied: false };
+    } finally {
+      client.release();
     }
   }
 
