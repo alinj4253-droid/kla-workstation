@@ -318,6 +318,12 @@ const migrations = [
   },
 ];
 
+// A branch merge reused 0036 for this migration. Keep deployed databases'
+// original applied ID valid after assigning the file a unique sequence number.
+const historicalMigrationIds: Record<string, string[]> = {
+  '0037_compute_points_and_tools': ['0036_compute_points_and_tools'],
+};
+
 export async function runMigrations(pool: Pool, schema = 'kla'): Promise<void> {
   if (!/^[a-z_][a-z0-9_]*$/i.test(schema)) throw new Error('非法数据库 schema 名称');
   // Retain historical embedded migrations (including IDs used by existing
@@ -338,7 +344,8 @@ export async function runMigrations(pool: Pool, schema = 'kla'): Promise<void> {
   for (const migration of runtimeMigrations) {
     const checkClient = await pool.connect();
     await checkClient.query(`SET search_path TO ${searchPath}`);
-    const existing = await checkClient.query('SELECT 1 FROM schema_migrations WHERE id = $1', [migration.id]);
+    const appliedIds = [migration.id, ...(historicalMigrationIds[migration.id] ?? [])];
+    const existing = await checkClient.query('SELECT 1 FROM schema_migrations WHERE id = ANY($1::text[])', [appliedIds]);
     checkClient.release();
     if (existing.rowCount) continue;
     const client = await pool.connect();

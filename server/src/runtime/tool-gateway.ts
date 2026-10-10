@@ -43,8 +43,8 @@ export class ToolGateway {
     return agentTools(agent);
   }
 
-  async knowledgeInfo(identityId: string): Promise<unknown> {
-    return this.serverTools.knowledgeInfo(identityId);
+  async knowledgeInfo(identityId: string, conversationId: string): Promise<unknown> {
+    return this.serverTools.knowledgeInfo(identityId, conversationId);
   }
 
   async completeModel(identity: Identity, input: GatewayChatInput) {

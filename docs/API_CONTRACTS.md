@@ -50,6 +50,14 @@ import type { ApiEnvelope, ApiErrorEnvelope } from '@kla-workstation/contracts';
 
 > 契约包 `exports.types` 直指 `src/index.ts`（internal package 模式），typecheck 无需先构建；`dist` 仅生产运行（`pnpm -r build` 拓扑序自动先建 contracts）。
 
+## 知识库范围联调（2026-10-10）
+
+KLA 身份权限侧以 `knowledge_library_scopes` 登记稳定库 ID、企业 ID、项目 ID 和个人身份 ID。`getCatalog` 返回当前身份可读的库及 `canWrite`；前端通过 `createLibrary/updateLibrary/deleteLibrary` 逐条变更，旧的整表 `saveCatalog` 在正式服务中拒绝。个人身份字段取 `identities.id`，绝不取账号 `users.id`。上传请求增加 `knowledgeBaseId`；KLA 重新核验库与项目关系，然后向知识服务 `/v1/process/async` 传 `knowledge_base_id/organization_id/project_id/personal_identity_id`，不采用客户端提交的归属 ID。
+
+`POST /api/v1/knowledge/search` 必须二选一提供 `knowledgeBaseId` 或 `conversationId`。库内 `contentRequest(search)` 需 `knowledgeBaseId`，群聊智能体 `knowledge_search` 使用运行群聊 ID。服务端计算可读库并向 `/v1/search` 传 `knowledge_base_ids` 和三个范围 ID；知识服务必须返回 `permission_filtered: true`，每个命中必须有 `doc_id/knowledge_base_id/collection`，否则整次请求失败。多个集合按集合分别检索，再按倒数排名融合结果。
+
+发送文件前，知识服务 `GET /v1/knowledge-scope/capabilities` 必须返回 `{ "scoped_upload": true }`；否则 KLA 不发送文件。上传响应必须返回 `scope_accepted: true`。`/v1/documents?knowledge_base_id=...` 必须返回 `permission_filtered: true`，且每个文档带匹配的 `knowledge_base_id`。这些字段和召回前过滤需知识库后端实现；在它们上线前，KLA 拒绝无可信归属的列表、全文及旧直通检索，任务旧绑定也暂不展示。历史目录/文档不会自动迁成共享库。对接及迁移细节见 [KNOWLEDGE_SCOPE_API_AND_ACL_PLAN.md](./KNOWLEDGE_SCOPE_API_AND_ACL_PLAN.md)。
+
 ## 6. 记忆浏览与生命周期契约
 
 新增 `GET /api/v1/memories/browser/scopes` 与 `GET /api/v1/memories/browser`，提供按当前身份的项目、群组、来源智能体、长短期及 ISO 创建时间范围 `from/to` 筛选和分页。请求参数通过 `memoryBrowserQuerySchema` 校验，响应使用 `memoryBrowserScopesSchema` / `memoryBrowserPageSchema`；原有记忆读写接口保持兼容。

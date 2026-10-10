@@ -1,4 +1,4 @@
--- 0020: 算力点口径与工具类计费项（P1-11 步骤 3）
+-- 0037: 算力点口径与工具类计费项（P1-11 步骤 3）
 -- 依据：docs/DESIGN_POINTS_BASED_BILLING.md §4、docs/DESIGN_BOCHA_SEARCH_INTEGRATION.md §5.1
 -- 全部为增量加列/建表，不改动既有列语义；历史行的 amount 继续表示 USD，迁移期与 points 双写。
 

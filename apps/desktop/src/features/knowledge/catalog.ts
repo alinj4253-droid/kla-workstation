@@ -1,7 +1,7 @@
-import { useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { libraryEntrySchema, type LibraryEntry } from '@kla-workstation/contracts/knowledge';
 import { knowledgeCatalogApi } from '../../api/knowledge';
+import { klaApi } from '../../api/client';
 import { unwrap } from './api';
 export type { LibraryEntry };
 export const KNOWLEDGE_SERVICE_URL = import.meta.env.VITE_KNOWLEDGE_BASE_URL || 'http://192.168.10.206:8120';
@@ -11,25 +11,16 @@ export function defaultCollection(entry: Pick<LibraryEntry, 'id' | 'name'>): str
   if (entry.id === 'personal') return '个人知识库';
   return 'kb_' + entry.id;
 }
-const key = ['knowledgeCatalog'] as const;
 export function useLibraryCatalog() {
   const client = useQueryClient();
+  const key = ['knowledgeCatalog', klaApi.getAccount(), klaApi.getIdentity()] as const;
   const query = useQuery({ queryKey: key, queryFn: () => unwrap(knowledgeCatalogApi.get()), retry: false });
-  const writes = useRef<Promise<unknown>>(Promise.resolve());
-  function persist(change: (entries: LibraryEntry[]) => LibraryEntry[]): Promise<void> {
-    const work = writes.current.catch(() => undefined).then(async () => {
-      const current = client.getQueryData<LibraryEntry[]>(key);
-      if (!current) throw new Error('请先读取服务端知识库目录。');
-      const next = await unwrap(knowledgeCatalogApi.save(change(current)));
-      client.setQueryData(key, next);
-    });
-    writes.current = work;
-    return work;
-  }
   async function save(entry: LibraryEntry) {
     const valid = libraryEntrySchema.parse({ ...entry, collection: entry.collection.trim() || defaultCollection(entry) });
-    await persist(current => current.some(item => item.id === valid.id) ? current.map(item => item.id === valid.id ? valid : item) : [...current, valid]);
+    const existing = client.getQueryData<LibraryEntry[]>(key)?.some(item => item.id === valid.id);
+    await unwrap(existing ? knowledgeCatalogApi.update(valid) : knowledgeCatalogApi.create(valid));
+    await client.invalidateQueries({ queryKey: key });
   }
-  async function remove(id: string) { await persist(current => current.filter(entry => entry.id !== id)); }
+  async function remove(id: string) { await unwrap(knowledgeCatalogApi.remove(id)); await client.invalidateQueries({ queryKey: key }); }
   return { entries: query.data ?? [], save, remove, error: query.error?.message ?? '', loading: query.isPending, refresh: query.refetch };
 }

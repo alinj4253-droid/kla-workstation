@@ -14,12 +14,12 @@ type DocumentProps = Parameters<NonNullable<KnowledgeSlots['documentPanel']>>[0]
 export function KnowledgeDocumentContent({ context, source, sources, sliceIndex }: DocumentProps) {
   const current = sources.find(item => item.docId === source.docId);
   const version = current?.version ?? source.version;
-  const queryContext = useMemo(() => readingContext(context, version), [context.serviceInstanceId, context.collection, version]);
+  const queryContext = useMemo(() => readingContext(context, version), [context.serviceInstanceId, context.collection, context.knowledgeBaseId, version]);
   return <div className="kb-b-body"><DocumentContent key={JSON.stringify([queryContext.cacheScope, source.docId, version, source.locateText])} context={queryContext} docId={source.docId} displayName={current?.name ?? source.displayName} {...(source.locateText !== undefined ? { locateText: source.locateText } : {})} {...(sliceIndex !== undefined ? { sliceIndex } : {})}/></div>;
 }
 type ChunksProps = Parameters<NonNullable<KnowledgeSlots['chunksPanel']>>[0];
 export function KnowledgeSlicesContent({ context, sourceMappings, sourceVersion, onChunkCount, onOpenSlice }: ChunksProps) {
-  const queryContext = useMemo(() => readingContext(context), [context.serviceInstanceId, context.collection]);
+  const queryContext = useMemo(() => readingContext(context), [context.serviceInstanceId, context.collection, context.knowledgeBaseId]);
   return <div className="kb-b-body"><MultiSourceSlices key={readingScope(context)} context={queryContext} sources={sourceMappings} sourceVersion={sourceVersion} scope={context} onChunkCount={onChunkCount} onOpenSlice={onOpenSlice}/></div>;
 }
 function publicRef(source: KnowledgeSource): SourceRef {
@@ -30,7 +30,7 @@ export function KnowledgeSearchContent({ context, sources, onOpenDocument }: Sea
   // 检索结果的缓存键只认「服务实例 + 集合」，不能掺入会随任务轮询每 4 秒变化的
   // sourceVersion：否则每轮轮询都会让 key 变、SearchContent 整体重挂载，已发出的
   // 检索请求被打断重发，用户看到「正在更新…」甚至超时。检索本身只依赖集合与检索词。
-  const queryContext = useMemo(() => readingContext(context), [context.serviceInstanceId, context.collection]);
+  const queryContext = useMemo(() => readingContext(context), [context.serviceInstanceId, context.collection, context.knowledgeBaseId]);
   // 「命中标识 → 来源文件」映射只有逐文档 /slices（契约无批量接口）。这里仍然一次性声明
   // 全部查询（react-query 自带去重与并发调度，重复声明只会翻倍请求），关键是让它们复用
   // 切片面板的同一 queryKey 并有足够长的 staleTime：打开检索面板时切片通常已缓存命中，

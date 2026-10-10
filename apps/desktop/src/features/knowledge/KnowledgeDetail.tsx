@@ -78,7 +78,7 @@ export function KnowledgeDetail({ context, connection, base, slots = {}, onConfi
   const rawError = sourceQuery.error?.message ?? savedBindings.error?.message;
   const refresh = () => { void Promise.all([
     client.invalidateQueries({ queryKey: knowledgeKeys.collection(context.serviceInstanceId, context.collection) }),
-    client.invalidateQueries({ queryKey: knowledgeKeys.reading(context.serviceInstanceId, context.collection) }),
+    client.invalidateQueries({ queryKey: knowledgeKeys.reading(context.serviceInstanceId, context.collection, context.knowledgeBaseId) }),
   ]); };
   const refreshing = sourceQuery.isFetching || savedBindings.isFetching || jobs.queries.some(query => query.isFetching) || sliceData.fetching;
   const rememberTrigger = () => { if (!drawer) drawerTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; };

@@ -15,7 +15,8 @@ import { KnowledgeBFailure, type KnowledgeTransport } from '../knowledge-b/trans
 
 const collectionInput = serviceInputSchema.extend({ collection: z.string().trim().min(1).max(200) });
 
-const uploadSchema = collectionInput.extend({ clientUploadId: z.string().uuid(), name: z.string().min(1).max(255), mime: z.string().max(200), bytes: z.instanceof(ArrayBuffer) });
+const uploadSchema = collectionInput.extend({ knowledgeBaseId: z.string().uuid(), clientUploadId: z.string().uuid(), name: z.string().min(1).max(255), mime: z.string().max(200), bytes: z.instanceof(ArrayBuffer),
+  resourceScope: z.object({ organizationId: z.string().uuid().nullable(), projectId: z.string().uuid().nullable(), personalIdentityId: z.string().uuid().nullable() }) });
 const contentSchema = serviceInputSchema.extend({
   endpoint: z.enum(['document', 'meta', 'content', 'slices', 'search']), docId: documentRequestSchema.shape.docId.optional(),
   para: z.number().int().nonnegative().optional(), limit: z.number().int().min(1).max(200).optional(),
@@ -35,7 +36,7 @@ function register(name: string, work: (owner: unknown, raw: unknown) => unknown)
   register('listSources', (event, raw) => { const input = collectionInput.parse(raw); const config = assertService(input.serviceInstanceId); if (input.collection !== config.collection) throw new KnowledgeError('CONFLICT', '目标集合已变更。'); return listSources(currentScope().ownerNumber, input.serviceInstanceId, input.collection, config.baseUrl, config.secretRef); });
   register('getBindings', (_event, raw) => { const input = collectionInput.parse(raw); const config = assertService(input.serviceInstanceId); if (input.collection !== config.collection) throw new KnowledgeError('CONFLICT', '目标集合已变更。'); return getBindings(input.serviceInstanceId, input.collection, config.baseUrl, config.secretRef); });
   register('getUnconfirmed', (_event, raw) => { const input = collectionInput.parse(raw); const config = assertService(input.serviceInstanceId); if (input.collection !== config.collection) throw new KnowledgeError('CONFLICT', '目标集合已变更。'); return getUnconfirmed(config.baseUrl, input.collection, config.secretRef); });
-  register('submit', (event, raw) => submit(currentScope().ownerNumber, uploadSchema.parse(raw) as UploadInput));
+  register('submit', (event, raw) => submit(currentScope().ownerNumber, uploadSchema.parse(raw)));
   register('recoverSubmissions', (event, raw) => { const input = collectionInput.parse(raw); return recoverSubmissions(currentScope().ownerNumber, input.serviceInstanceId, input.collection); });
   register('cancelUpload', (event, raw) => cancelUpload(currentScope().ownerNumber, z.object({ clientUploadId: z.string().uuid() }).parse(raw).clientUploadId));
   register('listJobs', async (event, raw) => {

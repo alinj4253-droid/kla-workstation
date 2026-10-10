@@ -4,13 +4,13 @@ import { toolArguments, runtimeSkillCatalog, type RuntimeSkillCode } from '@kla-
 import { requirePermission } from '../auth/permission-service.js';
 import type { AccountRepository } from '../repositories/types.js';
 import type { ShortTermMemoryService } from '../memories/short-term.js';
-import { createScope, inScope, PostgresKnowledgeStore } from '../knowledge-api/context.js';
-import { initializeKnowledge, dispatchKnowledge } from '../knowledge-api/dispatch.js';
+import { resolveSearchTargets, searchScopedKnowledge, scopedSearchInputSchema } from '../auth/knowledge-search.js';
+import { serviceUrl } from '../knowledge-api/config.js';
 import type { RegisteredAgent } from './registry.js';
 
 const string = { type: 'string' }, integer = { type: 'integer' };
 const properties: Record<RuntimeSkillCode, Record<string, unknown>> = {
-  knowledge_search: { serviceInstanceId: string, query: string, topK: integer },
+  knowledge_search: { query: string, topK: integer },
   knowledge_read: { serviceInstanceId: string, docId: string, offset: integer, limit: integer },
   memory_recall: { query: string }, artifact_write: { fileName: string, content: string, mimeType: string },
   artifact_read: { artifactId: string }, local_read: { path: string, offset: integer, maxChars: integer },
@@ -24,7 +24,7 @@ const properties: Record<RuntimeSkillCode, Record<string, unknown>> = {
   local_ppt_render: { path: string, documentId: string },
 };
 const required: Record<RuntimeSkillCode, string[]> = {
-  knowledge_search: ['serviceInstanceId','query'], knowledge_read: ['serviceInstanceId','docId'], memory_recall: ['query'],
+  knowledge_search: ['query'], knowledge_read: ['serviceInstanceId','docId'], memory_recall: ['query'],
   artifact_write: ['fileName','content'], artifact_read: ['artifactId'], local_read: ['path'], local_list: ['path'],
   local_write: ['fileName','content'], local_code: ['fileName','content'], local_bat: ['script'], local_cli: ['executable'],
   local_ppt_doctor: [], local_ppt_build: ['specJson'], local_ppt_inspect: [], local_ppt_render: [],
@@ -39,8 +39,9 @@ export function parseToolArguments(name: string, raw: unknown): Record<string, u
 }
 export class RuntimeTools {
   constructor(private readonly pool: Pool, private readonly accounts: AccountRepository, private readonly memory: ShortTermMemoryService, private readonly encryptionKey: string) {}
-  async knowledgeInfo(identityId:string):Promise<unknown> {
-    try { return await inScope(createScope(identityId,1,new PostgresKnowledgeStore(this.pool),this.encryptionKey),async()=>{await initializeKnowledge();const config=await dispatchKnowledge('getConnection',{}) as {serviceInstanceId:string;collection:string};return config.collection?{serviceInstanceId:config.serviceInstanceId,collection:config.collection}:null;}); }
+  async knowledgeInfo(identityId:string, conversationId:string):Promise<unknown> {
+    try { const targets = await resolveSearchTargets(this.pool, identityId, { conversationId });
+      return targets?.libraries.length ? { libraries: targets.libraries.map(item => ({ id: item.id, name: item.name, scope: item.scope })) } : null; }
     catch { return null; }
   }
   async execute(name: string, raw: unknown, scope: { identityId: string; conversationId: string; agentId: string; toolCallId?: string }): Promise<unknown> {
@@ -62,15 +63,15 @@ export class RuntimeTools {
       return { artifactId: rows[0].id, fileName: rows[0].name, sizeBytes: Number(rows[0].size_bytes), checksum, stored: true };
     }
     if (name.startsWith('knowledge_')) {
-      // Reuse the established knowledge adapter and its resource authorization; no separate search backend.
-      const context = createScope(scope.identityId, 1, new PostgresKnowledgeStore(this.pool), this.encryptionKey);
-      return inScope(context, async () => {
-        await initializeKnowledge();
-        const connection = await dispatchKnowledge('getConnection', {}) as { collection?: string };
-        if(!connection.collection)throw new Error('当前身份未配置可用知识集合');
-        return dispatchKnowledge('contentRequest', name === 'knowledge_search'
-          ? { serviceInstanceId: args.serviceInstanceId, endpoint: 'search', search: { query: args.query, collection: connection.collection ?? 'kb_m3', mode: 'hybrid', top_k: args.topK, expand: 0, fold_adjacent: true } }
-          : { serviceInstanceId: args.serviceInstanceId, endpoint: 'content', docId: String(args.docId), para: args.offset, limit: args.limit });
+      if (name === 'knowledge_read') throw new Error('文档归属尚未验证，暂不可读取原文');
+      const search = scopedSearchInputSchema.parse({ conversationId: scope.conversationId,
+        query: args.query, mode: 'hybrid', topK: args.topK });
+      return searchScopedKnowledge(this.pool, scope.identityId, search, async (_collection, payload) => {
+        const response = await fetch(`${serviceUrl}/v1/search`, { method: 'POST', headers: {
+          'content-type': 'application/json', ...(process.env.KB_API_KEY ? { 'x-api-key': process.env.KB_API_KEY } : {}),
+        }, body: JSON.stringify(payload) });
+        if (!response.ok) throw new Error(`知识服务返回 HTTP ${response.status}`);
+        return response.json();
       });
     }
     throw new Error('本地技能必须路由到已认证桌面设备');

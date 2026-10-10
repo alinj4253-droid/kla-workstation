@@ -58,5 +58,7 @@ export const knowledgeClient: KnowledgeLibraryBridge = {
 };
 export const knowledgeCatalogApi = {
   get: () => rpc<import('@kla-workstation/contracts/knowledge').LibraryEntry[]>('getCatalog'),
-  save: (entries: import('@kla-workstation/contracts/knowledge').LibraryEntry[]) => rpc<import('@kla-workstation/contracts/knowledge').LibraryEntry[]>('saveCatalog', entries),
+  create: (entry: import('@kla-workstation/contracts/knowledge').LibraryEntry) => rpc<import('@kla-workstation/contracts/knowledge').LibraryEntry>('createLibrary', entry),
+  update: (entry: import('@kla-workstation/contracts/knowledge').LibraryEntry) => rpc<import('@kla-workstation/contracts/knowledge').LibraryEntry>('updateLibrary', entry),
+  remove: (id: string) => rpc<boolean>('deleteLibrary', { id }),
 };

@@ -4,20 +4,22 @@ import { createKnowledgeBClient } from '../knowledge-b/bridge';
 import type { QueryContext } from '../knowledge-b/shared';
 
 /** The sole reader boundary: preserve the existing RPC envelope, then validate it. */
-export function createReadingApi(serviceInstanceId: string): KnowledgeBApi {
+export function createReadingApi(serviceInstanceId: string, knowledgeBaseId?: string): KnowledgeBApi {
   return createKnowledgeBClient({
     detail: ({ docId }) => bridge().contentRequest({ serviceInstanceId, endpoint: 'document', docId }),
     meta: ({ docId }) => bridge().contentRequest({ serviceInstanceId, endpoint: 'meta', docId }),
     content: ({ docId, para, limit }) => bridge().contentRequest({ serviceInstanceId, endpoint: 'content', docId, para, limit }),
     slices: ({ docId }) => bridge().contentRequest({ serviceInstanceId, endpoint: 'slices', docId }),
-    search: search => bridge().contentRequest({ serviceInstanceId, endpoint: 'search', search }),
+    search: search => bridge().contentRequest({ serviceInstanceId, endpoint: 'search', knowledgeBaseId, search }),
   });
 }
-export function readingScope(context: Pick<KnowledgeContext, 'serviceInstanceId' | 'collection'>): string {
-  return JSON.stringify([context.serviceInstanceId, context.collection]);
+export function readingScope(context: Pick<KnowledgeContext, 'serviceInstanceId' | 'collection' | 'knowledgeBaseId'>): string {
+  return JSON.stringify(context.knowledgeBaseId
+    ? [context.serviceInstanceId, context.collection, context.knowledgeBaseId]
+    : [context.serviceInstanceId, context.collection]);
 }
 export function readingContext(context: KnowledgeContext, resourceVersion?: string): QueryContext {
-  return { api: createReadingApi(context.serviceInstanceId), cacheScope: readingScope(context), ...(resourceVersion !== undefined ? { resourceVersion } : {}) };
+  return { api: createReadingApi(context.serviceInstanceId, context.knowledgeBaseId), cacheScope: readingScope(context), ...(resourceVersion !== undefined ? { resourceVersion } : {}) };
 }
 export function sourceResourceVersion(doc: RemoteDocument): string {
   return JSON.stringify([doc.modified, doc.size, doc.stale]);

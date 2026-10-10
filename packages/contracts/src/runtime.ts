@@ -42,7 +42,7 @@ export const runtimeSkillBundles = [
 ] as const satisfies ReadonlyArray<{ code: string; name: string; description: string; tools: readonly RuntimeSkillCode[] }>;
 export type RuntimeSkillBundleCode = typeof runtimeSkillBundles[number]['code'];
 export const toolArguments = {
-  knowledge_search: z.object({ serviceInstanceId: z.string().min(1), query: z.string().min(1), topK: z.number().int().min(1).max(20).default(5) }),
+  knowledge_search: z.object({ query: z.string().min(1), topK: z.number().int().min(1).max(20).default(5) }),
   knowledge_read: z.object({ serviceInstanceId: z.string().min(1), docId: z.union([z.string(), z.number()]), offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(200).default(20) }),
   memory_recall: z.object({ query: z.string().min(1) }),
   artifact_write: z.object({ fileName: z.string().min(1).max(255).refine(s => !/[\\/]/.test(s), '仅使用文件名'), content: z.string().max(1_000_000), mimeType: z.string().max(100).default('text/plain') }),

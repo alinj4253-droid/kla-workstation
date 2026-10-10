@@ -14,6 +14,8 @@ import { createRoomWithAgents, InvalidConversationAgents } from './runtime/creat
 import { MemoryBrowserRepository } from './memories/browser.js';
 import { ShortTermMemoryService } from './memories/short-term.js';
 import { canAccessConversation, canManageProject, resolveKnowledgeAccessScope } from './auth/resource-scope.js';
+import { scopedSearchInputSchema, searchScopedKnowledge } from './auth/knowledge-search.js';
+import { serviceUrl } from './knowledge-api/config.js';
 
 /** pino 子 logger 支持运行时 setBindings；FastifyBaseLogger 类型未暴露，且 logger:false 的 noop 实现没有该方法（规范 §3）。 */
 function bindRequestLog(request: FastifyRequest, bindings: Record<string, unknown>): void {
@@ -584,8 +586,22 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
     return reply.send({ ok: true, data: result.rows });
   });
   app.post('/api/v1/knowledge/search', async (request, reply) => {
-    const session = await auth(request, reply); if (!session) return; const identity = await enforce(session, request, 'read', reply); if (!identity) return; const body = request.body as { query?: string; collection?: string; mode?: string; topK?: number }; if (!body.query?.trim()) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: 'query 不能为空' } }); const endpoint = process.env.KNOWLEDGE_SERVICE_URL ?? 'http://127.0.0.1:8120';
-    try { const response = await fetch(`${endpoint.replace(/\/$/, '')}/v1/search`, { method: 'POST', headers: { 'content-type': 'application/json', ...(process.env.KB_API_KEY ? { 'x-api-key': process.env.KB_API_KEY } : {}) }, body: JSON.stringify({ query: body.query.trim(), collection: body.collection ?? 'kb_m3', mode: body.mode ?? 'hybrid', top_k: Math.min(Math.max(Number(body.topK ?? 5) || 5, 1), 20) }) }); const data = await response.json().catch(() => ({})); if (!response.ok) return reply.code(502).send({ ok: false, error: { code: 'KNOWLEDGE_SERVICE_ERROR', message: `知识服务返回 HTTP ${response.status}` } }); return reply.send({ ok: true, data }); } catch (error) { return reply.code(503).send({ ok: false, error: { code: 'KNOWLEDGE_SERVICE_UNAVAILABLE', message: error instanceof Error ? error.message : '知识服务不可用', retryable: true } }); }
+    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return;
+    const identity = await enforce(session, request, 'read', reply); if (!identity) return;
+    const parsed = scopedSearchInputSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: '请提供检索词和知识库或群聊 ID' } });
+    const endpoint = serviceUrl;
+    try {
+      const data = await searchScopedKnowledge(deps.database.rawPool, identity.id, parsed.data, async (_collection, payload) => {
+        const response = await fetch(`${endpoint.replace(/\/$/, '')}/v1/search`, { method: 'POST', headers: { 'content-type': 'application/json', ...(process.env.KB_API_KEY ? { 'x-api-key': process.env.KB_API_KEY } : {}) }, body: JSON.stringify(payload) });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.json();
+      });
+      return reply.send({ ok: true, data });
+    } catch (error) {
+      return reply.code(error instanceof Error && error.message === 'KNOWLEDGE_SCOPE_DENIED' ? 403 : 503)
+        .send({ ok: false, error: { code: 'KNOWLEDGE_SCOPE_UNAVAILABLE', message: '知识检索权限过滤尚不可用，请稍后重试', retryable: true } });
+    }
   });
   app.post('/api/v1/knowledge/read-document', async (request, reply) => {
     const session = await auth(request, reply); if (!session) return; const identity = await enforce(session, request, 'read', reply); if (!identity) return; const body = request.body as { text?: string; offset?: number; maxChars?: number }; if (!body.text) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: 'text 不能为空' } }); const offset = Math.max(Number(body.offset ?? 0) || 0, 0); const maxChars = Math.min(Math.max(Number(body.maxChars ?? 12000) || 12000, 1000), 30000); return reply.send({ ok: true, data: { content: body.text.slice(offset, offset + maxChars), startOffset: offset, endOffset: Math.min(body.text.length, offset + maxChars), hasMore: offset + maxChars < body.text.length } });

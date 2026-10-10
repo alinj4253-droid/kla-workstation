@@ -93,3 +93,27 @@
 @media(max-width:760px){.ws-stats.two,.ws-mini-grid{grid-template-columns:1fr 1fr}.ws-tool-row>.ws-right{margin-left:0}}
 .ws-user-menu-wrap{position:relative}.ws-user-popover{position:absolute;right:0;top:calc(100% + 10px);z-index:50;width:264px;padding:14px;background:#fff;border:1px solid #dce7f2;border-radius:10px;box-shadow:0 14px 34px rgba(40,83,130,.18);animation:ws-pop .14s ease}.ws-user-popover-head{display:flex;align-items:center;gap:10px;padding-bottom:12px;border-bottom:1px solid #edf2f7}.ws-user-popover-head>span:last-child{display:grid;gap:3px}.ws-user-popover-head strong{color:#334155;font-size:13px}.ws-user-popover-head small{color:#94a3b8;font-size:9px}.ws-user-avatar.large{width:46px;height:46px;font-size:18px}.ws-user-popover-meta{display:flex;flex-wrap:wrap;gap:5px;padding:10px 0;border-bottom:1px solid #edf2f7;margin-bottom:5px}.ws-user-popover-meta span{padding:3px 7px;border-radius:4px;background:#eef6ff;color:#4b6f98;font-size:9px}.ws-user-popover button{display:flex;align-items:center;gap:9px;width:100%;padding:9px 7px;border-radius:6px;text-align:left;color:#51677e;font-size:11px}.ws-user-popover button:hover{background:#f1f7fd}.ws-user-popover button.danger{color:#d24d60}.ws-user-popover button.danger:hover{background:#fff1f2}@keyframes ws-pop{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
 .ws-identity-card.current{border-color:#73afe6;background:#edf7ff}.ws-identity-card.current>svg{color:#169675}@media(max-width:760px){.ws-top-actions .ws-user{display:flex}.ws-user-button>span:last-child{display:none}.ws-user-popover{right:-6px}}
+
+/* Project and group tree follows the prototype's two-section secondary menu. */
+ .ws-main>.ws-subnav .ws-project-tree{display:block;width:100%;max-width:100%;min-width:0;overflow-x:hidden;overflow-y:auto}
+.ws-project-tree .ws-tree-label{min-width:0;gap:8px;padding:16px 8px 8px 12px;font-size:10px;color:#8a9aae}
+.ws-project-tree .ws-tree-label button{display:inline-flex;align-items:center;gap:3px;flex:none;padding:2px 5px;border-radius:4px;color:#2563eb;font-size:9px;font-weight:600;white-space:nowrap}
+.ws-project-tree .ws-tree-label button:hover{background:#eaf3ff}
+.ws-project-tree .ws-tree-orphans{margin-top:0;border-top:0}
+.ws-project-tree .ws-tree-project{min-width:0;width:100%;max-width:100%}
+.ws-project-tree .ws-tree-row,.ws-project-tree .ws-tree-child,.ws-project-tree .ws-tree-orphan{display:flex;align-items:center;gap:8px;width:100%;max-width:100%;min-width:0;min-height:48px;padding:10px 8px;border-radius:6px;text-align:left;color:#475569;font-size:11px}
+.ws-project-tree .ws-tree-row.active,.ws-project-tree .ws-tree-child.active,.ws-project-tree .ws-tree-orphan.active{background:#eaf3ff;color:#2563eb}
+.ws-project-tree .ws-tree-child:hover,.ws-project-tree .ws-tree-orphan:hover{background:#f0f7ff}
+.ws-project-tree .ws-tree-toggle,.ws-project-tree .ws-tree-spacer{width:18px;height:18px;flex:0 0 18px;padding:0;display:grid;place-items:center;color:#8293a8}
+.ws-project-tree .ws-tree-toggle svg{transition:transform .16s ease}
+.ws-project-tree .ws-tree-toggle.is-open svg{transform:rotate(90deg)}
+.ws-project-tree .ws-tree-toggle:hover,.ws-project-tree .ws-tree-add:hover{background:#deebfa;color:#2563eb;border-radius:4px}
+.ws-project-tree .ws-tree-main{display:block;flex:1;min-width:0;padding:0;text-align:left}
+.ws-project-tree .ws-tree-add{width:22px;height:22px;flex:0 0 22px;display:grid;place-items:center;padding:0;color:#2563eb}
+.ws-project-tree .ws-tree-copy{display:block;flex:1;min-width:0;max-width:100%;overflow:hidden}
+.ws-project-tree .ws-tree-name,.ws-project-tree .ws-tree-copy small{display:block;width:100%;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.3}
+.ws-project-tree .ws-tree-name{font-size:11px;color:inherit}
+.ws-project-tree .ws-tree-copy small{margin-top:1px;color:#94a3b8;font-size:9px;line-height:1.25;font-weight:400}
+.ws-project-tree .ws-tree-children{position:relative;display:block;min-width:0;max-width:100%;margin:0;padding:0;border:0}
+.ws-project-tree .ws-tree-children::before{content:"";position:absolute;left:30px;top:0;bottom:0;width:1px;background:#dce8f5;pointer-events:none}
+.ws-project-tree .ws-tree-child{padding-left:44px}

@@ -15,28 +15,19 @@ const scopeOptions: { value: Scope; label: string; icon: typeof Building2; hint:
   { value: 'personal', label: '个人知识库', icon: UserRound, hint: '个人知识库 · 仅本人可见，无需额外绑定' },
 ];
 
-/**
- * 项目候选：先取当前身份的真实项目列表，取不到时回落到原型演示用的虚拟项目名，
- * 保证「项目知识库」始终能选到一个归属项目（否则该作用域无从归属）。
- */
-const fallbackProjects = [
-  { id: 'demo-project-1', name: '测试版本', meta: '测试版本1.0 · 2 个关联节点' },
-  { id: 'demo-project-2', name: '测试版本1.0', meta: '个人项目' },
-];
-
 function useProjectOptions(): { id: string; name: string }[] {
   const [projects, setProjects] = useState<{ id: string; name: string }[]>([]);
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
-        const result = await klaApi.request<{ projects: { id: string; name: string }[] }>('/v1/bootstrap');
-        if (!cancelled && result.ok && result.data.projects.length) setProjects(result.data.projects);
-      } catch { /* 登录态缺失或后端不可用时用虚拟项目兜底 */ }
+        const result = await klaApi.request<{ id: string; name: string }[]>('/v1/projects');
+        if (!cancelled && result.ok) setProjects(result.data);
+      } catch { /* The form cannot create a project library without a real project. */ }
     })();
     return () => { cancelled = true; };
   }, []);
-  return projects.length ? projects : fallbackProjects;
+  return projects;
 }
 
 export function LibraryDialog({ entry, onClose, onSave }: { entry?: LibraryEntry; onClose: () => void; onSave: (entry: LibraryEntry) => void | Promise<void> }) {
@@ -47,7 +38,7 @@ export function LibraryDialog({ entry, onClose, onSave }: { entry?: LibraryEntry
   const [collection, setCollection] = useState(entry?.collection ?? defaultCollection({ id, name: '' }));
   const [error, setError] = useState('');
   const projects = useProjectOptions();
-  const [projectId, setProjectId] = useState('');
+  const [projectId, setProjectId] = useState(entry?.projectId ?? '');
   const editing = Boolean(entry);
   const activeHint = scopeOptions.find(option => option.value === scope)?.hint ?? '';
   const ActiveIcon = scopeOptions.find(option => option.value === scope)?.icon ?? Building2;
@@ -56,7 +47,12 @@ export function LibraryDialog({ entry, onClose, onSave }: { entry?: LibraryEntry
     <header><Dialog.Title>{editing ? '编辑知识库' : '新建知识库'}</Dialog.Title><button className="kl-icon-button" aria-label="关闭知识库配置" onClick={onClose}><X size={18}/></button></header>
     <form onSubmit={async event => {
       event.preventDefault(); setError('');
-      try { await onSave({ id, name: name.trim(), description: description.trim() || (scope === 'project' ? `归属项目：${selectedProject?.name ?? '未指定'}` : description.trim()), scope, collection: collection.trim(), updatedAt: new Date().toISOString() }); }
+      try {
+        if (scope === 'project' && !selectedProject) throw new Error('请先选择有效项目');
+        await onSave({ id, name: name.trim(), description: description.trim(), scope, collection: collection.trim(), updatedAt: new Date().toISOString(),
+          ...(scope === 'project' ? { projectId: selectedProject!.id } : {}),
+          ...(editing ? { organizationId: entry?.organizationId, personalIdentityId: entry?.personalIdentityId } : {}) });
+      }
       catch (reason) { setError((reason as Error).message); }
     }}>
       <label>知识库名称<input required maxLength={80} value={name} onChange={event => setName(event.target.value)} placeholder="例如：生产工艺库"/></label>
@@ -67,10 +63,10 @@ export function LibraryDialog({ entry, onClose, onSave }: { entry?: LibraryEntry
         // 原型：三选一卡片行（role=radiogroup + label「作用域」），选中态描边高亮，下方一行说明当前作用域含义
         : <><p className="kl-field-label">作用域</p><div className="kl-scope-pick" role="radiogroup" aria-label="作用域">{scopeOptions.map(({ value, label, icon: Icon }) =>
           <button type="button" role="radio" aria-checked={scope === value} data-on={scope === value} className="kl-scope-row" key={value} onClick={() => setScope(value)}><span/><Icon size={16}/><strong>{label}</strong></button>)}</div><p className="kl-scope-hint">{activeHint}</p></>}
-      {!editing && scope === 'project' && <label className="kl-field">项目<select value={selectedProject?.id ?? ''} onChange={event => setProjectId(event.target.value)}>{projects.map(project => <option value={project.id} key={project.id}>{project.name}</option>)}</select></label>}
-      <details className="kl-connection-advanced"><summary>高级设置 · 连接已有集合</summary><label className="kl-collection-field">连接集合（collection）<input maxLength={200} value={collection} onChange={event => setCollection(event.target.value)} placeholder="留空自动分配集合"/><small>默认自动分配，无需填写。相同集合会共享内容；新的集合在首次有效文件入库时由服务创建。当前连接 {KNOWLEDGE_SERVICE_URL}。</small></label></details>
+      {!editing && scope === 'project' && <label className="kl-field">项目<select value={selectedProject?.id ?? ''} onChange={event => setProjectId(event.target.value)} disabled={!projects.length}>{projects.length ? projects.map(project => <option value={project.id} key={project.id}>{project.name}</option>) : <option value="">暂无可用项目</option>}</select></label>}
+      <details className="kl-connection-advanced"><summary>高级设置 · 连接已有集合</summary><label className="kl-collection-field">连接集合（collection）<input maxLength={200} value={collection} onChange={event => setCollection(event.target.value)} disabled={editing} placeholder="留空自动分配集合"/><small>集合创建后固定；同名集合的知识库仍按库 ID 隔离。当前连接 {KNOWLEDGE_SERVICE_URL}。</small></label></details>
       {error && <p className="kl-error-text" role="alert">{error}</p>}
-      <footer><button type="button" onClick={onClose}>取消</button><button className="kl-primary" type="submit">{editing ? '保存配置' : '创建知识库'}</button></footer>
+      <footer><button type="button" onClick={onClose}>取消</button><button className="kl-primary" type="submit" disabled={scope === 'project' && !projects.length}>{editing ? '保存配置' : '创建知识库'}</button></footer>
     </form>
   </Dialog.Content></Dialog.Portal></Dialog.Root>;
 }

@@ -69,7 +69,8 @@ export function UploadDialog({ context, connection, onClose, onSubmitted }: {
             const bytes = await item.file.arrayBuffer();
             if (cancelled.current.has(item.id) || !alive.current) { update(item.id, { state: 'aborted' }); continue; }
             sent = true;
-            const binding = await knowledgeApi.submit({ serviceInstanceId: context.serviceInstanceId, collection: context.collection, clientUploadId: item.id, name: item.file.name, mime: item.file.type || 'application/octet-stream', bytes });
+            if (!context.knowledgeBaseId) throw new Error('请选择已创建的知识库');
+            const binding = await knowledgeApi.submit({ serviceInstanceId: context.serviceInstanceId, collection: context.collection, knowledgeBaseId: context.knowledgeBaseId, clientUploadId: item.id, name: item.file.name, mime: item.file.type || 'application/octet-stream', bytes });
             if (alive.current) {
               update(item.id, { state: 'submitted', jobId: binding.jobId });
               onSubmitted(binding);

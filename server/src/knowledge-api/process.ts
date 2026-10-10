@@ -6,6 +6,8 @@ import { assertService } from './config.js';
 import { saveBinding, hasBinding } from './documents.js';
 import { beginSubmission, confirmSubmission, hasSubmission } from './submissions.js';
 import { jsonRequest, KnowledgeError } from './transport.js';
+import type { KnowledgeResourceScope } from '../auth/resource-scope.js';
+import { z } from 'zod';
 export function isUploadActive(id: string): boolean { return Array.from(state().uploads.keys()).some(key => key.endsWith(`:${id}`)); }
 export function abortUploads(owner?: number): void {
     for (const [key, controller] of state().uploads)
@@ -17,7 +19,7 @@ export function cancelUpload(owner: number, id: string): boolean {
     controller?.abort();
     return Boolean(controller);
 }
-export async function submit(owner: number, input: UploadInput) {
+export async function submit(owner: number, input: UploadInput & { resourceScope: KnowledgeResourceScope }) {
     const connection = assertService(input.serviceInstanceId);
     if (!input.collection.trim() || input.collection !== connection.collection)
         throw new KnowledgeError('VALIDATION_FAILED', '请先配置明确的目标 collection。');
@@ -35,6 +37,12 @@ export async function submit(owner: number, input: UploadInput) {
     const key = `${owner}:${input.clientUploadId}`;
     if (state().uploads.has(key) || hasSubmission(input.clientUploadId) || hasBinding(input.clientUploadId))
         throw new KnowledgeError('DUPLICATE_REQUEST', '此提交编号已使用，请先核对现有结果。');
+    try {
+        await jsonRequest(owner, input.serviceInstanceId, '/v1/knowledge-scope/capabilities',
+            z.object({ scoped_upload: z.literal(true) }));
+    } catch {
+        throw new KnowledgeError('PERMISSION_DENIED', '知识服务尚未确认支持按知识库归属入库，上传已阻止。');
+    }
     const controller = new AbortController();
     state().uploads.set(key, controller);
     let sent = false;
@@ -53,6 +61,10 @@ export async function submit(owner: number, input: UploadInput) {
         form.set('ingest', 'true');
         form.set('save_slices', 'true');
         form.set('fix_terms', 'false');
+        form.set('knowledge_base_id', input.knowledgeBaseId);
+        form.set('organization_id', input.resourceScope.organizationId ?? '');
+        form.set('project_id', input.resourceScope.projectId ?? '');
+        form.set('personal_identity_id', input.resourceScope.personalIdentityId ?? '');
         sent = true;
         const response = await jsonRequest(owner, input.serviceInstanceId, '/v1/process/async', submitResponseSchema, { method: 'POST', body: form }, controller);
         if (response.filename !== physicalName && response.filename !== input.name)

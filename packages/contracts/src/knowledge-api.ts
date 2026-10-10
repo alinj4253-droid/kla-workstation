@@ -48,13 +48,13 @@ export interface FeatureCapabilities {
 }
 export interface KnowledgeContext {
   serviceInstanceId: string; collection: string; knowledgeBaseId?: string;
-  scope?: 'company' | 'project' | 'personal'; projectId?: string;
+  scope?: 'company' | 'project' | 'personal'; projectId?: string; organizationId?: string; personalIdentityId?: string;
   attribution: 'client-submissions' | 'collection-files' | 'confirmed-library';
   capabilities: FeatureCapabilities;
 }
 export interface KnowledgeBase {
   id: string; name: string; description: string; scope: 'company' | 'project' | 'personal';
-  status: 'ready' | 'processing' | 'error' | 'pending'; updatedAt: string; fileCount?: number; chunkCount?: number;
+  status: 'ready' | 'processing' | 'error' | 'pending'; updatedAt: string; fileCount?: number; chunkCount?: number; canWrite?: boolean;
   context: KnowledgeContext; sourceDocIds: string[];
   /** Only names supplied for sources in this authorized library; never global workspace names. */
   sourceNames?: string[];
@@ -75,17 +75,17 @@ export type KnowledgeConnectionInput = z.infer<typeof connectionInputSchema>;
 export const serviceInputSchema = z.object({ serviceInstanceId: z.string().min(1).max(100) });
 export const jobInputSchema = serviceInputSchema.extend({ jobId: z.string().min(1).max(200) });
 export interface UploadInput {
-  serviceInstanceId: string; collection: string; clientUploadId: string;
+  serviceInstanceId: string; collection: string; knowledgeBaseId: string; clientUploadId: string;
   name: string; mime: string; bytes: ArrayBuffer;
 }
-export const submitResponseSchema = z.object({ job_id: z.string().min(1), state: jobStateSchema, filename: z.string(), stored_path: z.string().min(1) });
+export const submitResponseSchema = z.object({ job_id: z.string().min(1), state: jobStateSchema, filename: z.string(), stored_path: z.string().min(1), scope_accepted: z.literal(true) });
 export interface SourceList { documents: RemoteDocument[]; bindings: SourceJobBinding[]; totalWorkspaceCount: number; verifiedServerDocIds?: string[]; unclassifiedCount?: number }
 export interface UnconfirmedSubmission { clientUploadId: string; displayName: string; physicalName: string; collection: string; submittedAt: string }
 export interface SubmissionRecovery { recovered: number; unresolved: number }
 export interface JobEvent { serviceInstanceId: string; subscriptionId: string; jobId: string; snapshot?: JobSnapshot; disconnected?: boolean }
 export interface ContentRequest {
   serviceInstanceId: string; endpoint: 'document' | 'meta' | 'content' | 'slices' | 'search';
-  docId?: string; para?: number; limit?: number;
+  docId?: string; para?: number; limit?: number; knowledgeBaseId?: string;
   search?: SearchRequest;
 }
 export interface KnowledgeLibraryBridge {
@@ -93,7 +93,7 @@ export interface KnowledgeLibraryBridge {
   configure(input: KnowledgeConnectionInput): Promise<RpcResult<KnowledgeConnection>>;
   acceptUploadConsent(input: { serviceInstanceId: string; noticeVersion: typeof KNOWLEDGE_UPLOAD_NOTICE_VERSION }): Promise<RpcResult<KnowledgeConnection>>;
   health(input: { serviceInstanceId: string }): Promise<RpcResult<{ status: string; jobs_running?: number }>>;
-  listSources(input: { serviceInstanceId: string; collection: string }): Promise<RpcResult<SourceList>>;
+  listSources(input: { serviceInstanceId: string; collection: string; knowledgeBaseId?: string }): Promise<RpcResult<SourceList>>;
   getBindings(input: { serviceInstanceId: string; collection: string }): Promise<RpcResult<SourceJobBinding[]>>;
   getUnconfirmed(input: { serviceInstanceId: string; collection: string }): Promise<RpcResult<UnconfirmedSubmission[]>>;
   recoverSubmissions(input: { serviceInstanceId: string; collection: string }): Promise<RpcResult<SubmissionRecovery>>;
