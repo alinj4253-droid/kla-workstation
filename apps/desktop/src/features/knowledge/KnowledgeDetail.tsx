@@ -77,6 +77,7 @@ export function KnowledgeDetail({ context, connection, base, slots = {}, onConfi
   const chunkCount = chunkReports.find(report => report.sourceVersion === sourceVersion);
   const rawError = sourceQuery.error?.message ?? savedBindings.error?.message;
   const refresh = () => { void Promise.all([
+    client.invalidateQueries({ queryKey: [...knowledgeKeys.all, 'statistics'] }),
     client.invalidateQueries({ queryKey: knowledgeKeys.collection(context.serviceInstanceId, context.collection) }),
     client.invalidateQueries({ queryKey: knowledgeKeys.reading(context.serviceInstanceId, context.collection, context.knowledgeBaseId) }),
   ]); };
@@ -125,8 +126,9 @@ export function KnowledgeDetail({ context, connection, base, slots = {}, onConfi
   }
   const fileStats = summarizeKnowledgeFiles(documents, bindings, jobMap, jobErrors, sliceData.queries);
   const statesAvailable = sourceQuery.isSuccess;
-  const displayedChunkCount = sliceData.count ?? (sliceData.errors.length === 0 && chunkCount?.complete && !chunkCount.error ? chunkCount.count : undefined);
-  const stats = [['原始文件', sourceQuery.isSuccess ? documents.length : '—'], ['知识切片', sourceQuery.isSuccess && displayedChunkCount !== undefined ? displayedChunkCount : '—'], ['已处理文件', statesAvailable ? fileStats.done : '—'], ['处理中', statesAvailable ? fileStats.processing : '—'], ['异常文件', statesAvailable ? fileStats.failed : '—']] as const;
+  const verifiedChunkCount = sliceData.count ?? (sliceData.errors.length === 0 && chunkCount?.complete && !chunkCount.error ? chunkCount.count : undefined);
+  const displayedChunkCount = sliceData.complete ? verifiedChunkCount : base?.chunkCount ?? verifiedChunkCount;
+  const stats = [['原始文件', sourceQuery.isSuccess ? documents.length : base?.fileCount ?? '—'], ['知识切片', displayedChunkCount ?? '—'], ['已处理文件', statesAvailable ? fileStats.done : '—'], ['处理中', statesAvailable ? fileStats.processing : '—'], ['异常文件', statesAvailable ? fileStats.failed : '—']] as const;
   return <>
     <Link className="kl-back" to="/knowledge"><ArrowLeft size={15}/>返回知识库</Link>
     <header className="kl-page-head"><div><span className="kl-eyebrow">{base ? 'KNOWLEDGE LIBRARY' : 'CLIENT SUBMISSIONS'}</span><h1>{base?.name ?? '当前身份上传记录'}</h1><p>{base?.description ?? `仅展示当前身份向 ${context.collection || '未配置集合'} 提交并成功关联的文件与任务。`}</p></div><div className="kl-actions"><button ref={searchTrigger} disabled={!slots.searchPanel || !context.collection} title={slots.searchPanel ? '检索当前集合' : '检索面板由 B 接入'} onClick={() => { rememberTrigger(); setDrawer({ type: 'search' }); }}><Search size={16}/>知识检索</button><button className="kl-primary" disabled={!context.capabilities.canUpload} onClick={() => setUpload(true)}><Upload size={16}/>上传文件</button>{base && <LibraryMenu name={base.name} onEdit={onEdit} onDelete={onDelete}/>}</div></header>

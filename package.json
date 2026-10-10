@@ -8,9 +8,10 @@
     "node": ">=22.0.0"
   },
   "scripts": {
-    "dev": "pnpm --filter @kla-workstation/desktop dev",
-    "dev:web": "pnpm --filter @kla-workstation/desktop dev:web",
+    "predev:server": "pnpm --filter @kla-workstation/contracts build",
     "dev:server": "pnpm --filter @kla-workstation/server dev",
+    "predev": "pnpm --filter @kla-workstation/contracts build",
+    "dev": "pnpm --filter @kla-workstation/desktop dev",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",

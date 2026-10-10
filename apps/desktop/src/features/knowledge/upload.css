@@ -18,6 +18,8 @@
 .kl-upload-item strong { font-size: 12px; font-weight: 500; overflow-wrap: anywhere; display: block; }
 .kl-upload-item small { display: block; font-size: 10px; color: var(--kq-text-tertiary); margin-top: 3px; }
 .kl-upload-item p { font-size: 11px; margin-top: 5px; }
+.kl-upload-item .kl-upload-rename { color: var(--kq-text-secondary); overflow-wrap: anywhere; }
+.kl-upload-item .kl-upload-rename strong { display: inline; }
 .kl-upload-indeterminate { margin-top: 9px; height: 3px; width: 100%; background: var(--kq-surface-subtle); border-radius: 4px; animation: kl-pulse 1s infinite; border-left: 20px solid var(--kq-primary); }
 .kl-upload-dialog > footer, .kl-connection-dialog footer { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 16px 24px; border-top: 1px solid var(--kq-border); }
 .kl-upload-dialog > footer > span { margin-right: auto; color: var(--kq-text-tertiary); font-size: 11px; }

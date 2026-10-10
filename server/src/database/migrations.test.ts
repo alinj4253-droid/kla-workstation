@@ -37,18 +37,20 @@ describe('loadMigrationFiles', () => {
     await expect(loadMigrationFiles(emptyDir)).rejects.toThrow('找到任何迁移文件');
   });
 
-  it('拒绝分支合并产生的同编号不同业务迁移', async () => {
+  it('按完整文件名区分同编号不同业务迁移', async () => {
     const duplicateDir = await createTempDir();
     await writeFile(join(duplicateDir, '0036_binary_ppt_artifacts.sql'), 'SELECT 1;');
     await writeFile(join(duplicateDir, '0036_compute_points_and_tools.sql'), 'SELECT 2;');
-    await expect(loadMigrationFiles(duplicateDir)).rejects.toThrow('迁移编号重复: 0036');
+    const migrations = await loadMigrationFiles(duplicateDir);
+    expect(migrations.map(migration => migration.id)).toEqual(['0036_binary_ppt_artifacts', '0036_compute_points_and_tools']);
   });
 
-  itOnCaseSensitiveFs('在大小写敏感文件系统上拒绝重复编号', async () => {
+  itOnCaseSensitiveFs('在大小写敏感文件系统上保留不同完整文件名', async () => {
     const duplicateDir = await createTempDir();
     await writeFile(join(duplicateDir, '0007_add_files.sql'), 'SELECT 1;');
     await writeFile(join(duplicateDir, '0007_ADD_FILES.sql'), 'SELECT 2;');
-    await expect(loadMigrationFiles(duplicateDir)).rejects.toThrow('迁移编号重复');
+    const migrations = await loadMigrationFiles(duplicateDir);
+    expect(migrations).toHaveLength(2);
   });
 
   it('解析仓库真实迁移目录（守护相对路径定位）', async () => {

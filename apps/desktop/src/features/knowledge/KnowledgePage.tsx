@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { KnowledgeBase, KnowledgeConnection, KnowledgeContext } from '@kla-workstation/contracts/knowledge';
-import { knowledgeApi, knowledgeKeys } from './api';
+import { knowledgeApi, knowledgeKeys, unwrap } from './api';
+import { knowledgeStatisticsApi } from '../../api/knowledge';
 import { KnowledgeOverview, type LibraryOverviewData } from './KnowledgeOverview';
 import { KnowledgeDetail } from './KnowledgeDetail';
 import { ConnectionDialog } from './ConnectionDialog';
@@ -24,13 +25,26 @@ export function KnowledgePage({ view = 'overview', slots = {}, libraries, loadin
   const [editing, setEditing] = useState<LibraryEntry | 'new' | null>(null);
   const [deleting, setDeleting] = useState<LibraryEntry | null>(null);
   const [notice, setNotice] = useState('');
-  const connection = useQuery({ queryKey: knowledgeKeys.connection, queryFn: knowledgeApi.connection, retry: false });
-  const health = useQuery({ queryKey: [...knowledgeKeys.all, connection.data?.serviceInstanceId, 'health'], queryFn: () => knowledgeApi.health(connection.data!.serviceInstanceId), enabled: connection.data?.baseUrl === KNOWLEDGE_SERVICE_URL, retry: false, refetchInterval: 30000 });
-  const config = connection.data;
+  const connection = useQuery({ queryKey: knowledgeKeys.connection, queryFn: knowledgeApi.connection, retry: false, staleTime: Infinity });
+  const savedConfig = connection.data;
+  const selectedEntry = catalog.entries.find(entry => entry.id === id);
+  const targetCollection = view === 'detail' ? libraries?.bases.find(item => item.id === id)?.context.collection ?? selectedEntry?.collection
+    : view === 'uploads' ? savedConfig?.collection || catalog.entries[0]?.collection
+    : catalog.entries.some(entry => entry.collection === savedConfig?.collection) ? savedConfig?.collection : catalog.entries[0]?.collection;
+  const autoConnection = useLibraryConnection(savedConfig, targetCollection, configuring || Boolean(editing) || Boolean(deleting) || Boolean(catalog.error));
+  const config = autoConnection.connection;
+  const health = useQuery({ queryKey: [...knowledgeKeys.all, config?.serviceInstanceId, 'health'], queryFn: () => knowledgeApi.health(config!.serviceInstanceId), enabled: config?.baseUrl === KNOWLEDGE_SERVICE_URL && autoConnection.matches, retry: false, refetchInterval: 30000 });
+  const statistics = useQuery({
+    queryKey: [...knowledgeKeys.all, 'statistics', config?.baseUrl, config?.secretRef, JSON.stringify(catalog.entries.map(entry => entry.id))],
+    queryFn: ({ signal }) => unwrap(knowledgeStatisticsApi.get(config!.serviceInstanceId, signal)),
+    enabled: view === 'overview' && autoConnection.matches && Boolean(config) && !catalog.loading,
+    staleTime: 15000, refetchInterval: 15000, retry: 1,
+  });
   const listedCollection = catalog.entries.some(entry => entry.collection === config?.collection);
-  const activeCollection = config && config.baseUrl === KNOWLEDGE_SERVICE_URL && (view !== 'overview' || listedCollection || libraries) ? config.collection : '';
-  const activeEntry = catalog.entries.find(entry => entry.id === id && entry.collection === activeCollection)
-    ?? catalog.entries.find(entry => entry.collection === activeCollection);
+  const activeCollection = config && autoConnection.matches && config.baseUrl === KNOWLEDGE_SERVICE_URL && (view !== 'overview' || listedCollection || libraries) ? config.collection : '';
+  const activeEntry = view === 'detail'
+    ? catalog.entries.find(entry => entry.id === id && entry.collection === activeCollection)
+    : catalog.entries.find(entry => entry.collection === activeCollection);
   const activeContext: KnowledgeContext = { serviceInstanceId: config?.serviceInstanceId ?? '', collection: activeCollection, ...(activeEntry ? { knowledgeBaseId: activeEntry.id } : {}), attribution: 'collection-files', capabilities: { hasLibraryMetadata: false, hasScopeAuthorization: false, canUpload: false, canCancel: true, canRetryText: false, hasPreview: true } };
   const sources = useSources(activeContext);
   const jobs = useQuery({ queryKey: knowledgeKeys.jobs(activeContext.serviceInstanceId, activeContext.collection), queryFn: async () => { const incoming = await knowledgeApi.jobs(activeContext.serviceInstanceId); return latestJobHistory(client.getQueryData(knowledgeKeys.jobs(activeContext.serviceInstanceId, activeContext.collection)), incoming); }, enabled: Boolean(activeCollection), retry: false, refetchInterval: 10000 });
@@ -40,16 +54,15 @@ export function KnowledgePage({ view = 'overview', slots = {}, libraries, loadin
   const names = new Map(sources.data?.bindings.map(binding => [binding.docId, binding.displayName]));
   const localBases: KnowledgeBase[] = catalog.entries.map(entry => {
     const current = entry.id === activeContext.knowledgeBaseId;
+    const totals = statistics.data?.collections.find(item => item.knowledgeBaseId === entry.id
+      || (!item.knowledgeBaseId && item.collection === entry.collection));
     const status = health.isError || (current && (sources.isError || jobs.isError)) ? 'error' : health.data?.status !== 'ok' ? 'pending' : current && records.some(job => ['queued', 'running'].includes(job.state)) ? 'processing' : 'ready';
-    return { ...entry, status, context: { ...activeContext, collection: entry.collection, knowledgeBaseId: entry.id, scope: entry.scope, ...(entry.projectId ? { projectId: entry.projectId } : {}), ...(entry.organizationId ? { organizationId: entry.organizationId } : {}), ...(entry.personalIdentityId ? { personalIdentityId: entry.personalIdentityId } : {}), capabilities: { ...activeContext.capabilities, canUpload: current && entry.canWrite === true } }, sourceDocIds: [],
-      ...(current && sources.isSuccess ? { fileCount: sources.data.documents.length, sourceNames: sources.data.documents.map(doc => names.get(doc.doc_id) ?? doc.name) } : {}), ...(current && sliceCount !== undefined ? { chunkCount: sliceCount } : {}),
+    return { ...entry, status, context: { ...activeContext, collection: entry.collection, knowledgeBaseId: entry.id, scope: entry.scope, ...(entry.projectId ? { projectId: entry.projectId } : {}), ...(entry.organizationId ? { organizationId: entry.organizationId } : {}), ...(entry.personalIdentityId ? { personalIdentityId: entry.personalIdentityId } : {}), capabilities: { ...activeContext.capabilities, canUpload: entry.canWrite === true } }, ...(totals ? { fileCount: totals.fileCount, chunkCount: totals.chunkCount, sourceNames: totals.sourceNames } : {}), sourceDocIds: current ? sources.data?.documents.map(doc => doc.doc_id) ?? [] : [],
+      ...(current && sources.isSuccess ? { fileCount: sources.data.documents.length, sourceNames: sources.data.documents.map(doc => names.get(doc.doc_id) ?? doc.name) } : {}), ...(current && sliceCount !== undefined && (!totals || sliceData.complete) ? { chunkCount: sliceCount } : {}),
     };
   });
-  const overview = libraries ?? { bases: localBases, localCatalog: true, collection: activeCollection, stats: { libraries: localBases.length, ...(sources.isSuccess && activeCollection ? { files: sources.data.documents.length } : {}), ...(sliceCount !== undefined && activeCollection ? { chunks: sliceCount } : {}), ...(jobs.isSuccess && activeCollection ? { processing24h: `${records.filter(job => ['queued', 'running'].includes(job.state)).length} 处理中 · ${records.filter(job => ['failed', 'interrupted'].includes(job.state)).length} 异常` } : {}) } };
+  const overview = libraries ?? { bases: localBases, localCatalog: true, collection: activeCollection, stats: { libraries: localBases.length, ...(statistics.data ? { files: statistics.data.collections.reduce((sum, item) => sum + item.fileCount, 0) } : {}), ...(statistics.data ? { chunks: statistics.data.collections.reduce((sum, item) => sum + item.chunkCount, 0) } : {}), ...(jobs.isSuccess && activeCollection ? { processing24h: `${records.filter(job => ['queued', 'running'].includes(job.state)).length} 处理中 · ${records.filter(job => ['failed', 'interrupted'].includes(job.state)).length} 异常` } : {}) } };
   const base = overview.bases.find(item => item.id === id);
-  const selectedEntry = catalog.entries.find(entry => entry.id === id);
-  const targetCollection = view === 'detail' ? base?.context.collection : view === 'uploads' ? config?.collection || catalog.entries[0]?.collection : listedCollection ? config?.collection : catalog.entries[0]?.collection;
-  const autoConnection = useLibraryConnection(config, targetCollection, configuring || Boolean(editing) || Boolean(deleting) || Boolean(catalog.error));
   const resolvedSlots = { ...knowledgeReadingSlots, ...slots };
   const context: KnowledgeContext | undefined = config ? base?.context ?? {
     serviceInstanceId: config.serviceInstanceId, collection: config.collection, attribution: 'client-submissions',
@@ -57,7 +70,9 @@ export function KnowledgePage({ view = 'overview', slots = {}, libraries, loadin
   } : undefined;
   function saved(next: KnowledgeConnection) {
     void client.cancelQueries({ queryKey: knowledgeKeys.all });
-    client.removeQueries({ queryKey: knowledgeKeys.all }); client.setQueryData(knowledgeKeys.connection, next); setConfiguring(false);
+    client.setQueryData(knowledgeKeys.connection, next);
+    void client.invalidateQueries({ queryKey: knowledgeKeys.all, predicate: query => query.queryKey[1] !== 'connection' });
+    setConfiguring(false);
   }
   const openConnection = () => { if (!autoConnection.connecting) setConfiguring(true); };
   const editEntry = (entryId: string) => { const entry = catalog.entries.find(item => item.id === entryId); if (entry?.canWrite && !autoConnection.connecting) setEditing(entry); };
@@ -66,6 +81,8 @@ export function KnowledgePage({ view = 'overview', slots = {}, libraries, loadin
   return <main className="kl-module kl-page">
     {connection.error && <div className="kl-notice kl-error-text" role="alert">{connection.error.message}<button onClick={() => setConfiguring(true)}>配置连接</button></div>}
     {health.error && <div className="kl-notice kl-error-text" role="alert">{health.error.message}</div>}
+    {view === 'overview' && statistics.isError && <div className="kl-notice kl-error-text" role="alert">知识库统计读取失败：{statistics.error.message}<button onClick={() => void statistics.refetch()}>重试统计</button></div>}
+    {view === 'overview' && Boolean(statistics.data?.unclassifiedCount) && <div className="kl-notice">{statistics.data!.unclassifiedCount} 个服务器原件的集合或切片尚未确认，数量仅统计已确认归属的数据。</div>}
     {catalog.error && <div className="kl-notice kl-error-text" role="alert">{catalog.error}</div>}
     {autoConnection.error && <div className="kl-notice kl-error-text" role="alert">自动连接失败：{autoConnection.error}<button onClick={autoConnection.retry}>重新连接</button></div>}
     {notice && <div className="kl-notice" role="status">{notice}</div>}

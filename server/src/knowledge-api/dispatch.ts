@@ -24,9 +24,12 @@ const contentSchema = serviceInputSchema.extend({
 });
 
 import { currentScope } from './context.js';
+import { uploadNameCheckSchema } from '@kla-workstation/contracts/knowledge';
+import { checkUploadNames } from './documents.js';
 const handlers = new Map<string, (owner: unknown, raw: unknown) => unknown>();
 function register(name: string, work: (owner: unknown, raw: unknown) => unknown) { handlers.set(name, work); }
   register('getConnection', () => publicConnection());
+  register('checkUploadNames', (_event, raw) => checkUploadNames(currentScope().ownerNumber, uploadNameCheckSchema.parse(raw)));
   register('acceptUploadConsent', (_event, raw) => {
     const input = serviceInputSchema.extend({ noticeVersion: z.literal(KNOWLEDGE_UPLOAD_NOTICE_VERSION) }).parse(raw);
     return acceptUploadConsent(input.serviceInstanceId, input.noticeVersion);

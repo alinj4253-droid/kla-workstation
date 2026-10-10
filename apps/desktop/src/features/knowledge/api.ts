@@ -11,6 +11,7 @@ export async function unwrap<T>(promise: Promise<RpcResult<T>>): Promise<T> {
   return result.data;
 }
 export const knowledgeApi = {
+  checkUploadNames: (input: Parameters<KnowledgeLibraryBridge['checkUploadNames']>[0]) => unwrap(bridge().checkUploadNames(input)),
   connection: () => unwrap(bridge().getConnection()),
   configure: (input: Parameters<KnowledgeLibraryBridge['configure']>[0]) => unwrap(bridge().configure(input)),
   acceptUploadConsent: (input: Parameters<KnowledgeLibraryBridge['acceptUploadConsent']>[0]) => unwrap(bridge().acceptUploadConsent(input)),

@@ -1,18 +1,19 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { Pool } from 'pg';
 import { z } from 'zod';
-import { knowledgeCatalogSchema, initialKnowledgeCatalog, normalizeKnowledgeCatalog, documentListSchema, KNOWLEDGE_UPLOAD_LIMIT, jobInputSchema, jobSnapshotSchema, isTerminalJobState, type JobEvent } from '@kla-workstation/contracts/knowledge';
+import { knowledgeCatalogSchema, initialKnowledgeCatalog, normalizeKnowledgeCatalog, documentListSchema, uploadNameCheckSchema, uploadSliceNameKey, KNOWLEDGE_UPLOAD_LIMIT, jobInputSchema, jobSnapshotSchema, isTerminalJobState, type JobEvent } from '@kla-workstation/contracts/knowledge';
 import type { AccountRepository } from '../repositories/types.js';
 import { requirePermission } from '../auth/permission-service.js';
 import { createScope, inScope, readStored, atomicStored, type KnowledgeStore } from './context.js';
 import { initializeKnowledge, dispatchKnowledge } from './dispatch.js';
 import { getJob, jobPath } from './jobs.js';
 import { publicKnowledgeData } from './public-data.js';
-import { KnowledgeError, withResponse } from './transport.js';
+import { KnowledgeError, jsonRequest, withResponse } from './transport.js';
 import { publicConnection } from './config.js';
 import { createLibrary, disableLibrary, getAccessibleLibrary, libraryInputSchema, libraryUpdateSchema, listAccessibleLibraries, updateLibrary } from '../auth/knowledge-libraries.js';
 import { scopedSearchInputSchema, searchScopedKnowledge } from '../auth/knowledge-search.js';
-import { jsonRequest } from './transport.js';
+import { libraryStatistics, scopedLibraryStatistics } from './statistics.js';
+import { serviceInputSchema } from '@kla-workstation/contracts/knowledge';
 export async function registerKnowledgeRoutes(app: FastifyInstance, deps: { accounts: AccountRepository; store: KnowledgeStore; pool?: Pool; encryptionKey?: string; mock?: boolean }) {
   const sessions = new Map<string, { scope: ReturnType<typeof createScope>; initialized: Promise<void> }>();
   let sequence = 0;
@@ -44,7 +45,7 @@ export async function registerKnowledgeRoutes(app: FastifyInstance, deps: { acco
     return reply.code(status).send({ ok: false, error: { code: mapped.code, message: mapped.message, retryable: mapped.retryable, details: mapped.details }, meta: { requestId: request.id } });
   };
   app.addContentTypeParser('application/octet-stream', { parseAs: 'buffer', bodyLimit: KNOWLEDGE_UPLOAD_LIMIT }, (_request, body, done) => done(null, body));
-  const reads = new Set(['getConnection', 'health', 'listSources', 'getBindings', 'getUnconfirmed', 'listJobs', 'getJob', 'contentRequest', 'getCatalog']);
+  const reads = new Set(['getConnection', 'health', 'listSources', 'getBindings', 'getUnconfirmed', 'listJobs', 'getJob', 'contentRequest', 'getCatalog', 'getStatistics', 'checkUploadNames']);
   app.post('/api/v1/knowledge-library/:operation', { bodyLimit: KNOWLEDGE_UPLOAD_LIMIT }, async (request, reply) => {
     try {
       const operation = (request.params as { operation: string }).operation;
@@ -59,6 +60,17 @@ export async function registerKnowledgeRoutes(app: FastifyInstance, deps: { acco
           const normalized = normalizeKnowledgeCatalog(entries);
           if (normalized.changed) { await atomicStored('catalog.json', normalized.entries); console.log('[knowledge] catalog 集合名已自动升级为当前约定名'); }
           return normalized.entries;
+        }
+        if (operation === 'getStatistics') {
+          const input = serviceInputSchema.parse(request.body);
+          if (deps.pool && !deps.mock) {
+            const entries = await listAccessibleLibraries(deps.pool, scope.owner);
+            return scopedLibraryStatistics(scope.ownerNumber, input.serviceInstanceId, entries);
+          }
+          let entries;
+          try { entries = knowledgeCatalogSchema.parse(await readStored('catalog.json')); }
+          catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; entries = initialKnowledgeCatalog; }
+          return libraryStatistics(scope.ownerNumber, input.serviceInstanceId, normalizeKnowledgeCatalog(entries).entries);
         }
         if (operation === 'saveCatalog') {
           if (deps.pool && !deps.mock) throw new KnowledgeError('PERMISSION_DENIED', '请使用知识库创建和编辑接口。');
@@ -119,6 +131,20 @@ export async function registerKnowledgeRoutes(app: FastifyInstance, deps: { acco
             throw new KnowledgeError('KNOWLEDGE_INGEST_FAILED', '知识服务返回了其他知识库的文档。');
           return { documents: result.documents.map(({ abs_path: _path, knowledge_base_id: _id, ...doc }) => doc),
             bindings: [], totalWorkspaceCount: result.count, verifiedServerDocIds: result.documents.map(doc => doc.doc_id), unclassifiedCount: 0 };
+        }
+        if (deps.pool && !deps.mock && operation === 'checkUploadNames') {
+          const body = uploadNameCheckSchema.extend({ knowledgeBaseId: z.string().uuid() }).parse(input);
+          const library = await getAccessibleLibrary(deps.pool, scope.owner, body.knowledgeBaseId, 'write');
+          if (!library) throw new KnowledgeError('PERMISSION_DENIED', '当前身份无权向该知识库上传。');
+          if (library.entry.collection !== body.collection) throw new KnowledgeError('CONFLICT', '目标知识库集合已变更。');
+          const upstreamSchema = documentListSchema.extend({ permission_filtered: z.literal(true),
+            documents: z.array(documentListSchema.shape.documents.element.extend({ knowledge_base_id: z.string().uuid() })) });
+          const result = await jsonRequest(scope.ownerNumber, body.serviceInstanceId,
+            `/v1/documents?knowledge_base_id=${encodeURIComponent(body.knowledgeBaseId)}`, upstreamSchema);
+          if (result.count !== result.documents.length || result.documents.some(doc => doc.knowledge_base_id !== body.knowledgeBaseId))
+            throw new KnowledgeError('KNOWLEDGE_INGEST_FAILED', '知识服务返回的文件范围不完整或不属于当前知识库。');
+          const existing = new Set(result.documents.map(doc => uploadSliceNameKey(doc.name)));
+          return { conflicts: body.names.filter(name => existing.has(uploadSliceNameKey(name))) };
         }
         if (deps.pool && !deps.mock && operation === 'getBindings') return [];
         if (deps.pool && !deps.mock && operation === 'getUnconfirmed') return [];
