@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { Pool } from 'pg';
 import { z } from 'zod';
 import { knowledgeCatalogSchema, initialKnowledgeCatalog, normalizeKnowledgeCatalog, documentListSchema, uploadNameCheckSchema, uploadSliceNameKey, KNOWLEDGE_UPLOAD_LIMIT, jobInputSchema, jobSnapshotSchema, isTerminalJobState, type JobEvent } from '@kla-workstation/contracts/knowledge';
+import { documentContentSchema, documentDetailSchema, documentMetaSchema, documentSlicesSchema } from '@kla-workstation/contracts/knowledge';
 import type { AccountRepository } from '../repositories/types.js';
 import { requirePermission } from '../auth/permission-service.js';
 import { createScope, inScope, readStored, atomicStored, type KnowledgeStore } from './context.js';
@@ -10,10 +11,63 @@ import { getJob, jobPath } from './jobs.js';
 import { publicKnowledgeData } from './public-data.js';
 import { KnowledgeError, jsonRequest, withResponse } from './transport.js';
 import { publicConnection } from './config.js';
-import { createLibrary, disableLibrary, getAccessibleLibrary, libraryInputSchema, libraryUpdateSchema, listAccessibleLibraries, updateLibrary } from '../auth/knowledge-libraries.js';
+import { createLibrary, disableLibrary, findReadableLibraryByDocId, getAccessibleLibrary, libraryInputSchema, libraryUpdateSchema, listAccessibleLibraries, updateLibrary } from '../auth/knowledge-libraries.js';
 import { scopedSearchInputSchema, searchScopedKnowledge } from '../auth/knowledge-search.js';
 import { libraryStatistics, scopedLibraryStatistics } from './statistics.js';
 import { serviceInputSchema } from '@kla-workstation/contracts/knowledge';
+
+/** 读取类端点 → 远端路径后缀（''表示直接是 /v1/documents/{id}）与前端契约校验。 */
+const READ_ENDPOINTS = {
+  document: { suffix: '', schema: documentDetailSchema },
+  meta: { suffix: 'meta', schema: documentMetaSchema },
+  content: { suffix: 'content', schema: documentContentSchema },
+  slices: { suffix: 'slices', schema: documentSlicesSchema },
+} as const;
+type ReadEndpoint = keyof typeof READ_ENDPOINTS;
+
+interface ReadRequestBody { endpoint: string; serviceInstanceId: string; docId?: unknown; para?: unknown; limit?: unknown }
+
+/**
+ * 读取单个文档的授权读取：详情 / 元信息 / 正文 / 切片。
+ *
+ * 三道关，缺一不可：
+ *  ① 文档须有归属记录，且所属库当前身份可读（findReadableLibraryByDocId 内部按 access() 判权）
+ *  ② 远端响应里的 knowledge_base_id 必须与该文档所属库一致 —— 防止上游返回别的库的内容
+ *  ③ 归属缺失按未授权处理（fail-closed），不「查不到就放行」
+ *
+ * 响应必须经前端契约 schema 校验再返回：远端会带 slices_path / knowledge_base_id 等
+ * 服务端专有字段，直接透传会让前端的 documentSlicesSchema 校验失败（表现为
+ * 「知识切片加载失败」这种无信息量的报错），schema.parse 同时起到白名单裁剪作用。
+ *
+ * 此前 contentRequest 只放行 search，读取类端点一律 403，界面读不到任何切片；此处补齐。
+ */
+async function readAuthorizedDocument(pool: Pool, ownerNumber: number, identityId: string, body: ReadRequestBody) {
+  const endpoint = body.endpoint as ReadEndpoint;
+  if (!(endpoint in READ_ENDPOINTS)) throw new KnowledgeError('PERMISSION_DENIED', '文档归属尚未由知识服务验证，暂不可读取。');
+  const docId = typeof body.docId === 'string' ? body.docId.trim() : '';
+  if (!docId) throw new KnowledgeError('VALIDATION_FAILED', '缺少文档 ID。');
+  const library = await findReadableLibraryByDocId(pool, identityId, docId);
+  if (!library) throw new KnowledgeError('PERMISSION_DENIED', '当前身份无权读取该文档。');
+
+  const target = READ_ENDPOINTS[endpoint];
+  const path = `/v1/documents/${encodeURIComponent(docId)}${target.suffix ? `/${target.suffix}` : ''}`;
+  const query = new URLSearchParams({ knowledge_base_id: library.entry.id });
+  const init: RequestInit = endpoint === 'content'
+    ? { headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ para: Number(body.para ?? 0), limit: Number(body.limit ?? 20) }) }
+    : {};
+  // 先按宽松结构取回以核对归属，再交给契约 schema 校验裁剪字段
+  const raw = await jsonRequest<Record<string, unknown>>(ownerNumber, body.serviceInstanceId, `${path}?${query}`,
+    z.record(z.string(), z.unknown()), init);
+  const declared = raw.knowledge_base_id;
+  if (declared !== undefined && declared !== library.entry.id)
+    throw new KnowledgeError('KNOWLEDGE_INGEST_FAILED', '知识服务返回了其他知识库的内容。');
+  const parsed = target.schema.safeParse(raw);
+  if (!parsed.success)
+    throw new KnowledgeError('KNOWLEDGE_INGEST_FAILED', '知识服务返回的内容与约定不一致，请确认部署版本。');
+  return parsed.data;
+}
+
 export async function registerKnowledgeRoutes(app: FastifyInstance, deps: { accounts: AccountRepository; store: KnowledgeStore; pool?: Pool; encryptionKey?: string; mock?: boolean }) {
   const sessions = new Map<string, { scope: ReturnType<typeof createScope>; initialized: Promise<void> }>();
   let sequence = 0;
@@ -110,8 +164,13 @@ export async function registerKnowledgeRoutes(app: FastifyInstance, deps: { acco
           const body = z.object({ serviceInstanceId: z.string(), endpoint: z.string(), knowledgeBaseId: z.string().uuid().optional(),
             search: z.object({ query: z.string(), mode: z.enum(['hybrid', 'vector', 'keyword']), top_k: z.number().int(),
               expand: z.number().int().optional(), fold_adjacent: z.boolean().optional() }).optional() }).parse(input);
-          if (body.endpoint !== 'search' || !body.knowledgeBaseId || !body.search) {
-            throw new KnowledgeError('PERMISSION_DENIED', '文档归属尚未由知识服务验证，暂不可读取。');
+          if (body.endpoint !== 'search') {
+            // 读取类端点（切片/正文/元信息）前端只带 docId，必须先反查该文档所属库并判权，
+            // 再向远端取数并复核归属——不能因为知道一个 docId 就放行。
+            return readAuthorizedDocument(deps.pool, scope.ownerNumber, scope.owner, body);
+          }
+          if (!body.knowledgeBaseId || !body.search) {
+            throw new KnowledgeError('PERMISSION_DENIED', '检索需要指定知识库或群聊上下文。');
           }
           const search = scopedSearchInputSchema.parse({ knowledgeBaseId: body.knowledgeBaseId,
             query: body.search.query, mode: body.search.mode, topK: body.search.top_k,
