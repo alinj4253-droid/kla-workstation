@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { Pool } from 'pg';
-import { createHash } from 'node:crypto';
+import { validateLocalArtifacts } from './local-artifacts.js';
 import { z } from 'zod';
 import { agentDefinitionInputSchema, agentDefinitionPatchSchema, deviceRegistrationSchema, runtimeSkillCatalog, toolReceiptSchema } from '@kla-workstation/contracts';
 import type { AccountRepository } from '../repositories/types.js';
@@ -153,17 +153,21 @@ export async function registerRuntimeRoutes(app: FastifyInstance, deps: {pool:Po
     // 且降噪会连失败态的自动日志一起压掉，因此失败必须在这里显式补一条，否则故障会被静默。
     } catch(error) { request.log.error({ err: error, deviceId: s.device.id }, 'runtime device poll failed'); await client.query('ROLLBACK'); throw error; } finally { client.release(); }
   });
-  app.post('/api/v1/runtime/devices/:deviceId/calls/:callId/receipt',{bodyLimit:4*1024*1024},async(request,reply)=>{
+  app.post('/api/v1/runtime/devices/:deviceId/calls/:callId/receipt',{bodyLimit:48*1024*1024},async(request,reply)=>{
     const s=await device(request,reply);if(!s)return;const callId=id((request.params as {callId:string}).callId);const b=toolReceiptSchema.parse(request.body);
     const client=await pool.connect();try{await client.query('BEGIN');const call=(await client.query(`SELECT t.*,st.run_id,r.conversation_id,r.status AS run_status FROM runtime_tool_calls t JOIN conversation_run_steps st ON st.id=t.step_id JOIN conversation_runs r ON r.id=st.run_id WHERE t.id=$1 AND t.device_id=$2 AND t.identity_id=$3 FOR UPDATE OF t,r`,[callId,s.device.id,s.identity.id])).rows[0];
       if(!call)throw app.httpErrors.notFound('工具调用不存在');if(call.receipt_id){if(call.receipt_id!==b.receiptId)throw app.httpErrors.conflict('调用已提交其他回执');await client.query('COMMIT');return{ok:true,data:call.result};}
       if(call.status!=='running'||['cancelled','failed','completed'].includes(call.run_status))throw app.httpErrors.conflict('任务已结束或调用未被领取');
       if(b.status==='completed'&&!b.approval.approved)throw app.httpErrors.badRequest('未经本地用户审批的操作不能提交成功回执');
-      let result={...b.result};if(b.artifact){if(b.status!=='completed'||!['local_write','local_code'].includes(call.tool_name))throw app.httpErrors.badRequest('此调用不接受成果');const a=b.artifact;if(createHash('sha256').update(a.content).digest('hex')!==a.checksum)throw app.httpErrors.badRequest('成果校验和不一致');
-        const artifact=(await client.query('INSERT INTO artifacts(identity_id,conversation_id,name,mime_type,content,size_bytes,checksum,source_device_id,tool_call_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id',[s.identity.id,call.conversation_id,a.fileName,a.mimeType,a.content,Buffer.byteLength(a.content),a.checksum,s.device.id,callId])).rows[0];result={...result,artifactId:artifact.id,checksum:a.checksum};}
-      await client.query('UPDATE runtime_tool_calls SET status=$2,result=$3,receipt_id=$4,completed_at=now() WHERE id=$1',[callId,b.status,JSON.stringify(result),b.receiptId]);await client.query('INSERT INTO runtime_events(identity_id,conversation_id,run_id,kind,payload) VALUES($1,$2,$3,$4,$5)',[s.identity.id,call.conversation_id,call.run_id,'tool.receipt',JSON.stringify({callId,deviceId:s.device.id,status:b.status,artifactId:result.artifactId,approval:b.approval??null})]);await client.query('COMMIT');worker.kick();return{ok:true,data:result};
+      let files;try{files=validateLocalArtifacts(call.tool_name,b);}catch(error){throw app.httpErrors.badRequest((error as Error).message);}
+      const result:Record<string,unknown>={...b.result};const artifactIds:string[]=[];
+      for(const [index,a] of files.entries()){
+        const artifact=(await client.query('INSERT INTO artifacts(identity_id,conversation_id,name,mime_type,content,content_encoding,size_bytes,checksum,source_device_id,tool_call_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id',[s.identity.id,call.conversation_id,a.fileName,a.mimeType,a.content,a.contentEncoding,a.sizeBytes,a.checksum,s.device.id,index===0?callId:null])).rows[0];artifactIds.push(artifact.id);
+      }
+      if(artifactIds.length){result.artifactId=artifactIds[0];result.artifactIds=artifactIds;result.checksum=files[0].checksum;}
+      await client.query('UPDATE runtime_tool_calls SET status=$2,result=$3,receipt_id=$4,completed_at=now() WHERE id=$1',[callId,b.status,JSON.stringify(result),b.receiptId]);await client.query('INSERT INTO runtime_events(identity_id,conversation_id,run_id,kind,payload) VALUES($1,$2,$3,$4,$5)',[s.identity.id,call.conversation_id,call.run_id,'tool.receipt',JSON.stringify({callId,deviceId:s.device.id,status:b.status,artifactId:result.artifactId,artifactIds,approval:b.approval??null})]);await client.query('COMMIT');worker.kick();return{ok:true,data:result};
     }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
   });
   app.get('/api/v1/runtime/events',async(request,reply)=>{const s=await scope(request,reply);if(!s)return;const q=z.object({after:z.coerce.number().int().min(0).default(0),conversationId:z.string().uuid().optional()}).parse(request.query);return{ok:true,data:(await pool.query('SELECT sequence,conversation_id,run_id,kind,payload,created_at FROM runtime_events WHERE identity_id=$1 AND sequence>$2 AND ($3::uuid IS NULL OR conversation_id=$3) ORDER BY sequence LIMIT 200',[s.identity.id,q.after,q.conversationId??null])).rows};});
-  app.get('/api/v1/artifacts/:artifactId/download',async(request,reply)=>{const s=await scope(request,reply,'export');if(!s)return;const a=await accounts.getArtifact(s.identity.id,id((request.params as {artifactId:string}).artifactId));if(!a)throw app.httpErrors.notFound('成果不存在');return reply.header('content-disposition',`attachment; filename*=UTF-8''${encodeURIComponent(a.name)}`).type(a.mimeType).send(a.content);});
+  app.get('/api/v1/artifacts/:artifactId/download',async(request,reply)=>{const s=await scope(request,reply,'export');if(!s)return;const a=await accounts.getArtifact(s.identity.id,id((request.params as {artifactId:string}).artifactId));if(!a)throw app.httpErrors.notFound('成果不存在');return reply.header('content-disposition',`attachment; filename*=UTF-8''${encodeURIComponent(a.name)}`).type(a.mimeType).send(a.contentEncoding==='base64'?Buffer.from(a.content,'base64'):a.content);});
 }

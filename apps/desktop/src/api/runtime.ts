@@ -1,5 +1,5 @@
 import {klaApi} from './client';
-import type {ExecutionLocation} from '@kla-workstation/contracts';
+import type {ConversationDto, CreateConversationRequest, ExecutionLocation} from '@kla-workstation/contracts';
 export type RuntimeAgent={id:string;name:string;role:string;modelId?:string|null;model_id?:string|null;modelKeyId?:string|null;model_key_id?:string|null;executionLocation?:ExecutionLocation;execution_location?:ExecutionLocation;deviceId?:string|null;device_id?:string|null;enabled:boolean;type:string;version:number};
 export type RuntimeDevice={id:string;name:string;platform:string;online:boolean};
 export type RuntimeSkill={code:string;name:string;description:string;tool_codes:string[];enabled:boolean};
@@ -7,6 +7,8 @@ export type RuntimeTool={code:string;name:string;description:string;location:'se
 export type AgentCapabilities={skills:Array<RuntimeSkill & {mounted:boolean}>;tools:Array<RuntimeTool & {mounted:boolean}>;effectiveTools:string[]};
 export const runtimeApi={
   agents:()=>klaApi.request<RuntimeAgent[]>('/v1/agents'),
+  groupAgents:(projectId:string,identityId:string)=>klaApi.request<RuntimeAgent[]>(`/v1/projects/${projectId}/agents`,{headers:{'x-identity-id':identityId}}),
+  createGroup:(input:CreateConversationRequest,identityId:string)=>klaApi.request<ConversationDto>('/v1/conversations',{method:'POST',body:JSON.stringify(input),headers:{'x-identity-id':identityId}}),
   devices:()=>klaApi.request<RuntimeDevice[]>('/v1/runtime/devices'),
   skills:()=>klaApi.request<RuntimeSkill[]>('/v1/skills'),
   tools:()=>klaApi.request<RuntimeTool[]>('/v1/runtime/tools'),

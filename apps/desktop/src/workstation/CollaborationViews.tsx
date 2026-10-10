@@ -5,7 +5,7 @@ import remarkGfm from 'remark-gfm';
 import rehypeSanitize from 'rehype-sanitize';
 import { klaApi } from '../api/client';
 
-export type RoomArtifact = { id: string; name: string; mimeType: string; content: string; sizeBytes: number; createdAt: string };
+export type RoomArtifact = { id: string; name: string; mimeType: string; content: string; contentEncoding?: 'utf8' | 'base64'; sizeBytes: number; createdAt: string };
 export type RoomRun = { id: string; status: string; phase?: string; currentAgent?: string; createdAt?: string; updatedAt?: string; result?: { waitingReason?: string; error?: string } };
 export type RunStep = { id: string; step_index: number; title: string; instruction: string; status: string; result?: { text?: string; error?: string; agentName?: string }; agent_snapshot?: { name?: string }; updated_at?: string };
 export type RunEvent = { sequence: number; run_id: string; kind: string; payload: Record<string, unknown>; created_at: string };
@@ -120,5 +120,28 @@ export function ProjectWorkspace({ project, rooms, onOpenRoom, onCreateRoom, onC
 export function ArtifactPane({ artifacts, selected, loading, collapsed, onSelect, onCollapse, onClose, onDownload }: { artifacts: RoomArtifact[]; selected: RoomArtifact | null; loading: boolean; collapsed: boolean; onSelect: (id: string) => void; onCollapse: () => void; onClose: () => void; onDownload: (artifact: RoomArtifact) => void }) {
   if (collapsed) return <button className="ws-artifact-mini" title="展开成果预览" onClick={onCollapse}><FileText size={17} /><span>{artifacts.length}</span></button>;
   const mime = selected?.mimeType ?? '';
-  return <aside className="ws-artifact-pane" aria-label="成果预览"><header><div className="ws-artifact-tabs">{artifacts.map(artifact => <button key={artifact.id} className={artifact.id === selected?.id ? 'active' : ''} onClick={() => onSelect(artifact.id)} title={artifact.name}><FileText size={13} />{artifact.name}</button>)}</div><button title="收起预览" onClick={onCollapse}><ArrowRight size={16} /></button><button title="关闭预览" onClick={onClose}><X size={16} /></button></header><div className="ws-artifact-meta">{selected ? `${selected.name} · 只读预览 · ${Math.max(1, Math.round((selected.sizeBytes ?? selected.content?.length ?? 0) / 1024))} KB` : loading ? '正在加载成果…' : '群组成果'}</div><div className="ws-artifact-body">{loading ? <div className="ws-artifact-loading"><LoaderCircle size={20} />正在加载文件…</div> : !selected ? <div className="ws-artifact-loading">{artifacts.length ? '选择上方文件进行预览' : '当前群组还没有成果文件'}</div> : mime.includes('html') || /\.html?$/i.test(selected.name) ? <iframe title={selected.name} srcDoc={selected.content} sandbox="" /> : /\.md$/i.test(selected.name) || mime.includes('markdown') ? <article><MarkdownMessage text={selected.content} /></article> : <pre>{selected.content}</pre>}</div><footer>{selected && <button onClick={() => onDownload(selected)}><Download size={14} />下载</button>}<small>服务端成果 · 当前身份可见</small></footer></aside>;
+  return <aside className="ws-artifact-pane" aria-label="成果预览"><header><div className="ws-artifact-tabs">{artifacts.map(artifact => <button key={artifact.id} className={artifact.id === selected?.id ? 'active' : ''} onClick={() => onSelect(artifact.id)} title={artifact.name}><FileText size={13} />{artifact.name}</button>)}</div><button title="收起预览" onClick={onCollapse}><ArrowRight size={16} /></button><button title="关闭预览" onClick={onClose}><X size={16} /></button></header><div className="ws-artifact-meta">{selected ? `${selected.name} · 只读预览 · ${Math.max(1, Math.round((selected.sizeBytes ?? selected.content?.length ?? 0) / 1024))} KB` : loading ? '正在加载成果…' : '群组成果'}</div><div className="ws-artifact-body">{loading ? <div className="ws-artifact-loading"><LoaderCircle size={20} />正在加载文件…</div> : !selected ? <div className="ws-artifact-loading">{artifacts.length ? '选择上方文件进行预览' : '当前群组还没有成果文件'}</div> : selected.contentEncoding === 'base64' ? <BinaryArtifactPreview artifact={selected} artifacts={artifacts} onSelect={onSelect} /> : mime.includes('html') || /\.html?$/i.test(selected.name) ? <iframe title={selected.name} srcDoc={selected.content} sandbox="" /> : /\.md$/i.test(selected.name) || mime.includes('markdown') ? <article><MarkdownMessage text={selected.content} /></article> : <pre>{selected.content}</pre>}</div><footer>{selected && <button onClick={() => onDownload(selected)}><Download size={14} />下载</button>}<small>服务端成果 · 当前身份可见</small></footer></aside>;
+}
+
+function BinaryArtifactPreview({ artifact, artifacts, onSelect }: { artifact: RoomArtifact; artifacts: RoomArtifact[]; onSelect: (id: string) => void }): React.JSX.Element {
+  const [url, setUrl] = useState('');
+  const [error, setError] = useState('');
+  const previewable = artifact.mimeType === 'application/pdf' || artifact.mimeType === 'image/png';
+  useEffect(() => {
+    setUrl(''); setError('');
+    if (!previewable || !artifact.content) return;
+    let objectUrl = '';
+    try {
+      const decoded = atob(artifact.content);
+      const bytes = Uint8Array.from(decoded, c => c.charCodeAt(0));
+      objectUrl = URL.createObjectURL(new Blob([bytes], { type: artifact.mimeType }));
+      setUrl(objectUrl);
+    } catch { setError('文件内容无效，请重新加载成果'); }
+    return () => { if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [artifact.id, artifact.content, artifact.mimeType, previewable]);
+  if (error) return <div className="ws-artifact-loading">{error}</div>;
+  if (previewable && url) return artifact.mimeType === 'image/png' ? <img src={url} alt={artifact.name} style={{ width: '100%', height: 'auto' }} /> : <iframe title={artifact.name} src={url} />;
+  if (previewable) return <div className="ws-artifact-loading"><LoaderCircle size={20} />正在加载文件预览…</div>;
+  const pdf = artifacts.find(a => a.mimeType === 'application/pdf' && a.createdAt === artifact.createdAt && a.name.replace(/\.pdf$/i, '') === artifact.name.replace(/\.pptx$/i, ''));
+  return <div className="ws-artifact-loading"><FileText size={28} /><p>可编辑 PPTX 已保存，可下载后在 PowerPoint / WPS 中打开。</p>{pdf ? <button className="ws-primary" onClick={() => onSelect(pdf.id)}>查看实际渲染的 PDF 预览</button> : <p>此文件暂无真实渲染预览，请查看质检报告与智能体说明。</p>}</div>;
 }

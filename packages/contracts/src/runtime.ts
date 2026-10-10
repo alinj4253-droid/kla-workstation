@@ -26,6 +26,10 @@ export const runtimeSkillCatalog = [
   { code: 'local_code', name: '代码编写', description: '保存代码文件并回传可交付副本', location: 'local' },
   { code: 'local_bat', name: '本地 BAT 执行', description: '以当前系统用户权限执行 BAT，支持超时和取消', location: 'local' },
   { code: 'local_cli', name: '本地 CLI 执行', description: '运行本地命令行程序及参数，支持超时和取消', location: 'local' },
+  { code: 'local_ppt_doctor', name: 'PPT 环境检查', description: '检查本地 Python、PPT 生成依赖、中文字体和真实渲染器，返回 full/partial/blocked', location: 'local' },
+  { code: 'local_ppt_build', name: 'PPT 生成与质检', description: '将语义页面 JSON 编译成可编辑 PPTX，强制校验和质检，默认真实渲染 PDF 和缩略图并回传成果。仅在用户确认大纲后调用', location: 'local' },
+  { code: 'local_ppt_inspect', name: 'PPT 内容读取', description: '读取本地 PPTX 的页数、文本、表格和备注，用于材料分析和改稿', location: 'local' },
+  { code: 'local_ppt_render', name: 'PPT 真实渲染', description: '将本地 PPTX 经过结构质检后真实渲染成 PDF 和缩略图，不覆盖原文件', location: 'local' },
 ] as const;
 export type RuntimeSkillCode = typeof runtimeSkillCatalog[number]['code'];
 export const runtimeSkillBundles = [
@@ -34,6 +38,7 @@ export const runtimeSkillBundles = [
   { code: 'artifact_management', name: '成果管理', description: '读取和保存群聊成果文件', tools: ['artifact_read', 'artifact_write'] },
   { code: 'local_files', name: '本地文件处理', description: '查看、读取并写入当前设备的文件', tools: ['local_list', 'local_read', 'local_write'] },
   { code: 'local_development', name: '本地代码开发', description: '编写代码并执行本地命令', tools: ['local_code', 'local_cli', 'local_bat'] },
+  { code: 'ppt_assistant', name: 'PPT 制作与改稿', description: 'deck-agent-kit 1.0：环境检查 → 材料读取 → 大纲确认 → 语义编译 → 质量门禁 → 真实渲染 → 成果交付；本地执行', tools: ['local_ppt_doctor', 'local_ppt_build', 'local_ppt_inspect', 'local_ppt_render'] },
 ] as const satisfies ReadonlyArray<{ code: string; name: string; description: string; tools: readonly RuntimeSkillCode[] }>;
 export type RuntimeSkillBundleCode = typeof runtimeSkillBundles[number]['code'];
 export const toolArguments = {
@@ -48,10 +53,21 @@ export const toolArguments = {
   local_code: z.object({ fileName: z.string().min(1).max(255), content: z.string().max(1_000_000), path: z.string().optional() }),
   local_bat: z.object({ script: z.string().min(1).max(100000), cwd: z.string().optional(), timeoutMs: z.number().int().min(1000).max(300000).default(60000) }),
   local_cli: z.object({ executable: z.string().min(1), args: z.array(z.string()).max(100).default([]), cwd: z.string().optional(), timeoutMs: z.number().int().min(1000).max(300000).default(60000) }),
+  local_ppt_doctor: z.object({}),
+  local_ppt_build: z.object({ specJson: z.string().min(2).max(1_000_000), fileName: z.string().min(1).max(200).regex(/^[^\\/:*?"<>|\x00-\x1f]+\.pptx$/i).default('演示文稿.pptx'), render: z.boolean().default(true) }),
+  local_ppt_inspect: z.object({ path: z.string().min(1).optional(), documentId: z.string().min(1).max(500).optional() }).refine(a => Boolean(a.path) !== Boolean(a.documentId), '选择 path 或 documentId 之一'),
+  local_ppt_render: z.object({ path: z.string().min(1).optional(), documentId: z.string().min(1).max(500).optional() }).refine(a => Boolean(a.path) !== Boolean(a.documentId), '选择 path 或 documentId 之一'),
 };
-export const deviceRegistrationSchema = z.object({ installationId: z.string().uuid(), name: z.string().min(1).max(100), platform: z.string().max(50), capabilities: z.array(z.enum(['local_read','local_list','local_write','local_code','local_bat','local_cli'])).max(6) });
+export const localToolCodes = runtimeSkillCatalog.filter(tool => tool.location === 'local').map(tool => tool.code);
+export const deviceRegistrationSchema = z.object({ installationId: z.string().uuid(), name: z.string().min(1).max(100), platform: z.string().max(50), capabilities: z.array(z.string().refine(code => localToolCodes.includes(code as typeof localToolCodes[number]))).max(localToolCodes.length) });
+export const localArtifactSchema = z.object({
+  fileName: z.string().min(1).max(255).refine(s => !/[\\/\x00-\x1f]/.test(s)),
+  content: z.string().max(24_000_000), contentEncoding: z.enum(['utf8', 'base64']).default('utf8'),
+  mimeType: z.string().max(100).default('text/plain'), checksum: z.string().regex(/^[a-f0-9]{64}$/),
+});
 export const toolReceiptSchema = z.object({
   receiptId: z.string().uuid(), status: z.enum(['completed','failed']), result: z.record(z.unknown()),
   approval: z.object({ approved: z.boolean(), decidedAt: z.string().datetime() }),
-  artifact: z.object({ fileName: z.string().min(1).max(255).refine(s => !/[\\/]/.test(s)), content: z.string().max(1_000_000), mimeType: z.string().max(100).default('text/plain'), checksum: z.string().regex(/^[a-f0-9]{64}$/) }).optional(),
+  artifact: localArtifactSchema.optional(),
+  artifacts: z.array(localArtifactSchema).max(6).optional(),
 });

@@ -15,6 +15,10 @@ vi.mock('../api/memories', () => ({ memoryApi: { warm, invalidate } }));
 const projects = [{ id: 'project-a', name: '同名项目' }, { id: 'project-b', name: '同名项目' }];
 const conversations = [{ id: 'chat-a', projectId: 'project-a', name: '已有群聊' }];
 const historicalReply = { id: 'history', senderType: 'agent', senderName: '统筹智能体', text: '上一轮的回复', createdAt: '2026-10-08T01:00:00Z' };
+const groupAgents = [
+  { id: '00000000-0000-4000-8000-000000000001', name: '统筹智能体', role: '协调任务', enabled: true, type: 'official', version: 1 },
+  { id: '00000000-0000-4000-8000-000000000002', name: '本地执行智能体', role: '执行任务', enabled: true, type: 'official', version: 1 },
+];
 type Result = { ok: boolean; data?: unknown; message?: string };
 let overrides: Record<string, () => Result | Promise<Result>>;
 
@@ -37,6 +41,7 @@ beforeEach(() => {
     if (path === '/v1/me') return { ok: true, data: { id: 'user-a', nickname: '测试用户' } };
     if (path === '/v1/me/identities') return { ok: true, data: [{ id: 'identity-a', type: 'personal', displayName: '个人工作区', isDefault: true }] };
     if (path === '/v1/bootstrap') return { ok: true, data: { projects, conversations } };
+    if (/^\/v1\/projects\/[^/]+\/agents$/.test(path)) return { ok: true, data: groupAgents };
     if (path.endsWith('/messages')) return { ok: true, data: [historicalReply] };
     return { ok: true, data: [] };
   });
@@ -146,10 +151,12 @@ describe('新版项目和群聊的真实接口交互', () => {
     expect(screen.getByLabelText('项目名称')).toHaveValue('待创建项目');
     await user.click(screen.getByRole('button', { name: '取消' }));
     await user.click(screen.getAllByTitle('在此项目下新建群聊')[0]);
-    await user.type(screen.getByLabelText('群聊名称'), '待创建群聊');
-    await user.click(screen.getByRole('button', { name: '创建' }));
+    await user.type(screen.getByLabelText('群组名称'), '待创建群聊');
+    await user.click(await screen.findByRole('checkbox', { name: '本地执行智能体' }));
+    await user.click(screen.getByRole('button', { name: '创建群组' }));
     expect(await screen.findByText('后端暂不可用')).toBeVisible();
-    expect(screen.getByLabelText('群聊名称')).toHaveValue('待创建群聊');
+    expect(screen.getByLabelText('群组名称')).toHaveValue('待创建群聊');
+    expect(screen.getByRole('checkbox', { name: '本地执行智能体' })).toBeChecked();
     expect(screen.getByText('2 个项目 · 1 个群组')).toBeVisible();
     expect(screen.queryByRole('textbox', { name: '发送消息给智能体小组' })).not.toBeInTheDocument();
   });
@@ -160,18 +167,20 @@ describe('新版项目和群聊的真实接口交互', () => {
     const user = await openProjects();
     await user.click(screen.getAllByTitle('在此项目下新建群聊')[1]);
     expect(screen.getByLabelText('关联项目')).toHaveValue('project-b');
-    await user.type(screen.getByLabelText('群聊名称'), '新的真实群聊');
-    await user.click(screen.getByRole('button', { name: '创建' }));
+    await user.type(screen.getByLabelText('群组名称'), '新的真实群聊');
+    await user.click(await screen.findByRole('checkbox', { name: '本地执行智能体' }));
+    await user.click(screen.getByRole('button', { name: '创建群组' }));
     const submitting = screen.getByRole('button', { name: '创建中…' });
     expect(submitting).toBeDisabled();
     fireEvent.click(submitting);
     const submissions = request.mock.calls.filter(([path, init]) => path === '/v1/conversations' && init.method === 'POST');
     expect(submissions).toHaveLength(1);
-    expect(JSON.parse(submissions[0][1].body)).toMatchObject({ projectId: 'project-b', name: '新的真实群聊' });
+    expect(JSON.parse(submissions[0][1].body)).toEqual({ projectId: 'project-b', name: '新的真实群聊', agentIds: [groupAgents[1].id] });
+    expect(submissions[0][1].headers).toEqual({ 'x-identity-id': 'identity-a' });
     resolveCreate({ ok: true, data: { id: 'chat-b', projectId: 'project-b', name: '新的真实群聊' } });
     await screen.findByRole('textbox', { name: '发送消息给智能体小组' });
     expect(screen.getByText('2 个项目 · 2 个群组')).toBeVisible();
-    expect(screen.queryByLabelText('群聊名称')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('群组名称')).not.toBeInTheDocument();
   });
 
   it('发送失败保留草稿，不添加未落库的消息气泡', async () => {

@@ -1,0 +1,105 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "DeckSpec",
+  "description": "页面语义契约。语言模型只填语义：一个坐标、字号、颜色都不填，几何由布局引擎计算。",
+  "type": "object",
+  "required": ["title", "design_system", "pages"],
+  "additionalProperties": true,
+  "properties": {
+    "title": { "type": "string", "minLength": 1 },
+    "design_system": {
+      "oneOf": [
+        { "type": "string", "description": "预设 id：modern-tech | classic-pro | deep-premium" },
+        {
+          "type": "object",
+          "properties": {
+            "preset": { "type": "string" },
+            "name": { "type": "string" },
+            "bg": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
+            "card": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
+            "line": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
+            "primary": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
+            "accent": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
+            "text": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
+            "text_weak": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
+            "neutrals": { "type": "array", "items": { "type": "string" }, "minItems": 3 },
+            "font_title": { "type": "string" },
+            "font_body": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "pages": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/PageSpec" }
+    }
+  },
+  "definitions": {
+    "PageSpec": {
+      "type": "object",
+      "required": ["page_id", "page_job"],
+      "properties": {
+        "page_id": { "type": "string" },
+        "page_job": { "type": "string", "description": "这页要干什么，一句话" },
+        "kind": { "enum": ["cover", "section", "content", "closing"], "default": "content" },
+        "title": { "type": "string", "description": "完整句结论（行动标题），不是主题标签" },
+        "kicker": { "type": "string", "description": "章节锚点标签" },
+        "meta": { "type": "array", "items": { "type": "string" }, "description": "仅封面：场合/日期/单位" },
+        "blocks": { "type": "array", "items": { "$ref": "#/definitions/Block" } }
+      }
+    },
+    "Block": {
+      "type": "object",
+      "required": ["type"],
+      "description": "禁止携带 x/y/w/h/left/top/size/color/fill 等几何与样式字段。",
+      "properties": {
+        "type": {
+          "enum": ["lead", "card", "bullets", "kpi", "steps", "chart", "compare",
+                   "matrix", "image_slot", "concl", "quote", "table"]
+        },
+        "title": { "type": "string" },
+        "index": { "type": "string", "description": "卡片序号，如 '01'" },
+        "mark": { "type": "boolean", "description": "是否作为本页强调项（每页 ≤1 处）" },
+        "text": { "type": "string" },
+        "body": { "type": "string", "description": "正文：完整句，不压缩成标签" },
+        "items": { "type": "array", "description": "条目/步骤，每项完整" },
+        "value": { "description": "英雄数字的值" },
+        "unit": { "type": "string" },
+        "label": { "type": "string" },
+        "note": { "type": "string", "description": "小注：单位/期间/说明" },
+        "source": { "type": "string", "description": "数据来源：外部数据必须标注" },
+        "assumption": { "type": "string", "description": "若为自算或假设，写出算式与口径" },
+        "data": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["label", "value"],
+            "properties": {
+              "label": { "type": "string" },
+              "value": { "type": "number" },
+              "hot": { "type": "boolean", "description": "是否高亮这一根" }
+            }
+          }
+        },
+        "left": { "$ref": "#/definitions/Side" },
+        "right": { "$ref": "#/definitions/Side" },
+        "rows": { "type": "array" },
+        "header": { "type": "array" },
+        "col_ratios": { "type": "array", "items": { "type": "number" } },
+        "hint": { "type": "string", "description": "配图位建议内容" },
+        "side": { "enum": ["left", "right"], "description": "配图位放哪一侧" },
+        "numbered": { "type": "boolean" },
+        "source_note": { "type": "string" }
+      }
+    },
+    "Side": {
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "body": { "type": "string" },
+        "items": { "type": "array" }
+      }
+    }
+  }
+}

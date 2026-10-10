@@ -7,6 +7,8 @@ import { Badge, IconButton } from './ui';
 import type { ExecutionLocation } from '@kla-workstation/contracts';
 
 type Props = { identityId: string; notify: (text: string) => void };
+const isBuiltinAgent = (agent: RuntimeAgent): boolean => agent.type === 'official' || ['统筹智能体', '本地执行智能体', 'PPT助手'].includes(agent.name);
+const agentDescription = (agent: RuntimeAgent): string => agent.name === 'PPT助手' ? '从材料生成可编辑 PPTX，支持大纲确认、对话改稿、质量检查及真实 PDF 预览。通过统一网关在本地执行。' : agent.role || '暂无角色说明';
 
 const marketAgents = [
   { name: '通用问答助手', category: '办公协作', description: '面向日常问答与信息整合，支持多轮追问、知识引用和来源追踪。', tags: ['通用', '知识检索', '多轮对话'], rating: '4.8', installs: '12.4k', tone: 'cyan' },
@@ -69,7 +71,7 @@ export function RuntimeAgentManagement({ identityId, notify }: Props): React.JSX
 
   const visibleAgents = useMemo(() => agents.filter((agent) => {
     const textMatch = `${agent.name} ${agent.role}`.toLowerCase().includes(query.toLowerCase());
-    const kind = agent.type === 'external' || agent.type === 'external-cli' ? 'external' : agent.name === '统筹智能体' || agent.name === '本地执行智能体' ? 'builtin' : 'custom';
+    const kind = agent.type === 'external' || agent.type === 'external-cli' ? 'external' : isBuiltinAgent(agent) ? 'builtin' : 'custom';
     return textMatch && (filter === 'all' || filter === kind);
   }), [agents, filter, query]);
 
@@ -91,12 +93,12 @@ export function RuntimeAgentManagement({ identityId, notify }: Props): React.JSX
     </div>
     <div className="ws-agent-tabs"><button className={view === 'mine' ? 'active' : ''} onClick={() => setView('mine')}>我的智能体 <small>· {agents.length}</small></button><button className={view === 'market' ? 'active' : ''} onClick={() => setView('market')}>智能体市场 <small>· {marketAgents.length}</small></button></div>
     {view === 'mine' ? <>
-      <div className="ws-agent-toolbar"><label className="ws-agent-search"><Search size={15} /><input placeholder="搜索智能体..." value={query} onChange={(event) => setQuery(event.target.value)} /></label><div className="ws-agent-chips"><button className={filter === 'all' ? 'active' : ''} onClick={() => setFilter('all')}>全部 {agents.length}</button><button className={filter === 'builtin' ? 'active' : ''} onClick={() => setFilter('builtin')}>官方内置 {agents.filter(a => a.name === '统筹智能体' || a.name === '本地执行智能体').length}</button><button className={filter === 'external' ? 'active' : ''} onClick={() => setFilter('external')}>外接三方 {agents.filter(a => a.type === 'external' || a.type === 'external-cli').length}</button><button className={filter === 'custom' ? 'active' : ''} onClick={() => setFilter('custom')}>自定义 {agents.filter(a => a.name !== '统筹智能体' && a.name !== '本地执行智能体' && a.type !== 'external' && a.type !== 'external-cli').length}</button></div></div>
+      <div className="ws-agent-toolbar"><label className="ws-agent-search"><Search size={15} /><input placeholder="搜索智能体..." value={query} onChange={(event) => setQuery(event.target.value)} /></label><div className="ws-agent-chips"><button className={filter === 'all' ? 'active' : ''} onClick={() => setFilter('all')}>全部 {agents.length}</button><button className={filter === 'builtin' ? 'active' : ''} onClick={() => setFilter('builtin')}>官方内置 {agents.filter(a => isBuiltinAgent(a)).length}</button><button className={filter === 'external' ? 'active' : ''} onClick={() => setFilter('external')}>外接三方 {agents.filter(a => a.type === 'external' || a.type === 'external-cli').length}</button><button className={filter === 'custom' ? 'active' : ''} onClick={() => setFilter('custom')}>自定义 {agents.filter(a => !isBuiltinAgent(a) && a.type !== 'external' && a.type !== 'external-cli').length}</button></div></div>
       <div className="ws-agent-grid">{visibleAgents.map(agent => <article className="ws-agent-card" key={agent.id}>
         <div className="ws-agent-card-head"><span className={`ws-agent-avatar is-${avatarTone(agent.name)}`}>{agent.name.slice(0, 1)}</span><div><h3>{agent.name}</h3><small className="ws-agent-code">{agent.type === 'external' || agent.type === 'external-cli' ? 'external.agent' : `builtin.${agent.id.slice(0, 8)}`}</small></div><button className={`ws-agent-switch ${agent.enabled ? 'active' : ''}`} aria-label="切换启用状态" disabled={agent.name === '统筹智能体'} onClick={() => void runtimeApi.toggleAgent(agent.id, !agent.enabled).then(result => { if (result.ok) void load(); else notify(result.message); }).catch(() => notify('操作失败'))}><span /></button></div>
-        <div className="ws-agent-tags"><Badge tone={agent.name === '统筹智能体' || agent.name === '本地执行智能体' || agent.type === 'external' || agent.type === 'external-cli' ? 'blue' : 'muted'}>{agent.name === '统筹智能体' || agent.name === '本地执行智能体' ? '官方内置' : agent.type === 'external' || agent.type === 'external-cli' ? '外接三方' : '自定义'}</Badge><Badge tone={agent.enabled ? 'green' : 'muted'}>{agent.enabled ? '已启用' : '已停用'}</Badge></div>
+        <div className="ws-agent-tags"><Badge tone={isBuiltinAgent(agent) || agent.type === 'external' || agent.type === 'external-cli' ? 'blue' : 'muted'}>{isBuiltinAgent(agent) ? '官方内置' : agent.type === 'external' || agent.type === 'external-cli' ? '外接三方' : '自定义'}</Badge><Badge tone={agent.enabled ? 'green' : 'muted'}>{agent.enabled ? '已启用' : '已停用'}</Badge></div>
         <div className="ws-agent-fields"><span><b>运行方式</b>{agent.name === '统筹智能体' ? '服务端编排智能体' : (agent.executionLocation ?? agent.execution_location) === 'local' ? '本地执行智能体' : '服务端执行'}</span><span><b>挂载模型</b>{agent.modelId ?? agent.model_id ?? '使用默认槽位'}</span></div>
-        <p className="ws-agent-description">{agent.role || '暂无角色说明'}</p>
+        <p className="ws-agent-description">{agentDescription(agent)}</p>
         <footer><button onClick={() => setDraft({ id: agent.id, name: agent.name, role: agent.role, modelId: agent.modelId ?? agent.model_id ?? null, modelKeyId: agent.modelKeyId ?? agent.model_key_id ?? null, executionLocation: agent.executionLocation ?? agent.execution_location ?? 'server', deviceId: agent.deviceId ?? agent.device_id ?? null, enabled: agent.enabled })}><Cpu size={14} /> 挂载模型</button><button onClick={() => setCapabilityAgent(agent)}><Sparkles size={14} /> 技能管理</button><button onClick={() => notify(`权限管理：${agent.name}`)}><KeyRound size={14} /> 权限</button></footer>
       </article>)}</div>
     </> : <AgentMarket notify={notify} installedNames={agents.map(agent => agent.name)} onInstalled={load} />}
@@ -214,7 +216,7 @@ export function RuntimeRoomMembers({ room, identityId, notify, onClose }: Props 
   const [agents, setAgents] = useState<RuntimeAgent[]>([]);
   const [members, setMembers] = useState<string[]>([]);
   useEffect(() => { let live = true; void Promise.all([runtimeApi.agents(), runtimeApi.members(room)]).then(([a, m]) => { if (!live) return; if (a.ok) setAgents(a.data); if (m.ok) setMembers(m.data.map(item => item.id)); }); return () => { live = false; }; }, [room, identityId]);
-  return <div className="ws-modal-backdrop"><div className="ws-modal"><header><h2>群聊智能体角色池</h2><IconButton title="关闭" onClick={onClose}><X size={18} /></IconButton></header>{agents.map(agent => <label key={agent.id} className="ws-member-option"><input type="checkbox" checked={members.includes(agent.id)} disabled={agent.name === '统筹智能体' || !agent.enabled} onChange={event => { const add = event.target.checked; void (add ? runtimeApi.addMember(room, agent.id) : runtimeApi.removeMember(room, agent.id)).then(result => { if (result.ok) setMembers(items => add ? [...items, agent.id] : items.filter(item => item !== agent.id)); else notify(result.message); }).catch(() => notify('更新成员失败')); }} /><span><b>{agent.name}</b><small>{agent.role}</small></span></label>)}</div></div>;
+  return <div className="ws-modal-backdrop"><div className="ws-modal"><header><h2>群聊智能体角色池</h2><IconButton title="关闭" onClick={onClose}><X size={18} /></IconButton></header>{agents.map(agent => <label key={agent.id} className="ws-member-option"><input type="checkbox" checked={members.includes(agent.id)} disabled={agent.name === '统筹智能体' || !agent.enabled} onChange={event => { const add = event.target.checked; void (add ? runtimeApi.addMember(room, agent.id) : runtimeApi.removeMember(room, agent.id)).then(result => { if (result.ok) setMembers(items => add ? [...items, agent.id] : items.filter(item => item !== agent.id)); else notify(result.message); }).catch(() => notify('更新成员失败')); }} /><span><b>{agent.name}</b><small>{agentDescription(agent)}</small></span></label>)}</div></div>;
 }
 
 type SettingsView = 'channels' | 'members' | 'profile' | 'appearance' | 'ops';

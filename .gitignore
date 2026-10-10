@@ -71,6 +71,9 @@ blob-report/
 *.tmp
 *.bak
 *.pid
+__pycache__/
+*.py[cod]
+.venv/
 .vscode/
 
 # Local-only demonstration assets (product source and docs are tracked separately)

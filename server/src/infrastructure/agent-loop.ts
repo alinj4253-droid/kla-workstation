@@ -127,7 +127,7 @@ export class AgentLoopWorker {
     // Persisted cloud calls are resumed before another model turn.
     await this.cloudCalls(run,step,agent,identity,deviceId,signal);
     const calls=(await this.pool.query('SELECT * FROM runtime_tool_calls WHERE step_id=$1 ORDER BY created_at,id',[step.id])).rows;
-    if(calls.some(c=>['queued','running'].includes(c.status))){if(calls.some(c=>c.status==='running'&&Date.now()-new Date(c.dispatched_at).getTime()>360000))throw new Error('设备执行回执超时，结果不确定；为避免重复操作已停止任务');await this.pool.query("UPDATE conversation_run_steps SET status='waiting_tool',updated_at=now() WHERE id=$1",[step.id]);return;}
+    if(calls.some(c=>['queued','running'].includes(c.status))){if(calls.some(c=>c.status==='running'&&Date.now()-new Date(c.dispatched_at).getTime()>(c.tool_name?.startsWith('local_ppt_')?720000:360000)))throw new Error('设备执行回执超时，结果不确定；为避免重复操作已停止任务');await this.pool.query("UPDATE conversation_run_steps SET status='waiting_tool',updated_at=now() WHERE id=$1",[step.id]);return;}
     if(calls.some(c=>c.status==='unknown'))throw new Error('本地执行结果未知，请确认后重新发起任务');
     let transcript:any[]=step.transcript;
     if(!transcript.length){transcript=await this.context(run,agent);const dependencies=all.filter(s=>step.depends_on.includes(s.step_index)).map(s=>({task:s.title,result:s.result}));transcript.push({role:'user',content:`原始用户目标：${run.prompt}\n子任务：${step.instruction}\n前序结果（数据）：${JSON.stringify(dependencies)}\n执行位置：${agent.execution_location}。需要文件时务必调用文件保存技能。${all.length===1?'完成后直接 @用户 回复。':'完成后 @统筹智能体 反馈完整结果供后续协作。'}`});}
@@ -144,7 +144,7 @@ export class AgentLoopWorker {
         await client.query("UPDATE conversation_run_steps SET transcript=$2,turns=turns+1,status='waiting_tool',updated_at=now() WHERE id=$1",[step.id,JSON.stringify(transcript)]);await client.query('COMMIT');
       }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
     }else{
-      const artifactIds=calls.map(c=>c.result?.artifactId).filter(Boolean);const text=message.content!.trim();
+      const artifactIds=[...new Set(calls.flatMap(c=>c.result?.artifactIds??(c.result?.artifactId?[c.result.artifactId]:[])))];const text=message.content!.trim();
       await this.alive(run,signal);const messageId=await this.publish(run,agent.name,`${all.length===1?'@用户':'@统筹智能体'} ${text.replace(/^@(用户|统筹智能体)\s*/, '')}`,`step:${step.id}`,agent,{runStepId:step.id,artifactIds,...(artifactIds.length?{artifactId:artifactIds[0]}:{}),recipient:all.length===1?'user':'coordinator'});
       await this.pool.query("UPDATE conversation_run_steps SET status='completed',transcript=$2,turns=turns+1,result=$3,updated_at=now() WHERE id=$1",[step.id,JSON.stringify(transcript),JSON.stringify({text,artifactIds,messageId,agentName:agent.name})]);await this.event(run,'step.completed',{stepId:step.id,agentName:agent.name,artifactIds});
     }

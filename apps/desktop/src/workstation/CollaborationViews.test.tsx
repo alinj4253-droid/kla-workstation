@@ -1,8 +1,9 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ArtifactPane, MarkdownMessage, RunActivity, type RoomArtifact } from './CollaborationViews';
 
 describe('群聊呈现', () => {
+  afterEach(() => vi.restoreAllMocks());
   it('安全呈现 Markdown 表格、代码和链接', () => {
     render(<MarkdownMessage text={'**结论**\n\n| 项目 | 数值 |\n| --- | --- |\n| 收入 | 42 |\n\n```ts\nconst ok = true\n```\n\n[资料](https://example.com)\n\n<script>alert(1)</script>'} />);
     expect(screen.getByText('结论').tagName).toBe('STRONG');
@@ -43,5 +44,36 @@ describe('群聊呈现', () => {
     expect(download).toHaveBeenCalledWith(artifacts[1]);
     fireEvent.click(screen.getByTitle('收起预览'));
     expect(collapse).toHaveBeenCalledOnce();
+  });
+
+  it('二进制成果使用实际文件预览，并在切换时释放资源', () => {
+    const create = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:ppt-preview');
+    const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    const artifacts: RoomArtifact[] = [
+      { id: 'pdf', name: '方案.pdf', mimeType: 'application/pdf', content: btoa('%PDF-1.7'), contentEncoding: 'base64', sizeBytes: 8, createdAt: '' },
+      { id: 'png', name: '预览.png', mimeType: 'image/png', content: btoa('png'), contentEncoding: 'base64', sizeBytes: 3, createdAt: '' },
+    ];
+    const props = { artifacts, loading: false, collapsed: false, onSelect: vi.fn(), onCollapse: vi.fn(), onClose: vi.fn(), onDownload: vi.fn() };
+    const { rerender, unmount } = render(<ArtifactPane {...props} selected={artifacts[0]} />);
+    expect(document.querySelector('iframe[title="方案.pdf"]')).toHaveAttribute('src', 'blob:ppt-preview');
+    expect(create.mock.calls[0][0]).toBeInstanceOf(Blob);
+    rerender(<ArtifactPane {...props} selected={artifacts[1]} />);
+    expect(revoke).toHaveBeenCalledWith('blob:ppt-preview');
+    expect(screen.getByRole('img', { name: '预览.png' })).toHaveAttribute('src', 'blob:ppt-preview');
+    unmount();
+    expect(revoke).toHaveBeenCalledTimes(2);
+  });
+
+  it('PPTX 引导到相同文稿的真实 PDF，不用 HTML 代替幻灯片', () => {
+    const artifacts: RoomArtifact[] = [
+      { id: 'ppt', name: '方案.pptx', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', content: btoa('PK'), contentEncoding: 'base64', sizeBytes: 2, createdAt: '' },
+      { id: 'old-pdf', name: '方案.pdf', mimeType: 'application/pdf', content: '', contentEncoding: 'base64', sizeBytes: 2, createdAt: '2026-10-09' },
+      { id: 'pdf', name: '方案.pdf', mimeType: 'application/pdf', content: '', contentEncoding: 'base64', sizeBytes: 2, createdAt: '' },
+    ];
+    const select = vi.fn();
+    render(<ArtifactPane artifacts={artifacts} selected={artifacts[0]} loading={false} collapsed={false} onSelect={select} onCollapse={vi.fn()} onClose={vi.fn()} onDownload={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: '查看实际渲染的 PDF 预览' }));
+    expect(select).toHaveBeenCalledWith('pdf');
+    expect(document.querySelector('iframe')).toBeNull();
   });
 });

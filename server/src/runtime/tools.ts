@@ -18,11 +18,16 @@ const properties: Record<RuntimeSkillCode, Record<string, unknown>> = {
   local_code: { fileName: string, content: string, path: string },
   local_bat: { script: string, cwd: string, timeoutMs: integer },
   local_cli: { executable: string, args: { type: 'array', items: string }, cwd: string, timeoutMs: integer },
+  local_ppt_doctor: {},
+  local_ppt_build: { specJson: { type: 'string', description: '完整 DeckSpec JSON 字符串；必须有 cover 和语义块，禁止几何字段' }, fileName: string, render: { type: 'boolean', description: '默认 true，调用真实 PPTX 渲染器' } },
+  local_ppt_inspect: { path: string, documentId: string },
+  local_ppt_render: { path: string, documentId: string },
 };
 const required: Record<RuntimeSkillCode, string[]> = {
   knowledge_search: ['serviceInstanceId','query'], knowledge_read: ['serviceInstanceId','docId'], memory_recall: ['query'],
   artifact_write: ['fileName','content'], artifact_read: ['artifactId'], local_read: ['path'], local_list: ['path'],
   local_write: ['fileName','content'], local_code: ['fileName','content'], local_bat: ['script'], local_cli: ['executable'],
+  local_ppt_doctor: [], local_ppt_build: ['specJson'], local_ppt_inspect: [], local_ppt_render: [],
 };
 export function agentTools(agent: RegisteredAgent) {
   return runtimeSkillCatalog.filter(s => agent.skills.includes(s.code) && (s.location === 'server' || agent.execution_location === 'local'))
@@ -45,6 +50,7 @@ export class RuntimeTools {
     if (name === 'artifact_read') {
       const artifact = await this.accounts.getArtifact(scope.identityId, String(args.artifactId));
       if (!artifact) throw new Error('成果不存在或当前身份无权访问');
+      if (artifact.contentEncoding === 'base64') return { id: artifact.id, name: artifact.name, mimeType: artifact.mimeType, sizeBytes: artifact.sizeBytes, binary: true, hint: '二进制内容不进入模型上下文。PPTX 请使用 local_ppt_inspect 读取本地 documentId；PDF/PNG 可在成果抽屉查看。' };
       return artifact;
     }
     if (name === 'artifact_write') {

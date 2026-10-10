@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, ArrowRight, Bell, BookOpen, Bot, BriefcaseBusiness, CalendarDays, Check, CheckCircle2, ChevronDown, CircleHelp, Clock3, Cloud, Code2, Copy, CreditCard, Database, Download, Eye, EyeOff, FileText, Folder, FolderPlus, Home, KeyRound, LayoutDashboard, LogOut, Menu, MessageSquare, MoreHorizontal, Paperclip, Plus, Search, Send, Settings, ShieldCheck, Sparkles, Upload, UserCircle, Users, Wallet, X, Wrench, Route, RefreshCw, Brain as BrainIcon } from 'lucide-react';
 import logo from '../assets/kla-sidebar-logo.png';
-import type { IdentityDto } from '@kla-workstation/contracts';
+import type { CreateConversationRequest, IdentityDto } from '@kla-workstation/contracts';
 import { authExpiredEventName, klaApi, sessionChangedEventName } from '../api/client';
 import { RuntimeAgentManagement, RuntimeRoomMembers, RuntimeSkillManagement, RuntimeToolManagement, RuntimeSettingsView } from './RuntimeManagement';
 import { memoryApi } from '../api/memories';
@@ -12,6 +12,8 @@ import { Badge, Chart, formatPoints, IconButton, Panel, Stat } from './ui';
 import { computeApi } from '../api/compute';
 import { ArtifactPane, MarkdownMessage, ProjectWorkspace, RunActivity, type RoomArtifact, type RunEvent, type RunStep } from './CollaborationViews';
 import './collaboration.css';
+import { CreateGroupDialog } from './CreateGroupDialog';
+import { runtimeApi } from '../api/runtime';
 
 type Section = 'home' | 'projects' | 'knowledge' | 'agents' | 'memory' | 'compute' | 'chats' | 'settings';
 type LoginIdentity = IdentityDto & { role?: 'personal' | 'admin' | 'member' };
@@ -499,20 +501,6 @@ export function Workstation(): React.JSX.Element {
       }).catch((error: unknown) => notify(error instanceof Error ? `创建项目失败：${error.message}` : '创建项目失败，请检查后端连接后重试')).finally(() => { createLock.current = false; setCreating(false); });
       return;
     }
-    if (modal === 'chat') {
-      if (!signedIn) { notify('请先登录后创建群组'); return; }
-      const selectedProject = projects.find(p => p.id === (newProject || activeProject || projects[0]?.id));
-      if (!selectedProject?.id) { notify('请先创建项目，再创建群组'); return; }
-      const identityId = activeIdentityId;
-      createLock.current = true; setCreating(true);
-      void klaApi.request<{ id: string; projectId: string; name: string }>('/v1/conversations', { method: 'POST', body: JSON.stringify({ projectId: selectedProject.id, name: newName.trim() }) }).then((result) => {
-        if (klaApi.getIdentity() !== identityId) return;
-        if (!result.ok) { notify(apiError(result)); return; }
-        const chat = { id: result.data.id, name: result.data.name, project: selectedProject.name, projectId: selectedProject.id, messages: [] };
-        setChats(items => [...items, chat]); setProjects(items => items.map(p => p.id === selectedProject.id ? { ...p, groupIds: [...(p.groupIds ?? []), chat.id], open: true } : p)); setActiveChat(chat.id); setActiveProject(selectedProject.id); setModal(null); setNewName(''); setNewProject(''); setSection('chats'); notify('群组已创建并保存到数据库');
-      }).catch((error: unknown) => notify(error instanceof Error ? `创建群聊失败：${error.message}` : '创建群聊失败，请检查后端连接后重试')).finally(() => { createLock.current = false; setCreating(false); });
-      return;
-    }
     if (modal === 'knowledge-create') {
       const id = `kb-local-${Date.now()}`;
       const color = knowledgeScopeChoice === 'enterprise' ? '#2779e9' : knowledgeScopeChoice === 'project' ? '#0d9488' : '#f59e0b';
@@ -522,6 +510,20 @@ export function Workstation(): React.JSX.Element {
       return;
     }
     setModal(null); setNewName(''); setNewDescription(''); notify('已在本地预览中创建');
+  };
+  const createGroup = async (input: CreateConversationRequest) => {
+    if (!signedIn) throw new Error('请先登录后创建群组');
+    if (workspaceLoading) throw new Error('工作区正在加载，请稍后重试');
+    const selectedProject = projects.find(project => project.id === input.projectId);
+    if (!selectedProject) throw new Error('项目不存在，请刷新后重试');
+    const identityId = activeIdentityId;
+    const result = await runtimeApi.createGroup(input, identityId);
+    if (klaApi.getIdentity() !== identityId) return;
+    if (!result.ok) throw new Error(apiError(result));
+    const chat: Chat = { id: result.data.id, name: result.data.name, project: selectedProject.name, projectId: selectedProject.id, messages: [] };
+    setChats(items => [...items, chat]);
+    setProjects(items => items.map(project => project.id === selectedProject.id ? { ...project, groupIds: [...(project.groupIds ?? []), chat.id], open: true } : project));
+    setActiveChat(chat.id); setActiveProject(selectedProject.id); setModal(null); setNewName(''); setNewProject(''); setSection('chats'); notify('群组已创建并保存到数据库');
   };
   // 用量导出改由服务端生成（§7.4），前端不再本地拼接 CSV。
 
@@ -597,7 +599,8 @@ export function Workstation(): React.JSX.Element {
         </>}
       </div>
     </main>
-    {modal && !['register','identity','create-enterprise','join-enterprise'].includes(modal) && <div className="ws-modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget && !creating) setModal(null); }}><div className="ws-modal"><header><h2>{modal === 'project' ? '创建项目' : modal === 'chat' ? '创建群聊' : modal === 'knowledge-create' ? '新建知识库' : '上传知识文件'}</h2><IconButton title="关闭" onClick={() => { if (!creating) setModal(null); }}><X size={19} /></IconButton></header>{modal === 'knowledge' ? <div className="ws-upload"><Upload size={28} /><p>拖拽文件到此处，或点击选择本地文件</p><small>支持 xlsx、ppt/pptx、word、pdf、mp4、mp3、png、jpg</small><input type="file" multiple accept=".xlsx,.xls,.ppt,.pptx,.doc,.docx,.pdf,.mp4,.mp3,.wav,.png,.jpg,.jpeg,.txt,.md,.html" onChange={e => addKnowledgeFiles(Array.from(e.target.files ?? []))} /></div> : modal === 'knowledge-create' ? <form onSubmit={e => { e.preventDefault(); create(); }}><label>知识库名称<input autoFocus required value={newName} onChange={e => setNewName(e.target.value)} placeholder="请输入知识库名称" /></label><label>说明（选填）<textarea value={newDescription} onChange={e => setNewDescription(e.target.value)} placeholder="说明知识库的用途和内容范围" /></label><label>知识库层级<select value={knowledgeScopeChoice} onChange={e => setKnowledgeScopeChoice(e.target.value as KnowledgeScope)}><option value="personal">个人知识库</option><option value="project">项目知识库</option><option value="enterprise">企业知识库</option></select></label><p className="ws-detail-copy">企业知识库需企业管理员权限，项目知识库默认归当前项目创建者管理。</p><footer><button type="button" disabled={creating} onClick={() => setModal(null)}>取消</button><button className="ws-primary" type="submit">创建知识库</button></footer></form> : <form onSubmit={e => { e.preventDefault(); create(); }}><label>{modal === 'project' ? '项目名称' : modal === 'chat' ? '群聊名称' : '名称'}<input autoFocus required value={newName} onChange={e => setNewName(e.target.value)} placeholder="请输入名称" /></label>{modal === 'project' && <label>项目说明<textarea value={newDescription} onChange={e => setNewDescription(e.target.value)} placeholder="简要描述职责与目标" /></label>}{modal === 'chat' && <label>关联项目<select value={newProject || activeProject || projects[0]?.id || ""} onChange={e => setNewProject(e.target.value)} disabled={!projects.length}>{projects.length ? projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>) : <option value="">暂无可用项目</option>}</select></label>}<footer><button type="button" disabled={creating} onClick={() => setModal(null)}>取消</button><button className="ws-primary" type="submit" disabled={creating || workspaceLoading || (modal === "chat" && !projects.length)}>{creating ? '创建中…' : '创建'}</button></footer></form>}</div></div>}
+    {modal === 'chat' && <CreateGroupDialog key={activeIdentityId} identityId={activeIdentityId} projects={projects} initialProjectId={newProject || activeProject || projects[0]?.id || ''} fixedProject={!!newProject} onClose={() => { setModal(null); setNewProject(''); }} onCreate={createGroup} />}
+    {modal && !['chat','register','identity','create-enterprise','join-enterprise'].includes(modal) && <div className="ws-modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget && !creating) setModal(null); }}><div className="ws-modal"><header><h2>{modal === 'project' ? '创建项目' : modal === 'knowledge-create' ? '新建知识库' : '上传知识文件'}</h2><IconButton title="关闭" onClick={() => { if (!creating) setModal(null); }}><X size={19} /></IconButton></header>{modal === 'knowledge' ? <div className="ws-upload"><Upload size={28} /><p>拖拽文件到此处，或点击选择本地文件</p><small>支持 xlsx、ppt/pptx、word、pdf、mp4、mp3、png、jpg</small><input type="file" multiple accept=".xlsx,.xls,.ppt,.pptx,.doc,.docx,.pdf,.mp4,.mp3,.wav,.png,.jpg,.jpeg,.txt,.md,.html" onChange={e => addKnowledgeFiles(Array.from(e.target.files ?? []))} /></div> : modal === 'knowledge-create' ? <form onSubmit={e => { e.preventDefault(); create(); }}><label>知识库名称<input autoFocus required value={newName} onChange={e => setNewName(e.target.value)} placeholder="请输入知识库名称" /></label><label>说明（选填）<textarea value={newDescription} onChange={e => setNewDescription(e.target.value)} placeholder="说明知识库的用途和内容范围" /></label><label>知识库层级<select value={knowledgeScopeChoice} onChange={e => setKnowledgeScopeChoice(e.target.value as KnowledgeScope)}><option value="personal">个人知识库</option><option value="project">项目知识库</option><option value="enterprise">企业知识库</option></select></label><p className="ws-detail-copy">企业知识库需企业管理员权限，项目知识库默认归当前项目创建者管理。</p><footer><button type="button" disabled={creating} onClick={() => setModal(null)}>取消</button><button className="ws-primary" type="submit">创建知识库</button></footer></form> : <form onSubmit={e => { e.preventDefault(); create(); }}><label>{modal === 'project' ? '项目名称' : '名称'}<input autoFocus required value={newName} onChange={e => setNewName(e.target.value)} placeholder="请输入名称" /></label>{modal === 'project' && <label>项目说明<textarea value={newDescription} onChange={e => setNewDescription(e.target.value)} placeholder="简要描述职责与目标" /></label>}<footer><button type="button" disabled={creating} onClick={() => setModal(null)}>取消</button><button className="ws-primary" type="submit" disabled={creating || workspaceLoading}>{creating ? '创建中…' : '创建'}</button></footer></form>}</div></div>}
     {roomMembersOpen && activeChat && <RuntimeRoomMembers room={activeChat} identityId={activeIdentityId} notify={notify} onClose={() => setRoomMembersOpen(false)} />}
     {details && <div className="ws-modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setDetails(null); }}><div className="ws-modal"><header><h2>{details}</h2><IconButton title="关闭" onClick={() => setDetails(null)}><X size={19} /></IconButton></header><p className="ws-detail-copy">当前为前端预览数据。文件正文或模型参数详情将在对应服务端接口接入后展示。</p><footer><button className="ws-primary" onClick={() => setDetails(null)}>关闭</button></footer></div></div>}
     {knowledgePreview && <div className="ws-modal-backdrop" style={{ justifyContent: 'flex-end', padding: 0, background: '#15375724' }} onMouseDown={e => { if (e.target === e.currentTarget) { if (knowledgePreview.url) URL.revokeObjectURL(knowledgePreview.url); setKnowledgePreview(null); } }}><div className="ws-modal ws-knowledge-preview"><header><h2>{knowledgePreview.title}</h2><IconButton title="关闭预览" onClick={() => { if (knowledgePreview.url) URL.revokeObjectURL(knowledgePreview.url); setKnowledgePreview(null); }}><X size={19} /></IconButton></header>{knowledgePreview.url ? <iframe title={knowledgePreview.title} src={knowledgePreview.url} /> : <article>{knowledgePreview.content}</article>}</div></div>}

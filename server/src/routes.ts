@@ -9,7 +9,8 @@ import { PermissionDeniedError, requirePermission, type PermissionAction } from 
 import type { Session } from './repositories/types.js';
 import type { AgentLoopWorker } from './infrastructure/agent-loop.js';
 import { ensureRuntimeRegistry, roomRegistry } from './runtime/registry.js';
-import { memoryBrowserQuerySchema } from '@kla-workstation/contracts';
+import { createConversationRequestSchema, memoryBrowserQuerySchema } from '@kla-workstation/contracts';
+import { createRoomWithAgents, InvalidConversationAgents } from './runtime/create-room.js';
 import { MemoryBrowserRepository } from './memories/browser.js';
 import { ShortTermMemoryService } from './memories/short-term.js';
 import { canAccessConversation, canManageProject, resolveKnowledgeAccessScope } from './auth/resource-scope.js';
@@ -381,7 +382,42 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
     return reply.send({ ok: true, data: null });
   });
   app.get('/api/v1/conversations', async (request, reply) => { const session = await auth(request, reply); if (!session) return; const identity = await enforce(session, request, 'read', reply); if (!identity) return; return reply.send({ ok: true, data: await deps.accounts.listAllConversations(identity.id) }); });
-  app.post('/api/v1/conversations', async (request, reply) => { const session = await auth(request, reply); if (!session) return; const identity = await enforce(session, request, 'write', reply); if (!identity) return; const body = request.body as { projectId?: string; name?: string }; let projectId = body.projectId; if (!projectId) { const projects = await deps.accounts.listProjects(identity.id); projectId = projects.find(project => project.ownerIdentityId === identity.id)?.id ?? (await deps.accounts.createProject(identity.id, '我的协作项目')).id; } if (!projectId || !body.name?.trim()) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: 'name 为必填项', retryable: false } }); if (deps.mode !== 'mock' && deps.database?.rawPool) { if (!(await canManageProject(deps.database.rawPool, identity.id, projectId))) return reply.code(403).send({ ok: false, error: { code: 'FORBIDDEN', message: '无权管理该项目' } }); } else { const projects = await deps.accounts.listProjects(identity.id); if (!projects.some((project) => project.id === projectId)) return reply.code(403).send({ ok: false, error: { code: 'FORBIDDEN', message: '无权访问该项目' } }); } const conversation = await deps.accounts.createConversation(projectId, body.name.trim()); if (deps.mode !== 'mock' && deps.database?.rawPool) await roomRegistry(deps.database.rawPool, conversation.id); return reply.send({ ok: true, data: conversation }); });
+  app.get('/api/v1/projects/:projectId/agents', async (request, reply) => {
+    const session = await auth(request, reply); if (!session) return;
+    if (!deps.database?.rawPool) return reply.code(503).send({ ok: false, error: { code: 'DATABASE_NOT_CONFIGURED', message: '数据库未配置，无法加载可用智能体' } });
+    const identity = await enforce(session, request, 'read', reply); if (!identity) return;
+    const { projectId } = request.params as { projectId: string };
+    if (!(await canManageProject(deps.database.rawPool, identity.id, projectId))) return reply.code(403).send({ ok: false, error: { code: 'FORBIDDEN', message: '无权管理该项目' } });
+    const project = (await deps.database.rawPool.query('SELECT owner_identity_id FROM projects WHERE id=$1', [projectId])).rows[0];
+    if (!project) return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: '项目不存在' } });
+    await ensureRuntimeRegistry(deps.database.rawPool, project.owner_identity_id);
+    const agents = await deps.database.rawPool.query('SELECT id,name,role,type,execution_location,enabled,version FROM agents WHERE identity_id=$1 AND enabled ORDER BY created_at,name', [project.owner_identity_id]);
+    return reply.send({ ok: true, data: agents.rows });
+  });
+  app.post('/api/v1/conversations', async (request, reply) => {
+    const session = await auth(request, reply); if (!session) return;
+    const identity = await enforce(session, request, 'write', reply); if (!identity) return;
+    // Retain project-less legacy requests while validating before any database writes.
+    const parsed = createConversationRequestSchema.extend({ projectId: createConversationRequestSchema.shape.projectId.optional() }).safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: '请输入群组名称，并选择有效且不重复的协作智能体', retryable: false } });
+    const body = parsed.data;
+    let projectId = body.projectId;
+    if (!projectId) {
+      const projects = await deps.accounts.listProjects(identity.id);
+      projectId = projects.find(project => project.ownerIdentityId === identity.id)?.id ?? (await deps.accounts.createProject(identity.id, '我的协作项目')).id;
+    }
+    if (deps.mode !== 'mock' && deps.database?.rawPool) {
+      if (!(await canManageProject(deps.database.rawPool, identity.id, projectId))) return reply.code(403).send({ ok: false, error: { code: 'FORBIDDEN', message: '无权管理该项目' } });
+      try { return reply.send({ ok: true, data: await createRoomWithAgents(deps.database.rawPool, projectId, body.name, body.agentIds) }); }
+      catch (error) {
+        if (error instanceof InvalidConversationAgents) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: error.message, retryable: false } });
+        throw error;
+      }
+    }
+    const projects = await deps.accounts.listProjects(identity.id);
+    if (!projects.some(project => project.id === projectId)) return reply.code(403).send({ ok: false, error: { code: 'FORBIDDEN', message: '无权访问该项目' } });
+    return reply.send({ ok: true, data: await deps.accounts.createConversation(projectId, body.name) });
+  });
   app.get('/api/v1/conversations/:conversationId/messages', async (request, reply) => { const session = await auth(request, reply); if (!session) return; const identity = await enforce(session, request, 'read', reply); if (!identity) return; const params = request.params as { conversationId: string }; const conversations = await deps.accounts.listAllConversations(identity.id); if (!conversations.some((item) => item.id === params.conversationId)) return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: '群聊不存在或无权访问', retryable: false } }); return reply.send({ ok: true, data: await deps.accounts.listMessages(params.conversationId) }); });
   app.post('/api/v1/conversations/:conversationId/messages', async (request, reply) => {
     const session = await auth(request, reply); if (!session) return;
@@ -424,7 +460,10 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
     if (!body.agentId) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: 'agentId 为必填项' } });
     const agent = await deps.database.rawPool.query('SELECT id, name, role, type, model_id, enabled FROM agents WHERE id=$1 AND identity_id=$2', [body.agentId, identity.id]);
     if (!agent.rows[0]) return reply.code(404).send({ ok: false, error: { code: 'AGENT_NOT_FOUND', message: '智能体不存在或无权使用' } });
-    await deps.database.rawPool.query('INSERT INTO conversation_agents (conversation_id, agent_id, role) VALUES ($1,$2,$3) ON CONFLICT (conversation_id, agent_id) DO UPDATE SET role=EXCLUDED.role', [conversationId, body.agentId, body.role ?? 'member']);
+    if (!agent.rows[0].enabled) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: '智能体已禁用' } });
+    const role = agent.rows[0].name === '统筹智能体' ? 'coordinator' : 'member';
+    if (body.role && body.role !== role) return reply.code(400).send({ ok: false, error: { code: 'COORDINATOR_REQUIRED', message: '群主固定为统筹智能体，其他智能体只能作为协作成员' } });
+    await deps.database.rawPool.query('INSERT INTO conversation_agents (conversation_id, agent_id, role) VALUES ($1,$2,$3) ON CONFLICT (conversation_id, agent_id) DO UPDATE SET role=EXCLUDED.role', [conversationId, body.agentId, role]);
     return reply.send({ ok: true, data: agent.rows[0] });
   });
   app.delete('/api/v1/conversations/:conversationId/agents/:agentId', async (request, reply) => {

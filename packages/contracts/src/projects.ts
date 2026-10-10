@@ -26,7 +26,9 @@ export type ConversationDto = z.infer<typeof conversationDtoSchema>;
 
 export const createConversationRequestSchema = z.object({
   projectId: z.string().min(1),
-  name: z.string().min(1).max(100),
+  name: z.string().trim().min(1).max(100),
+  // Collaborating agents only; the server always adds the project coordinator.
+  agentIds: z.array(z.string().uuid()).min(1).max(100).refine(ids => new Set(ids).size === ids.length, '智能体不能重复').optional(),
 });
 
 export type CreateConversationRequest = z.infer<typeof createConversationRequestSchema>;

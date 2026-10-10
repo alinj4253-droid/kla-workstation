@@ -7,6 +7,13 @@ files:
   - desktop/**/*
   - package.json
 asar: true
+extraResources:
+  - from: resources/skills/deck-agent-kit
+    to: skills/deck-agent-kit
+    filter:
+      - '**/*'
+      - '!**/__pycache__/**'
+      - '!**/*.pyc'
 win:
   target:
     - nsis

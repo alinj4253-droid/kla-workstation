@@ -3,7 +3,8 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { createHash } = require('node:crypto');
 
-const capabilities = ['local_read','local_list','local_write','local_code','local_bat','local_cli'];
+const ppt = require('./local-ppt.cjs');
+const capabilities = ['local_read','local_list','local_write','local_code','local_bat','local_cli', ...ppt.capabilities];
 function absolute(value) { if (typeof value !== 'string' || !path.isAbsolute(value)) throw new Error('本地路径必须是绝对路径'); return path.resolve(value); }
 function filename(value) { if (typeof value !== 'string' || !value || value === '.' || value === '..' || /[\\/:*?"<>|\x00-\x1f]/.test(value)) throw new Error('文件名无效'); return value; }
 function within(target, root) { const relative = path.relative(root, target); return relative === '' || (relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative)); }
@@ -58,6 +59,7 @@ function command(executable,args,cwd,timeoutMs,signal) {
 }
 async function executeLocal(call,root,signal,approvedRead=false) {
   if(!capabilities.includes(call.tool))throw new Error('不支持的本地技能');signal.throwIfAborted();
+  if(ppt.capabilities.includes(call.tool))return ppt.executePpt(call,root,signal,approvedRead,{command,absolute,filename,within,approvedReadPath});
   const a=call.arguments;const folder=path.join(root,call.runId,call.stepId);await fs.mkdir(folder,{recursive:true});
   if(call.tool==='local_read'){const target=await approvedReadPath(absolute(a.path),root,approvedRead);const stat=await fs.stat(target);if(stat.size>10_000_000)throw new Error('文本读取限 10 MB，请用 CLI 分段处理');const text=await fs.readFile(target,'utf8');return{result:{content:text.slice(a.offset??0,(a.offset??0)+(a.maxChars??20000)),sizeBytes:stat.size,truncated:text.length>(a.offset??0)+(a.maxChars??20000)}};}
   if(call.tool==='local_list'){const target=await approvedReadPath(absolute(a.path),root,approvedRead);const entries=await fs.readdir(target,{withFileTypes:true});return{result:{entries:entries.slice(0,2000).map(e=>({name:e.name,directory:e.isDirectory()})),truncated:entries.length>2000}};}
