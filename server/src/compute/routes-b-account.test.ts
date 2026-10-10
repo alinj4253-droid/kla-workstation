@@ -1,4 +1,4 @@
-﻿import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import Fastify from 'fastify';
 import type { AccountRepository, Identity, Session } from '../repositories/types.js';
 import type { ComputeRepository } from './compute-repository.js';

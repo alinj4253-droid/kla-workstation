@@ -7,6 +7,14 @@ import { ENTERPRISE_ADMIN_PERMISSIONS, ENTERPRISE_MEMBER_PERMISSIONS, PERSONAL_D
 const scrypt = promisify(scryptCallback);
 const hashToken = (value: string) => createHash('sha256').update(value).digest('hex');
 
+/** 同一用户已在该企业拥有 active 身份，禁止重复加入。 */
+export class DuplicateMembershipError extends Error {
+  constructor(public readonly userId: string, public readonly organizationId: string) {
+    super('你已是该企业成员，无需重复加入');
+    this.name = 'DuplicateMembershipError';
+  }
+}
+
 async function hashPassword(password: string): Promise<string> {
   const salt = randomBytes(16).toString('hex');
   const derived = await scrypt(password, salt, 64) as Buffer;
@@ -164,6 +172,15 @@ export class PostgresAccountRepository implements AccountRepository {
       await client.query('BEGIN');
       const org = await client.query("SELECT id, name FROM organizations WHERE invite_code = $1 AND status = 'active'", [inviteCode.trim().toUpperCase()]);
       if (!org.rows[0]) { await client.query('ROLLBACK'); return null; }
+      // 禁止同一用户重复加入同一企业：已存在 active 企业身份时直接拒绝（DB 唯一索引兜底）
+      const existing = await client.query(
+        "SELECT id FROM identities WHERE user_id = $1 AND organization_id = $2 AND type = 'enterprise' AND status = 'active' LIMIT 1",
+        [userId, org.rows[0].id],
+      );
+      if (existing.rows[0]) {
+        await client.query('ROLLBACK');
+        throw new DuplicateMembershipError(userId, org.rows[0].id);
+      }
       const userEmailRow = await client.query('SELECT email FROM users WHERE id = $1', [userId]);
       const identity = await client.query("INSERT INTO identities (user_id, type, display_name, organization_id, is_default) VALUES ($1, 'enterprise', $2, $3, false) RETURNING id, user_id, type, display_name, organization_id, status, is_default", [userId, org.rows[0].name, org.rows[0].id]);
       const role = await client.query("INSERT INTO roles (organization_id, name, description, is_system) VALUES ($1, '成员', '企业成员', true) ON CONFLICT (organization_id, name) DO UPDATE SET name = EXCLUDED.name RETURNING id", [org.rows[0].id]);

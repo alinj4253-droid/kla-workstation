@@ -129,7 +129,14 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
   app.post('/api/v1/organizations/join', async (request, reply) => {
     const session = await auth(request, reply); if (!session) return;
     const body = request.body as { inviteCode?: string }; if (!body.inviteCode?.trim()) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: '企业邀请码不能为空', retryable: false } });
-    const identity = await deps.accounts.joinOrganization(session.userId, body.inviteCode); if (!identity) return reply.code(404).send({ ok: false, error: { code: 'INVITE_NOT_FOUND', message: '企业邀请码无效或企业已停用', retryable: false } }); return reply.send({ ok: true, data: identity });
+    try {
+      const identity = await deps.accounts.joinOrganization(session.userId, body.inviteCode); if (!identity) return reply.code(404).send({ ok: false, error: { code: 'INVITE_NOT_FOUND', message: '企业邀请码无效或企业已停用', retryable: false } }); return reply.send({ ok: true, data: identity });
+    } catch (error) {
+      if (error instanceof Error && error.name === 'DuplicateMembershipError') {
+        return reply.code(409).send({ ok: false, error: { code: 'DUPLICATE_MEMBERSHIP', message: error.message, retryable: false } });
+      }
+      throw error;
+    }
   });
   app.post('/api/v1/me/identities/:identityId/activate', async (request, reply) => {
     const session = await auth(request, reply); if (!session) return; const params = request.params as { identityId: string };

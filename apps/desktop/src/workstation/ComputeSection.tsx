@@ -193,7 +193,7 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
     event.preventDefault();
     if (!organizationId || !allocTarget) return;
     const amount = Number(allocAmount);
-    if (!Number.isFinite(amount) || amount <= 0) { onNotify('请输入大于 0 的算力点数'); return; }
+    if (!Number.isFinite(amount) || amount <= 0) { onNotify('请输入大于 0 的积分数'); return; }
     setAllocSubmitting(true);
     // 回收接口路径中的 :id 仅用于回显归属，传成员 identityId 占位。
     const result = allocMode === 'allocate'
@@ -555,7 +555,7 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
         <Metric icon={<FileText />} label="总请求数" value={`${usageSummary?.requestCount ?? 0}`} desc={`所选范围内 ｜ 成功率 ${successRate}，失败 ${usageSummary?.failureCount ?? 0} 次`} />
         <Metric icon={<Database />} label="总 Token" value={formatTokens(usageSummary?.totalTokens)}
           desc={`输入 ${formatTokens(usageSummary?.inputTokens)} / 输出 ${formatTokens(usageSummary?.outputTokens)} / 缓存 ——`} />
-        <Metric accent icon={<Wallet />} label="总消费" value={formatPoints(usageSummary?.costPoints)} desc="按实际结算价计入（算力点）" />
+        <Metric accent icon={<Wallet />} label="总消费" value={formatPoints(usageSummary?.costPoints)} desc="按实际结算价计入（积分）" />
         <Metric icon={<Clock3 />} label="平均耗时" value={usageSummary?.avgLatencyMs != null ? `${Math.round(usageSummary.avgLatencyMs)}ms` : '—'} desc={`${usageSummary?.requestCount ?? 0} 次请求的端到端平均时延`} />
       </div>
 
@@ -758,21 +758,32 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
             </p>
           </Panel>
 
-          <Panel title="企业额度流水" subtitle="管理员与成员两侧的分发/回收流水都会记录在此，并标注是否已同步到算力上游。">
+          <Panel title="企业额度流水" subtitle="每笔分配/回收在管理员与成员账户各记一条流水：“账户”为流水归属，“对方”为交易对手方，金额带 +/− 表示流入/流出。">
             {orgLedger.length === 0
               ? <div className="ws-empty">暂无企业额度流水</div>
               : <table className="ws-table"><thead><tr>
-                <th>时间</th><th>类型</th><th>方向</th><th>金额</th><th>状态</th><th>已同步上游</th><th>请求号</th>
+                <th>时间</th><th>操作</th><th>账户</th><th>对方</th><th>变动</th><th>状态</th><th>上游同步</th><th>请求号</th>
               </tr></thead><tbody>
-                {orgLedger.slice(0, 20).map((entry) => <tr key={entry.id}>
+                {orgLedger.slice(0, 20).map((entry) => {
+                  const meta = entry.metadata as { direction?: string } | null;
+                  const direction = meta?.direction === 'out' ? 'out' : meta?.direction === 'in' ? 'in' : null;
+                  return <tr key={entry.id}>
                   <td>{formatTime(entry.createdAt)}</td>
                   <td><Badge tone={entry.operation === 'reclaim' ? 'orange' : 'blue'}>{LEDGER_LABELS[entry.operation] ?? entry.operation}</Badge></td>
-                  <td>{(entry.metadata as { direction?: string } | null)?.direction === 'out' ? '划出' : (entry.metadata as { direction?: string } | null)?.direction === 'in' ? '划入' : '—'}</td>
-                  <td>{formatPoints(entry.amount)}</td>
+                  <td>{entry.identityName ?? '—'}</td>
+                  <td>{entry.counterpartyName ?? '—'}</td>
+                  <td>{direction === 'in'
+                    ? <b style={{ color: '#1a7f37' }}>划入 +{formatPoints(entry.amount)}</b>
+                    : direction === 'out'
+                      ? <b style={{ color: '#b42318' }}>划出 −{formatPoints(entry.amount)}</b>
+                      : (entry.operation === 'recharge' || entry.operation === 'grant')
+                        ? <b style={{ color: '#1a7f37' }}>+{formatPoints(entry.amount)}</b>
+                        : formatPoints(entry.amount)}</td>
                   <td>{entry.status === 'completed' ? '已完成' : entry.status}</td>
-                  <td>{entry.sub2apiSynced ? '是' : <Badge tone="orange">待同步</Badge>}</td>
+                  <td>{entry.sub2apiSynced ? '已同步' : <Badge tone="orange">待同步</Badge>}</td>
                   <td><code>{entry.requestId ? `${entry.requestId.slice(0, 8)}…` : '—'}</code></td>
-                </tr>)}
+                </tr>;
+                })}
               </tbody></table>}
           </Panel>
         </>}
@@ -782,7 +793,7 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
       <div className="ws-modal">
         <header><h2>{allocMode === 'allocate' ? '分配额度' : '回收额度'} · {allocTarget.displayName}</h2><button className="ws-icon-button" aria-label="关闭" onClick={() => setAllocTarget(null)}>×</button></header>
         <form onSubmit={(event) => void submitAllocation(event)}>
-          <label>算力点<input autoFocus required type="number" min="0.001" step="0.001" value={allocAmount} onChange={(event) => setAllocAmount(event.target.value)} placeholder="请输入算力点" /></label>
+          <label>积分<input autoFocus required type="number" min="0.001" step="0.001" value={allocAmount} onChange={(event) => setAllocAmount(event.target.value)} placeholder="请输入积分" /></label>
           <p className="ws-detail-copy">
             成员当前可用 {formatPoints(allocTarget.available)} ｜ 总额度 {formatPoints(allocTarget.quotaTotal)} ｜ 已用 {formatPoints(allocTarget.quotaUsed)}
             {allocMode === 'reclaim' && <> ｜ 可回收上限 {formatPoints(allocTarget.available)}</>}
@@ -801,7 +812,7 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
         <form onSubmit={(event) => void createKey(event)}>
           <label>名称<input required value={keyForm.name} onChange={(event) => setKeyForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="请输入密钥名称" /></label>
           <label>模型分组（选填）<input value={keyForm.groupId} onChange={(event) => setKeyForm((prev) => ({ ...prev, groupId: event.target.value }))} placeholder="留空使用默认分组" /></label>
-          <label>限额算力点（选填）<input type="number" min="0" step="0.001" value={keyForm.quota} onChange={(event) => setKeyForm((prev) => ({ ...prev, quota: event.target.value }))} /></label>
+          <label>限额积分（选填）<input type="number" min="0" step="0.001" value={keyForm.quota} onChange={(event) => setKeyForm((prev) => ({ ...prev, quota: event.target.value }))} /></label>
           <label>速率 RPM（选填）<input type="number" min="1" step="1" value={keyForm.rpm} onChange={(event) => setKeyForm((prev) => ({ ...prev, rpm: event.target.value }))} /></label>
           <label>有效期（选填）<input type="datetime-local" value={keyForm.expiresAt} onChange={(event) => setKeyForm((prev) => ({ ...prev, expiresAt: event.target.value }))} /></label>
           <p className="ws-detail-copy">完整密钥仅在创建成功后展示一次，服务端只保存前缀与指纹。</p>
@@ -815,7 +826,7 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
         <header><h2>编辑密钥 · {editKey.name}</h2><button className="ws-icon-button" aria-label="关闭" onClick={() => setEditKey(null)}>×</button></header>
         <form onSubmit={(event) => void submitEdit(event)}>
           <label>名称<input required value={editForm.name} onChange={(event) => setEditForm((prev) => ({ ...prev, name: event.target.value }))} /></label>
-          <label>限额算力点<input type="number" min="0" step="0.001" value={editForm.quota} onChange={(event) => setEditForm((prev) => ({ ...prev, quota: event.target.value }))} placeholder="留空表示不限额" /></label>
+          <label>限额积分<input type="number" min="0" step="0.001" value={editForm.quota} onChange={(event) => setEditForm((prev) => ({ ...prev, quota: event.target.value }))} placeholder="留空表示不限额" /></label>
           <label>速率 RPM<input type="number" min="1" step="1" value={editForm.rpm} onChange={(event) => setEditForm((prev) => ({ ...prev, rpm: event.target.value }))} placeholder="留空表示不设上限" /></label>
           <label>有效期<input type="datetime-local" value={editForm.expiresAt} onChange={(event) => setEditForm((prev) => ({ ...prev, expiresAt: event.target.value }))} /></label>
           <p className="ws-detail-copy">留空即清除该限制；分组与完整密钥不可在此修改，{editKey.isDefault ? '默认 Key 不可删除。' : '如需更换密钥请删除后重建。'}</p>

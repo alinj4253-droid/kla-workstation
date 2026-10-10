@@ -14,12 +14,6 @@ export type Sub2ApiConfig = {
   fastGroupId: string;
   /** 托管账号内部邮箱域名；KLA 存确定性用户名，由此拼出 Sub2API 的 email 标识 */
   accountEmailDomain: string;
-  /**
-   * 共享上游账号模式：两者都非空时，所有 KLA 身份复用该 Sub2API 账号（不再逐个建号）。
-   * 用于上游只给一个账号/一份额度的联调与部署场景。
-   */
-  sharedAccountEmail: string;
-  sharedAccountPassword: string;
 };
 
 export type Sub2ApiUser = {

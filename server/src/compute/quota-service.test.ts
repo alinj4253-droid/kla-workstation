@@ -16,23 +16,23 @@ function makeEntitlement(id: string, identityId: string, total: number): Entitle
 
 type StubDeps = {
   repo: { calls: string[]; ledgerSeq: number };
-  sub2api: { adjustments: Array<{ userId: string; delta: number }>; sameUser: boolean };
+  sub2api: { adjustments: Array<{ userId: string; delta: number }> };
 }
 
-function buildService(opts: { adminBalance: number; memberBalance: number; sameSub2apiUser?: boolean }): { service: QuotaService; deps: StubDeps } {
+function buildService(opts: { adminBalance: number; memberBalance: number }): { service: QuotaService; deps: StubDeps } {
   const adminEnt = makeEntitlement('ent-admin', 'admin-i', opts.adminBalance);
   const memberEnt = makeEntitlement('ent-member', 'member-i', opts.memberBalance);
   const find = (owner: { identityId?: string }) => (owner.identityId === 'admin-i' ? adminEnt : memberEnt);
 
   const deps: StubDeps = {
     repo: { calls: [], ledgerSeq: 0 },
-    sub2api: { adjustments: [], sameUser: opts.sameSub2apiUser ?? false },
+    sub2api: { adjustments: [] },
   };
 
   const adminBinding = { identityId: 'admin-i', sub2apiUserId: 'sub-admin', sub2apiUsername: 'a', managedPassword: null, status: 'ready' as const, provisionJobId: null, lastError: null, createdAt: NOW, updatedAt: NOW };
   const memberBinding = {
     identityId: 'member-i',
-    sub2apiUserId: opts.sameSub2apiUser ? 'sub-admin' : 'sub-member',
+    sub2apiUserId: 'sub-member',
     sub2apiUsername: 'm', managedPassword: null, status: 'ready' as const, provisionJobId: null, lastError: null, createdAt: NOW, updatedAt: NOW,
   };
 
@@ -85,8 +85,8 @@ describe('QuotaService 企业额度转账', () => {
     await service.grant({ identityId: 'admin-i' }, 0.1, 'grant-1');
     await service.grant({ identityId: 'admin-i' }, 0.2, 'grant-2');
     expect(deps.sub2api.adjustments).toEqual([
-      { userId: 'sub-admin', delta: 0.0001 },
-      { userId: 'sub-admin', delta: 0.0002 },
+      { userId: 'sub-admin', delta: 0.00001 },
+      { userId: 'sub-admin', delta: 0.00002 },
     ]);
     expect(deps.sub2api.adjustments).toHaveLength(2);
   });
@@ -98,8 +98,8 @@ describe('QuotaService 企业额度转账', () => {
     expect(result.sub2apiSynced).toBe(true);
     expect(result.counterpartyLedgerId).toBeTruthy();
     expect(deps.sub2api.adjustments).toEqual([
-      { userId: 'sub-admin', delta: -0.03 },
-      { userId: 'sub-member', delta: 0.03 },
+      { userId: 'sub-admin', delta: -0.003 },
+      { userId: 'sub-member', delta: 0.003 },
     ]);
     // 两条流水都被标记为已同步
     expect(deps.repo.calls).toContain('sync:led-1:true');
@@ -113,20 +113,13 @@ describe('QuotaService 企业额度转账', () => {
     expect(deps.sub2api.adjustments).toHaveLength(0);
   });
 
-  it('allocate：双方映射同一 Sub2API 账号时跳过转账，台账仍成功（sub2apiSynced=false）', async () => {
-    const { service, deps } = buildService({ adminBalance: 50, memberBalance: 0, sameSub2apiUser: true });
-    const result = await service.allocate('admin-i', 'org1', 'member-i', 20, 'req-3');
-    expect(result.sub2apiSynced).toBe(false);
-    expect(deps.sub2api.adjustments).toHaveLength(0);
-  });
-
   it('reclaim：成员减、管理员加，上限为成员可用额度', async () => {
     const { service, deps } = buildService({ adminBalance: 80, memberBalance: 20 });
     const result = await service.reclaim('admin-i', 'org1', 'member-i', 12, 'req-4');
     expect(result.sub2apiSynced).toBe(true);
     expect(deps.sub2api.adjustments).toEqual([
-      { userId: 'sub-member', delta: -0.012 },
-      { userId: 'sub-admin', delta: 0.012 },
+      { userId: 'sub-member', delta: -0.0012 },
+      { userId: 'sub-admin', delta: 0.0012 },
     ]);
   });
 
@@ -188,7 +181,7 @@ describe('QuotaService actual usage billing', () => {
 
     expect(await service.recordUpstreamUsage('i1', item, 'k1')).toBe(true);
     expect(await service.recordUpstreamUsage('i1', item, 'k1')).toBe(false);
-    expect(deltas).toEqual([0.362]);
+    expect(deltas).toEqual([3.621]);
     expect(recorded).toHaveLength(1);
     expect(recorded[0]).toMatchObject({ identityId: 'i1', keyId: 'k1', sub2apiUsageId: '39', amountUsd: 0.00036205 });
     expect(sql).toContain("SELECT set_config('kla.upstream_usage', 'on', true)");
