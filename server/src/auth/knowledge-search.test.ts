@@ -9,15 +9,15 @@ const companyId = '40000000-0000-4000-8000-000000000004';
 const projectLibraryId = '50000000-0000-4000-8000-000000000005';
 const personalId = '60000000-0000-4000-8000-000000000006';
 const base = { name: '库', description: '', collection: 'shared', updated_at: new Date(), status: 'active' };
-const company = { ...base, id: companyId, scope: 'company', organization_id: organizationId, project_id: null, personal_identity_id: null };
-const project = { ...base, id: projectLibraryId, scope: 'project', organization_id: organizationId, project_id: projectId, personal_identity_id: null };
+const company = { ...base, id: companyId, scope: 'company', organization_id: organizationId, project_id: null, owner_identity_id: null };
+const project = { ...base, id: projectLibraryId, scope: 'project', organization_id: organizationId, project_id: projectId, owner_identity_id: null };
 
 function poolForEnterprise(): Pool {
   return {
     hasPermission: () => true,
     query: vi.fn(async (sql: string) => {
       if (sql.includes('FROM conversations c')) return { rows: [{ organization_id: organizationId, project_id: projectId, type: 'enterprise' }] };
-      if (sql.includes('SELECT k.* FROM knowledge_library_scopes')) return { rows: [company, project] };
+      if (sql.includes('SELECT k.* FROM knowledge_bases')) return { rows: [company, project] };
       if (sql.includes('SELECT i.type,i.organization_id')) return { rows: [{ type: 'enterprise', organization_id: organizationId }] };
       if (sql.includes('SELECT p.organization_id FROM projects')) return { rows: [{ organization_id: organizationId }] };
       return { rows: [] };

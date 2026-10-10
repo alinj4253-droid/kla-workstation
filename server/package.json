@@ -4,16 +4,19 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "predev": "pnpm --filter @kla-workstation/contracts build",
     "dev": "tsx watch src/server.ts",
     "db:migrate": "tsx src/database/migrate-cli.ts",
     "db:sync-documents": "tsx src/database/sync-documents-cli.ts",
     "db:grant": "tsx src/database/grant-documents-cli.ts",
+    "db:seed-company-base": "tsx src/database/seed-company-base-cli.ts",
     "points:migrate": "tsx scripts/migrate-points.ts",
     "points:reconcile": "tsx scripts/reconcile-points.ts",
     "points:revalue": "tsx scripts/revalue-points.ts",
     "build": "tsc -p tsconfig.json && node scripts/copy-migrations.mjs",
     "start": "node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.scripts.json --noEmit",
+    "pretest": "pnpm --filter @kla-workstation/contracts build",
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {

@@ -5,6 +5,7 @@
   "type": "module",
   "main": "desktop/main.cjs",
   "scripts": {
+    "predev": "pnpm --filter @kla-workstation/contracts build",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
