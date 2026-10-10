@@ -56,6 +56,12 @@ function stat(label: string) {
 }
 
 describe('knowledge statistics refresh (local fixtures only)', () => {
+  it('keeps confirmed overview counts while the detail source request is pending', () => {
+    mock.sources.mockImplementation(() => new Promise(() => undefined));
+    render(<QueryClientProvider client={client}><MemoryRouter><KnowledgeDetail context={context} connection={connection} base={{ ...base, fileCount: 1, chunkCount: 19 }} onConfigure={() => undefined}/></MemoryRouter></QueryClientProvider>);
+    expect(stat('原始文件').value).toBe('1');
+    expect(stat('知识切片').value).toBe('19');
+  });
   it('uses valid slices when an expired job query has stale cached data', () => {
     expect(summarizeKnowledgeFiles([doc], [binding], new Map([[done.job_id, done]]), new Set([done.job_id]), [{ data: slices(2), isSuccess: true }])).toEqual({ done: 1, processing: 0, failed: 0, unknown: 0 });
   });

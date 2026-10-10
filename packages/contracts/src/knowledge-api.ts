@@ -89,6 +89,7 @@ export interface ContentRequest {
   search?: SearchRequest;
 }
 export interface KnowledgeLibraryBridge {
+  checkUploadNames(input: import('./knowledge-upload-names.js').UploadNameCheck): Promise<RpcResult<import('./knowledge-upload-names.js').UploadNameCheckResult>>;
   getConnection(): Promise<RpcResult<KnowledgeConnection>>;
   configure(input: KnowledgeConnectionInput): Promise<RpcResult<KnowledgeConnection>>;
   acceptUploadConsent(input: { serviceInstanceId: string; noticeVersion: typeof KNOWLEDGE_UPLOAD_NOTICE_VERSION }): Promise<RpcResult<KnowledgeConnection>>;
