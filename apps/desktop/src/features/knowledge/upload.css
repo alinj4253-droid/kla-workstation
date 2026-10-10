@@ -33,6 +33,34 @@
 .kl-connection-dialog form > p { padding: 8px 24px; }
 .kl-connection-advanced { margin: 12px 24px; border-top: 1px solid var(--kq-border); padding-top: 12px; }
 .kl-connection-advanced summary { cursor: pointer; color: var(--kq-text-secondary); }
+
+/* ---------------- 新建/编辑知识库：作用域选择（对齐桌面原型 kbNewModal） ---------------- */
+/* 三选一卡片行：单选圆点 + 标题，选中态用主色描边 + 浅蓝底。
+   需压过 overview.css 的 `.kl-module button`（同特异 0,1,1 但后加载会覆盖），故选择器重复类提权。 */
+.kl-scope-pick { display: flex; flex-direction: column; gap: 8px; padding: 10px 24px 0; }
+.kl-module .kl-scope-row { display: flex; align-items: center; justify-content: flex-start; gap: 12px; width: 100%; padding: 12px; border: 1px solid var(--kq-border); border-radius: 8px; background: var(--kq-surface); cursor: pointer; text-align: left; color: var(--kq-text); min-height: 0; white-space: normal; }
+.kl-module .kl-scope-row:hover { border-color: var(--kq-border-strong); }
+.kl-module .kl-scope-row[data-on="true"] { border-color: var(--kq-primary); background: color-mix(in srgb, var(--kq-primary) 6%, var(--kq-surface)); }
+.kl-module .kl-scope-row > span:first-child { width: 16px; height: 16px; flex: 0 0 16px; border-radius: 50%; border: 1.5px solid var(--kq-border); background: #fff; display: grid; place-items: center; }
+.kl-module .kl-scope-row[data-on="true"] > span:first-child { border-color: var(--kq-primary); }
+.kl-module .kl-scope-row[data-on="true"] > span:first-child::after { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--kq-primary); }
+.kl-module .kl-scope-row > svg { flex: none; color: var(--kq-text-tertiary); }
+.kl-module .kl-scope-row[data-on="true"] > svg { color: var(--kq-primary); }
+.kl-module .kl-scope-row strong { font-size: 13px; font-weight: 600; color: inherit; }
+.kl-scope-hint { padding: 8px 24px 0; color: var(--kq-text-tertiary); font-size: 11px; }
+/* 编辑态：作用域创建后固定，用只读条 + 标签说明，不再提供修改入口 */
+.kl-scope-lock { display: flex; align-items: center; gap: 12px; margin: 10px 24px 0; padding: 12px; border: 1px solid var(--kq-border); border-radius: 8px; background: var(--kq-surface-muted); }
+.kl-scope-lock > span:first-child { width: 30px; height: 30px; flex: 0 0 30px; border-radius: 8px; display: grid; place-items: center; background: var(--kq-surface); color: var(--kq-text-tertiary); }
+.kl-scope-lock > span:nth-child(2) { display: grid; gap: 2px; min-width: 0; }
+.kl-scope-lock strong { font-size: 13px; }
+.kl-scope-lock small { color: var(--kq-text-tertiary); font-size: 11px; }
+.kl-scope-lock > em { margin-left: auto; flex: none; font-style: normal; font-size: 11px; padding: 3px 8px; border-radius: 999px; background: var(--kq-surface-subtle); color: var(--kq-text-tertiary); }
+/* 字段容器：项目选择器等 */
+.kl-field { display: flex; flex-direction: column; gap: 6px; padding: 10px 24px; font-size: 12px; }
+.kl-field > select { width: 100%; height: 36px; padding: 6px 10px; border: 1px solid var(--kq-border); border-radius: 6px; color: var(--kq-text); background: var(--kq-surface); }
+/* 原型里「作用域」是独立 field 的label，不套在 input 标签内，故单独一个类 */
+.kl-field-label { padding: 12px 24px 0; font-size: 12px; color: var(--kq-text); }
+.kl-scope-pick { padding-top: 8px; }
 .kl-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 12px 0; }
 .kl-settings-grid label { display: flex; flex-direction: column; gap: 6px; }
 .kl-settings-grid input { width: 100%; padding: 7px 10px; min-height: 36px; border: 1px solid var(--kq-border); border-radius: 6px; color: var(--kq-text); background: var(--kq-surface); }
