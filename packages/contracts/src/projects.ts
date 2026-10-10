@@ -38,14 +38,17 @@ export const messageDtoSchema = z.object({
   conversationId: z.string().min(1),
   senderId: z.string().min(1),
   text: z.string(),
+  metadata: z.record(z.unknown()).optional(),
   createdAt: z.string().datetime(),
 });
 
 export type MessageDto = z.infer<typeof messageDtoSchema>;
 
 export const createMessageRequestSchema = z.object({
-  text: z.string().min(1),
+  text: z.string().max(100000).default(''),
+  mode: z.string().max(50).optional(),
+  fileIds: z.array(z.string().uuid()).max(20).default([]).transform(ids => [...new Set(ids)]),
   replyToId: z.string().min(1).optional(),
-});
+}).refine(input => Boolean(input.text.trim()) || input.fileIds.length > 0, '消息不能为空');
 
 export type CreateMessageRequest = z.infer<typeof createMessageRequestSchema>;

@@ -12,8 +12,10 @@ export function validateLocalArtifacts(tool: string, receipt: Receipt) {
   if (!files.length) return [];
   if (receipt.status !== 'completed' || !receipt.approval.approved) throw new Error('失败或未经审批的调用不能上传成果');
   const ppt = ['local_ppt_build', 'local_ppt_render'].includes(tool);
-  if (!ppt && !['local_write', 'local_code'].includes(tool)) throw new Error('此调用不接受成果');
-  if (!ppt && (files.length !== 1 || files[0].contentEncoding !== 'utf8' || files[0].content.length > 1_000_000)) throw new Error('文本工具仅接受一份不超过 100 万字符的文本成果');
+  const publish = tool === 'local_file_publish';
+  if (!ppt && !publish && !['local_write', 'local_code'].includes(tool)) throw new Error('此调用不接受成果');
+  if (publish && files.length !== 1) throw new Error('文件发布仅接受一份成果');
+  if (!ppt && !publish && (files.length !== 1 || files[0].contentEncoding !== 'utf8' || files[0].content.length > 1_000_000)) throw new Error('文本工具仅接受一份不超过 100 万字符的文本成果');
   const qc = receipt.result.qc as { ok?: boolean; blocked?: number } | undefined;
   if (ppt && (qc?.ok !== true || qc.blocked !== 0 || receipt.result.error || receipt.result.renderStatus === 'failed')) throw new Error('PPT 质检未通过，不能交付成果');
   const names = new Set<string>();

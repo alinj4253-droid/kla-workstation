@@ -117,3 +117,8 @@
 .ws-project-tree .ws-tree-children{position:relative;display:block;min-width:0;max-width:100%;margin:0;padding:0;border:0}
 .ws-project-tree .ws-tree-children::before{content:"";position:absolute;left:30px;top:0;bottom:0;width:1px;background:#dce8f5;pointer-events:none}
 .ws-project-tree .ws-tree-child{padding-left:44px}
+.ws-chat-attachments { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-bottom:10px; }
+.ws-chat-attachments > button { display:inline-flex; align-items:center; gap:5px; border:1px solid #dce5ee; border-radius:6px; background:#fff; padding:5px 9px; color:#506176; cursor:pointer; }
+.ws-chat-attachments > span { display:inline-flex; align-items:center; gap:6px; max-width:240px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:5px 8px; border-radius:6px; background:#edf5ff; color:#2565a5; font-size:12px; }
+.ws-chat-attachments > span button { flex-shrink:0; border:0; background:none; padding:0; cursor:pointer; color:inherit; }
+.ws-chat-attachments small { color:#8290a3; font-size:11px; }

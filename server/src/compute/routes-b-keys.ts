@@ -76,7 +76,7 @@ export async function registerComputeKeyRoutes(app: FastifyInstance, deps: Compu
     if (!binding) return { ok: false, code: 'CONFLICT', message: '算力账号尚未初始化，请先重试初始化' };
     if (!COMPUTE_READY_STATES.has(binding.status)) return { ok: false, code: 'CONFLICT', message: `算力账号未就绪（${binding.status}）` };
     const password = resolveManagedPassword(binding.managedPassword, deps.encryptionKey);
-    if (!password) return { ok: false, code: 'CONFLICT', message: '托管凭据不可用，无法管理 API Key' };
+    if (!password) return { ok: false, code: 'CONFLICT', message: '当前身份的托管凭据无法解密，请恢复原 COMPUTE_SECRET_ENCRYPTION_KEY 或由管理员重置上游账号凭据' };
     try {
       const jwt = await deps.sub2api.getUserJwt(binding.sub2apiUserId, binding.sub2apiUsername, password);
       return { ok: true, jwt, binding };

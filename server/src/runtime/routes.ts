@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { Pool } from 'pg';
 import { validateLocalArtifacts } from './local-artifacts.js';
@@ -11,8 +12,10 @@ import type { AgentLoopWorker } from '../infrastructure/agent-loop.js';
 import type { ComputeRepository } from '../compute/compute-repository.js';
 import type { Sub2ApiClient } from '../compute/sub2api-client.js';
 import { resolveManagedPassword } from '../compute/encryption.js';
+import type { ObjectStore } from '../storage/object-store.js';
+import { accessibleFile } from '../storage/file-access.js';
 
-export async function registerRuntimeRoutes(app: FastifyInstance, deps: {pool:Pool;accounts:AccountRepository;worker:AgentLoopWorker;computeRepo?:ComputeRepository;sub2api?:Sub2ApiClient;encryptionKey?:string}) {
+export async function registerRuntimeRoutes(app: FastifyInstance, deps: {pool:Pool;accounts:AccountRepository;worker:AgentLoopWorker;computeRepo?:ComputeRepository;sub2api?:Sub2ApiClient;encryptionKey?:string;objectStore?:ObjectStore}) {
   const {pool,accounts,worker}=deps;
   async function scope(request:FastifyRequest,reply:FastifyReply,action:PermissionAction='read') {
     const session=await accounts.getSession((request.headers.authorization??'').replace(/^Bearer /,''));
@@ -153,6 +156,34 @@ export async function registerRuntimeRoutes(app: FastifyInstance, deps: {pool:Po
     // 且降噪会连失败态的自动日志一起压掉，因此失败必须在这里显式补一条，否则故障会被静默。
     } catch(error) { request.log.error({ err: error, deviceId: s.device.id }, 'runtime device poll failed'); await client.query('ROLLBACK'); throw error; } finally { client.release(); }
   });
+  app.post('/api/v1/runtime/devices/:deviceId/workspaces/status', async (request, reply) => {
+    const s = await device(request, reply); if (!s) return;
+    const body = z.object({ runIds: z.array(z.string().uuid()).max(200) }).parse(request.body);
+    return { ok: true, data: (await pool.query(`SELECT DISTINCT r.id AS "runId",r.status FROM conversation_runs r
+      JOIN conversation_run_steps st ON st.run_id=r.id JOIN runtime_tool_calls t ON t.step_id=st.id
+      WHERE r.id=ANY($1::uuid[]) AND t.device_id=$2 AND t.identity_id=$3`, [body.runIds, s.device.id, s.identity.id])).rows };
+  });
+  app.get('/api/v1/runtime/devices/:deviceId/calls/:callId/input', async (request, reply) => {
+    const s = await device(request, reply); if (!s) return;
+    const call = (await pool.query(`SELECT t.*,r.conversation_id,r.status AS run_status FROM runtime_tool_calls t
+      JOIN conversation_run_steps st ON st.id=t.step_id JOIN conversation_runs r ON r.id=st.run_id
+      WHERE t.id=$1 AND t.device_id=$2 AND t.identity_id=$3`, [id((request.params as { callId: string }).callId), s.device.id, s.identity.id])).rows[0];
+    if (!call || call.tool_name !== 'local_file_fetch' || call.status !== 'running' || !['running','waiting_tool'].includes(call.run_status)) throw app.httpErrors.notFound('文件下载调用不可用');
+    const args = parseToolArguments(call.tool_name, call.arguments);
+    let bytes: Buffer | null | undefined, name: string, mime: string, checksum: string | null;
+    if (args.fileId) {
+      const file = await accessibleFile(pool, s.identity.id, String(args.fileId));
+      if (!file || file.conversation_id !== call.conversation_id) throw app.httpErrors.notFound('附件不属于当前群聊');
+      bytes = await deps.objectStore?.get(file.storage_key); name = file.name; mime = file.content_type || 'application/octet-stream'; checksum = file.checksum;
+    } else {
+      const artifact = await accounts.getArtifact(s.identity.id, String(args.artifactId));
+      if (!artifact || artifact.conversationId !== call.conversation_id) throw app.httpErrors.notFound('成果不属于当前群聊');
+      bytes = artifact.storageKey ? await deps.objectStore?.get(artifact.storageKey) : Buffer.from(artifact.content, artifact.contentEncoding === 'base64' ? 'base64' : 'utf8');
+      name = artifact.name; mime = artifact.mimeType; checksum = bytes ? createHash('sha256').update(bytes).digest('hex') : null;
+    }
+    if (!bytes) throw app.httpErrors.serviceUnavailable('共享文件对象不可用');
+    return reply.header('cache-control', 'private, no-store').header('x-kla-file-name', encodeURIComponent(name)).header('x-kla-checksum', checksum ?? '').header('content-length', bytes.length).type(mime).send(bytes);
+  });
   app.post('/api/v1/runtime/devices/:deviceId/calls/:callId/receipt',{bodyLimit:48*1024*1024},async(request,reply)=>{
     const s=await device(request,reply);if(!s)return;const callId=id((request.params as {callId:string}).callId);const b=toolReceiptSchema.parse(request.body);
     const client=await pool.connect();try{await client.query('BEGIN');const call=(await client.query(`SELECT t.*,st.run_id,r.conversation_id,r.status AS run_status FROM runtime_tool_calls t JOIN conversation_run_steps st ON st.id=t.step_id JOIN conversation_runs r ON r.id=st.run_id WHERE t.id=$1 AND t.device_id=$2 AND t.identity_id=$3 FOR UPDATE OF t,r`,[callId,s.device.id,s.identity.id])).rows[0];
@@ -163,11 +194,25 @@ export async function registerRuntimeRoutes(app: FastifyInstance, deps: {pool:Po
       const result:Record<string,unknown>={...b.result};const artifactIds:string[]=[];
       for(const [index,a] of files.entries()){
         const artifact=(await client.query('INSERT INTO artifacts(identity_id,conversation_id,name,mime_type,content,content_encoding,size_bytes,checksum,source_device_id,tool_call_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id',[s.identity.id,call.conversation_id,a.fileName,a.mimeType,a.content,a.contentEncoding,a.sizeBytes,a.checksum,s.device.id,index===0?callId:null])).rows[0];artifactIds.push(artifact.id);
+        // Binary or large results are durable objects. Keep small text inline for
+        // fast model access and backwards compatibility with old databases.
+        if(deps.objectStore && (a.contentEncoding==='base64' || a.sizeBytes>256*1024)){
+          const storageKey=`artifacts/${s.identity.id}/${artifact.id}/${a.fileName.replace(/[^\w.\-\u4e00-\u9fff]/g,'_')}`;
+          const bytes=a.contentEncoding==='base64'?Buffer.from(a.content,'base64'):Buffer.from(a.content,'utf8');
+          await deps.objectStore.put(storageKey,bytes);
+          await client.query("UPDATE artifacts SET storage_key=$2,storage_status='stored',content='' WHERE id=$1",[artifact.id,storageKey]);
+        }
       }
       if(artifactIds.length){result.artifactId=artifactIds[0];result.artifactIds=artifactIds;result.checksum=files[0].checksum;}
       await client.query('UPDATE runtime_tool_calls SET status=$2,result=$3,receipt_id=$4,completed_at=now() WHERE id=$1',[callId,b.status,JSON.stringify(result),b.receiptId]);await client.query('INSERT INTO runtime_events(identity_id,conversation_id,run_id,kind,payload) VALUES($1,$2,$3,$4,$5)',[s.identity.id,call.conversation_id,call.run_id,'tool.receipt',JSON.stringify({callId,deviceId:s.device.id,status:b.status,artifactId:result.artifactId,artifactIds,approval:b.approval??null})]);await client.query('COMMIT');worker.kick();return{ok:true,data:result};
     }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
   });
   app.get('/api/v1/runtime/events',async(request,reply)=>{const s=await scope(request,reply);if(!s)return;const q=z.object({after:z.coerce.number().int().min(0).default(0),conversationId:z.string().uuid().optional()}).parse(request.query);return{ok:true,data:(await pool.query('SELECT sequence,conversation_id,run_id,kind,payload,created_at FROM runtime_events WHERE identity_id=$1 AND sequence>$2 AND ($3::uuid IS NULL OR conversation_id=$3) ORDER BY sequence LIMIT 200',[s.identity.id,q.after,q.conversationId??null])).rows};});
-  app.get('/api/v1/artifacts/:artifactId/download',async(request,reply)=>{const s=await scope(request,reply,'export');if(!s)return;const a=await accounts.getArtifact(s.identity.id,id((request.params as {artifactId:string}).artifactId));if(!a)throw app.httpErrors.notFound('成果不存在');return reply.header('content-disposition',`attachment; filename*=UTF-8''${encodeURIComponent(a.name)}`).type(a.mimeType).send(a.contentEncoding==='base64'?Buffer.from(a.content,'base64'):a.content);});
+  for (const operation of ['content', 'download'] as const) app.get(`/api/v1/artifacts/:artifactId/${operation}`, async(request,reply)=>{
+    const s=await scope(request,reply,operation==='download'?'export':'read');if(!s)return;
+    const a=await accounts.getArtifact(s.identity.id,id((request.params as {artifactId:string}).artifactId));if(!a)throw app.httpErrors.notFound('成果不存在');
+    let payload:Buffer|string=a.contentEncoding==='base64'?Buffer.from(a.content,'base64'):a.content;
+    if(a.storageKey){if(!deps.objectStore)throw app.httpErrors.serviceUnavailable('对象存储未配置');const stored=await deps.objectStore.get(a.storageKey);if(!stored)throw app.httpErrors.notFound('成果对象已被清理');payload=stored;}
+    return reply.header('cache-control','private, no-store').header('x-content-type-options','nosniff').header('content-disposition',`attachment; filename*=UTF-8''${encodeURIComponent(a.name)}`).type(a.mimeType).send(payload);
+  });
 }

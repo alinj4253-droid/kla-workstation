@@ -10,13 +10,20 @@ import type { ProvisioningService } from './provisioning-service.js';
 import type { Sub2ApiClient } from './sub2api-client.js';
 import { COMPUTE_PERMISSION, errorBody, hasPermission, requireIdentity } from './permissions.js';
 import { availableBalance } from './types.js';
+import { resolveManagedPassword } from './encryption.js';
+import type { ComputeBinding } from './types.js';
 
 export type ComputeAccountRouteDeps = {
   accounts: AccountRepository;
   computeRepo: ComputeRepository;
   sub2api: Sub2ApiClient;
   provisioning: ProvisioningService;
+  encryptionKey?: string;
 };
+
+const credentialError = '托管凭据无法解密，请恢复原 COMPUTE_SECRET_ENCRYPTION_KEY 或联系管理员重置上游账号凭据';
+const credentialUnavailable = (binding: ComputeBinding | null, encryptionKey: string): boolean =>
+  Boolean(binding && binding.status === 'ready' && !resolveManagedPassword(binding.managedPassword, encryptionKey));
 
 /** §5.3 建号状态机的正向顺序，用于生成进度步骤。 */
 const PROVISION_ORDER: ProvisionState[] = ['pending', 'provisioning', 'user_created', 'balance_granted', 'default_key_created', 'ready'];
@@ -92,7 +99,7 @@ export async function registerComputeAccountRoutes(app: FastifyInstance, deps: C
       used: quota.quotaUsed,
       reserved: quota.quotaReserved,
       available: availableBalance(quota),
-      provisionState: (binding?.status ?? 'pending') as ProvisionState,
+      provisionState: credentialUnavailable(binding, deps.encryptionKey ?? '') ? 'failed' : (binding?.status ?? 'pending') as ProvisionState,
       defaultKey,
       availableModelCount: modelCount.rows[0]?.total ?? 0,
       sub2apiHealth: health,
@@ -127,13 +134,14 @@ export async function registerComputeAccountRoutes(app: FastifyInstance, deps: C
     const ctx = await requireIdentity(deps.accounts, request, reply);
     if (!ctx) return;
     const binding = await deps.computeRepo.getBinding(ctx.identity.id);
-    const state = (binding?.status ?? 'pending') as ProvisionState;
+    const broken = credentialUnavailable(binding, deps.encryptionKey ?? '');
+    const state = broken ? 'failed' : (binding?.status ?? 'pending') as ProvisionState;
     const data: ProvisionStatus = {
       identityId: ctx.identity.id,
       state,
-      steps: buildProvisionSteps(state, binding?.updatedAt ?? null, binding?.lastError ?? null),
-      lastError: binding?.lastError ?? null,
-      retryable: RETRYABLE_STATES.has(state),
+      steps: buildProvisionSteps(state, binding?.updatedAt ?? null, broken ? credentialError : binding?.lastError ?? null),
+      lastError: broken ? credentialError : binding?.lastError ?? null,
+      retryable: !broken && RETRYABLE_STATES.has(state),
     };
     return reply.send({ ok: true, data });
   });
@@ -144,6 +152,9 @@ export async function registerComputeAccountRoutes(app: FastifyInstance, deps: C
     if (!ctx) return;
     const identity = ctx.identity;
     const binding = await deps.computeRepo.getBinding(identity.id);
+    if (credentialUnavailable(binding, deps.encryptionKey ?? '')) {
+      return reply.code(409).send(errorBody('CONFLICT', credentialError, request.id));
+    }
     const current = (binding?.status ?? 'pending') as ProvisionState;
     if (current === 'ready') {
       return reply.send({ ok: true, data: { identityId: identity.id, state: current, accepted: false } });

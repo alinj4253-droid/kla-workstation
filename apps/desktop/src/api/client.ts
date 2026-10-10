@@ -119,10 +119,8 @@ export class KlaApiClient {
 
   /** §7.4：导出等非 JSON 响应；仍带 Bearer，绝不把凭据放进 URL。 */
   async download(path: string): Promise<{ ok: true; blob: Blob } | { ok: false; code: string; message: string }> {
-    const token = sessionStorage.getItem(tokenKey);
-    const identityId = sessionStorage.getItem(identityKey);
-    const response = await fetch(`${this.baseUrl}${path}`, { headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(identityId ? { 'x-identity-id': identityId } : {}) } });
-    if (!response.ok) return { ok: false, code: `HTTP_${response.status}`, message: '导出失败，请稍后重试' };
+    const response = await this.stream(path);
+    if (!response.ok) { const body = await response.json().catch(() => ({})); return { ok: false, code: body.error?.code ?? `HTTP_${response.status}`, message: body.error?.message ?? '文件加载失败，请稍后重试' }; }
     return { ok: true, blob: await response.blob() };
   }
 }

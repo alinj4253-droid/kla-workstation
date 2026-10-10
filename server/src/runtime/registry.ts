@@ -26,7 +26,8 @@ export async function ensureRuntimeRegistry(pool: Pool | PoolClient, identityId:
     WHERE NOT EXISTS(SELECT 1 FROM agents WHERE identity_id=$1 AND name='PPT助手') ON CONFLICT DO NOTHING`, [identityId, pptAssistantRole]);
   for (const bundle of runtimeSkillBundles) {
     await pool.query(`INSERT INTO runtime_skill_catalog(identity_id,code,name,description,tool_codes)
-      VALUES($1,$2,$3,$4,$5::text[]) ON CONFLICT(identity_id,code) DO NOTHING`,
+      VALUES($1,$2,$3,$4,$5::text[]) ON CONFLICT(identity_id,code) DO UPDATE SET
+      name=EXCLUDED.name,description=EXCLUDED.description,tool_codes=EXCLUDED.tool_codes`,
     [identityId, bundle.code, bundle.name, bundle.description, [...bundle.tools]]);
   }
   const uninitialized = await pool.query(`SELECT id FROM agents WHERE identity_id=$1 AND name='本地执行智能体' AND NOT capabilities_initialized`, [identityId]);
@@ -38,7 +39,7 @@ export async function ensureRuntimeRegistry(pool: Pool | PoolClient, identityId:
   }
   const pptAgents = await pool.query(`SELECT id FROM agents WHERE identity_id=$1 AND name='PPT助手' AND type='official' AND NOT capabilities_initialized`, [identityId]);
   for (const agent of pptAgents.rows) {
-    for (const code of ['ppt_assistant', 'local_files', 'artifact_management', 'memory_context']) {
+    for (const code of ['ppt_assistant', 'local_files', 'artifact_management', 'memory_context', 'knowledge_research', 'web_research']) {
       await pool.query('INSERT INTO agent_skill_mounts(agent_id,skill_code) VALUES($1,$2) ON CONFLICT DO NOTHING', [agent.id, code]);
     }
     await pool.query('UPDATE agents SET capabilities_initialized=true WHERE id=$1', [agent.id]);

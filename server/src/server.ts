@@ -28,6 +28,7 @@ import { registerKnowledgeRoutes } from './knowledge-api/routes.js';
 import { PostgresKnowledgeStore } from './knowledge-api/context.js';
 import { ComputeGateway } from './compute/gateway.js';
 import { MemoryRetentionWorker, ShortTermMemoryService } from './memories/short-term.js';
+import { ObjectStore } from './storage/object-store.js';
 
 export const corsOptions = { origin: true, methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'] };
 
@@ -48,6 +49,8 @@ export async function createServer() {
   if (!database.rawPool) throw new Error('DATABASE_URL 未配置');
   const pool = database.rawPool;
   const accounts = new PostgresAccountRepository(pool);
+  const objectStore = new ObjectStore(config.objectStoragePath);
+  await objectStore.ensureRoot();
 
   // 算力模块装配
   const sub2api = new Sub2ApiClient(config.sub2api, redis);
@@ -68,13 +71,13 @@ export async function createServer() {
 
   const shortTermMemory = new ShortTermMemoryService(pool);
   const memoryRetention = new MemoryRetentionWorker(shortTermMemory, error => app.log.error({ err: error }, 'Memory retention failed'));
-  const loopWorker = new AgentLoopWorker(pool, accounts, gateway, shortTermMemory, process.env.KNOWLEDGE_SECRET_ENCRYPTION_KEY || config.compute.secretEncryptionKey, error => app.log.error({err:error}, 'Agent loop failed'));
-  await registerRoutes(app, { accounts, database, redis, gateway, shortTermMemory, loopWorker });
-  await registerRuntimeRoutes(app, {pool, accounts, worker:loopWorker, computeRepo, sub2api, encryptionKey:config.compute.secretEncryptionKey});
+  const loopWorker = new AgentLoopWorker(pool, accounts, gateway, shortTermMemory, process.env.KNOWLEDGE_SECRET_ENCRYPTION_KEY || config.compute.secretEncryptionKey, error => app.log.error({err:error}, 'Agent loop failed'), objectStore);
+  await registerRoutes(app, { accounts, database, redis, gateway, shortTermMemory, loopWorker, objectStore, objectStorageMaxFileBytes: config.objectStorageMaxFileBytes });
+  await registerRuntimeRoutes(app, {pool, accounts, worker:loopWorker, computeRepo, sub2api, encryptionKey:config.compute.secretEncryptionKey, objectStore});
   await registerKnowledgeRoutes(app, { accounts, pool, store: new PostgresKnowledgeStore(pool), encryptionKey: process.env.KNOWLEDGE_SECRET_ENCRYPTION_KEY || config.compute.secretEncryptionKey });
   await registerComputeRoutes(app, { accounts, computeRepo, quota });
   await registerComputeRoutesB(app, { accounts, computeRepo });
-  await registerComputeAccountRoutes(app, { accounts, computeRepo, sub2api, provisioning });
+  await registerComputeAccountRoutes(app, { accounts, computeRepo, sub2api, provisioning, encryptionKey: config.compute.secretEncryptionKey });
   await registerComputeKeyRoutes(app, {
     accounts,
     computeRepo,
@@ -99,7 +102,7 @@ export async function createServer() {
     await database.close();
     await redis.close();
   });
-  return { app, config, database, redis, loopWorker, outboxWorker, usageSyncWorker, quota };
+  return { app, config, database, redis, loopWorker, outboxWorker, usageSyncWorker, quota, objectStore };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

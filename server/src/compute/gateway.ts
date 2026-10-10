@@ -151,7 +151,7 @@ export class ComputeGateway {
       throw new GatewayError('CONFLICT', '多个身份共用同一上游算力账号，无法保证独立计费；请为当前身份重新绑定独立账号', 409);
     }
     const password = resolveManagedPassword(binding.managedPassword, this.deps.encryptionKey);
-    if (!password) throw new GatewayError('CONFLICT', '托管凭据不可用，无法调用模型', 409);
+    if (!password) throw new GatewayError('CONFLICT', '当前身份的托管凭据无法解密，请恢复原 COMPUTE_SECRET_ENCRYPTION_KEY 或由管理员重置上游账号凭据', 409);
 
     // §8.3 锁定并预扣额度；并发下由 SELECT FOR UPDATE 行锁保证不超发
     let ledgerId: string;

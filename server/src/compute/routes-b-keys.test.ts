@@ -62,11 +62,14 @@ describe('resolveManagedPassword', () => {
 
   it('明文（未配置加密密钥）原样返回', () => {
     expect(resolveManagedPassword('plain-pass', '')).toBe('plain-pass');
+    expect(resolveManagedPassword('plain:pass', '')).toBe('plain:pass');
   });
 
   it('缺失或无法解密时返回 null', () => {
     expect(resolveManagedPassword(null, '')).toBeNull();
     expect(resolveManagedPassword('a:b:c', 'a'.repeat(64))).toBeNull();
+    expect(resolveManagedPassword(encryptField('managed-pass', 'a'.repeat(64)), '')).toBeNull();
+    expect(resolveManagedPassword(encryptField('managed-pass', 'a'.repeat(64)), 'b'.repeat(64))).toBeNull();
   });
 });
 

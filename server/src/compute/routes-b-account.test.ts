@@ -7,6 +7,7 @@ import type { QuotaService } from './quota-service.js';
 import type { Sub2ApiClient } from './sub2api-client.js';
 import { registerComputeRoutes } from './routes.js';
 import { buildProvisionSteps, registerComputeAccountRoutes } from './routes-b-account.js';
+import { encryptField } from './encryption.js';
 
 const NOW = '2026-10-07T00:00:00.000Z';
 
@@ -55,7 +56,7 @@ describe('§7.1 当前身份与余额', () => {
       },
       {
         getEntitlement: async () => ({ id: 'e1', identityId: 'i1', organizationId: null, quotaTotal: 10000, quotaGranted: 0, quotaUsed: 1000, quotaReserved: 500, version: 1, createdAt: NOW, updatedAt: NOW }),
-        getBinding: async () => ({ identityId: 'i1', sub2apiUserId: 'u1', sub2apiUsername: 'kla-personal-i1', managedPassword: null, status: 'ready', provisionJobId: null, lastError: null, createdAt: NOW, updatedAt: NOW }),
+        getBinding: async () => ({ identityId: 'i1', sub2apiUserId: 'u1', sub2apiUsername: 'kla-personal-i1', managedPassword: 'plain-pass', status: 'ready', provisionJobId: null, lastError: null, createdAt: NOW, updatedAt: NOW }),
         listKeys: async () => [
           { id: 'k1', identityId: 'i1', sub2apiKeyId: 'sk1', keyPrefix: 'sk-kla-ab', keyFingerprint: 'fp', name: '默认工作站 Key', isDefault: true, status: 'active', groupId: 'group-personal', quotaUsd: null, rpm: null, ipAllowList: [], expiresAt: null, lastSyncedAt: null, createdAt: NOW, updatedAt: NOW },
         ],
@@ -119,6 +120,29 @@ describe('§7.1 当前身份与余额', () => {
     });
     const response = await app.inject({ method: 'GET', url: '/api/v1/compute/summary', headers: { authorization: 'Bearer t' } });
     expect(response.json().data).toMatchObject({ sub2apiHealth: 'unavailable', provisionState: 'pending', balance: 0, defaultKey: null });
+    await app.close();
+  });
+
+  it('密钥不匹配时不再把绑定报告为 ready，也不允许重试建号', async () => {
+    const app = Fastify();
+    const password = encryptField('upstream-pass', 'a'.repeat(64));
+    const repo = repoWith(
+      (sql) => sql.includes('FROM models WHERE enabled') ? { rows: [{ total: 1 }], rowCount: 1 } : undefined,
+      { getEntitlement: async () => null, getBinding: async () => ({ identityId: 'i1', sub2apiUserId: 'u1',
+        sub2apiUsername: 'person@example.test', managedPassword: password, status: 'ready',
+        provisionJobId: null, lastError: null, createdAt: NOW, updatedAt: NOW }), listKeys: async () => [] },
+    );
+    await registerComputeAccountRoutes(app, { accounts: authedAccounts(identity()), computeRepo: repo,
+      sub2api: { health: async () => ({ ok: true }) } as unknown as Sub2ApiClient,
+      provisioning: { retryProvision: async () => { throw new Error('不能重新建号'); } } as unknown as ProvisioningService,
+      encryptionKey: 'b'.repeat(64) });
+    const headers = { authorization: 'Bearer t' };
+    expect((await app.inject({ method: 'GET', url: '/api/v1/compute/summary', headers })).json().data.provisionState).toBe('failed');
+    const status = (await app.inject({ method: 'GET', url: '/api/v1/compute/provision-status', headers })).json().data;
+    expect(status).toMatchObject({ state: 'failed', retryable: false });
+    expect(status.lastError).toContain('COMPUTE_SECRET_ENCRYPTION_KEY');
+    const retry = await app.inject({ method: 'POST', url: '/api/v1/compute/provision/retry', headers });
+    expect(retry.statusCode).toBe(409);
     await app.close();
   });
 });

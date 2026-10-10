@@ -3,12 +3,12 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Workstation } from './Workstation';
 
-const { request, setSession, setIdentity, setAccount, warm, invalidate } = vi.hoisted(() => ({
-  request: vi.fn(), setSession: vi.fn(), setIdentity: vi.fn(), setAccount: vi.fn(), warm: vi.fn(), invalidate: vi.fn(),
+const { request, download, setSession, setIdentity, setAccount, warm, invalidate } = vi.hoisted(() => ({
+  request: vi.fn(), download: vi.fn(), setSession: vi.fn(), setIdentity: vi.fn(), setAccount: vi.fn(), warm: vi.fn(), invalidate: vi.fn(),
 }));
 vi.mock('../api/client', () => ({
   authExpiredEventName: 'kla:auth-expired',
-  klaApi: { request, setSession, setIdentity, setAccount, getIdentity: () => sessionStorage.getItem('kla.identity-id'), clearAccessToken: () => sessionStorage.clear() },
+  klaApi: { request, download, setSession, setIdentity, setAccount, getIdentity: () => sessionStorage.getItem('kla.identity-id'), clearAccessToken: () => sessionStorage.clear() },
 }));
 vi.mock('../api/memories', () => ({ memoryApi: { warm, invalidate } }));
 
@@ -28,6 +28,7 @@ beforeEach(() => {
   sessionStorage.setItem('kla.identity-id', 'identity-a');
   overrides = {};
   request.mockReset();
+  download.mockReset();
   setSession.mockReset();
   setIdentity.mockReset();
   setAccount.mockReset();
@@ -193,6 +194,48 @@ describe('新版项目和群聊的真实接口交互', () => {
     expect(input).toHaveValue('请记住项目代号蓝鲸');
     expect(screen.queryByText('请记住项目代号蓝鲸', { selector: 'p' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '发送给群组' })).toBeEnabled();
+  });
+
+  it('附件真实走上传会话、内容上传和完成接口，发送文件引用并可在右侧预览', async () => {
+    const file = { id: '00000000-0000-4000-8000-000000000003', workspaceId: null, name: '共享资料.md', storageKey: 'uploads/opaque/content', checksum: null,
+      contentType: 'text/markdown', sizeBytes: 23, status: 'uploaded', createdAt: '2026-10-10T01:00:00Z' };
+    const uploadId = 'upload-a';
+    overrides['POST /v1/files/upload-sessions'] = () => ({ ok: true, data: { id: uploadId, file_name: file.name, content_type: file.contentType, size_bytes: String(file.sizeBytes), checksum: null,
+      status: 'created', expires_at: '2026-10-10T02:00:00Z', uploadUrl: `/api/v1/files/upload-sessions/${uploadId}/content`, completeUrl: `/api/v1/files/upload-sessions/${uploadId}/complete`, mode: 'server-object-storage' } });
+    overrides[`PUT /v1/files/upload-sessions/${uploadId}/content`] = () => ({ ok: true });
+    overrides[`POST /v1/files/upload-sessions/${uploadId}/complete`] = () => ({ ok: true, data: file });
+    const message = { id: 'file-message', senderType: 'user', text: '', createdAt: file.createdAt, metadata: { fileIds: [file.id], files: [{ id: file.id, name: file.name, contentType: file.contentType, sizeBytes: file.sizeBytes }] } };
+    let submitted = false;
+    overrides['POST /v1/conversations/chat-a/messages'] = () => { submitted = true; return { ok: true, data: { message, run: null } }; };
+    overrides['GET /v1/conversations/chat-a/messages'] = () => ({ ok: true, data: submitted ? [message] : [] });
+    download.mockResolvedValue({ ok: true, blob: { text: async () => '# 共享文件内容\n已持久化' } });
+    const user = await openChat();
+    const selected = new File(['# 共享文件内容'], file.name, { type: file.contentType });
+    await user.upload(screen.getByLabelText('选择群聊附件'), selected);
+    await screen.findByText('已保存到群聊 · 同群成员可访问');
+    const uploaded = request.mock.calls.find(([path, init]) => path.endsWith('/content') && init?.method === 'PUT');
+    expect(uploaded![1].body).toBe(selected);
+    expect(uploaded![1].headers).toEqual({ 'x-identity-id': 'identity-a', 'content-type': 'application/octet-stream' });
+    await user.click(screen.getByRole('button', { name: '发送给群组' }));
+    const sent = request.mock.calls.find(([path, init]) => path === '/v1/conversations/chat-a/messages' && init?.method === 'POST');
+    expect(JSON.parse(sent![1].body)).toEqual({ text: '', mode: 'balanced', fileIds: [file.id] });
+    expect(screen.queryByLabelText(`移除附件 ${file.name}`)).not.toBeInTheDocument();
+    await user.click(await screen.findByRole('button', { name: file.name }));
+    expect(await screen.findByRole('heading', { name: '共享文件内容' })).toBeVisible();
+    expect(download).toHaveBeenCalledWith(`/v1/files/${file.id}/content`);
+    await user.click(screen.getAllByRole('button', { name: file.name })[1]);
+    expect(screen.getByRole('heading', { name: '共享文件内容' })).toBeVisible();
+    expect(request.mock.calls.some(([path]) => path === `/v1/artifacts/${file.id}`)).toBe(false);
+  });
+
+  it('附件上传失败不加入草稿，也不会提交未完成的文件引用', async () => {
+    overrides['POST /v1/files/upload-sessions'] = () => ({ ok: false, message: '文件存储服务未配置' });
+    const user = await openChat();
+    await user.upload(screen.getByLabelText('选择群聊附件'), new File(['data'], '失败.txt', { type: 'text/plain' }));
+    expect(await screen.findByText('文件存储服务未配置')).toBeVisible();
+    expect(screen.queryByLabelText('移除附件 失败.txt')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '发送给群组' }));
+    expect(request.mock.calls.filter(([path, init]) => path.endsWith('/messages') && init?.method === 'POST')).toHaveLength(0);
   });
 
   it('成果读取失败会提示，成功后使用隔离的 HTML 预览', async () => {

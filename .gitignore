@@ -43,6 +43,11 @@ uploads/
 **/uploads/
 storage/
 **/storage/
+!server/src/storage/
+!server/src/storage/**
+# Electron task caches are runtime data; the executor source remains tracked.
+agent-runtime/
+**/agent-runtime/
 backups/
 **/backups/
 *.sqlite

@@ -43,7 +43,8 @@ export function decryptField(encoded: string | null, key: string): string | null
  */
 export function resolveManagedPassword(encoded: string | null, encryptionKey: string): string | null {
   if (!encoded) return null;
-  if (encryptionKey && encoded.split(':').length === 3) {
+  if (encoded.split(':').length === 3) {
+    if (!encryptionKey) return null;
     try {
       return decryptField(encoded, encryptionKey);
     } catch {

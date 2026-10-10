@@ -32,7 +32,7 @@ export type Project = { id: string; name: string; ownerIdentityId: string; creat
 export type Conversation = { id: string; projectId: string; name: string; createdAt: string };
 export type Message = { id: string; conversationId: string; senderId: string; senderType: 'user' | 'agent' | 'system'; senderName?: string | null; kind: string; text: string; metadata?: Record<string, unknown>; createdAt: string };
 export type AgentProfile = { id: string; name: string; role: string; type: string; modelId: string | null; enabled: boolean };
-export type Artifact = { id: string; conversationId: string | null; name: string; mimeType: string; content: string; contentEncoding?: 'utf8' | 'base64'; sizeBytes: number; createdAt: string };
+export type Artifact = { id: string; conversationId: string | null; name: string; mimeType: string; content: string; contentEncoding?: 'utf8' | 'base64'; storageKey?: string | null; storageStatus?: 'inline' | 'stored' | 'deleted'; sizeBytes: number; createdAt: string };
 export type ConversationRun = { id: string; conversationId: string; triggerMessageId: string | null; status: string; mode: string; currentAgent: string | null; result: Record<string, unknown>; createdAt: string; updatedAt: string };
 
 export interface AccountRepository {
@@ -53,7 +53,7 @@ export interface AccountRepository {
   listConversations(projectId?: string, identityId?: string): Promise<Conversation[]>;
   createConversation(projectId: string, name: string): Promise<Conversation>;
   listMessages(conversationId: string): Promise<Message[]>;
-  createMessage(conversationId: string, senderId: string, text: string): Promise<Message>;
+  createMessage(conversationId: string, senderId: string, text: string, metadata?: Record<string, unknown>): Promise<Message>;
   createAgentMessage(conversationId: string, agentName: string, text: string, metadata?: Record<string, unknown>): Promise<Message>;
   listAgents(identityId: string): Promise<AgentProfile[]>;
   listConversationRuns(conversationId: string): Promise<ConversationRun[]>;

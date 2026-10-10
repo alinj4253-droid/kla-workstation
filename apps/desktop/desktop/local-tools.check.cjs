@@ -21,7 +21,7 @@ test('local file skills write, read, and list actual files', async () => {
     assert.equal(read.result.content, 'print(42)\n');
     const writtenText = await executeLocal({ ...base, tool: 'local_write', arguments: { fileName: 'notes.md', content: '# Verified\n' } }, root, new AbortController().signal);
     assert.equal(writtenText.result.stored, true);
-    assert.equal(await fs.readFile(path.join(root, base.runId, base.stepId, 'notes.md'), 'utf8'), '# Verified\n');
+    assert.equal(await fs.readFile(path.join(root, 'runs', base.runId, base.stepId, base.id, 'output', 'notes.md'), 'utf8'), '# Verified\n');
     const listed = await executeLocal({ ...base, tool: 'local_list', arguments: { path: root } }, root, new AbortController().signal);
     assert.ok(listed.result.entries.some(entry => entry.name === 'result.py'));
     await assert.rejects(executeLocal({ ...base, tool: 'local_write', arguments: { fileName: '../escape.txt', content: 'bad' } }, root, new AbortController().signal), /文件名无效/);
@@ -64,5 +64,43 @@ test('local BAT executes a command on Windows', { skip: process.platform !== 'wi
     const result = await executeLocal(call, root, new AbortController().signal);
     assert.equal(result.result.exitCode, 0);
     assert.match(result.result.stdout, /KLA_BAT_OK/);
+    assert.match(result.result.workingDirectory, /^workspace:\/\//);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('shared input downloads into an isolated workspace and CLI output can be explicitly published', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'kla-shared-local-'));
+  const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'kla-private-local-'));
+  const signal = new AbortController().signal;
+  const base = { runId: randomUUID(), stepId: randomUUID() };
+  const call = (tool, args) => ({ ...base, id: randomUUID(), tool, arguments: args });
+  try {
+    const input = Buffer.from('shared source\n');
+    const fetched = await executeLocal(call('local_file_fetch', { fileId: randomUUID() }), root, signal, false, async () => ({ name: 'input.txt', bytes: input }));
+    assert.match(fetched.result.path, /^workspace:\/\/runs\//);
+    const read = await executeLocal(call('local_read', { path: fetched.result.path }), root, signal);
+    assert.equal(read.result.content, input.toString());
+    const output = await executeLocal(call('local_cli', { executable: process.execPath, args: ['-e', 'require("node:fs").writeFileSync("report.pdf", Buffer.from("%PDF-1.4 test"))'] }), root, signal);
+    assert.equal(output.result.exitCode, 0);
+    const published = await executeLocal(call('local_file_publish', { path: output.result.workingDirectory + '/report.pdf' }), root, signal);
+    assert.equal(published.artifact.mimeType, 'application/pdf');
+    assert.equal(published.artifact.contentEncoding, 'base64');
+    assert.equal(Buffer.from(published.artifact.content, 'base64').toString(), '%PDF-1.4 test');
+    const privatePath = path.join(outside, 'private.txt');
+    await fs.writeFile(privatePath, 'private');
+    await assert.rejects(executeLocal(call('local_file_publish', { path: privatePath }), root, signal), /允许目录/);
+    assert.equal((await executeLocal(call('local_file_publish', { path: privatePath }), root, signal, true)).artifact.content, 'private');
+    await assert.rejects(executeLocal(call('local_read', { path: 'workspace://../private.txt' }), root, signal), /越界/);
+    await assert.rejects(executeLocal(call('local_file_fetch', { fileId: randomUUID() }), root, signal, false, async () => ({ name: '../escape.txt', bytes: input })), /文件名/);
+    const prior = process.env.KLA_LOCAL_ARTIFACT_UPLOAD;
+    try {
+      process.env.KLA_LOCAL_ARTIFACT_UPLOAD = 'false';
+      const localOnly = await executeLocal(call('local_file_publish', { path: fetched.result.path }), root, signal);
+      assert.equal(localOnly.result.localOnly, true);
+      assert.equal(localOnly.artifact, undefined);
+    } finally { if (prior === undefined) delete process.env.KLA_LOCAL_ARTIFACT_UPLOAD; else process.env.KLA_LOCAL_ARTIFACT_UPLOAD = prior; }
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(outside, { recursive: true, force: true });
+  }
 });

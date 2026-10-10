@@ -64,9 +64,9 @@ describe('群聊呈现', () => {
     expect(revoke).toHaveBeenCalledTimes(2);
   });
 
-  it('PPTX 引导到相同文稿的真实 PDF，不用 HTML 代替幻灯片', () => {
+  it.each([false, true])('PPTX 引导到相同文稿的真实 PDF，不用 HTML 代替幻灯片（对象存储：%s）', (stored) => {
     const artifacts: RoomArtifact[] = [
-      { id: 'ppt', name: '方案.pptx', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', content: btoa('PK'), contentEncoding: 'base64', sizeBytes: 2, createdAt: '' },
+      { id: 'ppt', name: '方案.pptx', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', content: stored ? '' : btoa('PK'), storageKey: stored ? 'artifacts/ppt/content' : null, contentEncoding: 'base64', sizeBytes: 2, createdAt: '' },
       { id: 'old-pdf', name: '方案.pdf', mimeType: 'application/pdf', content: '', contentEncoding: 'base64', sizeBytes: 2, createdAt: '2026-10-09' },
       { id: 'pdf', name: '方案.pdf', mimeType: 'application/pdf', content: '', contentEncoding: 'base64', sizeBytes: 2, createdAt: '' },
     ];

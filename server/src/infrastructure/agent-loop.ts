@@ -8,6 +8,7 @@ import { requirePermission } from '../auth/permission-service.js';
 import { effectiveToolCodes, roomRegistry, validatePlan, type RegisteredAgent } from '../runtime/registry.js';
 import { RuntimeTools } from '../runtime/tools.js';
 import { ToolGateway } from '../runtime/tool-gateway.js';
+import type { ObjectStore } from '../storage/object-store.js';
 
 const activeStates = ['queued','running','waiting_device','waiting_tool','waiting_approval'];
 const planTool = { type:'function',function:{ name:'delegate_tasks',description:'按注册表委派任务；dependsOn 引用前序任务序号，无依赖可并行。',parameters:{ type:'object',required:['tasks'],properties:{ tasks:{type:'array',minItems:1,maxItems:16,items:{type:'object',required:['title','instruction','agentId','dependsOn'],properties:{title:{type:'string'},instruction:{type:'string'},agentId:{type:'string'},dependsOn:{type:'array',items:{type:'integer'}}}}}}}}};
@@ -25,8 +26,8 @@ export class AgentLoopWorker {
   private readonly controllers=new Map<string,AbortController>();
   private readonly tools:ToolGateway;
   constructor(private readonly pool:Pool,private readonly accounts:AccountRepository,gateway:Pick<ComputeGateway,'completeChat'>,
-    memory:ShortTermMemoryService,encryptionKey='',private readonly onError:(error:unknown)=>void=()=>{}) {
-    this.tools=new ToolGateway(pool,new RuntimeTools(pool,accounts,memory,encryptionKey),gateway,memory);
+    memory:ShortTermMemoryService,encryptionKey='',private readonly onError:(error:unknown)=>void=()=>{}, objectStore?: ObjectStore) {
+    this.tools=new ToolGateway(pool,new RuntimeTools(pool,accounts,memory,encryptionKey,objectStore),gateway,memory);
   }
   start(intervalMs=750):void {if(this.timer)return;this.timer=setInterval(()=>this.kick(),intervalMs);this.timer.unref();this.kick();}
   kick():void {if(this.pending)return;this.pending=this.tick().catch(this.onError).finally(()=>{this.pending=null;});}

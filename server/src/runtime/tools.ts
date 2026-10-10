@@ -1,19 +1,29 @@
 import { createHash } from 'node:crypto';
 import type { Pool } from 'pg';
 import { toolArguments, runtimeSkillCatalog, type RuntimeSkillCode } from '@kla-workstation/contracts';
+import { z } from 'zod';
 import { requirePermission } from '../auth/permission-service.js';
 import type { AccountRepository } from '../repositories/types.js';
 import type { ShortTermMemoryService } from '../memories/short-term.js';
 import { resolveSearchTargets, searchScopedKnowledge, scopedSearchInputSchema } from '../auth/knowledge-search.js';
-import { serviceUrl } from '../knowledge-api/config.js';
+import { getAccessibleLibrary } from '../auth/knowledge-libraries.js';
+import { createBochaClient, formatBochaSearchResults } from '../tools/bocha-client.js';
 import type { RegisteredAgent } from './registry.js';
+import type { ObjectStore } from '../storage/object-store.js';
+import { knowledgeRequest } from './knowledge-transport.js';
+import { accessibleFile } from '../storage/file-access.js';
 
 const string = { type: 'string' }, integer = { type: 'integer' };
 const properties: Record<RuntimeSkillCode, Record<string, unknown>> = {
   knowledge_search: { query: string, topK: integer },
-  knowledge_read: { serviceInstanceId: string, docId: string, offset: integer, limit: integer },
+  knowledge_read: { knowledgeBaseId: string, docId: string, offset: integer, limit: integer },
+  knowledge_ocr: { artifactId: string, maxPages: integer },
+  web_search: { query: string, count: integer, freshness: string,
+    include: { type: 'array', items: string }, exclude: { type: 'array', items: string } },
   memory_recall: { query: string }, artifact_write: { fileName: string, content: string, mimeType: string },
   artifact_read: { artifactId: string }, local_read: { path: string, offset: integer, maxChars: integer },
+  file_read: { fileId: string, offset: integer, maxChars: integer }, local_file_fetch: { fileId: string, artifactId: string },
+  local_file_publish: { path: string, fileName: string },
   local_list: { path: string }, local_write: { fileName: string, content: string, path: string },
   local_code: { fileName: string, content: string, path: string },
   local_bat: { script: string, cwd: string, timeoutMs: integer },
@@ -24,8 +34,11 @@ const properties: Record<RuntimeSkillCode, Record<string, unknown>> = {
   local_ppt_render: { path: string, documentId: string },
 };
 const required: Record<RuntimeSkillCode, string[]> = {
-  knowledge_search: ['query'], knowledge_read: ['serviceInstanceId','docId'], memory_recall: ['query'],
+  knowledge_search: ['query'], knowledge_read: ['knowledgeBaseId','docId'], knowledge_ocr: ['artifactId'],
+  web_search: ['query'], memory_recall: ['query'],
   artifact_write: ['fileName','content'], artifact_read: ['artifactId'], local_read: ['path'], local_list: ['path'],
+  file_read: ['fileId'], local_file_fetch: [],
+  local_file_publish: ['path'],
   local_write: ['fileName','content'], local_code: ['fileName','content'], local_bat: ['script'], local_cli: ['executable'],
   local_ppt_doctor: [], local_ppt_build: ['specJson'], local_ppt_inspect: [], local_ppt_render: [],
 };
@@ -38,7 +51,7 @@ export function parseToolArguments(name: string, raw: unknown): Record<string, u
   return toolArguments[name as RuntimeSkillCode].parse(raw);
 }
 export class RuntimeTools {
-  constructor(private readonly pool: Pool, private readonly accounts: AccountRepository, private readonly memory: ShortTermMemoryService, private readonly encryptionKey: string) {}
+  constructor(private readonly pool: Pool, private readonly accounts: AccountRepository, private readonly memory: ShortTermMemoryService, private readonly encryptionKey: string, private readonly objectStore?: ObjectStore) {}
   async knowledgeInfo(identityId:string, conversationId:string):Promise<unknown> {
     try { const targets = await resolveSearchTargets(this.pool, identityId, { conversationId });
       return targets?.libraries.length ? { libraries: targets.libraries.map(item => ({ id: item.id, name: item.name, scope: item.scope })) } : null; }
@@ -46,33 +59,107 @@ export class RuntimeTools {
   }
   async execute(name: string, raw: unknown, scope: { identityId: string; conversationId: string; agentId: string; toolCallId?: string }): Promise<unknown> {
     const args = parseToolArguments(name, raw);
-    await requirePermission(this.pool, scope.identityId, name === 'artifact_write' ? 'write' : 'read');
+    await requirePermission(this.pool, scope.identityId, name === 'artifact_write' ? 'write'
+      : name === 'knowledge_ocr' || name === 'web_search' ? 'execute' : 'read');
+    if (name === 'web_search') {
+      const results = await createBochaClient({ apiKey: process.env.BOCHA_API_KEY ?? '' }).searchWeb({
+        query: String(args.query), count: Number(args.count), freshness: String(args.freshness),
+        include: args.include as string[] | undefined, exclude: args.exclude as string[] | undefined,
+      });
+      return { results, text: formatBochaSearchResults(results) };
+    }
     if (name === 'memory_recall') return { memories: await this.memory.recall(scope, String(args.query)), longTermApplied: false };
+    if (name === 'file_read') {
+      const file = await accessibleFile(this.pool, scope.identityId, String(args.fileId));
+      if (!file || file.conversation_id !== scope.conversationId) throw new Error('文件不存在或不属于当前群聊');
+      const info = { fileId: file.id, name: file.name, contentType: file.content_type, sizeBytes: Number(file.size_bytes) };
+      if (!/^text\//i.test(file.content_type ?? '') && !/\.(txt|md|csv|json|xml|html|log|js|ts|py|css)$/i.test(file.name)) return { ...info, binary: true, hint: '使用 local_file_fetch 下载到执行设备，再调用专用解析工具；read 不负责 OCR。' };
+      if (Number(file.size_bytes) > 10_000_000) throw new Error('文本附件超过 10 MB，请下载后分段处理');
+      const bytes = await this.objectStore?.get(file.storage_key);
+      if (!bytes) throw new Error('文件对象不可用');
+      const text = bytes.toString('utf8'), offset = Number(args.offset), limit = Number(args.maxChars);
+      return { ...info, content: text.slice(offset, offset + limit), truncated: text.length > offset + limit };
+    }
     if (name === 'artifact_read') {
       const artifact = await this.accounts.getArtifact(scope.identityId, String(args.artifactId));
       if (!artifact) throw new Error('成果不存在或当前身份无权访问');
+      if (artifact.conversationId !== scope.conversationId) throw new Error('成果不属于当前群聊');
+      if (artifact.storageKey && !this.objectStore) throw new Error('对象存储未配置');
+      if (artifact.storageKey && this.objectStore) {
+        const bytes = await this.objectStore.get(artifact.storageKey);
+        if (!bytes) throw new Error('成果对象已被清理');
+        if (artifact.contentEncoding === 'base64') return { id: artifact.id, name: artifact.name, mimeType: artifact.mimeType, sizeBytes: artifact.sizeBytes, binary: true, storageKey: artifact.storageKey, hint: '二进制内容不进入模型上下文。PPTX 请使用 local_ppt_inspect 读取本地 documentId；PDF/PNG 可在成果抽屉查看。' };
+        return { ...artifact, content: bytes.toString('utf8') };
+      }
       if (artifact.contentEncoding === 'base64') return { id: artifact.id, name: artifact.name, mimeType: artifact.mimeType, sizeBytes: artifact.sizeBytes, binary: true, hint: '二进制内容不进入模型上下文。PPTX 请使用 local_ppt_inspect 读取本地 documentId；PDF/PNG 可在成果抽屉查看。' };
       return artifact;
     }
     if (name === 'artifact_write') {
       const content = String(args.content);
       const checksum = createHash('sha256').update(content).digest('hex');
-      const {rows} = await this.pool.query(`INSERT INTO artifacts(identity_id,conversation_id,name,mime_type,content,size_bytes,checksum,tool_call_id)
+      const bytes = Buffer.from(content, 'utf8');
+      const client = await this.pool.connect();
+      try {
+        await client.query('BEGIN');
+        const {rows} = await client.query(`INSERT INTO artifacts(identity_id,conversation_id,name,mime_type,content,size_bytes,checksum,tool_call_id)
         VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(tool_call_id) WHERE tool_call_id IS NOT NULL DO UPDATE SET tool_call_id=EXCLUDED.tool_call_id RETURNING *`,
-      [scope.identityId,scope.conversationId,args.fileName,args.mimeType,content,Buffer.byteLength(content),checksum,scope.toolCallId??null]);
-      return { artifactId: rows[0].id, fileName: rows[0].name, sizeBytes: Number(rows[0].size_bytes), checksum, stored: true };
+        [scope.identityId,scope.conversationId,args.fileName,args.mimeType,content,bytes.byteLength,checksum,scope.toolCallId??null]);
+        const artifact = rows[0];
+        if (artifact.identity_id !== scope.identityId || artifact.conversation_id !== scope.conversationId) throw new Error('成果调用不属于当前身份或群聊');
+        if (artifact.checksum !== checksum || artifact.name !== args.fileName || artifact.mime_type !== args.mimeType) throw new Error('同一工具调用不可覆盖已有成果');
+        let storageKey: string | undefined = artifact.storage_key ?? undefined;
+        if (this.objectStore && bytes.byteLength > 256 * 1024 && !storageKey) {
+          storageKey = `artifacts/${scope.identityId}/${artifact.id}/content`;
+          await this.objectStore.put(storageKey, bytes);
+          await client.query("UPDATE artifacts SET storage_key=$2,storage_status='stored',content='' WHERE id=$1", [artifact.id, storageKey]);
+        }
+        await client.query('COMMIT');
+        return { artifactId: artifact.id, fileName: artifact.name, sizeBytes: Number(artifact.size_bytes), checksum: artifact.checksum, stored: true, ...(storageKey ? { storageKey } : {}) };
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
     }
-    if (name.startsWith('knowledge_')) {
-      if (name === 'knowledge_read') throw new Error('文档归属尚未验证，暂不可读取原文');
+    if (name === 'knowledge_ocr') {
+      const artifact = await this.accounts.getArtifact(scope.identityId, String(args.artifactId));
+      if (!artifact) throw new Error('成果不存在或当前身份无权访问');
+      if (artifact.conversationId !== scope.conversationId) throw new Error('成果不属于当前群聊');
+      if (artifact.mimeType !== 'application/pdf' || artifact.sizeBytes > 16 * 1024 * 1024)
+        throw new Error('OCR 仅支持不超过 16 MiB 的 PDF 成果');
+      const bytes = artifact.storageKey
+        ? await this.objectStore?.get(artifact.storageKey)
+        : Buffer.from(artifact.content, artifact.contentEncoding === 'base64' ? 'base64' : 'utf8');
+      if (!bytes || bytes.length !== artifact.sizeBytes || bytes.subarray(0, 5).toString() !== '%PDF-')
+        throw new Error('PDF 成果内容不可用或格式不正确');
+      const form = new FormData();
+      form.set('file', new Blob([Uint8Array.from(bytes)], { type: 'application/pdf' }), artifact.name);
+      form.set('display_name', artifact.name);
+      form.set('max_pages', String(args.maxPages));
+      const response = await knowledgeRequest(this.pool, scope.identityId, this.encryptionKey,
+        '/v1/ocr', { method: 'POST', body: form });
+      return z.object({ filename: z.string(), pages: z.number().int().nonnegative(),
+        chars: z.number().int().nonnegative(), markdown: z.string().max(1_000_000) }).parse(response);
+    }
+    if (name === 'knowledge_read') {
+      const library = await getAccessibleLibrary(this.pool, scope.identityId, String(args.knowledgeBaseId), 'read');
+      const targets = await resolveSearchTargets(this.pool, scope.identityId, { conversationId: scope.conversationId });
+      if (!library || !targets?.libraries.some(item => item.id === library.entry.id)) throw new Error('KNOWLEDGE_SCOPE_DENIED');
+      const path = `/v1/documents/${encodeURIComponent(String(args.docId))}/content?knowledge_base_id=${library.entry.id}&para=${args.offset}&limit=${args.limit}`;
+      const response = z.object({ permission_filtered: z.literal(true), knowledge_base_id: z.string().uuid(),
+        doc_id: z.union([z.string(), z.number()]) }).passthrough().safeParse(
+          await knowledgeRequest(this.pool, scope.identityId, this.encryptionKey, path));
+      if (!response.success || response.data.knowledge_base_id !== library.entry.id || String(response.data.doc_id) !== String(args.docId))
+        throw new Error('KNOWLEDGE_SCOPE_PROTOCOL');
+      return response.data;
+    }
+    if (name === 'knowledge_search') {
       const search = scopedSearchInputSchema.parse({ conversationId: scope.conversationId,
         query: args.query, mode: 'hybrid', topK: args.topK });
-      return searchScopedKnowledge(this.pool, scope.identityId, search, async (_collection, payload) => {
-        const response = await fetch(`${serviceUrl}/v1/search`, { method: 'POST', headers: {
-          'content-type': 'application/json', ...(process.env.KB_API_KEY ? { 'x-api-key': process.env.KB_API_KEY } : {}),
-        }, body: JSON.stringify(payload) });
-        if (!response.ok) throw new Error(`知识服务返回 HTTP ${response.status}`);
-        return response.json();
-      });
+      return searchScopedKnowledge(this.pool, scope.identityId, search, (_collection, payload) =>
+        knowledgeRequest(this.pool, scope.identityId, this.encryptionKey, '/v1/search',
+          { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) }));
     }
     throw new Error('本地技能必须路由到已认证桌面设备');
   }

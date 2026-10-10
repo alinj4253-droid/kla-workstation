@@ -5,7 +5,7 @@ import remarkGfm from 'remark-gfm';
 import rehypeSanitize from 'rehype-sanitize';
 import { klaApi } from '../api/client';
 
-export type RoomArtifact = { id: string; name: string; mimeType: string; content: string; contentEncoding?: 'utf8' | 'base64'; sizeBytes: number; createdAt: string };
+export type RoomArtifact = { id: string; name: string; mimeType: string; content: string; contentEncoding?: 'utf8' | 'base64'; storageKey?: string | null; sourceKind?: 'file' | 'artifact'; sizeBytes: number; createdAt: string };
 export type RoomRun = { id: string; status: string; phase?: string; currentAgent?: string; createdAt?: string; updatedAt?: string; result?: { waitingReason?: string; error?: string } };
 export type RunStep = { id: string; step_index: number; title: string; instruction: string; status: string; result?: { text?: string; error?: string; agentName?: string }; agent_snapshot?: { name?: string }; updated_at?: string };
 export type RunEvent = { sequence: number; run_id: string; kind: string; payload: Record<string, unknown>; created_at: string };
@@ -120,7 +120,44 @@ export function ProjectWorkspace({ project, rooms, onOpenRoom, onCreateRoom, onC
 export function ArtifactPane({ artifacts, selected, loading, collapsed, onSelect, onCollapse, onClose, onDownload }: { artifacts: RoomArtifact[]; selected: RoomArtifact | null; loading: boolean; collapsed: boolean; onSelect: (id: string) => void; onCollapse: () => void; onClose: () => void; onDownload: (artifact: RoomArtifact) => void }) {
   if (collapsed) return <button className="ws-artifact-mini" title="展开成果预览" onClick={onCollapse}><FileText size={17} /><span>{artifacts.length}</span></button>;
   const mime = selected?.mimeType ?? '';
-  return <aside className="ws-artifact-pane" aria-label="成果预览"><header><div className="ws-artifact-tabs">{artifacts.map(artifact => <button key={artifact.id} className={artifact.id === selected?.id ? 'active' : ''} onClick={() => onSelect(artifact.id)} title={artifact.name}><FileText size={13} />{artifact.name}</button>)}</div><button title="收起预览" onClick={onCollapse}><ArrowRight size={16} /></button><button title="关闭预览" onClick={onClose}><X size={16} /></button></header><div className="ws-artifact-meta">{selected ? `${selected.name} · 只读预览 · ${Math.max(1, Math.round((selected.sizeBytes ?? selected.content?.length ?? 0) / 1024))} KB` : loading ? '正在加载成果…' : '群组成果'}</div><div className="ws-artifact-body">{loading ? <div className="ws-artifact-loading"><LoaderCircle size={20} />正在加载文件…</div> : !selected ? <div className="ws-artifact-loading">{artifacts.length ? '选择上方文件进行预览' : '当前群组还没有成果文件'}</div> : selected.contentEncoding === 'base64' ? <BinaryArtifactPreview artifact={selected} artifacts={artifacts} onSelect={onSelect} /> : mime.includes('html') || /\.html?$/i.test(selected.name) ? <iframe title={selected.name} srcDoc={selected.content} sandbox="" /> : /\.md$/i.test(selected.name) || mime.includes('markdown') ? <article><MarkdownMessage text={selected.content} /></article> : <pre>{selected.content}</pre>}</div><footer>{selected && <button onClick={() => onDownload(selected)}><Download size={14} />下载</button>}<small>服务端成果 · 当前身份可见</small></footer></aside>;
+  return <aside className="ws-artifact-pane" aria-label="成果预览">
+    <header><div className="ws-artifact-tabs">{[...artifacts, ...(selected?.sourceKind === 'file' ? [selected] : [])].map(artifact => <button key={artifact.id} className={artifact.id === selected?.id ? 'active' : ''} onClick={() => onSelect(artifact.id)} title={artifact.name}><FileText size={13} />{artifact.name}</button>)}</div><button title="收起预览" onClick={onCollapse}><ArrowRight size={16} /></button><button title="关闭预览" onClick={onClose}><X size={16} /></button></header>
+    <div className="ws-artifact-meta">{selected ? `${selected.name} · 只读预览 · ${Math.max(1, Math.round((selected.sizeBytes ?? selected.content?.length ?? 0) / 1024))} KB` : loading ? '正在加载成果…' : '群组成果'}</div>
+    <div className="ws-artifact-body">{loading ? <div className="ws-artifact-loading"><LoaderCircle size={20} />正在加载文件…</div>
+      : !selected ? <div className="ws-artifact-loading">{artifacts.length ? '选择上方文件进行预览' : '当前群组还没有成果文件'}</div>
+      : /\.pptx$/i.test(selected.name) ? <BinaryArtifactPreview artifact={selected} artifacts={artifacts} onSelect={onSelect} />
+      : (selected.storageKey || selected.sourceKind === 'file') ? <StoredFilePreview artifact={selected} />
+      : selected.contentEncoding === 'base64' ? <BinaryArtifactPreview artifact={selected} artifacts={artifacts} onSelect={onSelect} />
+      : mime.includes('html') || /\.html?$/i.test(selected.name) ? <iframe title={selected.name} srcDoc={selected.content} sandbox="" />
+      : /\.md$/i.test(selected.name) || mime.includes('markdown') ? <article><MarkdownMessage text={selected.content} /></article> : <pre>{selected.content}</pre>}</div>
+    <footer>{selected && <button onClick={() => onDownload(selected)}><Download size={14} />下载</button>}<small>服务端成果 · 当前身份可见</small></footer>
+  </aside>;
+}
+
+function StoredFilePreview({ artifact }: { artifact: RoomArtifact }) {
+  const [content, setContent] = useState(''); const [url, setUrl] = useState(''); const [error, setError] = useState(''); const [loading, setLoading] = useState(true);
+  const image = /^image\/(png|jpeg|gif|webp)$/i.test(artifact.mimeType), pdf = artifact.mimeType === 'application/pdf';
+  const text = /^text\//i.test(artifact.mimeType) || /\.(md|txt|json|csv|xml|log|js|ts|py|css)$/i.test(artifact.name);
+  const supported = (image || pdf || text) && artifact.sizeBytes <= 10 * 1024 * 1024;
+  useEffect(() => {
+    let disposed = false, objectUrl = '';
+    setContent(''); setUrl(''); setError(''); setLoading(supported);
+    if (supported) void klaApi.download(artifact.sourceKind === 'file' ? `/v1/files/${artifact.id}/content` : `/v1/artifacts/${artifact.id}/content`).then(async result => {
+      if (!result.ok) throw new Error(result.message);
+      if (disposed) return;
+      if (text) { const value = await result.blob.text(); if (!disposed) setContent(value); }
+      else { objectUrl = URL.createObjectURL(new Blob([result.blob], { type: artifact.mimeType })); setUrl(objectUrl); }
+    }).catch((e: unknown) => { if (!disposed) setError(e instanceof Error ? e.message : '文件预览加载失败'); }).finally(() => { if (!disposed) setLoading(false); });
+    return () => { disposed = true; if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [artifact.id, artifact.sourceKind, artifact.mimeType, supported, text]);
+  if (!supported) return <div className="ws-artifact-loading"><FileText size={28} />此格式或大小暂不支持内嵌预览，可下载后打开。</div>;
+  if (error) return <div className="ws-artifact-loading">{error}</div>;
+  if (loading) return <div className="ws-artifact-loading"><LoaderCircle size={20} />正在加载文件…</div>;
+  if (image) return <img src={url} alt={artifact.name} style={{ width: '100%', height: 'auto' }} />;
+  if (pdf) return <iframe title={artifact.name} src={url} />;
+  if (/html/i.test(artifact.mimeType)) return <iframe title={artifact.name} srcDoc={content} sandbox="" />;
+  if (/markdown/i.test(artifact.mimeType) || /\.md$/i.test(artifact.name)) return <article><MarkdownMessage text={content} /></article>;
+  return <pre>{content}</pre>;
 }
 
 function BinaryArtifactPreview({ artifact, artifacts, onSelect }: { artifact: RoomArtifact; artifacts: RoomArtifact[]; onSelect: (id: string) => void }): React.JSX.Element {

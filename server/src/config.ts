@@ -66,6 +66,8 @@ export type ServerConfig = {
   sub2api: Sub2ApiConfig;
   compute: ComputeConfig;
   tools: ToolsConfig;
+  objectStoragePath: string;
+  objectStorageMaxFileBytes: number;
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
@@ -105,5 +107,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     tools: {
       bochaApiKey: env.BOCHA_API_KEY ?? '',
     },
+    objectStoragePath: resolve(env.OBJECT_STORAGE_PATH ?? resolve(process.cwd(), '.runtime/object-storage')),
+    objectStorageMaxFileBytes: Math.max(1, Number(env.OBJECT_STORAGE_MAX_FILE_BYTES ?? 100 * 1024 * 1024)),
   };
 }

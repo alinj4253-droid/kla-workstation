@@ -14,7 +14,7 @@
     "dev": "pnpm --filter @kla-workstation/desktop dev",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
-    "test": "pnpm -r test",
+    "test": "pnpm --filter @kla-workstation/contracts build && pnpm -r test",
     "lint": "eslint .",
     "ci-check": "pnpm typecheck && pnpm lint && pnpm test && pnpm build",
     "package:win": "pnpm --filter @kla-workstation/desktop package:win"

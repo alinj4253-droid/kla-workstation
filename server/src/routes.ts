@@ -16,6 +16,10 @@ import { ShortTermMemoryService } from './memories/short-term.js';
 import { canAccessConversation, canManageProject, resolveKnowledgeAccessScope } from './auth/resource-scope.js';
 import { scopedSearchInputSchema, searchScopedKnowledge } from './auth/knowledge-search.js';
 import { serviceUrl } from './knowledge-api/config.js';
+import type { ObjectStore } from './storage/object-store.js';
+import { registerFileRoutes } from './storage/routes.js';
+import { messageFileReferences } from './storage/file-access.js';
+import { createMessageRequestSchema } from '@kla-workstation/contracts';
 
 /** pino 子 logger 支持运行时 setBindings；FastifyBaseLogger 类型未暴露，且 logger:false 的 noop 实现没有该方法（规范 §3）。 */
 function bindRequestLog(request: FastifyRequest, bindings: Record<string, unknown>): void {
@@ -23,7 +27,7 @@ function bindRequestLog(request: FastifyRequest, bindings: Record<string, unknow
   log.setBindings?.(bindings);
 }
 
-export async function registerRoutes(app: FastifyInstance, deps: { accounts: AccountRepository; database?: PostgresDatabase; redis?: RedisDatabase; gateway?: Pick<ComputeGateway, 'completeChat'>; shortTermMemory?: ShortTermMemoryService; loopWorker?: Pick<AgentLoopWorker, 'kick' | 'cancel'>; mode?: 'postgres' | 'mock' }): Promise<void> {
+export async function registerRoutes(app: FastifyInstance, deps: { accounts: AccountRepository; database?: PostgresDatabase; redis?: RedisDatabase; gateway?: Pick<ComputeGateway, 'completeChat'>; shortTermMemory?: ShortTermMemoryService; loopWorker?: Pick<AgentLoopWorker, 'kick' | 'cancel'>; mode?: 'postgres' | 'mock'; objectStore?: ObjectStore; objectStorageMaxFileBytes?: number }): Promise<void> {
   const auth = async (request: FastifyRequest, reply: FastifyReply) => {
     const raw = request.headers.authorization;
     const token = typeof raw === 'string' && raw.startsWith('Bearer ') ? raw.slice(7) : '';
@@ -426,10 +430,14 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
     // Sending a chat message is a write operation. The execute permission is
     // reserved for invoking tools, operation platforms, or queued actions.
     const identity = await enforce(session, request, 'write', reply); if (!identity) return;
-    const params = request.params as { conversationId: string }; const body = request.body as { text?: string; mode?: string };
-    if (!body.text?.trim()) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: '消息不能为空', retryable: false }, meta: { requestId: request.id } } satisfies ApiErrorBody);
+    const params = request.params as { conversationId: string }; const parsed = createMessageRequestSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: '消息内容或附件参数无效', retryable: false } });
+    const body = parsed.data;
     if (!identity || !(await deps.accounts.listAllConversations(identity.id)).some((item) => item.id === params.conversationId)) return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: '群聊不存在或无权访问', retryable: false } });
-    const userMessage = await deps.accounts.createMessage(params.conversationId, session.userId, body.text.trim());
+    let files;
+    try { files = body.fileIds.length && deps.database?.rawPool ? await messageFileReferences(deps.database.rawPool, identity.id, params.conversationId, body.fileIds) : []; }
+    catch { return reply.code(403).send({ ok: false, error: { code: 'FILE_SCOPE_DENIED', message: '附件未上传完成或不属于当前群聊' } }); }
+    const userMessage = await deps.accounts.createMessage(params.conversationId, session.userId, body.text.trim() || '请处理附件中的内容', { files, fileIds: files.map(file => file.id) });
     if (deps.mode !== 'mock' && deps.database?.rawPool) {
       const owner = await deps.database.rawPool.query(`SELECT p.owner_identity_id FROM conversations c JOIN projects p ON p.id=c.project_id WHERE c.id=$1`, [params.conversationId]);
       if (owner.rows[0]?.owner_identity_id !== identity.id) return reply.send({ ok: true, data: { message: userMessage, run: null } });
@@ -521,27 +529,8 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
     const identity = await enforce(session, request, 'manage', reply); if (!identity) return;
     const { memoryId } = request.params as { memoryId: string }; const result = await deps.database.rawPool.query('DELETE FROM memories m USING workspaces w WHERE m.id=$1 AND m.workspace_id=w.id AND w.identity_id=$2 RETURNING m.id', [memoryId, identity.id]); if (!result.rows[0]) return reply.code(404).send({ ok: false, error: { code: 'MEMORY_NOT_FOUND', message: '记忆不存在或无权删除' } }); return reply.send({ ok: true, data: null });
   });
-  app.get('/api/v1/files', async (request, reply) => {
-    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return;
-    const identity = await enforce(session, request, 'read', reply); if (!identity) return;
-    const query = request.query as { workspaceId?: string; projectId?: string; status?: string; limit?: string }; const limit = Math.min(Math.max(Number(query.limit ?? 100) || 100, 1), 500);
-    const result = await deps.database.rawPool.query(`SELECT f.id,f.workspace_id,f.name,f.storage_key,f.checksum,f.content_type,f.size_bytes,f.status,f.created_at FROM files f JOIN workspaces w ON w.id=f.workspace_id WHERE w.identity_id=$1 AND ($2::uuid IS NULL OR f.workspace_id=$2) AND ($3::text IS NULL OR f.status=$3) ORDER BY f.created_at DESC LIMIT $4`, [identity?.id ?? '', query.workspaceId ?? null, query.status ?? null, limit]);
-    return reply.send({ ok: true, data: result.rows.map((row) => ({ id: row.id, workspaceId: row.workspace_id, name: row.name, storageKey: row.storage_key, checksum: row.checksum, contentType: row.content_type, sizeBytes: Number(row.size_bytes), status: row.status, createdAt: new Date(row.created_at).toISOString() })) });
-  });
-  app.get('/api/v1/files/:fileId', async (request, reply) => {
-    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return;
-    const identity = await enforce(session, request, 'read', reply); if (!identity) return;
-    const { fileId } = request.params as { fileId: string };
-    const result = await deps.database.rawPool.query('SELECT f.id,f.workspace_id,f.name,f.storage_key,f.checksum,f.content_type,f.size_bytes,f.status,f.created_at FROM files f JOIN workspaces w ON w.id=f.workspace_id WHERE f.id=$1 AND w.identity_id=$2', [fileId, identity?.id ?? '']);
-    if (!result.rows[0]) return reply.code(404).send({ ok: false, error: { code: 'FILE_NOT_FOUND', message: '文件不存在或无权访问' } }); const row = result.rows[0]; return reply.send({ ok: true, data: { id: row.id, workspaceId: row.workspace_id, name: row.name, storageKey: row.storage_key, checksum: row.checksum, contentType: row.content_type, sizeBytes: Number(row.size_bytes), status: row.status, createdAt: new Date(row.created_at).toISOString() } });
-  });
-  app.post('/api/v1/files/upload-sessions', async (request, reply) => {
-    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return;
-    const identity = await enforce(session, request, 'write', reply); if (!identity) return;
-    const body = request.body as { workspaceId?: string; fileName?: string; contentType?: string; sizeBytes?: number; checksum?: string }; if (!body.workspaceId || !body.fileName) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: 'workspaceId 和 fileName 为必填项' } });
-    const owned = await deps.database.rawPool.query('SELECT id FROM workspaces WHERE id=$1 AND identity_id=$2', [body.workspaceId, identity.id]); if (!owned.rows[0]) return reply.code(403).send({ ok: false, error: { code: 'FORBIDDEN', message: '无权上传到该工作区' } });
-    const result = await deps.database.rawPool.query('INSERT INTO upload_sessions (identity_id,workspace_id,file_name,content_type,size_bytes,checksum) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id,file_name,content_type,size_bytes,checksum,status,expires_at', [identity?.id, body.workspaceId, body.fileName, body.contentType ?? null, body.sizeBytes ?? 0, body.checksum ?? null]); return reply.code(201).send({ ok: true, data: { ...result.rows[0], uploadUrl: null, mode: 'server-multipart-placeholder' } });
-  });
+  await registerFileRoutes(app, { pool: deps.database?.rawPool ?? undefined, objectStore: deps.objectStore, maxBytes: deps.objectStorageMaxFileBytes,
+    authorize: async (request, reply, action) => { const session = await auth(request, reply); return session ? enforce(session, request, action, reply) : null; } });
   app.get('/api/v1/me/permissions', async (request, reply) => {
     const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return;
     const identity = await enforce(session, request, 'read', reply); if (!identity) return;

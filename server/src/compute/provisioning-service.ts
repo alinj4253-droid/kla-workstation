@@ -47,6 +47,10 @@ export class ProvisioningService {
     // 断点恢复（§5.3 幂等）：上游账号已建好但默认 Key 未建时，复用已存的托管密码续跑，
     // 不再重复 createUser（否则会因邮箱重复被 409 拒绝，且中途失败会产生无法登录的孤儿账号）。
     const existing = await this.repo.getBinding(identityId);
+    if (existing?.sub2apiUserId && !resolveManagedPassword(existing.managedPassword, this.encryptionKey)) {
+      throw new Error('已有上游账号的托管凭据无法解密；请恢复原加密密钥或由管理员重置该账号密码，不能重新建号');
+    }
+    if (existing?.status === 'ready') return;
     if (existing?.sub2apiUserId && (existing.status === 'user_created' || existing.status === 'balance_granted')) {
       const password = resolveManagedPassword(existing.managedPassword, this.encryptionKey);
       if (password) {

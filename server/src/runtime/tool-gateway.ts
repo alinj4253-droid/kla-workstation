@@ -59,7 +59,12 @@ export class ToolGateway {
   async conversationHistory(scope: AgentMemoryScope, triggerMessageId: string) {
     if (!this.memory) throw new Error('记忆服务未配置');
     await requirePermission(this.pool, scope.identityId, 'read');
-    return this.memory.history(scope, triggerMessageId);
+    const history = await this.memory.history(scope, triggerMessageId);
+    const rows = (await this.pool.query(`SELECT m.metadata->'files' AS files FROM messages m
+      WHERE m.conversation_id=$1 AND m.created_at<=(SELECT created_at FROM messages WHERE id=$2 AND conversation_id=$1)
+        AND CASE WHEN jsonb_typeof(m.metadata->'files')='array' THEN jsonb_array_length(m.metadata->'files') ELSE 0 END>0 ORDER BY m.created_at DESC LIMIT 20`, [scope.conversationId, triggerMessageId])).rows;
+    if (rows.length) history.push({ role: 'system', content: `本群聊近期附件（文件编号是跨设备共享标识；使用 file_read 读文本，local_file_fetch 下载后调用本地工具，不能将其他设备路径作为输入）：${JSON.stringify(rows.flatMap(row => row.files))}` });
+    return history;
   }
 
   async recallMemory(scope: AgentMemoryScope, query: string, runId: string) {
@@ -92,7 +97,7 @@ export class ToolGateway {
     if (skill.location === 'local' && (scope.agent.execution_location !== 'local' || !scope.deviceId)) {
       throw new Error('本地工具需要已认证的本地执行设备');
     }
-    const action: PermissionAction = skill.location === 'local' ? 'execute' : name === 'artifact_write' ? 'write' : 'read';
+    const action: PermissionAction = skill.location === 'local' || name === 'knowledge_ocr' || name === 'web_search' ? 'execute' : name === 'artifact_write' ? 'write' : 'read';
     await requirePermission(this.pool, scope.identityId, action);
     return { location: skill.location, action };
   }

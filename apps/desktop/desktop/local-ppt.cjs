@@ -1,6 +1,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
+const { ensureWorkspace } = require('./local-workspace.cjs');
 const capabilities = ['local_ppt_doctor', 'local_ppt_build', 'local_ppt_inspect', 'local_ppt_render'];
 const mimes = { '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation', '.pdf': 'application/pdf', '.png': 'image/png', '.json': 'application/json' };
 async function pythonExecutable() {
@@ -13,8 +14,8 @@ function kitDirectory() {
 }
 async function executePpt(call, root, signal, approved, helpers) {
   const { command, absolute, filename, within, approvedReadPath } = helpers;
-  const folder = path.join(root, filename(call.runId), filename(call.stepId), filename(call.id));
-  await fs.mkdir(folder, { recursive: true });
+  const workspace = await ensureWorkspace(root, call);
+  const folder = workspace.output;
   const args = call.arguments;
   const action = call.tool.replace('local_ppt_', '');
   const request = { action, output: folder };
@@ -38,7 +39,7 @@ async function executePpt(call, root, signal, approved, helpers) {
     request.input = input;
   }
   signal.throwIfAborted();
-  const file = path.join(folder, 'request.json');
+  const file = path.join(workspace.work, 'request.json');
   await fs.writeFile(file, JSON.stringify(request), 'utf8');
   let proc;
   try { proc = await command(await pythonExecutable(), ['-X', 'utf8', path.join(kitDirectory(), 'scripts', 'kla_bridge.py'), file], folder, 660000, signal); }

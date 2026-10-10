@@ -50,9 +50,9 @@ ipcMain.handle('kla:operation-health', async () => ({ ok: true, runtime: 'electr
 
 app.whenReady().then(() => {
   localRuntime = new LocalRuntime(app.getPath('userData'), process.env.KLA_API_BASE_URL || 'http://127.0.0.1:8787/api', async call => {
-    const action = { local_read: '读取本地文件', local_list: '查看本地目录', local_write: '写入本地文件', local_code: '保存代码文件', local_bat: '运行 BAT 脚本', local_cli: '运行命令行程序', local_ppt_doctor: '检查本地 PPT 环境', local_ppt_build: '生成 PPTX 并进行质量检查与渲染', local_ppt_inspect: '读取 PPTX 的页面内容与备注', local_ppt_render: '检查并渲染本地 PPTX' }[call.tool];
+    const action = { local_read: '读取本地文件', local_list: '查看本地目录', local_write: '写入本地文件', local_code: '保存代码文件', local_bat: '运行 BAT 脚本', local_cli: '运行命令行程序', local_file_fetch: '下载群聊共享文件到本地工作区', local_file_publish: '发布本地文件为群聊成果', local_ppt_doctor: '检查本地 PPT 环境', local_ppt_build: '生成 PPTX 并进行质量检查与渲染', local_ppt_inspect: '读取 PPTX 的页面内容与备注', local_ppt_render: '检查并渲染本地 PPTX' }[call.tool];
     if (!action) return false;
-    const summary = call.tool === 'local_cli' ? `${String(call.arguments.executable)} ${(call.arguments.args || []).join(' ')}` : call.tool === 'local_bat' ? String(call.arguments.script).slice(0, 400) : String(call.arguments.path || call.arguments.documentId || call.arguments.fileName || 'Python 依赖、中文字体、Office/WPS 渲染器');
+    const summary = call.tool === 'local_file_fetch' ? `${call.arguments.fileId ? '附件' : '成果'} ID：${String(call.arguments.fileId || call.arguments.artifactId)}` : call.tool === 'local_cli' ? `${String(call.arguments.executable)} ${(call.arguments.args || []).join(' ')}` : call.tool === 'local_bat' ? String(call.arguments.script).slice(0, 400) : String(call.arguments.path || call.arguments.documentId || call.arguments.fileName || 'Python 依赖、中文字体、Office/WPS 渲染器');
     const window = BrowserWindow.getAllWindows()[0];
     if (!window) return false;
     const choice = await dialog.showMessageBox(window, { type: 'warning', buttons: ['拒绝', '允许本次操作'], defaultId: 0, cancelId: 0,

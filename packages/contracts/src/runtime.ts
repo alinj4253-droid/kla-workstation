@@ -17,9 +17,14 @@ export type TaskPlan = z.infer<typeof taskPlanSchema>;
 export const runtimeSkillCatalog = [
   { code: 'knowledge_search', name: '知识检索', description: '检索当前身份已授权的知识库', location: 'server' },
   { code: 'knowledge_read', name: '知识全文读取', description: '读取已授权知识文档与切片', location: 'server' },
+  { code: 'knowledge_ocr', name: 'PDF OCR', description: '识别当前身份成果中的 PDF 文本', location: 'server' },
+  { code: 'web_search', name: '博查网页搜索', description: '检索公开网页并返回标题、链接和摘要', location: 'server' },
   { code: 'memory_recall', name: '短期记忆使用', description: '使用本群聊、本智能体的短期记忆；长期记忆暂不应用', location: 'server' },
   { code: 'artifact_write', name: '成果文件保存', description: '保存真实文件并返回可预览、下载的成果编号', location: 'server' },
   { code: 'artifact_read', name: '成果文件读取', description: '读取当前身份的既有成果继续协作', location: 'server' },
+  { code: 'file_read', name: '群聊附件读取', description: '按文件编号读取当前群聊上传的文本附件；二进制返回元数据', location: 'server' },
+  { code: 'local_file_fetch', name: '共享文件下载', description: '将当前群聊的附件或成果按编号下载到本机任务 input，返回本机路径供后续本地工具使用', location: 'local' },
+  { code: 'local_file_publish', name: '本地成果发布', description: '将用户批准的本地文件作为群聊成果上传，供其他设备按成果编号取用；CLI 生成的文件需显式发布', location: 'local' },
   { code: 'local_read', name: '本地 read', description: '读取设备上当前系统用户可访问的文件', location: 'local' },
   { code: 'local_list', name: '本地目录查看', description: '列出本地目录中的文件', location: 'local' },
   { code: 'local_write', name: '本地 write', description: '写入文件，默认保存至任务临时目录并回传成果副本', location: 'local' },
@@ -33,20 +38,26 @@ export const runtimeSkillCatalog = [
 ] as const;
 export type RuntimeSkillCode = typeof runtimeSkillCatalog[number]['code'];
 export const runtimeSkillBundles = [
-  { code: 'knowledge_research', name: '知识资料处理', description: '检索并读取当前身份已授权的知识内容', tools: ['knowledge_search', 'knowledge_read'] },
+  { code: 'knowledge_research', name: '知识资料处理', description: '检索并读取当前身份已授权的知识内容，识别 PDF 成果', tools: ['knowledge_search', 'knowledge_read', 'knowledge_ocr'] },
+  { code: 'web_research', name: '网页资料检索', description: '通过博查检索公开网页', tools: ['web_search'] },
   { code: 'memory_context', name: '短期记忆', description: '读取当前群聊和智能体的短期记忆', tools: ['memory_recall'] },
-  { code: 'artifact_management', name: '成果管理', description: '读取和保存群聊成果文件', tools: ['artifact_read', 'artifact_write'] },
-  { code: 'local_files', name: '本地文件处理', description: '查看、读取并写入当前设备的文件', tools: ['local_list', 'local_read', 'local_write'] },
+  { code: 'artifact_management', name: '成果管理', description: '读取附件和保存群聊成果文件', tools: ['artifact_read', 'artifact_write', 'file_read'] },
+  { code: 'local_files', name: '本地文件处理', description: '查看、读取、下载共享文件、写入文件并发布群聊成果', tools: ['local_list', 'local_read', 'local_write', 'local_file_fetch', 'local_file_publish'] },
   { code: 'local_development', name: '本地代码开发', description: '编写代码并执行本地命令', tools: ['local_code', 'local_cli', 'local_bat'] },
   { code: 'ppt_assistant', name: 'PPT 制作与改稿', description: 'deck-agent-kit 1.0：环境检查 → 材料读取 → 大纲确认 → 语义编译 → 质量门禁 → 真实渲染 → 成果交付；本地执行', tools: ['local_ppt_doctor', 'local_ppt_build', 'local_ppt_inspect', 'local_ppt_render'] },
 ] as const satisfies ReadonlyArray<{ code: string; name: string; description: string; tools: readonly RuntimeSkillCode[] }>;
 export type RuntimeSkillBundleCode = typeof runtimeSkillBundles[number]['code'];
 export const toolArguments = {
   knowledge_search: z.object({ query: z.string().min(1), topK: z.number().int().min(1).max(20).default(5) }),
-  knowledge_read: z.object({ serviceInstanceId: z.string().min(1), docId: z.union([z.string(), z.number()]), offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(200).default(20) }),
+  knowledge_read: z.object({ knowledgeBaseId: z.string().uuid(), docId: z.union([z.string(), z.number()]), offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(200).default(20) }),
+  knowledge_ocr: z.object({ artifactId: z.string().uuid(), maxPages: z.number().int().min(1).max(20).default(5) }),
+  web_search: z.object({ query: z.string().trim().min(1).max(1000), count: z.number().int().min(1).max(20).default(5), freshness: z.string().max(50).default('noLimit'), include: z.array(z.string().min(1)).max(20).optional(), exclude: z.array(z.string().min(1)).max(20).optional() }),
   memory_recall: z.object({ query: z.string().min(1) }),
   artifact_write: z.object({ fileName: z.string().min(1).max(255).refine(s => !/[\\/]/.test(s), '仅使用文件名'), content: z.string().max(1_000_000), mimeType: z.string().max(100).default('text/plain') }),
   artifact_read: z.object({ artifactId: z.string().uuid() }),
+  file_read: z.object({ fileId: z.string().uuid(), offset: z.number().int().min(0).default(0), maxChars: z.number().int().min(1).max(100000).default(20000) }),
+  local_file_fetch: z.object({ fileId: z.string().uuid().optional(), artifactId: z.string().uuid().optional() }).refine(input => Boolean(input.fileId) !== Boolean(input.artifactId), '选择 fileId 或 artifactId 之一'),
+  local_file_publish: z.object({ path: z.string().min(1), fileName: z.string().min(1).max(255).optional() }),
   local_read: z.object({ path: z.string().min(1), offset: z.number().int().min(0).default(0), maxChars: z.number().int().min(1).max(100000).default(20000) }),
   local_list: z.object({ path: z.string().min(1) }),
   local_write: z.object({ fileName: z.string().min(1).max(255), content: z.string().max(1_000_000), path: z.string().optional() }),

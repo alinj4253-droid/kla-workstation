@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { ConversationAttachments } from './ConversationAttachments';
+import type { FileItem } from '@kla-workstation/contracts';
 import { Activity, ArrowRight, Bell, BookOpen, Bot, BriefcaseBusiness, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronRight, CircleHelp, Clock3, Cloud, Code2, Copy, CreditCard, Database, Download, Eye, EyeOff, FileText, Folder, FolderPlus, Home, KeyRound, LayoutDashboard, LogOut, Menu, MessageSquare, MoreHorizontal, Paperclip, Plus, Search, Send, Settings, ShieldCheck, Sparkles, Upload, UserCircle, Users, Wallet, X, Wrench, Route, RefreshCw, Brain as BrainIcon } from 'lucide-react';
 import logo from '../assets/kla-sidebar-logo.png';
 import type { CreateConversationRequest, IdentityDto } from '@kla-workstation/contracts';
@@ -19,10 +21,11 @@ type Section = 'home' | 'projects' | 'knowledge' | 'agents' | 'memory' | 'comput
 type LoginIdentity = IdentityDto & { role?: 'personal' | 'admin' | 'member' };
 type Modal = 'project' | 'chat' | 'knowledge' | 'knowledge-create' | 'register' | 'identity' | 'create-enterprise' | 'join-enterprise' | null;
 type Project = { id: string; name: string; description: string; progress: number; members: number; color: string; open?: boolean; groupIds?: string[] };
-type Chat = { id: string; name: string; project: string; projectId?: string; messages: { id?: string; author: string; text: string; time: string; senderType?: string; artifactIds?: string[] }[] };
-type ChatMessage = { id: string; senderType: string; senderName?: string; text: string; createdAt: string; metadata?: { artifactId?: string; artifactIds?: string[] } };
+type FileReference = { id: string; name: string; contentType?: string; sizeBytes: number };
+type Chat = { id: string; name: string; project: string; projectId?: string; messages: { id?: string; author: string; text: string; time: string; senderType?: string; artifactIds?: string[]; files?: FileReference[] }[] };
+type ChatMessage = { id: string; senderType: string; senderName?: string; text: string; createdAt: string; metadata?: { artifactId?: string; artifactIds?: string[]; files?: FileReference[] } };
 type ChatRun = { id: string; status: string; phase?: string; result?: { waitingReason?: string } };
-const mapChatMessages = (messages: ChatMessage[]): Chat['messages'] => messages.map(m => ({ id: m.id, author: m.senderType === 'agent' ? (m.senderName ?? '智能体') : '我', text: m.text, time: new Date(m.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }), senderType: m.senderType, artifactIds: [...new Set([...(m.metadata?.artifactIds ?? []), ...(m.metadata?.artifactId ? [m.metadata.artifactId] : [])])] }));
+const mapChatMessages = (messages: ChatMessage[]): Chat['messages'] => messages.map(m => ({ id: m.id, author: m.senderType === 'agent' ? (m.senderName ?? '智能体') : '我', text: m.text, time: new Date(m.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }), senderType: m.senderType, files: m.metadata?.files, artifactIds: [...new Set([...(m.metadata?.artifactIds ?? []), ...(m.metadata?.artifactId ? [m.metadata.artifactId] : [])])] }));
 type Document = { name: string; group: string; size: string; status: string; date: string };
 type KnowledgeScope = 'enterprise' | 'project' | 'personal';
 type KnowledgeTab = 'sources' | 'chunks';
@@ -162,6 +165,10 @@ export function Workstation(): React.JSX.Element {
   const [licenseNumber, setLicenseNumber] = useState('');
   const [inviteCode, setInviteCode] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
+  const [pendingAttachments, setPendingAttachments] = useState<Record<string, FileItem[]>>({});
+  const [attachmentsUploading, setAttachmentsUploading] = useState(false);
+  useEffect(() => { setPendingAttachments({}); setAttachmentsUploading(false); }, [activeIdentityId]);
+  useEffect(() => { setAttachmentsUploading(false); }, [activeChat]);
   const [pendingRuns, setPendingRuns] = useState<Record<string, string>>({});
   const [activeRun, setActiveRun] = useState<ChatRun | null>(null);
   const [runSteps, setRunSteps] = useState<RunStep[]>([]);
@@ -230,6 +237,7 @@ export function Workstation(): React.JSX.Element {
     const identityId = activeIdentityId;
     setArtifactPaneOpen(true);
     setArtifactPaneCollapsed(false);
+    if (previewArtifact?.id === artifactId && previewArtifact.sourceKind === 'file') return;
     const cached = chatArtifacts.find(item => item.id === artifactId);
     if (cached) { setPreviewArtifact(cached); return; }
     setPreviewArtifact(null);
@@ -459,18 +467,20 @@ export function Workstation(): React.JSX.Element {
   const createEnterprise = async () => { const result = await klaApi.request<LoginIdentity & { inviteCode?: string | null }>('/v1/organizations', { method: 'POST', body: JSON.stringify({ name: companyName.trim(), licenseNumber: licenseNumber.trim() }) }); if (!result.ok) { notify(apiError(result)); return; } setIdentities(items => [...items, result.data]); setCompanyName(''); setLicenseNumber(''); await activateIdentity(result.data.id); notify(result.data.inviteCode ? `企业创建成功，邀请码：${result.data.inviteCode}` : '企业创建成功，已进入企业身份'); };
   const joinEnterprise = async () => { const result = await klaApi.request<LoginIdentity>('/v1/organizations/join', { method: 'POST', body: JSON.stringify({ inviteCode: inviteCode.trim() }) }); if (!result.ok) { notify(apiError(result)); return; } setIdentities(items => [...items, result.data]); setInviteCode(''); await activateIdentity(result.data.id); notify('已加入企业，已进入企业身份'); };
   const send = async (conversationId = activeChat) => {
-    if (!draft.trim() || pendingRuns[conversationId] || sendingChats.current.has(conversationId) || chatLoading) return;
+    const files = pendingAttachments[conversationId] ?? [];
+    if ((!draft.trim() && !files.length) || attachmentsUploading || pendingRuns[conversationId] || sendingChats.current.has(conversationId) || chatLoading) return;
     if (!signedIn || !conversationId) { notify('请先创建或选择一个真实群组'); return; }
     const text = draft.trim();
     const identityId = activeIdentityId;
     sendingChats.current.add(conversationId);
     setPendingRuns(items => ({ ...items, [conversationId]: 'submitting' }));
     try {
-      const submitted = await klaApi.request<{ message: ChatMessage; run: ChatRun | null }>(`/v1/conversations/${conversationId}/messages`, { method: 'POST', body: JSON.stringify({ text, mode: chatMode }), headers: { 'x-identity-id': identityId } });
+      const submitted = await klaApi.request<{ message: ChatMessage; run: ChatRun | null }>(`/v1/conversations/${conversationId}/messages`, { method: 'POST', body: JSON.stringify({ text, mode: chatMode, fileIds: files.map(file => file.id) }), headers: { 'x-identity-id': identityId } });
       if (klaApi.getIdentity() !== identityId) return;
       if (!submitted.ok) { notify(apiError(submitted)); setPendingRuns(items => { const next = { ...items }; delete next[conversationId]; return next; }); return; }
       setChats(items => items.map(chat => chat.id === conversationId ? { ...chat, messages: [...chat.messages.filter(message => message.id !== submitted.data.message.id), ...mapChatMessages([submitted.data.message])] } : chat));
       setDraft(current => current.trim() === text ? '' : current);
+      setPendingAttachments(items => ({ ...items, [conversationId]: (items[conversationId] ?? []).filter(file => !files.some(sent => sent.id === file.id)) }));
       if (submitted.data.run) {
         setPendingRuns(items => ({ ...items, [conversationId]: submitted.data.run!.id }));
         setActiveRun(submitted.data.run); setRunSteps([]); setRunEvents([]);
@@ -607,12 +617,12 @@ export function Workstation(): React.JSX.Element {
   <div className="ws-chat">
     <header><div><span className="ws-avatar">{currentChat.name.slice(0, 2)}</span><span><strong>{currentChat.name}</strong><small>{currentChat.project} · 智能体群聊 · 消息全量存档</small></span></div><div><IconButton title="管理群聊智能体" onClick={() => setRoomMembersOpen(true)}><Users size={17} /></IconButton><IconButton title="群组成果" onClick={() => { setArtifactPaneOpen(true); setArtifactPaneCollapsed(false); if (!previewArtifact && chatArtifacts[0]) setPreviewArtifact(chatArtifacts[0]); }}><Folder size={17} /></IconButton></div></header>
     <div className="ws-chat-messages"><p className="ws-chat-date">{chatLoading ? '正在加载消息…' : '消息记录'}</p>
-      {currentChat.messages.map((m, i) => <div className={`ws-message ${m.author === '我' ? 'self' : ''}`} key={m.id ?? `${m.time}-${i}`}><span className="ws-avatar">{m.author.slice(0, 2)}</span><div><small>{m.author} · {m.time}</small><div className="ws-message-bubble"><MarkdownMessage text={m.text} />{m.artifactIds?.map((id, index) => <button key={id} className="ws-text-button" onClick={() => void openArtifact(id)}><FileText size={14} /> {index === 0 ? '打开成果文件' : `打开成果文件 ${index + 1}`}</button>)}</div></div></div>)}
+      {currentChat.messages.map((m, i) => <div className={`ws-message ${m.author === '我' ? 'self' : ''}`} key={m.id ?? `${m.time}-${i}`}><span className="ws-avatar">{m.author.slice(0, 2)}</span><div><small>{m.author} · {m.time}</small><div className="ws-message-bubble"><MarkdownMessage text={m.text} />{m.files?.map(file => <button key={file.id} className="ws-text-button" onClick={() => { setArtifactPaneOpen(true); setArtifactPaneCollapsed(false); setPreviewArtifact({ id: file.id, name: file.name, mimeType: file.contentType ?? 'application/octet-stream', content: '', sizeBytes: file.sizeBytes, createdAt: '', sourceKind: 'file', storageKey: file.id }); }}><Paperclip size={14} /> {file.name}</button>)}{m.artifactIds?.map((id, index) => <button key={id} className="ws-text-button" onClick={() => void openArtifact(id)}><FileText size={14} /> {index === 0 ? '打开成果文件' : `打开成果文件 ${index + 1}`}</button>)}</div></div></div>)}
       <RunActivity run={activeRun} steps={runSteps} events={runEvents} submitting={pendingRunId === 'submitting'} onCancel={() => void cancelActiveRun()} />
     </div>
-    <div className="ws-chat-compose"><textarea placeholder="发送消息给智能体小组…（输入 @ 召唤特定智能体，Enter 发送、Shift + Enter 换行）" aria-label="发送消息给智能体小组" value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!chatSending) void send(); } }} /><div><span><Paperclip size={16} /> 附件 <Bot size={16} /> 智能体 <select aria-label="响应模式" value={chatMode} onChange={e => setChatMode(e.target.value as typeof chatMode)}><option value="fast">快速响应</option><option value="balanced">均衡协同</option><option value="expert">专家深度推理</option></select></span><button aria-label={chatSending ? '终止生成' : '发送给群组'} className={`ws-primary ${chatSending ? 'is-stop' : ''}`} disabled={chatLoading || !currentChat.id || pendingRunId === 'submitting'} onClick={() => chatSending ? void cancelActiveRun() : void send()}><Send size={15} />{chatSending ? '终止生成' : '发送协同指令'}</button></div></div>
+    <div className="ws-chat-compose"><ConversationAttachments key={`${activeIdentityId}:${activeChat}`} conversationId={activeChat} identityId={activeIdentityId} files={pendingAttachments[activeChat] ?? []} onChange={files => setPendingAttachments(items => ({ ...items, [activeChat]: files }))} onBusy={setAttachmentsUploading} onError={notify} /><textarea placeholder="发送消息给智能体小组…（输入 @ 召唤特定智能体，Enter 发送、Shift + Enter 换行）" aria-label="发送消息给智能体小组" value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!chatSending) void send(); } }} /><div><span><Bot size={16} /> 智能体 <select aria-label="响应模式" value={chatMode} onChange={e => setChatMode(e.target.value as typeof chatMode)}><option value="fast">快速响应</option><option value="balanced">均衡协同</option><option value="expert">专家深度推理</option></select></span><button aria-label={chatSending ? '终止生成' : '发送给群组'} className={`ws-primary ${chatSending ? 'is-stop' : ''}`} disabled={attachmentsUploading || chatLoading || !currentChat.id || pendingRunId === 'submitting'} onClick={() => chatSending ? void cancelActiveRun() : void send()}><Send size={15} />{chatSending ? '终止生成' : '发送协同指令'}</button></div></div>
   </div>
-  {artifactPaneOpen && <ArtifactPane artifacts={chatArtifacts} selected={previewArtifact} loading={artifactLoading} collapsed={artifactPaneCollapsed} onSelect={id => void openArtifact(id)} onCollapse={() => setArtifactPaneCollapsed(value => !value)} onClose={() => { setArtifactPaneOpen(false); setArtifactPaneCollapsed(false); setPreviewArtifact(null); }} onDownload={artifact => void klaApi.download(`/v1/artifacts/${artifact.id}/download`).then(result => { if (!result.ok) { notify(result.message); return; } const url = URL.createObjectURL(result.blob); const anchor = document.createElement('a'); anchor.href = url; anchor.download = artifact.name; anchor.click(); URL.revokeObjectURL(url); })} />}
+  {artifactPaneOpen && <ArtifactPane artifacts={chatArtifacts} selected={previewArtifact} loading={artifactLoading} collapsed={artifactPaneCollapsed} onSelect={id => void openArtifact(id)} onCollapse={() => setArtifactPaneCollapsed(value => !value)} onClose={() => { setArtifactPaneOpen(false); setArtifactPaneCollapsed(false); setPreviewArtifact(null); }} onDownload={artifact => void klaApi.download(artifact.sourceKind === 'file' ? `/v1/files/${artifact.id}/content` : `/v1/artifacts/${artifact.id}/download`).then(result => { if (!result.ok) { notify(result.message); return; } const url = URL.createObjectURL(result.blob); const anchor = document.createElement('a'); anchor.href = url; anchor.download = artifact.name; anchor.click(); URL.revokeObjectURL(url); })} />}
 </div>}
         {section === 'knowledge' && <KnowledgeSection key={computeReloadKey} />}
         {section === 'compute' && <>
