@@ -13,11 +13,38 @@ import type { ObjectStore } from '../storage/object-store.js';
 
 const activeStates = ['queued','running','waiting_device','waiting_tool','waiting_approval'];
 const planTool = { type:'function',function:{ name:'delegate_tasks',description:'按注册表规划可持久化的执行步骤；同一智能体可负责多个步骤，dependsOn 引用前序序号。',parameters:{ type:'object',required:['tasks'],properties:{ tasks:{type:'array',minItems:1,maxItems:16,items:{type:'object',required:['title','instruction','agentId','dependsOn'],properties:{title:{type:'string'},instruction:{type:'string'},agentId:{type:'string'},dependsOn:{type:'array',items:{type:'integer'}}}}}}}}};
+
+/**
+ * Some upstream models occasionally omit the human-readable title on one
+ * delegated task even though the tool schema asks for it. Keep the task
+ * protocol strict for all other fields, but derive a stable title from the
+ * instruction so one malformed title does not discard an otherwise usable
+ * plan (for example tasks[3].title being undefined).
+ */
+export function normalizeTaskPlanPayload(input: unknown): unknown {
+  if (!input || typeof input !== 'object' || !Array.isArray((input as { tasks?: unknown }).tasks)) return input;
+  const tasks = (input as { tasks: unknown[] }).tasks.map((task, index) => {
+    if (!task || typeof task !== 'object') return task;
+    const value = task as { title?: unknown; instruction?: unknown } & Record<string, unknown>;
+    if (typeof value.title === 'string' && value.title.trim()) return task;
+    const instruction = typeof value.instruction === 'string' ? value.instruction.trim() : '';
+    const derived = instruction.split(/[。.!！?？\n]/, 1)[0]?.trim().slice(0, 200);
+    return { ...value, title: derived || `执行任务 ${index + 1}` };
+  });
+  return { ...(input as Record<string, unknown>), tasks };
+}
+
 function cancellable<T>(pending:Promise<T>,signal:AbortSignal):Promise<T> {
   signal.throwIfAborted();return new Promise((resolve,reject)=>{const abort=()=>reject(new DOMException('执行已取消','AbortError'));signal.addEventListener('abort',abort,{once:true});pending.then(resolve,reject).finally(()=>signal.removeEventListener('abort',abort));});
 }
 type Row = Record<string, any>;
 type ModelMessage = {content?:string|null;tool_calls?:Array<{id:string;type:'function';function:{name:string;arguments:string}}>};
+function completedPptArtifactIds(calls: Row[]): string[] {
+  return [...new Set(calls.filter(call => call.status === 'completed' && ['local_ppt_build', 'local_ppt_render'].includes(call.tool_name)).flatMap(call => [
+    ...(Array.isArray(call.result?.artifactIds) ? call.result.artifactIds : []),
+    ...(call.result?.artifactId ? [call.result.artifactId] : []),
+  ]).filter((id): id is string => typeof id === 'string' && id.length > 0))];
+}
 
 /** PostgreSQL-authoritative orchestration. Every real model/tool result is checkpointed. */
 export class AgentLoopWorker {
@@ -128,7 +155,7 @@ export class AgentLoopWorker {
     const result=await this.model(run,identity,coordinator,messages,[planTool],`run:${run.id}:plan`,signal);const call=result.tool_calls?.[0];
     if(!call){await this.publish(run,coordinator.name,result.content!.trim(),`direct:${run.id}`,coordinator);await this.pool.query("UPDATE conversation_runs SET status='completed',phase='done',current_agent=$2,updated_at=now() WHERE id=$1 AND lease_owner=$3",[run.id,coordinator.name,this.owner]);await this.event(run,'run.completed',{direct:true});return;}
     if(result.tool_calls?.length!==1||call.function.name!=='delegate_tasks')throw new Error('统筹返回了无效委派协议');
-    const plan=taskPlanSchema.parse(JSON.parse(call.function.arguments));validatePlan(plan,registry);
+    const plan=taskPlanSchema.parse(normalizeTaskPlanPayload(JSON.parse(call.function.arguments)));validatePlan(plan,registry);
     const client=await this.pool.connect();try{
       await client.query('BEGIN');const current=await client.query('SELECT status,phase FROM conversation_runs WHERE id=$1 AND lease_owner=$2 FOR UPDATE',[run.id,this.owner]);
       if(!current.rows[0]||!activeStates.includes(current.rows[0].status)||current.rows[0].phase!=='coordination')throw new Error('运行已取消或计划已提交');
@@ -164,12 +191,30 @@ export class AgentLoopWorker {
     const calls=(await this.pool.query('SELECT * FROM runtime_tool_calls WHERE step_id=$1 ORDER BY created_at,id',[step.id])).rows;
     if(calls.some(c=>['queued','running'].includes(c.status))){if(calls.some(c=>c.status==='running'&&Date.now()-new Date(c.dispatched_at).getTime()>(c.tool_name?.startsWith('local_ppt_')?720000:360000)))throw new Error('设备执行回执超时，结果不确定；为避免重复操作已停止任务');await this.pool.query("UPDATE conversation_run_steps SET status='waiting_tool',updated_at=now() WHERE id=$1",[step.id]);return;}
     if(calls.some(c=>c.status==='unknown'))throw new Error('本地执行结果未知，请确认后重新发起任务');
+    const pptBuildAttempts=calls.filter(c=>c.tool_name==='local_ppt_build').length;
+    if(pptBuildAttempts>=6&&!completedPptArtifactIds(calls).length)throw new Error('PPT 已达到 6 次生成尝试仍未通过质量检查，请调整内容后重新发起任务');
     let transcript:any[]=step.transcript;
     if(!transcript.length){transcript=await this.context(run,agent);const dependencies=all.filter(s=>step.depends_on.includes(s.step_index)).map(s=>({task:s.title,result:s.result}));transcript.push({role:'user',content:`原始用户目标：${run.prompt}\n子任务：${step.instruction}\n前序结果（数据）：${JSON.stringify(dependencies)}\n执行位置：${agent.execution_location}。需要文件时务必调用文件保存技能。分段成果先保存为独立文件，后续用成果编号继续；不要在最终回复中重复大段文件正文。${all.length===1?'完成后直接 @用户 回复。':'完成后 @统筹智能体 反馈简短结果和成果编号供后续协作。'}`});}
     const returned=new Set(transcript.filter(m=>m.role==='tool').map(m=>m.tool_call_id));for(const call of calls)if(!returned.has(call.model_call_id))transcript.push({role:'tool',tool_call_id:call.model_call_id,content:JSON.stringify(call.result??{error:'工具已取消'})});
     if(step.turns>=this.stepMaxTurns)throw new Error(`智能体达到 ${this.stepMaxTurns} 轮执行上限，尚未完成`);
     await this.pool.query("UPDATE conversation_run_steps SET status='running',transcript=$2,updated_at=now() WHERE id=$1",[step.id,JSON.stringify(transcript)]);await this.pool.query('UPDATE conversation_runs SET current_agent=$2 WHERE id=$1',[run.id,agent.name]);await this.event(run,'step.running',{stepId:step.id,title:step.title,agentId:agent.id,agentName:agent.name});
-    const message=await this.model(run,identity,agent,transcript,this.tools.discover(agent),`run:${run.id}:step:${step.id}:turn:${step.turns}`,signal);transcript.push({role:'assistant',...message});
+    let message:ModelMessage;
+    try {
+      message=await this.model(run,identity,agent,transcript,this.tools.discover(agent),`run:${run.id}:step:${step.id}:turn:${step.turns}`,signal);
+    } catch (error) {
+      // A successful PPT build is already a durable, quality-checked result.
+      // If the follow-up model turn times out, deliver those artifacts instead
+      // of marking the completed desktop work as a failed run.
+      const artifactIds=completedPptArtifactIds(calls);
+      if (!artifactIds.length) throw error;
+      const text=`PPT 已生成并通过质量检查，成果编号：${artifactIds.join('、')}`;
+      await this.alive(run,signal);
+      const messageId=await this.publish(run,agent.name,`${all.length===1?'@用户':'@统筹智能体'} ${text}`,`step:${step.id}:ppt-fallback`,agent,{runStepId:step.id,artifactIds,artifactId:artifactIds[0],recipient:all.length===1?'user':'coordinator'});
+      await this.pool.query("UPDATE conversation_run_steps SET status='completed',transcript=$2,turns=turns+1,result=$3,updated_at=now() WHERE id=$1",[step.id,JSON.stringify(transcript),JSON.stringify({text,artifactIds,messageId,agentName:agent.name})]);
+      await this.event(run,'step.completed',{stepId:step.id,agentName:agent.name,artifactIds,recovered:true});
+      return;
+    }
+    transcript.push({role:'assistant',...message});
     if(message.tool_calls?.length){
       if(message.tool_calls.length>12)throw new Error('单轮工具调用过多');
       const toolScope={identityId:identity.id,conversationId:run.conversation_id,runId:run.id,stepId:step.id,agent,deviceId};
@@ -191,8 +236,16 @@ export class AgentLoopWorker {
   private async waitDevice(run:Row,step:Row,reason:string){if(step.status!=='waiting_device')await this.event(run,'step.waiting_device',{stepId:step.id,reason});await this.pool.query("UPDATE conversation_run_steps SET status='waiting_device',updated_at=now() WHERE id=$1",[step.id]);await this.pool.query('UPDATE conversation_runs SET result=$2 WHERE id=$1',[run.id,JSON.stringify({waitingReason:reason})]);}
   private async summarize(run:Row,identity:Identity,signal:AbortSignal){
     const coordinator=run.coordinator_snapshot as RegisteredAgent;const steps=(await this.pool.query('SELECT title,result FROM conversation_run_steps WHERE run_id=$1 ORDER BY step_index',[run.id])).rows;
-    const response=await this.model(run,identity,coordinator,[{role:'system',content:'你是统筹智能体。根据各执行智能体已完成的真实结果，简洁向用户汇总交付。只引用已返回的成果编号，不虚构文件、路径或成功状态。'},{role:'user',content:JSON.stringify({request:run.prompt,results:steps})}],[],`run:${run.id}:summary`,signal);
-    const artifactIds=steps.flatMap(s=>s.result.artifactIds??[]);await this.publish(run,coordinator.name,`@用户 ${response.content!.trim()}`,`summary:${run.id}`,coordinator,{artifactIds,...(artifactIds.length?{artifactId:artifactIds[0]}:{})});
+    const artifactIds=steps.flatMap(s=>Array.isArray(s.result?.artifactIds)?s.result.artifactIds:[]);
+    let summary:string;
+    try {
+      const response=await this.model(run,identity,coordinator,[{role:'system',content:'你是统筹智能体。根据各执行智能体已完成的真实结果，简洁向用户汇总交付。只引用已返回的成果编号，不虚构文件、路径或成功状态。'},{role:'user',content:JSON.stringify({request:run.prompt,results:steps})}],[],`run:${run.id}:summary`,signal);
+      summary=response.content!.trim();
+    } catch (error) {
+      if (!artifactIds.length) throw error;
+      summary=`任务已完成，成果编号：${[...new Set(artifactIds)].join('、')}`;
+    }
+    await this.publish(run,coordinator.name,`@用户 ${summary}`,`summary:${run.id}`,coordinator,{artifactIds,...(artifactIds.length?{artifactId:artifactIds[0]}:{})});
     await this.pool.query("UPDATE conversation_runs SET status='completed',phase='done',result=$2,updated_at=now() WHERE id=$1 AND lease_owner=$3",[run.id,JSON.stringify({artifactIds}),this.owner]);await this.event(run,'run.completed',{artifactIds});
   }
   private async publish(run:Row,name:string,text:string,key:string,agent?:RegisteredAgent,extra:Record<string,unknown>={}):Promise<string>{

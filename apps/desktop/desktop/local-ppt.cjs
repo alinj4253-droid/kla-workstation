@@ -24,6 +24,12 @@ async function executePpt(call, root, signal, approved, helpers) {
     request.specJson = args.specJson;
     request.fileName = filename(args.fileName || '演示文稿.pptx');
     if (!request.fileName.toLowerCase().endsWith('.pptx')) throw new Error('成果文件名必须以 .pptx 结尾');
+    // Keep the generated file below the Windows MAX_PATH boundary. The
+    // per-run workspace intentionally contains several UUIDs, so a natural
+    // language file name can otherwise fail only when the engine opens it.
+    if (folder.length + 1 + request.fileName.length > 259) {
+      request.fileName = `ppt-${String(call.id).replaceAll('-', '').slice(0, 8)}.pptx`;
+    }
     request.render = args.render !== false;
   }
   if (action === 'inspect' || action === 'render') {
