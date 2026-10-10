@@ -138,7 +138,8 @@ describe('§7.1 当前身份与余额', () => {
     await registerComputeAccountRoutes(app, { accounts: authedAccounts(identity()), computeRepo: repo,
       sub2api: { health: async () => ({ ok: true }) } as unknown as Sub2ApiClient,
       provisioning: { retryProvision: async () => { throw new Error('不能重新建号'); } } as unknown as ProvisioningService,
-      encryptionKey: 'b'.repeat(64) });
+      encryptionKey: 'b'.repeat(64),
+      quota: { reconcileBalanceFromSub2api: async () => ({ driftPoints: 0, applied: false }) } as unknown as QuotaService });
     const headers = { authorization: 'Bearer t' };
     expect((await app.inject({ method: 'GET', url: '/api/v1/compute/summary', headers })).json().data.provisionState).toBe('failed');
     const status = (await app.inject({ method: 'GET', url: '/api/v1/compute/provision-status', headers })).json().data;
