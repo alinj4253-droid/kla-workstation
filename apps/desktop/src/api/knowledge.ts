@@ -6,7 +6,9 @@ const listeners = new Set<(event: JobEvent) => void>();
 const subscriptions = new Map<string, AbortController>();
 async function rpc<T>(operation: string, input: unknown = {}, init?: RequestInit): Promise<RpcResult<T>> {
   try {
-    const result = await klaApi.request<T>('/v1/knowledge-library/' + operation, init ?? { method: 'POST', body: JSON.stringify(input) });
+    const metadataSignal = ['configure', 'getConnection'].includes(operation) ? AbortSignal.timeout(15000) : operation === 'listSources' ? AbortSignal.timeout(30000) : init?.signal;
+    const requestInit = init ?? { method: 'POST', body: JSON.stringify(input) };
+    const result = await klaApi.request<T>('/v1/knowledge-library/' + operation, { ...requestInit, ...(metadataSignal ? { signal: metadataSignal } : {}) });
     const requestId = result.meta?.requestId ?? randomUUID();
     if (result.ok) return { ok: true, requestId, data: result.data };
     return { ok: false, requestId, error: { code: result.code as ErrorCode, message: result.message, retryable: result.error?.retryable ?? false, details: result.error?.details } };
@@ -59,4 +61,8 @@ export const knowledgeClient: KnowledgeLibraryBridge = {
 export const knowledgeCatalogApi = {
   get: () => rpc<import('@kla-workstation/contracts/knowledge').LibraryEntry[]>('getCatalog'),
   save: (entries: import('@kla-workstation/contracts/knowledge').LibraryEntry[]) => rpc<import('@kla-workstation/contracts/knowledge').LibraryEntry[]>('saveCatalog', entries),
+};
+
+export const knowledgeStatisticsApi = {
+  get: (serviceInstanceId: string, signal?: AbortSignal) => rpc<import('@kla-workstation/contracts/knowledge').KnowledgeStatistics>('getStatistics', {}, { method: 'POST', body: JSON.stringify({ serviceInstanceId }), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(60000)]) : AbortSignal.timeout(60000) }),
 };

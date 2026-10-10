@@ -1,7 +1,7 @@
 import { moduleState, readStored } from './context.js';
-function state() { return moduleState('documents', () => ({bindings: [] as StoredBinding[],writes: Promise.resolve(),proofCache: new Map<string, { expires: number; collection: string | null }>(),verifiedScope: undefined as { serviceId: string; collection: string; ids: Map<string, number> } | undefined})); }
+function state() { return moduleState('documents', () => ({bindings: [] as StoredBinding[],writes: Promise.resolve(),proofCache: new Map<string, { expires: number; collection: string | null; count: number }>(),proofRequests: new Map<string, Promise<{ expires: number; collection: string | null; count: number }>>(),verifiedScope: undefined as { serviceId: string; collection: string; ids: Map<string, number> } | undefined})); }
 import { z } from 'zod';
-import { documentListSchema, type SourceJobBinding, type SourceList } from '@kla-workstation/contracts/knowledge';
+import { documentListSchema, type SourceJobBinding, type SourceList, type RemoteDocument } from '@kla-workstation/contracts/knowledge';
 import { assertService, atomicJson } from './config.js';
 import { jsonRequest, KnowledgeError } from './transport.js';
 const bindingSchema = z.object({
@@ -99,7 +99,7 @@ export async function verifyDocumentScope(owner: number, serviceId: string, docI
     }
 }
 export async function listSources(owner: number, serviceId: string, collection: string, origin: string, credentialRef: string | null): Promise<SourceList> {
-    const result = await jsonRequest(owner, serviceId, '/v1/documents?category=' + encodeURIComponent('上传文档'), documentListSchema);
+    const result = await jsonRequest(owner, serviceId, '/v1/documents?category=' + encodeURIComponent('上传文档'), documentListSchema, {}, undefined, 10000);
     // Only exact returned storage paths associate a remote source with a client submission.
     // Unknown global workspace files are never presented as authorized library contents.
     const work = state().writes.catch(() => undefined).then(async () => {
@@ -134,28 +134,11 @@ export async function listSources(owner: number, serviceId: string, collection: 
     const verified = new Map<string, number>();
     let unclassifiedCount = candidates.length - scanned.length;
     let cursor = 0;
+    const scanDeadline = Date.now() + 10000;
     const worker = async () => {
-        while (cursor < scanned.length) {
+        while (cursor < scanned.length && Date.now() < scanDeadline) {
             const doc = scanned[cursor++]!;
-            const key = `${serviceId}:${doc.doc_id}:${doc.modified}:${doc.size}:${doc.stale}`;
-            let proof = state().proofCache.get(key);
-            if (!proof || proof.expires <= Date.now()) {
-                try {
-                    const result = await jsonRequest(owner, serviceId, `/v1/documents/${encodeURIComponent(doc.doc_id)}/slices`, sourceProofSchema);
-                    if (result.doc_id !== doc.doc_id || result.count !== result.slices.length)
-                        throw new KnowledgeError('KNOWLEDGE_INGEST_FAILED', '服务器文档与切片信息不一致。');
-                    proof = { expires: Date.now() + 60000, collection: result.collection };
-                }
-                catch (error) {
-                    assertService(serviceId);
-                    if (error instanceof KnowledgeError && ['PERMISSION_DENIED', 'CONFLICT', 'RUN_CANCELLED', 'CHANNEL_CONNECTION_FAILED'].includes(error.code))
-                        throw error;
-                    proof = { expires: Date.now() + 5000, collection: null };
-                }
-                if (state().proofCache.size >= 400)
-                    state().proofCache.delete(state().proofCache.keys().next().value!);
-                state().proofCache.set(key, proof);
-            }
+            const proof = await documentProof(owner, serviceId, doc);
             if (proof.collection === collection) {
                 ids.add(doc.doc_id);
                 verified.set(doc.doc_id, proof.expires + 60000);
@@ -165,6 +148,7 @@ export async function listSources(owner: number, serviceId: string, collection: 
         }
     };
     await Promise.all(Array.from({ length: Math.min(3, scanned.length) }, worker));
+    unclassifiedCount += scanned.length - cursor;
     assertService(serviceId);
     state().verifiedScope = { serviceId, collection, ids: verified };
     return {
@@ -173,4 +157,45 @@ export async function listSources(owner: number, serviceId: string, collection: 
         bindings: mapped,
         verifiedServerDocIds: Array.from(verified.keys()), unclassifiedCount,
     };
+}
+
+/** Classification proofs are shared across collection switches, scoped to this identity and credential. */
+export async function documentProof(owner: number, serviceId: string, doc: RemoteDocument) {
+    const config = assertService(serviceId);
+    const key = JSON.stringify([config.baseUrl, config.secretRef, doc.doc_id, doc.modified, doc.size, doc.stale]);
+    const cached = state().proofCache.get(key);
+    if (cached && cached.expires > Date.now()) return cached;
+    const requestKey = JSON.stringify([serviceId, key]);
+    let pending = state().proofRequests.get(requestKey);
+    if (!pending) {
+        pending = (async () => {
+            let proof;
+            try {
+                // A single slow/unprocessed document must not hold every collection for 120 seconds.
+                const result = await jsonRequest(owner, serviceId, '/v1/documents/' + encodeURIComponent(doc.doc_id) + '/slices', sourceProofSchema, {}, undefined, Math.min(5000, config.settings.requestTimeoutMs));
+                if (result.doc_id !== doc.doc_id || result.count !== result.slices.length) throw new KnowledgeError('KNOWLEDGE_INGEST_FAILED', '服务器文档与切片信息不一致。');
+                proof = { expires: Date.now() + 15000, collection: result.collection, count: result.count };
+            } catch (error) {
+                // Changed services still fail; individual classification timeouts remain unresolved.
+                assertService(serviceId);
+                if (error instanceof KnowledgeError && ['PERMISSION_DENIED', 'CONFLICT', 'CHANNEL_CONNECTION_FAILED'].includes(error.code)) throw error;
+                proof = { expires: Date.now() + 5000, collection: null, count: 0 };
+            }
+            if (state().proofCache.size >= 400) state().proofCache.delete(state().proofCache.keys().next().value!);
+            state().proofCache.set(key, proof);
+            return proof;
+        })();
+        state().proofRequests.set(requestKey, pending);
+    }
+    try { const proof = await pending; assertService(serviceId); return proof; }
+    finally { if (state().proofRequests.get(requestKey) === pending) state().proofRequests.delete(requestKey); }
+}
+
+/** Exact storage association, also used for pending documents that have no slices yet. */
+export function matchedDocumentBinding(serviceId: string, collection: string, doc: RemoteDocument & { abs_path: string }) {
+    const config = assertService(serviceId);
+    const matches = state().bindings.filter(binding => binding.serverOrigin === config.baseUrl && binding.collection === collection
+      && binding.credentialRef === config.secretRef && binding.storedPath === doc.abs_path
+      && (binding.physicalName ?? binding.storedPath.split(/[\\/]/).pop()) === doc.name);
+    return matches.length === 1 ? publicBinding(matches[0]!, serviceId) : undefined;
 }

@@ -81,6 +81,7 @@ export function useJobs(context: KnowledgeContext, bindings: SourceJobBinding[],
         void client.invalidateQueries({ queryKey: knowledgeKeys.sourceContent(context.serviceInstanceId, context.collection, binding.docId) });
       }
       if (!['queued', 'running'].includes(job.state)) {
+        void client.invalidateQueries({ queryKey: [...knowledgeKeys.all, 'statistics'] });
         void client.invalidateQueries({ queryKey: knowledgeKeys.sources(context.serviceInstanceId, context.collection) });
         void client.invalidateQueries({ queryKey: knowledgeKeys.bindings(context.serviceInstanceId, context.collection) });
       }

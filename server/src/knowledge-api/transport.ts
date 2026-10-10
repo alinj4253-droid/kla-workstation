@@ -49,7 +49,7 @@ export async function withResponse<T>(owner: number, serviceId: string, path: st
         state().requests.delete(controller);
     }
 }
-export async function jsonRequest<T>(owner: number, serviceId: string, path: string, schema: ZodType<T, ZodTypeDef, unknown>, init: RequestInit = {}, controller?: AbortController): Promise<T> {
+export async function jsonRequest<T>(owner: number, serviceId: string, path: string, schema: ZodType<T, ZodTypeDef, unknown>, init: RequestInit = {}, controller?: AbortController, timeout?: number): Promise<T> {
     return withResponse(owner, serviceId, path, init, async (response) => {
         const reader = response.body?.getReader();
         if (!reader)
@@ -79,5 +79,5 @@ export async function jsonRequest<T>(owner: number, serviceId: string, path: str
         finally {
             await reader.cancel().catch(() => undefined);
         }
-    }, controller);
+    }, controller, timeout);
 }
