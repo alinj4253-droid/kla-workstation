@@ -17,13 +17,12 @@ export async function loadMigrationFiles(directory = fileURLToPath(new URL(exist
     .map((entry) => entry.name)
     .sort((a, b) => a.localeCompare(b, 'en'));
   if (!files.length) throw new Error('未找到任何迁移文件');
-  const seenNumbers = new Set<string>();
   const result: MigrationFile[] = [];
   for (const file of files) {
-    const match = /^(\d+)_.*\.sql$/i.exec(file);
-    const number = match?.[1] ?? file;
-    if (seenNumbers.has(number)) throw new Error(`迁移编号重复: ${number}`);
-    seenNumbers.add(number);
+    // 迁移的记账键是完整文件名（id），不是数字前缀。历史迁移用两种编号习惯（0021_compute_points_and_tools
+    // 与 0021_knowledge_documents 曾在同一库里共存），且都已写入 schema_migrations。
+    // 因此同号文件前缀不再视为错误：只要完整 id 不同就都能正常加载并各自记账。
+    // 新增文件请选用当前最大编号 + 1，避免继续制造同号。
     result.push({ id: file.slice(0, -4), sql: await readFile(join(directory, file), 'utf8') });
   }
   return result;
