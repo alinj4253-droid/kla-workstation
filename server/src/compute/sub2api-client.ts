@@ -216,6 +216,16 @@ export class Sub2ApiClient {
     });
   }
 
+  /** 管理面改密：托管凭据重置流程使用（与 disableUser 同端点，仅改密码字段）。 */
+  async updateUserPassword(userId: string, password: string): Promise<void> {
+    await this.request({
+      method: 'PUT',
+      path: `/api/v1/admin/users/${userId}`,
+      apiKey: this.config.adminApiKey,
+      body: { password },
+    });
+  }
+
   /**
    * 调整用户余额（增量，可为负）。
    * Sub2API 要求 body 为 { balance: 正数, operation: 'add' | 'subtract' }，balance 字段校验 gt=0。

@@ -65,9 +65,16 @@ export class ProvisioningService {
 
     // 1. 为每个身份新建独立 Sub2API 账号
     const baseEmail = deriveSub2apiEmail(ctx);
+    // 密钥未配置时明文落库会导致共库多实例场景下跨实例不可解密（且无法事后恢复原文），
+    // 直接失败并给出明确提示，而不是静默写入明文。
+    if (!this.encryptionKey) {
+      const message = 'COMPUTE_SECRET_ENCRYPTION_KEY 未配置，拒绝明文写入托管密码；请先在服务端 .env 配置该密钥';
+      await this.repo.updateBindingStatus(identityId, 'failed', message);
+      throw new Error(message);
+    }
     await this.repo.updateBindingStatus(identityId, 'provisioning');
     const password = '123456';
-    const managedPassword = this.encryptionKey ? encryptField(password, this.encryptionKey) : password;
+    const managedPassword = encryptField(password, this.encryptionKey);
 
     let sub2apiUserId: string;
     let username = baseEmail;
