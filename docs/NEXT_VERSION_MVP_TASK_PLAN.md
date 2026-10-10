@@ -42,7 +42,7 @@
 | P1-08 | 开发 KLA Model Gateway（服务端化） | P1-06、P1-07 | 服务端网关服务（抽自 model-core，含代理登录与会话缓存） | 按服务端重建的工作身份选 key；流式、超时、有限重试和错误码映射通过；工作站内端到端真实调用 | 进行中（completeChat 与流式 streamChat（SSE 透传路由 + usage 提取）、配额预扣、按身份选 key、超时与错误映射、网关级幂等去重均已实现，runConversation 已改走网关；工作站内端到端真实调用验收未做） |
 | P1-09 | 建立模型用量采集和结算事件 | P1-08 | `model_usage` 事件、usage_sync 定时任务与查询接口 | 用量按用户、项目、群聊、智能体和任务查询；水位线增量拉取、明细幂等去重、`token_used` 回流 | 进行中（compute_usage 表、UsageSyncWorker 定时增量拉取、sha256 幂等去重（ON CONFLICT）、用量查询/汇总/CSV 导出均已实现；水位线为内存变量需持久化；ReconciliationService 已写但未挂载，余额对账已挂到 /compute/summary） |
 | P1-10 | 开发算力账号同步器 | P1-06、P2-02 | 同步器 worker（Outbox 模式）、`compute_binding`/`entitlement_ledger` 表 | 企业/个人身份建号、额度发放、停用、清退、漂移检测全链路演练通过，outbox 无积压 | 进行中（OutboxWorker（SKIP LOCKED）、ProvisioningService 建号状态机（断点恢复、共享上游账号、冲突追加序号）、注册/建企业/加企业写 provision 事件均已落地；disable_identity_compute 事件缺生产者（停用/清退只有消费端）、漂移检测未实现、全链路演练未做） |
-| P1-11 | 算力计费单位切换为"算力点"（积分口径） | P1-08、P1-09 | 《算力点计费设计》（DESIGN_POINTS_BASED_BILLING.md）、契约/台账/网关/前端改造与存量迁移脚本 | 用户侧全链路只见算力点（无 USD 残留）；`points ÷ rate ≈ sub2api 余额` 对账通过；存量 USD 余额按幂等流水一次性迁移完成 | 进行中·收口（步骤 1–5 全部完成：换算模块、契约切换 currency='point'、迁移 0021、全链路点数化（server 113 项单测全绿）、存量迁移脚本 points:migrate（已在开发库迁移 8 个额度池并验证幂等）与对账脚本 points:reconcile（缺 SUB2API 凭据时明确守卫）；剩余：配置 SUB2API 凭据后跑 points:reconcile 出对账报告、博查 tool-service 接线作为积分首个按次计费场景） |
+| P1-11 | 算力计费单位切换为"算力点"（积分口径） | P1-08、P1-09 | 《算力点计费设计》（DESIGN_POINTS_BASED_BILLING.md）、契约/台账/网关/前端改造与存量迁移脚本 | 用户侧全链路只见算力点（无 USD 残留）；`points ÷ rate ≈ sub2api 余额` 对账通过；存量 USD 余额按幂等流水一次性迁移完成 | 已完成（合并远端 0024-0030 计费重构为权威口径：兼容触发器、0028 计费切换、recordUpstreamUsage 真实成本结算、否决余额快照充值；我方迁移重编号为 0036（tool_pricing/权限种子）、points:migrate/reconcile 脚本与契约 tools.ts 保留；server 131 项单测全绿、迁移链已在开发库执行；剩余：部署环境出对账报告、博查 tool-service 计费接线作为首个按次计费场景） |
 
 ## 四、P2：服务端基础能力
 
