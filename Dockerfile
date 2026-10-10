@@ -23,7 +23,8 @@ COPY server/package.json server/package.json
 # 不使用 BuildKit cache mount：目标主机的缓存卷挂载同样触发 EPERM；
 # 依赖未变时本层直接命中层缓存。--ignore-scripts：镜像内不执行依赖
 # 构建脚本，esbuild 二进制随可选依赖预编译分发，无需 postinstall 校验。
-RUN pnpm install --frozen-lockfile --ignore-scripts
+# --loglevel debug 仅用于排障：打印完整错误栈与文件路径，定位后移除。
+RUN pnpm install --frozen-lockfile --ignore-scripts --loglevel debug
 COPY packages/contracts packages/contracts
 COPY server server
 RUN pnpm --filter @kla-workstation/contracts build \
