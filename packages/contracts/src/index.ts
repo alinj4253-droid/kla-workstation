@@ -8,6 +8,7 @@ export * from './identity.js';
 export * from './organizations.js';
 export * from './projects.js';
 export * from './compute.js';
+export * from './tools.js';
 export * from './memories.js';
 export * from './memory-policy.js';
 export * from './runtime.js';

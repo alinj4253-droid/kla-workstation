@@ -24,7 +24,7 @@
 .ws-main>.ws-subnav .ws-wallet{margin-left:20px;margin-right:20px}
 @media(max-width:900px){.ws-main{grid-template-columns:220px minmax(0,1fr)}.ws-main>.ws-content{padding:20px}.ws-main>.ws-subnav{border-radius:10px}}
 @media(max-width:700px){.ws-main.has-subnav{grid-template-columns:1fr;grid-template-rows:44px auto minmax(0,1fr);overflow:auto}.ws-main.has-subnav>.ws-subnav{grid-column:1;grid-row:2;height:auto;max-height:260px}.ws-main.has-subnav>.ws-content{grid-column:1;grid-row:3;height:auto;min-height:0}.ws-main.wide>.ws-content{padding:18px}}
-/* 算力模块（对齐《鲲擎2.0 交互演示版》版式，计价单位保持 USD） */
+/* 算力模块（对齐《鲲擎2.0 交互演示版》版式，计价单位为算力点，P1-11） */
 .ws-stat-k{display:flex;align-items:center;gap:5px;color:#94a3b8;font-size:10px}.ws-stat-k svg{width:14px;height:14px;flex:none}
 .ws-stat-d{font-size:9px;color:#9fadbe;line-height:1.55}
 .ws-stat.is-accent{background:linear-gradient(135deg,#eef6ff,#fbfdff);border-color:#d9e8fa}.ws-stat.is-accent strong{color:#2563eb}

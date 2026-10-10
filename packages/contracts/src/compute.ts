@@ -1,4 +1,4 @@
-import { z } from 'zod';
+﻿import { z } from 'zod';
 import { pageQuerySchema } from './envelope.js';
 
 // 面向用户的余额、额度、费用统一为算力点；Sub2API 的 USD 仅留在服务端成本边界。
@@ -21,6 +21,8 @@ export const COMPUTE_PERMISSIONS = {
   recharge: 'compute.recharge',
   modelUse: 'model.use',
   modelCatalogView: 'model.catalog.view',
+  /** 工具类计费项：联网搜索（docs/DESIGN_BOCHA_SEARCH_INTEGRATION.md §6） */
+  toolSearchUse: 'tool.search.use',
 } as const;
 
 export type ComputePermission = (typeof COMPUTE_PERMISSIONS)[keyof typeof COMPUTE_PERMISSIONS];
