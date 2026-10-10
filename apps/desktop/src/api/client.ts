@@ -1,6 +1,6 @@
 import type { ApiEnvelope, ApiErrorEnvelope } from '@kla-workstation/contracts';
 
-const defaultBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8787/api';
+const defaultBaseUrl = window.klaPlatform?.apiBaseUrl || import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8787/api';
 const tokenKey = 'kla.access-token';
 const expiryKey = 'kla.access-expiry';
 const refreshKey = 'kla.refresh-token';
