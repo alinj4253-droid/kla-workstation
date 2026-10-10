@@ -671,7 +671,7 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
         <Badge>平台目录</Badge>
       </div>
 
-      {sortedModels.length === 0 ? <div className="ws-empty">没有符合筛选条件的模型</div> : <div className="ws-card-grid-3">
+      {sortedModels.length === 0 ? <div className="ws-empty">{models.length === 0 ? '当前账号所在分组暂无可调用的模型，请联系管理员确认分组与模型可用范围' : '没有符合筛选条件的模型'}</div> : <div className="ws-card-grid-3">
         {sortedModels.map((model) => <article className="ws-model" key={model.id}>
           <div className="ws-model-head">
             <span className="ws-model-icon">{model.name.slice(0, 1)}</span>

@@ -421,8 +421,8 @@ export class QuotaService {
 
     // 用已同步流水净额作为 KLA 在 Sub2API 的预期余额，而非 KLA 可用余额。
     // 这样未真正同步到上游的 grant 不会制造虚假漂移。
-    const entitlement = await this.repo.getEntitlement({ identityId });
-    if (!entitlement) return { driftPoints: 0, applied: false };
+    // 台账不存在时自动创建：只建过号、从未发放过的身份也能在上游充值后入账。
+    const entitlement = await this.repo.getOrCreateEntitlement({ identityId });
     const expectedUsd = await this.repo.getSyncedSub2ApiBalanceUsd(entitlement.id);
     const driftUsd = sub2apiUsd - expectedUsd;
     const driftPoints = Math.round(driftUsd * this.points.pointsPerUsd * 1000) / 1000;

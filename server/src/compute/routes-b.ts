@@ -13,12 +13,19 @@ import type {
 } from '@kla-workstation/contracts';
 import type { AccountRepository, Identity } from '../repositories/types.js';
 import type { ComputeRepository } from './compute-repository.js';
+import type { Sub2ApiAdminGroup, Sub2ApiClient } from './sub2api-client.js';
 import { COMPUTE_PERMISSION, errorBody, hasPermission, requireIdentity } from './permissions.js';
+import { resolveManagedPassword } from './encryption.js';
+import { COMPUTE_READY_STATES } from './types.js';
 import { createPointsConverter } from './points.js';
 
 export type ComputeRouteBDeps = {
   accounts: AccountRepository;
   computeRepo: ComputeRepository;
+  /** Sub2API 客户端：模型清单实时按当前身份的 Key 从上游拉取，分组关系不落库 */
+  sub2api: Sub2ApiClient;
+  /** 托管密码解密密钥（与 provisioning/gateway 保持一致） */
+  encryptionKey: string;
 };
 
 const PAGE_SIZE_MAX = 100;
@@ -233,27 +240,145 @@ export async function registerComputeRoutesB(app: FastifyInstance, deps: Compute
   };
 
   // §7.3 模型广场：只读，不提供任何模型编辑或上游 Key 填写能力。
+  // 目录仅用于给上游模型补充展示元数据（能力/价格），不作为可调用集合的来源。
   const MODEL_SELECT = `SELECT m.id, m.name, m.provider, m.capabilities, m.enabled,
               p.input_price_per_mtok_usd, p.output_price_per_mtok_usd, p.available_groups
        FROM models m
        LEFT JOIN compute_model_pricing p ON p.model_id = m.id`;
 
+  /** 上游模型 id 前缀 → 供应商的启发式映射（目录未收录时兜底展示用）。 */
+  function guessProvider(modelId: string): string {
+    const id = modelId.toLowerCase();
+    if (/^(gpt|o[1345](-|$)|codex|chatgpt)/.test(id)) return 'openai';
+    if (/^claude/.test(id)) return 'anthropic';
+    if (/^(glm|cogview|cogvideo|charglm|emohaa)/.test(id)) return 'zhipu';
+    if (/^deepseek/.test(id)) return 'deepseek';
+    if (/^(qwen|qwq|qvq)/.test(id)) return 'qwen';
+    if (/^(gemini|gemma)/.test(id)) return 'google';
+    if (/^(moonshot|kimi)/.test(id)) return 'moonshot';
+    if (/^doubao/.test(id)) return 'volcengine';
+    if (/^(minimax|abab)/.test(id)) return 'minimax';
+    return 'sub2api';
+  }
+
+  /** 模型清单缓存（按身份，60 秒）：避免每次打开模型广场都实时请求上游。 */
+  const modelListCache = new Map<string, { items: ComputeModel[]; expiresAt: number }>();
+  const MODEL_LIST_CACHE_TTL_MS = 60_000;
+
+  /** §7.3（实时版·仅真实可调用）：模型清单全部来自 Sub2API 平台，本地数据库不参与分组/模型判定——
+   *  1) 身份名下活跃 Key 实时调网关 /v1/models，返回的即该 Key 所在分组真实可调用的模型（地面真相）；
+   *  2) 白名单勾选清单、分组配置等仅供参考，不用于展示（未启用限制或无 Key 的分组无法证实可调用）；
+   *  3) 本地 models 目录只按名称补充能力/价格等展示元数据。 */
+  const loadIdentityModels = async (
+    identityId: string,
+    reply: FastifyReply,
+  ): Promise<ComputeModel[] | null> => {
+    const binding = await deps.computeRepo.getBinding(identityId);
+    if (!binding || !COMPUTE_READY_STATES.has(binding.status)) return [];
+    const password = resolveManagedPassword(binding.managedPassword, deps.encryptionKey);
+    if (!password) {
+      reply.code(409).send(errorBody('CONFLICT', '当前身份的托管凭据无法解密（COMPUTE_SECRET_ENCRYPTION_KEY 与开通时不一致），请联系管理员重置上游账号凭据'));
+      return null;
+    }
+    let jwt: string;
+    try {
+      jwt = await deps.sub2api.getUserJwt(binding.sub2apiUserId, binding.sub2apiUsername, password);
+    } catch (error) {
+      reply.code(503).send(errorBody('UNAVAILABLE', error instanceof Error ? `算力网关暂时不可用：${error.message}` : '算力网关暂时不可用'));
+      return null;
+    }
+
+    const userGroups: Sub2ApiAdminGroup[] = await deps.sub2api.adminListGroups().catch(() => []);
+    const groupNameById = new Map(userGroups.map((group) => [group.id, group.name]));
+
+    const modelGroups = new Map<string, Set<string>>();
+    const addModel = (modelId: string, groupName: string) => {
+      const bucket = modelGroups.get(modelId) ?? new Set<string>();
+      bucket.add(groupName);
+      modelGroups.set(modelId, bucket);
+    };
+
+    // 仅收录身份名下活跃 Key 实测可调用的模型（Key 的分组归属以上游管理端为准，缺失时回退本地记录）
+    const keys = (await deps.computeRepo.listKeys(identityId)).filter(
+      (key) => key.status === 'active' && Boolean(key.sub2apiKeyId),
+    );
+    let upstreamKeys: Array<{ id: string; groupId: string | null; groupName: string | null }> = [];
+    try {
+      upstreamKeys = await deps.sub2api.adminListUserKeys(binding.sub2apiUserId);
+    } catch {
+      upstreamKeys = [];
+    }
+    const upstreamKeyById = new Map(upstreamKeys.map((key) => [key.id, key]));
+    try {
+      for (const key of keys) {
+        const secret = await deps.sub2api.resolveApiKeySecret(jwt, key.sub2apiKeyId);
+        if (!secret) continue;
+        const upstreamKey = upstreamKeyById.get(key.sub2apiKeyId);
+        const groupId = upstreamKey?.groupId ?? key.groupId;
+        const groupName =
+          (groupId != null ? groupNameById.get(String(groupId)) : undefined) ??
+          upstreamKey?.groupName ??
+          (groupId != null ? `分组 ${groupId}` : '默认分组');
+        for (const modelId of await deps.sub2api.listModels(secret)) addModel(modelId, groupName);
+      }
+    } catch (error) {
+      reply.code(503).send(errorBody('UNAVAILABLE', error instanceof Error ? `获取可调用模型失败：${error.message}` : '获取可调用模型失败'));
+      return null;
+    }
+
+    // 本地目录仅补充展示元数据（能力/价格），不决定展示与否；每个模型标注其来源分组
+    const catalog = await pool().query<ComputeModelRow>(`${MODEL_SELECT} WHERE m.enabled = true`);
+    const byName = new Map<string, ComputeModelRow>();
+    for (const row of catalog.rows) {
+      byName.set(row.name.toLowerCase(), row);
+      byName.set(row.id.toLowerCase(), row);
+    }
+    return [...modelGroups.keys()].sort().map((modelId) => {
+      const sourceGroups = [...(modelGroups.get(modelId) ?? [])];
+      const normalized = modelId.toLowerCase();
+      const row = byName.get(normalized) ?? byName.get(normalized.replace(/[\s_]+/g, '-'));
+      if (row) return { ...mapComputeModel(row), availableGroups: sourceGroups };
+      return mapComputeModel({
+        id: modelId,
+        name: modelId,
+        provider: guessProvider(modelId),
+        capabilities: {},
+        enabled: true,
+        input_price_per_mtok_usd: null,
+        output_price_per_mtok_usd: null,
+        available_groups: sourceGroups,
+      });
+    });
+  };
+
+  const loadIdentityModelsCached = async (
+    identityId: string,
+    reply: FastifyReply,
+  ): Promise<ComputeModel[] | null> => {
+    const cached = modelListCache.get(identityId);
+    if (cached && cached.expiresAt > Date.now()) return cached.items;
+    const items = await loadIdentityModels(identityId, reply);
+    if (items) modelListCache.set(identityId, { items, expiresAt: Date.now() + MODEL_LIST_CACHE_TTL_MS });
+    return items;
+  };
+
   app.get('/api/v1/compute/models', async (request: FastifyRequest, reply: FastifyReply) => {
     const ctx = await requireIdentity(deps.accounts, request, reply);
     if (!ctx) return;
-    const result = await pool().query<ComputeModelRow>(`${MODEL_SELECT} WHERE m.enabled = true ORDER BY m.is_official DESC, m.name`);
-    const data: ComputeModelList = { items: result.rows.map(mapComputeModel) };
-    return reply.send({ ok: true, data });
+    const items = await loadIdentityModelsCached(ctx.identity.id, reply);
+    if (!items) return;
+    return reply.send({ ok: true, data: { items } as ComputeModelList });
   });
 
   app.get('/api/v1/compute/models/:modelId', async (request: FastifyRequest, reply: FastifyReply) => {
     const ctx = await requireIdentity(deps.accounts, request, reply);
     if (!ctx) return;
+    const items = await loadIdentityModelsCached(ctx.identity.id, reply);
+    if (!items) return;
     const { modelId } = request.params as { modelId: string };
-    const result = await pool().query<ComputeModelRow>(`${MODEL_SELECT} WHERE m.id = $1`, [modelId]);
-    const row = result.rows[0];
-    if (!row) return reply.code(404).send(errorBody('NOT_FOUND', '模型不存在', request.id));
-    return reply.send({ ok: true, data: mapComputeModel(row) });
+    const model = items.find((item) => item.id === modelId);
+    if (!model) return reply.code(404).send(errorBody('NOT_FOUND', '模型不存在或当前身份不可调用', request.id));
+    return reply.send({ ok: true, data: model });
   });
 
   // §7.4：FROM/JOIN 与 WHERE 复用；$1 为作用域（子句经白名单构造，非用户输入）。
