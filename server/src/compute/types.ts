@@ -62,6 +62,10 @@ export type AllocationLedger = {
   metadata: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
+  /** 流水归属账户的展示名（仅企业流水查询返回，其余场景为 null） */
+  identityName?: string | null;
+  /** 交易对手方展示名（分配/回收流水的另一侧账户） */
+  counterpartyName?: string | null;
 };
 
 /** §5.3：算力账号已经可以调用模型 / 管理 Key 的状态 */

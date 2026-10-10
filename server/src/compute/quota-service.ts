@@ -298,16 +298,6 @@ export class QuotaService {
       });
       return false;
     }
-    // 共享上游账号模式下双方映射到同一账号，转账无意义（净零），跳过并告警。
-    if (fromBinding.sub2apiUserId === toBinding.sub2apiUserId) {
-      await this.repo.insertSyncLog({
-        syncType: 'balance',
-        organizationId: orgId,
-        status: 'warning',
-        message: `${operation} ${requestId}：双方映射到同一 Sub2API 账号（${fromBinding.sub2apiUserId}），跳过转账，需切换为每身份独立账号模式`,
-      });
-      return false;
-    }
     try {
       await this.sub2api.adjustBalance(fromBinding.sub2apiUserId, fromDelta);
       await this.sub2api.adjustBalance(toBinding.sub2apiUserId, toDelta);

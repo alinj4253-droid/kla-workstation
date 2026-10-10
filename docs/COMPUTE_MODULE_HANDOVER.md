@@ -65,8 +65,7 @@ SUB2API_BASE_URL=http://192.168.10.218:8099
 SUB2API_ADMIN_API_KEY=admin-<64hex>          # 管理面建号/调额/查用量
 SUB2API_DEFAULT_GROUP_ID=7                   # 算力订阅分组
 SUB2API_PERSONAL_GROUP_ID=11                 # 个人身份默认 Key 分组
-SUB2API_SHARED_ACCOUNT_EMAIL=…               # 共享上游账号（见 §4）
-SUB2API_SHARED_ACCOUNT_PASSWORD=…
+SUB2API_ACCOUNT_EMAIL_DOMAIN=kla.internal          # 托管账号邮箱域名
 COMPUTE_SECRET_ENCRYPTION_KEY=<32字节hex>    # 托管密码字段级加密
 COMPUTE_MIN_RESERVE_USD=0.01                 # 预扣下限，也充当无费率时的计价兜底
 ```
@@ -101,12 +100,11 @@ server/src/compute/compute-repository.ts 算力仓储（含 compute_bindings/key
 packages/contracts/src/compute.ts        机器可读契约（zod，唯一事实源）
 ```
 
-### 四条硬约定
+### 三条硬约定
 
 1. **契约先行**：新接口先加 `packages/contracts/src/compute.ts`，再写实现。
 2. **服务端二次校验**：权限从 Session 重新计算（`server/src/compute/permissions.ts` 的 `hasPermission`），前端按钮状态不可信。
 3. **完整 Key 不落库、不下发前端**：`compute_keys` 只存前缀与指纹；网关用托管账号 JWT 调 `GET /api/v1/keys` 现取明文，**仅内存缓存 5 分钟**。
-4. **共享上游账号模式**（本次新增）：`SUB2API_SHARED_ACCOUNT_EMAIL/PASSWORD` 非空时，**所有 KLA 身份复用同一个 Sub2API 账号**（当前 `kunqingadmin@qq.com`，余额约 4997 USD），不再逐个建号；每个身份在该账号下各建一个 Key 以便归属用量。`compute_bindings.sub2api_user_id` 因此**不再是唯一**（见迁移 `0016`）。
 
 ---
 

@@ -1,4 +1,4 @@
-﻿import { z } from 'zod';
+import { z } from 'zod';
 import { pageQuerySchema } from './envelope.js';
 
 // 面向用户的余额、额度、费用统一为算力点；Sub2API 的 USD 仅留在服务端成本边界。
@@ -331,6 +331,10 @@ export const computeLedgerEntrySchema = z.object({
   metadata: z.record(z.string(), z.unknown()),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
+  /** 流水归属账户展示名（企业流水接口返回；个人流水可能缺省） */
+  identityName: z.string().nullable().optional(),
+  /** 交易对手方账户展示名（分配/回收流水的另一侧） */
+  counterpartyName: z.string().nullable().optional(),
 });
 export type ComputeLedgerEntry = z.infer<typeof computeLedgerEntrySchema>;
 
