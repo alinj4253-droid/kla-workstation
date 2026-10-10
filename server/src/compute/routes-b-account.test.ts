@@ -67,6 +67,7 @@ describe('§7.1 当前身份与余额', () => {
       computeRepo: repo,
       sub2api: { health: async () => ({ ok: true }) } as unknown as Sub2ApiClient,
       provisioning: {} as unknown as ProvisioningService,
+      quota: { reconcileBalanceFromSub2api: async () => ({ driftPoints: 0, applied: false }) } as unknown as QuotaService,
     });
     const response = await app.inject({ method: 'GET', url: '/api/v1/compute/summary', headers: { authorization: 'Bearer t' } });
     expect(response.statusCode).toBe(200);
@@ -101,6 +102,7 @@ describe('§7.1 当前身份与余额', () => {
       computeRepo: repo,
       sub2api: { health: async () => ({ ok: true }) } as unknown as Sub2ApiClient,
       provisioning: {} as unknown as ProvisioningService,
+      quota: { reconcileBalanceFromSub2api: async () => ({ driftPoints: 0, applied: false }) } as unknown as QuotaService,
     });
     const response = await app.inject({ method: 'GET', url: '/api/v1/compute/summary', headers: { authorization: 'Bearer t' } });
     expect(response.json().data.permissions).toMatchObject({
@@ -117,6 +119,7 @@ describe('§7.1 当前身份与余额', () => {
       computeRepo: repo,
       sub2api: { health: async () => { throw new Error('down'); } } as unknown as Sub2ApiClient,
       provisioning: {} as unknown as ProvisioningService,
+      quota: { reconcileBalanceFromSub2api: async () => ({ driftPoints: 0, applied: false }) } as unknown as QuotaService,
     });
     const response = await app.inject({ method: 'GET', url: '/api/v1/compute/summary', headers: { authorization: 'Bearer t' } });
     expect(response.json().data).toMatchObject({ sub2apiHealth: 'unavailable', provisionState: 'pending', balance: 0, defaultKey: null });
