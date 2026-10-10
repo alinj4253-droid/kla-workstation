@@ -6,6 +6,7 @@ import type { QuotaService } from './quota-service.js';
 import { registerRoutes } from '../routes.js';
 import { registerComputeRoutes } from './routes.js';
 import { buildUsageCsv, mapComputeModel, mapUsageRecord, parseUsageQuery, registerComputeRoutesB } from './routes-b.js';
+import type { ComputeRouteBDeps } from './routes-b.js';
 
 function stubAccounts(): AccountRepository {
   return { getSession: async () => null, listIdentities: async () => [] } as unknown as AccountRepository;
@@ -13,6 +14,14 @@ function stubAccounts(): AccountRepository {
 
 function stubRepo(): ComputeRepository {
   return { pool: { query: async () => ({ rows: [], rowCount: 0 }) } } as unknown as ComputeRepository;
+}
+
+function stubSub2Api(): unknown {
+  return { getUserJwt: async () => 'jwt', resolveApiKeySecret: async () => null, listModels: async () => [] };
+}
+
+function stubDepsB(): ComputeRouteBDeps {
+  return { accounts: stubAccounts(), computeRepo: stubRepo(), sub2api: stubSub2Api() as ComputeRouteBDeps['sub2api'], encryptionKey: 'test-encryption-key' };
 }
 
 describe('mapComputeModel', () => {
@@ -178,7 +187,7 @@ describe('A/B 路由合并注册', () => {
       computeRepo: stubRepo(),
       quota: {} as unknown as QuotaService,
     });
-    await registerComputeRoutesB(app, { accounts: stubAccounts(), computeRepo: stubRepo() });
+    await registerComputeRoutesB(app, stubDepsB());
     await app.ready();
     const routes = app.printRoutes({ commonPrefix: false });
     expect(routes).toContain('/api/v1/compute/models');
@@ -193,7 +202,7 @@ describe('A/B 路由合并注册', () => {
 
   it('B 侧接口未登录返回 401', async () => {
     const app = Fastify();
-    await registerComputeRoutesB(app, { accounts: stubAccounts(), computeRepo: stubRepo() });
+    await registerComputeRoutesB(app, stubDepsB());
     const response = await app.inject({ method: 'GET', url: '/api/v1/compute/models' });
     expect(response.statusCode).toBe(401);
     expect(response.json()).toMatchObject({ ok: false, error: { code: 'UNAUTHENTICATED', retryable: false } });

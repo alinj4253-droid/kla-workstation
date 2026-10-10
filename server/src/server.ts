@@ -76,7 +76,7 @@ export async function createServer() {
   await registerRuntimeRoutes(app, {pool, accounts, worker:loopWorker, computeRepo, sub2api, encryptionKey:config.compute.secretEncryptionKey, objectStore});
   await registerKnowledgeRoutes(app, { accounts, pool, store: new PostgresKnowledgeStore(pool), encryptionKey: process.env.KNOWLEDGE_SECRET_ENCRYPTION_KEY || config.compute.secretEncryptionKey });
   await registerComputeRoutes(app, { accounts, computeRepo, quota });
-  await registerComputeRoutesB(app, { accounts, computeRepo });
+  await registerComputeRoutesB(app, { accounts, computeRepo, sub2api, encryptionKey: config.compute.secretEncryptionKey });
   await registerComputeAccountRoutes(app, { accounts, computeRepo, sub2api, provisioning, encryptionKey: config.compute.secretEncryptionKey });
   await registerComputeKeyRoutes(app, {
     accounts,

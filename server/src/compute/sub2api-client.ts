@@ -21,6 +21,10 @@ export type Sub2ApiUser = {
   username: string;
   balance: number;
   status: string;
+  /** 管理端字段：显式分配给用户的专属分组 ID（仅 restrictPublicGroups=true 时作为白名单） */
+  allowedGroups: string[];
+  /** true = 仅允许 allowedGroups；false = 可用全部公开分组 */
+  restrictPublicGroups: boolean;
 };
 
 export type Sub2ApiKey = {
@@ -48,6 +52,20 @@ export type Sub2ApiUsageItem = {
 export type Sub2ApiGroup = {
   id: string;
   name: string;
+};
+
+/** 管理端分组清单条目：用于按"用户可用分组"聚合各分组可调用模型。 */
+export type Sub2ApiAdminGroup = {
+  id: string;
+  name: string;
+  platform: string;
+  status: string;
+  /** 专属分组：仅显式分配给用户时可用 */
+  isExclusive: boolean;
+  /** 白名单是否启用限制（启用时勾选清单即该分组可调用全集） */
+  allowlistEnabled: boolean;
+  /** 分组勾选的模型清单 */
+  allowlistModels: string[];
 };
 
 export class Sub2ApiError extends Error {
@@ -372,6 +390,52 @@ export class Sub2ApiClient {
     });
   }
 
+  /** 管理端分组清单：平台、专属标记、模型白名单勾选与启用状态。 */
+  async adminListGroups(): Promise<Sub2ApiAdminGroup[]> {
+    const raw = await this.request<{ items?: Array<Record<string, unknown>> }>({
+      method: 'GET',
+      path: '/api/v1/admin/groups?page=1&page_size=100',
+      apiKey: this.config.adminApiKey,
+    });
+    const items = Array.isArray(raw) ? raw : (raw.items ?? []);
+    return items.map((item) => {
+      const allowlist = (item.model_allowlist ?? {}) as { enabled?: unknown; models?: unknown };
+      return {
+        id: String(item.id ?? ''),
+        name: String(item.name ?? ''),
+        platform: String(item.platform ?? ''),
+        status: String(item.status ?? 'active'),
+        isExclusive: item.is_exclusive === true,
+        allowlistEnabled: allowlist.enabled === true,
+        allowlistModels: Array.isArray(allowlist.models)
+          ? allowlist.models.filter((value): value is string => typeof value === 'string' && value !== '')
+          : [],
+      };
+    });
+  }
+
+  /** 管理端用户 Key 清单：用于把 Key 映射到其在上游所属的分组（分组归属以上游为准）。 */
+  async adminListUserKeys(userId: string): Promise<
+    Array<{ id: string; name: string; status: string; groupId: string | null; groupName: string | null }>
+  > {
+    const raw = await this.request<{ items?: Array<Record<string, unknown>> }>({
+      method: 'GET',
+      path: `/api/v1/admin/users/${encodeURIComponent(userId)}/api-keys?page=1&page_size=100`,
+      apiKey: this.config.adminApiKey,
+    });
+    const items = Array.isArray(raw) ? raw : (raw.items ?? []);
+    return items.map((item) => {
+      const group = (item.group ?? {}) as { name?: unknown };
+      return {
+        id: String(item.id ?? ''),
+        name: String(item.name ?? ''),
+        status: String(item.status ?? 'active'),
+        groupId: item.group_id == null ? null : String(item.group_id),
+        groupName: typeof group.name === 'string' && group.name !== '' ? group.name : null,
+      };
+    });
+  }
+
   /** Proxy-side model list is scoped by the selected API Key's group. */
   async listModels(apiKey: string): Promise<string[]> {
     const raw = await this.request<Array<{ id?: string }> | { data?: Array<{ id?: string }> }>({
@@ -425,11 +489,16 @@ export class Sub2ApiClient {
 
 // 工具：从 Sub2API 响应中提取字段（兼容 snake_case 与 camelCase）
 export function parseUser(raw: Record<string, unknown>): Sub2ApiUser {
+  const allowedGroups = Array.isArray(raw.allowed_groups)
+    ? raw.allowed_groups.map((value) => String(value)).filter((value) => value !== '')
+    : [];
   return {
     id: String(raw.id ?? raw.user_id ?? ''),
     username: String(raw.username ?? raw.user_name ?? ''),
     balance: Number(raw.balance ?? 0),
     status: String(raw.status ?? 'active'),
+    allowedGroups,
+    restrictPublicGroups: raw.restrict_public_groups === true,
   };
 }
 
