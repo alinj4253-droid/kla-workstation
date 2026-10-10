@@ -185,6 +185,48 @@ export class ComputeRepository {
     return rows[0] ? this.ledger(rows[0]) : null;
   }
 
+  /**
+   * 计算某身份在 Sub2API 上的预期余额（USD）：仅汇总 sub2api_synced=true 的流水，
+   * 按操作方向带符号。用于对账时判断 Sub2API 余额是否包含 KLA 未知的充值。
+   *
+   * 规则：
+   * - grant：+amount（平台发放，已推上游）
+   * - allocate/reclaim：metadata.direction='in' → +amount，'out' → -amount
+   * - commit：-amount（用量扣费，已推上游）
+   * - recharge：不参与（来自上游，sub2api_synced=false）
+   * - reserve/release：不参与（不影响上游余额）
+   */
+  async getSyncedSub2ApiBalanceUsd(entitlementId: string, client?: QueryClient): Promise<number> {
+    const c = client ?? this.pool;
+    const { rows } = await c.query(
+      `SELECT
+         operation,
+         amount,
+         COALESCE(metadata->>'direction', '') AS direction
+       FROM compute_allocation_ledger
+       WHERE entitlement_id = $1 AND sub2api_synced = true AND status = 'completed'`,
+      [entitlementId],
+    );
+    let total = 0;
+    for (const row of rows) {
+      const amt = Number(row.amount);
+      switch (row.operation) {
+        case 'grant':
+          total += amt;
+          break;
+        case 'allocate':
+        case 'reclaim':
+          total += row.direction === 'in' ? amt : -amt;
+          break;
+        case 'commit':
+          total -= amt;
+          break;
+        // recharge / reserve / release: 不影响上游余额
+      }
+    }
+    return total;
+  }
+
   async getLedger(id: string, client?: QueryClient): Promise<AllocationLedger | null> {
     const c = client ?? this.pool;
     const { rows } = await c.query('SELECT * FROM compute_allocation_ledger WHERE id = $1', [id]);

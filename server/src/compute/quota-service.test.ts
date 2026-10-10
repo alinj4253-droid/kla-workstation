@@ -85,8 +85,8 @@ describe('QuotaService 企业额度转账', () => {
     await service.grant({ identityId: 'admin-i' }, 0.1, 'grant-1');
     await service.grant({ identityId: 'admin-i' }, 0.2, 'grant-2');
     expect(deps.sub2api.adjustments).toEqual([
-      { userId: 'sub-admin', delta: 0.00001 },
-      { userId: 'sub-admin', delta: 0.00002 },
+      { userId: 'sub-admin', delta: 0.0001 },
+      { userId: 'sub-admin', delta: 0.0002 },
     ]);
     expect(deps.sub2api.adjustments).toHaveLength(2);
   });
@@ -98,8 +98,8 @@ describe('QuotaService 企业额度转账', () => {
     expect(result.sub2apiSynced).toBe(true);
     expect(result.counterpartyLedgerId).toBeTruthy();
     expect(deps.sub2api.adjustments).toEqual([
-      { userId: 'sub-admin', delta: -0.003 },
-      { userId: 'sub-member', delta: 0.003 },
+      { userId: 'sub-admin', delta: -0.03 },
+      { userId: 'sub-member', delta: 0.03 },
     ]);
     // 两条流水都被标记为已同步
     expect(deps.repo.calls).toContain('sync:led-1:true');
@@ -118,8 +118,8 @@ describe('QuotaService 企业额度转账', () => {
     const result = await service.reclaim('admin-i', 'org1', 'member-i', 12, 'req-4');
     expect(result.sub2apiSynced).toBe(true);
     expect(deps.sub2api.adjustments).toEqual([
-      { userId: 'sub-member', delta: -0.0012 },
-      { userId: 'sub-admin', delta: 0.0012 },
+      { userId: 'sub-member', delta: -0.012 },
+      { userId: 'sub-admin', delta: 0.012 },
     ]);
   });
 
@@ -181,7 +181,7 @@ describe('QuotaService actual usage billing', () => {
 
     expect(await service.recordUpstreamUsage('i1', item, 'k1')).toBe(true);
     expect(await service.recordUpstreamUsage('i1', item, 'k1')).toBe(false);
-    expect(deltas).toEqual([3.621]);
+    expect(deltas).toEqual([0.362]);
     expect(recorded).toHaveLength(1);
     expect(recorded[0]).toMatchObject({ identityId: 'i1', keyId: 'k1', sub2apiUsageId: '39', amountUsd: 0.00036205 });
     expect(sql).toContain("SELECT set_config('kla.upstream_usage', 'on', true)");
