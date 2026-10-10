@@ -5,7 +5,7 @@
 // - 版式与文案对齐《鲲擎2.0 交互演示版》，计价单位为算力点（§4.2）
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Activity, Check, Clock3, Copy, CreditCard, Database, Download, FileText, Gauge, KeyRound, Layers, Pencil, Plus, RefreshCw, Search, Send, Trash2, Undo2, Users, Wallet } from 'lucide-react';
+import { Activity, Check, Clock3, Copy, CreditCard, Database, Download, FileText, Gauge, KeyRound, Layers, Pencil, Plus, RefreshCw, Search, Send, Trash2, Undo2, Users, Wallet, X } from 'lucide-react';
 import type { ComputeKey, ComputeLedgerEntry, ComputeModel, ComputeOrgMember, ComputeOrgOverview, ComputeSummary, ComputeUsageBucket, ComputeUsageRecord, ComputeUsageSummary } from '@kla-workstation/contracts';
 import { computeApi } from '../api/compute';
 import { klaApi } from '../api/client';
@@ -83,6 +83,8 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
   const [summary, setSummary] = useState<ComputeSummary | null>(null);
   const [keys, setKeys] = useState<ComputeKey[]>([]);
   const [models, setModels] = useState<ComputeModel[]>([]);
+  const [detailModel, setDetailModel] = useState<ComputeModel | null>(null);
+  const [detailTab, setDetailTab] = useState<'overview' | 'performance' | 'api'>('overview');
   const [usageSummary, setUsageSummary] = useState<ComputeUsageSummary | null>(null);
   const [usageRows, setUsageRows] = useState<ComputeUsageRecord[]>([]);
   const [usageTotal, setUsageTotal] = useState(0);
@@ -686,6 +688,9 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
             <span className="ws-muted">可用分组</span>
             <span className="ws-note">{model.availableGroups.length ? model.availableGroups.join('、') : '—'}</span>
           </div>
+          <div className="ws-model-actions">
+            <button onClick={() => { setDetailModel(model); setDetailTab('overview'); }}>模型详细</button>
+          </div>
         </article>)}
       </div>}
     </>}
@@ -829,5 +834,89 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
         <footer><button className="ws-primary" onClick={() => setCreatedSecret(null)}><Check size={14} /> 我已保存</button></footer>
       </div>
     </div>}
+
+    {detailModel && (() => {
+      const caps: Array<[string, boolean]> = [
+        ['视觉理解', detailModel.capabilities.vision],
+        ['深度推理', detailModel.capabilities.reasoning],
+        ['工具调用', detailModel.capabilities.tools],
+        ['流式输出', detailModel.capabilities.streaming],
+      ];
+      const curlSample = `curl -X POST "$KLA_GATEWAY/api/v1/chat/completions" \\\n  -H "Authorization: Bearer sk-你的完整密钥" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"${detailModel.id}","messages":[{"role":"user","content":"你好"}]}'`;
+      const pythonSample = `from openai import OpenAI\n\nclient = OpenAI(\n    base_url="https://<KLA 网关地址>/api/v1",\n    api_key="sk-你的完整密钥",\n)\n\nresp = client.chat.completions.create(\n    model="${detailModel.id}",\n    messages=[{"role": "user", "content": "你好"}],\n)\nprint(resp.choices[0].message.content)`;
+      const copy = (text: string, tip: string) => { void navigator.clipboard?.writeText(text); onNotify(tip); };
+      return <div className="ws-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setDetailModel(null); }}>
+        <div className="ws-modal wide">
+          <header>
+            <div className="ws-md-head">
+              <span className="ws-model-icon">{detailModel.name.slice(0, 1)}</span>
+              <div>
+                <h2>{detailModel.name}</h2>
+                <small>{detailModel.provider} ｜ {detailModel.id}</small>
+              </div>
+              <Badge tone={detailModel.available ? 'green' : 'muted'}>{detailModel.available ? '可用' : '停用'}</Badge>
+            </div>
+            <button className="ws-icon-button" aria-label="关闭" onClick={() => setDetailModel(null)}><X size={16} /></button>
+          </header>
+
+          <div className="ws-md-tabs">
+            <button className={detailTab === 'overview' ? 'active' : ''} onClick={() => setDetailTab('overview')}>概览</button>
+            <button className={detailTab === 'performance' ? 'active' : ''} onClick={() => setDetailTab('performance')}>性能</button>
+            <button className={detailTab === 'api' ? 'active' : ''} onClick={() => setDetailTab('api')}>API</button>
+          </div>
+
+          {detailTab === 'overview' && <>
+            <div className="ws-md-kpis">
+              <div className="ws-md-kpi"><span>上下文窗口</span><b>{detailModel.contextWindow ? `${Math.round(detailModel.contextWindow / 1000)}K tokens` : '—'}</b></div>
+              <div className="ws-md-kpi"><span>输入计费</span><b>{detailModel.inputPricePerMillionTokensPoints != null ? `${formatPoints(detailModel.inputPricePerMillionTokensPoints)} / 1M` : '待同步'}</b></div>
+              <div className="ws-md-kpi"><span>输出计费</span><b>{detailModel.outputPricePerMillionTokensPoints != null ? `${formatPoints(detailModel.outputPricePerMillionTokensPoints)} / 1M` : '待同步'}</b></div>
+              <div className="ws-md-kpi"><span>调用状态</span><b>{detailModel.available ? '可调用' : '已停用'}</b></div>
+            </div>
+
+            <div className="ws-md-section">
+              <h4>基础计费（按 token 用量扣减算力点）</h4>
+              <div className="ws-md-price-row"><span>输入价格</span><b>{detailModel.inputPricePerMillionTokensPoints != null ? `${formatPoints(detailModel.inputPricePerMillionTokensPoints)} 算力点 / 1M tokens` : '待模型目录同步'}</b></div>
+              <div className="ws-md-price-row"><span>输出价格</span><b>{detailModel.outputPricePerMillionTokensPoints != null ? `${formatPoints(detailModel.outputPricePerMillionTokensPoints)} 算力点 / 1M tokens` : '待模型目录同步'}</b></div>
+              <div className="ws-md-price-row"><span>计价方式</span><b>按实际用量后付费</b></div>
+            </div>
+
+            <div className="ws-md-section">
+              <h4>能力标签</h4>
+              <div className="ws-md-pills">
+                <span className="ws-md-pill">文本对话</span>
+                {caps.filter(([, on]) => on).map(([label]) => <span key={label} className="ws-md-pill">{label}</span>)}
+              </div>
+            </div>
+
+            <div className="ws-md-section" style={{ marginBottom: 0 }}>
+              <h4>目录信息</h4>
+              <div className="ws-md-meta">
+                <div><span>供应商</span><b>{detailModel.provider}</b></div>
+                <div><span>目录状态</span><b>{detailModel.status === 'active' ? '已上架' : '已下架'}</b></div>
+                <div><span>模型 ID</span><b>{detailModel.id} <button className="ws-text-button" onClick={() => copy(detailModel.id, '模型 ID 已复制到剪贴板')}><Copy size={11} /></button></b></div>
+                <div><span>可用分组</span><b>{detailModel.availableGroups.length ? detailModel.availableGroups.join('、') : '—'}</b></div>
+              </div>
+            </div>
+          </>}
+
+          {detailTab === 'performance' && <div className="ws-empty">平台暂未采集该模型的性能指标（吞吐 / 平均延迟 / 成功率），数据上线后在此展示。</div>}
+
+          {detailTab === 'api' && <>
+            <div className="ws-md-section">
+              <h4>鉴权方式</h4>
+              <p className="ws-detail-copy">在「API 密钥」页创建密钥后，以 Bearer Token 携带完整密钥请求网关；费用按概览页单价从账户算力点中实时扣减。</p>
+            </div>
+            <div className="ws-md-section">
+              <h4>cURL 调用示例</h4>
+              <pre className="ws-md-code">{curlSample}<button className="ws-md-copy" onClick={() => copy(curlSample, 'cURL 示例已复制到剪贴板')}><Copy size={11} /> 复制</button></pre>
+            </div>
+            <div className="ws-md-section" style={{ marginBottom: 0 }}>
+              <h4>Python（OpenAI SDK）示例</h4>
+              <pre className="ws-md-code">{pythonSample}<button className="ws-md-copy" onClick={() => copy(pythonSample, 'Python 示例已复制到剪贴板')}><Copy size={11} /> 复制</button></pre>
+            </div>
+          </>}
+        </div>
+      </div>;
+    })()}
   </>;
 }
