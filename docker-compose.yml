@@ -1,0 +1,86 @@
+# KLA Workstation 一体化部署（临时/内网试用）：PostgreSQL + Redis + 服务端
+# 用法（在仓库根目录执行）：
+#   docker compose up -d --build
+#   docker compose logs -f server
+#   curl http://localhost:8787/api/health
+#
+# 说明：
+# - 所有持久化数据均挂载到宿主机 /home/kla/ 下（可用 DATA_ROOT 覆盖）：
+#   /home/kla/postgres/、/home/kla/redis/、/home/kla/object-storage/。
+# - Sub2API 为外部算力服务，走局域网直连，不在本编排内；密钥等敏感配置
+#   通过 env_file 引用 server/.env，容器内覆盖其中与基础设施相关的变量。
+# - 数据库迁移在服务端启动时自动执行（CREATE SCHEMA IF NOT EXISTS + 全量迁移）。
+# - Linux 部署：先在宿主机创建 /home/kla 及对象存储目录并授权
+#   （postgres/redis 的数据目录由镜像启动时自行 chown，无需干预；
+#   server 容器以 node（uid 1000）运行，对象存储目录需属主为 uid 1000）：
+#     sudo mkdir -p /home/kla
+#     sudo mkdir -p /home/kla/object-storage
+#     sudo chown 1000:1000 /home/kla/object-storage
+# - 首次启动为全新空库；如需初始数据，可从宿主机执行
+#   pnpm --filter @kla-workstation/server db:seed-company-base
+#   （需先把 server/.env 的 DATABASE_URL 临时指向 localhost:15432）。
+# - 想改端口/数据库口令/数据目录：在仓库根目录建 .env 覆盖 DATA_ROOT、
+#   POSTGRES_USER、POSTGRES_PASSWORD、POSTGRES_DB、POSTGRES_HOST_PORT、
+#   REDIS_HOST_PORT、SERVER_HOST_PORT 即可，无需改动本文件。
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: kla-prod-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-kla}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kla}
+      POSTGRES_DB: ${POSTGRES_DB:-kla}
+    ports:
+      - "${POSTGRES_HOST_PORT:-15432}:5432"
+    volumes:
+      - ${DATA_ROOT:-/home/kla}/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-kla} -d ${POSTGRES_DB:-kla}"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    container_name: kla-prod-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_HOST_PORT:-16379}:6379"
+    volumes:
+      - ${DATA_ROOT:-/home/kla}/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  server:
+    build:
+      context: .
+    image: kla-server
+    container_name: kla-prod-server
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - server/.env
+    environment:
+      # 容器内覆盖 env_file 中与基础设施相关的变量；SUB2API_*、
+      # COMPUTE_SECRET_ENCRYPTION_KEY 等敏感配置沿用 server/.env。
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 8787
+      DATABASE_URL: postgresql://${POSTGRES_USER:-kla}:${POSTGRES_PASSWORD:-kla}@postgres:5432/${POSTGRES_DB:-kla}
+      DATABASE_SCHEMA: ${DATABASE_SCHEMA:-kla}
+      REDIS_URL: redis://redis:6379/4
+      OBJECT_STORAGE_PATH: /data/object-storage
+      OBJECT_STORAGE_MAX_FILE_BYTES: ${OBJECT_STORAGE_MAX_FILE_BYTES:-104857600}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "${SERVER_HOST_PORT:-8787}:8787"
+    volumes:
+      - ${DATA_ROOT:-/home/kla}/object-storage:/data/object-storage
+    restart: unless-stopped
