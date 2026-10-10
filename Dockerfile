@@ -4,14 +4,25 @@
 # syntax=docker/dockerfile:1
 FROM node:22-alpine AS build
 WORKDIR /repo
-RUN corepack enable
+# 固定 pnpm@10.11：其 store 索引不使用 SQLite（pnpm 10.12+ 的 SQLite store 在
+# 部分 CentOS/老内核文件系统上必报 disk I/O error）；仓库锁文件为
+# lockfileVersion 9.0，与该版本兼容。packageManager 字段指向 11.9.0：
+# package-manager-strict=false 跳过版本校验；manage-package-manager-versions=false
+# 禁止 pnpm 自动下载并切换到 11.9.0（默认开启，切换写入 PNPM_HOME 即
+# /root/.local/share/pnpm，与下方 store 缓存卷相邻，BuildKit cache mount 下触发 EPERM）。
+RUN npm install -g pnpm@10.11.0
+ENV npm_config_package_manager_strict=false
+ENV npm_config_manage_package_manager_versions=false
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
 COPY packages/contracts/package.json packages/contracts/package.json
 COPY server/package.json server/package.json
-RUN pnpm install --frozen-lockfile
+# store 挂 BuildKit 缓存卷，重复构建无需重新下载依赖
+RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
+    pnpm install --frozen-lockfile
 COPY packages/contracts packages/contracts
 COPY server server
-RUN pnpm --filter @kla-workstation/contracts build \
+RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
+    pnpm --filter @kla-workstation/contracts build \
   && pnpm --filter @kla-workstation/server build \
   && pnpm --filter @kla-workstation/server deploy --prod /out \
   && test -f /out/dist/server.js \
