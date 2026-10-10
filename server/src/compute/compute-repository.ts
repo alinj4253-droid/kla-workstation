@@ -248,12 +248,29 @@ export class ComputeRepository {
     }));
   }
 
-  /** 企业流水：企业池行 + 该企业所有企业身份的个人池行（分发/回收两侧都会落流水）。 */
+  /** 企业流水：企业池行 + 该企业所有企业身份的个人池行（分发/回收两侧都会落流水），并带出账户与对手方展示名（含角色后缀消歧）。 */
   async listOrgLedger(orgId: string, limit = 100, client?: QueryClient): Promise<AllocationLedger[]> {
     const c = client ?? this.pool;
+    // 展示名规则：优先用户昵称（企业身份的 display_name 是企业名，多成员会重名），昵称为空回退身份名；
+    // 企业身份追加（管理员）/（成员）后缀，个人身份（如充值）不加后缀
     const { rows } = await c.query(
-      `SELECT l.* FROM compute_allocation_ledger l
+      `SELECT l.*,
+              COALESCE(NULLIF(ou.nickname, ''), owner.display_name) || CASE WHEN owner.type = 'enterprise' THEN
+                CASE WHEN EXISTS (
+                  SELECT 1 FROM identity_roles oir JOIN roles orr ON orr.id = oir.role_id
+                  WHERE oir.identity_id = owner.id AND orr.organization_id = owner.organization_id AND orr.name = '管理员'
+                ) THEN '（管理员）' ELSE '（成员）' END ELSE '' END AS identity_name,
+              COALESCE(NULLIF(cu.nickname, ''), cp.display_name) || CASE WHEN cp.type = 'enterprise' THEN
+                CASE WHEN EXISTS (
+                  SELECT 1 FROM identity_roles cir JOIN roles crr ON crr.id = cir.role_id
+                  WHERE cir.identity_id = cp.id AND crr.organization_id = cp.organization_id AND crr.name = '管理员'
+                ) THEN '（管理员）' ELSE '（成员）' END ELSE '' END AS counterparty_name
+       FROM compute_allocation_ledger l
        JOIN compute_entitlements e ON e.id = l.entitlement_id
+       LEFT JOIN identities owner ON owner.id = e.identity_id
+       LEFT JOIN users ou ON ou.id = owner.user_id
+       LEFT JOIN identities cp ON cp.id::text = l.metadata->>'counterpartyIdentityId'
+       LEFT JOIN users cu ON cu.id = cp.user_id
        WHERE e.organization_id = $1
           OR EXISTS (SELECT 1 FROM identities i WHERE i.id = e.identity_id AND i.organization_id = $1)
        ORDER BY l.created_at DESC
@@ -624,6 +641,9 @@ export class ComputeRepository {
       metadata: (r.metadata as Record<string, unknown>) ?? {},
       createdAt: new Date(r.created_at as string).toISOString(),
       updatedAt: new Date(r.updated_at as string).toISOString(),
+      // 企业流水查询带出的展示名；其他查询没有这些列，保持为 null
+      identityName: (r.identity_name as string | null) ?? null,
+      counterpartyName: (r.counterparty_name as string | null) ?? null,
     };
   }
 

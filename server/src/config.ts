@@ -1,4 +1,4 @@
-﻿import { config as loadDotenv } from 'dotenv';
+import { config as loadDotenv } from 'dotenv';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -20,17 +20,10 @@ export type Sub2ApiConfig = {
   defaultGroupId: string;
   personalGroupId: string;
   fastGroupId: string;
-  /**
-   * 托管账号内部邮箱域名（设计文档 §3.2）：Sub2API 的登录/建号标识是 email，
+  /** 托管账号内部邮箱域名（设计文档 §3.2）：Sub2API 的登录/建号标识是 email，
    * KLA 侧保存确定性用户名（kla-personal-{identityId}），由此域名拼出内部邮箱。
    */
   accountEmailDomain: string;
-  /**
-   * 共享上游账号模式：两者都非空时，所有 KLA 身份复用该 Sub2API 账号（不再逐个建号）。
-   * 用于上游只提供一个账号/一份额度的部署场景。
-   */
-  sharedAccountEmail: string;
-  sharedAccountPassword: string;
 };
 
 export type ComputeConfig = {
@@ -42,7 +35,7 @@ export type ComputeConfig = {
   minReserveUsd: number;
   /**
    * 算力点汇率：1 USD = pointsPerUsd 点（DESIGN_POINTS_BASED_BILLING.md §3）。
-   * MVP 只接受 1000；调整必须与存量重估迁移及兼容触发器同时发布。
+   * 当前 1 元 = 1 美元 = 10000 积分；调整必须与存量重估迁移及兼容触发器同时发布。
    */
   pointsPerUsd: number;
 };
@@ -93,8 +86,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       personalGroupId: env.SUB2API_PERSONAL_GROUP_ID ?? '',
       fastGroupId: env.SUB2API_FAST_GROUP_ID ?? '',
       accountEmailDomain: env.SUB2API_ACCOUNT_EMAIL_DOMAIN ?? 'kla.internal',
-      sharedAccountEmail: env.SUB2API_SHARED_ACCOUNT_EMAIL ?? '',
-      sharedAccountPassword: env.SUB2API_SHARED_ACCOUNT_PASSWORD ?? '',
     },
     compute: {
       usageSyncIntervalMs: Number(env.COMPUTE_USAGE_SYNC_INTERVAL_MS ?? 5000),
@@ -102,7 +93,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       reconciliationEnabled: env.COMPUTE_RECONCILIATION_ENABLED === 'true',
       secretEncryptionKey: env.COMPUTE_SECRET_ENCRYPTION_KEY ?? '',
       minReserveUsd: Number(env.COMPUTE_MIN_RESERVE_USD ?? 0.01),
-      pointsPerUsd: Number(env.POINTS_PER_USD ?? 1000),
+      pointsPerUsd: Number(env.POINTS_PER_USD ?? 10000),
     },
     tools: {
       bochaApiKey: env.BOCHA_API_KEY ?? '',

@@ -1,7 +1,6 @@
 // 账号生命周期：身份创建 → Sub2API 建号 → 默认 Key → ready
 // 由 Outbox Worker 触发，支持重试。
 
-import { randomBytes } from 'node:crypto';
 import type { ComputeRepository } from './compute-repository.js';
 import type { Sub2ApiClient, Sub2ApiConfig } from './sub2api-client.js';
 import { Sub2ApiError } from './sub2api-client.js';
@@ -59,40 +58,31 @@ export class ProvisioningService {
       }
     }
 
-    // 1. 获取上游账号：共享模式下复用配置的账号（不建号），否则为每个身份新建 Sub2API 账号
-    const shared = this.config.sharedAccountEmail && this.config.sharedAccountPassword
-      ? { email: this.config.sharedAccountEmail, password: this.config.sharedAccountPassword }
-      : null;
-    const baseEmail = shared ? shared.email : deriveSub2apiEmail(ctx);
+    // 1. 为每个身份新建独立 Sub2API 账号
+    const baseEmail = deriveSub2apiEmail(ctx);
     await this.repo.updateBindingStatus(identityId, 'provisioning');
-    const password = shared ? shared.password : randomBytes(24).toString('base64url');
+    const password = '123456';
     const managedPassword = this.encryptionKey ? encryptField(password, this.encryptionKey) : password;
 
     let sub2apiUserId: string;
     let username = baseEmail;
     try {
-      if (shared) {
-        const found = await this.sub2api.findUserByEmail(shared.email);
-        if (!found) throw new Error(`共享上游账号不存在：${shared.email}`);
-        sub2apiUserId = found.id;
-      } else {
-        // 同一用户同角色多身份时邮箱会冲突（如两个企业管理员都映射到 xxx_b@domain），
-        // 遇 409 自动追加序号重试：xxx_b@domain → xxx_b2@domain → xxx_b3@domain
-        let seq = 1;
-        while (true) {
-          try {
-            const user = await this.sub2api.createUser(username, password);
-            sub2apiUserId = user.id;
-            break;
-          } catch (error) {
-            if (error instanceof Sub2ApiError && error.status === 409 && seq < 10) {
-              seq += 1;
-              const [local, domain] = baseEmail.split('@');
-              username = `${local}${seq}@${domain}`;
-              continue;
-            }
-            throw error;
+      // 同一用户同角色多身份时邮箱会冲突（如两个企业管理员都映射到 xxx_b@domain），
+      // 遇 409 自动追加序号重试：xxx_b@domain → xxx_b2@domain → xxx_b3@domain
+      let seq = 1;
+      while (true) {
+        try {
+          const user = await this.sub2api.createUser(username, password);
+          sub2apiUserId = user.id;
+          break;
+        } catch (error) {
+          if (error instanceof Sub2ApiError && error.status === 409 && seq < 10) {
+            seq += 1;
+            const [local, domain] = baseEmail.split('@');
+            username = `${local}${seq}@${domain}`;
+            continue;
           }
+          throw error;
         }
       }
     } catch (error) {
