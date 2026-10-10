@@ -23,6 +23,7 @@ import type {
   OrgMemberQuota,
 } from './types.js';
 import { createPointsConverter, type PointsConverter } from './points.js';
+import { initializeDefaultAgentModels } from '../runtime/default-model.js';
 
 export type QueryClient = Pick<Pool, 'query'>;
 
@@ -282,6 +283,10 @@ export class ComputeRepository {
 
   // ---- compute_keys ----
 
+  async initializeAgentModels(identityId: string, client?: QueryClient): Promise<void> {
+    await initializeDefaultAgentModels(client ?? this.pool, identityId);
+  }
+
   async recordDefaultKey(input: {
     identityId: string;
     sub2apiKeyId: string;
@@ -297,6 +302,7 @@ export class ComputeRepository {
        VALUES ($1, $2, $3, $4, $5, true, $6) RETURNING *`,
       [input.identityId, input.sub2apiKeyId, input.keyPrefix, input.keyFingerprint, input.name, input.groupId ?? null],
     );
+    await this.initializeAgentModels(input.identityId, c);
     return this.key(rows[0]);
   }
 

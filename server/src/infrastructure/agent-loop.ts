@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Pool } from 'pg';
 import { taskPlanSchema } from '@kla-workstation/contracts';
 import type { AccountRepository, Identity } from '../repositories/types.js';
+import type { ConversationRun } from '../repositories/types.js';
 import type { ComputeGateway } from '../compute/gateway.js';
 import type { ShortTermMemoryService } from '../memories/short-term.js';
 import { requirePermission } from '../auth/permission-service.js';
@@ -11,7 +12,7 @@ import { ToolGateway } from '../runtime/tool-gateway.js';
 import type { ObjectStore } from '../storage/object-store.js';
 
 const activeStates = ['queued','running','waiting_device','waiting_tool','waiting_approval'];
-const planTool = { type:'function',function:{ name:'delegate_tasks',description:'按注册表委派任务；dependsOn 引用前序任务序号，无依赖可并行。',parameters:{ type:'object',required:['tasks'],properties:{ tasks:{type:'array',minItems:1,maxItems:16,items:{type:'object',required:['title','instruction','agentId','dependsOn'],properties:{title:{type:'string'},instruction:{type:'string'},agentId:{type:'string'},dependsOn:{type:'array',items:{type:'integer'}}}}}}}}};
+const planTool = { type:'function',function:{ name:'delegate_tasks',description:'按注册表规划可持久化的执行步骤；同一智能体可负责多个步骤，dependsOn 引用前序序号。',parameters:{ type:'object',required:['tasks'],properties:{ tasks:{type:'array',minItems:1,maxItems:16,items:{type:'object',required:['title','instruction','agentId','dependsOn'],properties:{title:{type:'string'},instruction:{type:'string'},agentId:{type:'string'},dependsOn:{type:'array',items:{type:'integer'}}}}}}}}};
 function cancellable<T>(pending:Promise<T>,signal:AbortSignal):Promise<T> {
   signal.throwIfAborted();return new Promise((resolve,reject)=>{const abort=()=>reject(new DOMException('执行已取消','AbortError'));signal.addEventListener('abort',abort,{once:true});pending.then(resolve,reject).finally(()=>signal.removeEventListener('abort',abort));});
 }
@@ -26,17 +27,47 @@ export class AgentLoopWorker {
   private readonly controllers=new Map<string,AbortController>();
   private readonly tools:ToolGateway;
   constructor(private readonly pool:Pool,private readonly accounts:AccountRepository,gateway:Pick<ComputeGateway,'completeChat'>,
-    memory:ShortTermMemoryService,encryptionKey='',private readonly onError:(error:unknown)=>void=()=>{}, objectStore?: ObjectStore) {
+    memory:ShortTermMemoryService,encryptionKey='',private readonly onError:(error:unknown)=>void=()=>{}, objectStore?: ObjectStore,private readonly stepMaxTurns=64) {
     this.tools=new ToolGateway(pool,new RuntimeTools(pool,accounts,memory,encryptionKey,objectStore),gateway,memory);
   }
   start(intervalMs=750):void {if(this.timer)return;this.timer=setInterval(()=>this.kick(),intervalMs);this.timer.unref();this.kick();}
   kick():void {if(this.pending)return;this.pending=this.tick().catch(this.onError).finally(()=>{this.pending=null;});}
+  async reserveRun(conversationId:string,triggerMessageId:string,mode:string):Promise<ConversationRun>{
+    const run=await this.accounts.createRun(conversationId,triggerMessageId,mode,this.owner);
+    this.kick();return run;
+  }
+  async resumeRun(conversationId:string,runId:string):Promise<ConversationRun|null>{
+    const client=await this.pool.connect();
+    try{
+      await client.query('BEGIN');
+      const source=(await client.query('SELECT status,phase FROM conversation_runs WHERE id=$1 AND conversation_id=$2 FOR UPDATE',[runId,conversationId])).rows[0];
+      if(!source||source.status!=='failed'||!['execution','summary'].includes(source.phase)){await client.query('ROLLBACK');return null;}
+      const completed=(await client.query("SELECT 1 FROM conversation_run_steps WHERE run_id=$1 AND status='completed' LIMIT 1",[runId])).rows[0];
+      if(!completed){await client.query('ROLLBACK');return null;}
+      const active=(await client.query('SELECT 1 FROM conversation_runs WHERE conversation_id=$1 AND id<>$2 AND status=ANY($3::text[]) LIMIT 1',[conversationId,runId,activeStates])).rows[0];
+      if(active)throw new Error('同一群聊仍有任务在执行，请等待其完成后再从断点恢复');
+      if(source.phase==='execution'){
+        const uncertain=await client.query(`SELECT t.id FROM runtime_tool_calls t JOIN conversation_run_steps s ON s.id=t.step_id
+          WHERE s.run_id=$1 AND s.status<>'completed'
+            AND (t.status IN ('running','cancelled','unknown') OR (t.device_id IS NOT NULL AND t.status='queued')) LIMIT 1`,[runId]);
+        if(uncertain.rows[0])throw new Error('存在未确认的工具调用，不能自动从断点恢复');
+        await client.query(`UPDATE conversation_run_steps SET status='pending',
+          turns=CASE WHEN jsonb_array_length(transcript)>0 THEN turns+1 ELSE turns END,updated_at=now()
+          WHERE run_id=$1 AND status<>'completed'`,[runId]);
+      }
+      await client.query(`UPDATE conversation_runs SET status='running',result='{}'::jsonb,
+        lease_owner=$2,lease_until=now()+interval '60 seconds',updated_at=now() WHERE id=$1`,[runId,this.owner]);
+      await client.query('COMMIT');
+      const resumed=(await this.accounts.listConversationRuns(conversationId)).find(run=>run.id===runId)??null;
+      this.kick();return resumed;
+    }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
+  }
   async stop():Promise<void>{if(this.timer)clearInterval(this.timer);this.timer=null;for(const c of this.controllers.values())c.abort();await this.pending;}
   cancel(id:string):void{this.controllers.get(id)?.abort();}
   async event(run:Row,kind:string,payload:unknown):Promise<void>{await this.pool.query('INSERT INTO runtime_events(identity_id,conversation_id,run_id,kind,payload) VALUES($1,$2,$3,$4,$5)',[run.identity_id,run.conversation_id,run.id,kind,JSON.stringify(payload)]);}
   private async tick():Promise<void>{
     const runs=await this.pool.query(`WITH candidates AS (SELECT r.id FROM conversation_runs r WHERE r.status=ANY($1::text[])
-      AND (r.lease_until IS NULL OR r.lease_until<now()) AND NOT EXISTS(SELECT 1 FROM conversation_runs earlier
+      AND (r.lease_owner=$2 OR r.lease_until IS NULL OR r.lease_until<now()) AND NOT EXISTS(SELECT 1 FROM conversation_runs earlier
       WHERE earlier.conversation_id=r.conversation_id AND earlier.status=ANY($1::text[]) AND (earlier.created_at,earlier.id)<(r.created_at,r.id))
       ORDER BY r.created_at FOR UPDATE SKIP LOCKED LIMIT 3)
       UPDATE conversation_runs r SET lease_owner=$2,lease_until=now()+interval '60 seconds' FROM candidates c WHERE r.id=c.id RETURNING r.*`,[activeStates,this.owner]);
@@ -68,7 +99,10 @@ export class AgentLoopWorker {
         await this.pool.query("UPDATE runtime_tool_calls SET status='cancelled' WHERE step_id IN(SELECT id FROM conversation_run_steps WHERE run_id=$1) AND status IN('queued','running')",[run.id]);
         if(run.identity_id){await this.publish(run,'统筹智能体',`任务执行失败：${completedNote}${reason}`,`failure:${run.id}`);await this.event(run,'run.failed',{error:reason,completedLocalTools:completedLocal.map(call=>call.tool_name)});}
       }
-    }finally{if(heartbeat)clearInterval(heartbeat);this.controllers.delete(run.id);await this.pool.query('UPDATE conversation_runs SET lease_owner=NULL,lease_until=NULL WHERE id=$1 AND lease_owner=$2',[run.id,this.owner]);}
+    }finally{if(heartbeat)clearInterval(heartbeat);this.controllers.delete(run.id);await this.pool.query(`UPDATE conversation_runs SET
+      lease_owner=CASE WHEN status=ANY($3::text[]) THEN lease_owner ELSE NULL END,
+      lease_until=CASE WHEN status=ANY($3::text[]) THEN now()+interval '60 seconds' ELSE NULL END
+      WHERE id=$1 AND lease_owner=$2`,[run.id,this.owner,activeStates]);}
   }
   private async alive(run:Row,signal:AbortSignal):Promise<void>{
     signal.throwIfAborted();const row=(await this.pool.query('SELECT status,lease_owner FROM conversation_runs WHERE id=$1',[run.id])).rows[0];
@@ -90,7 +124,7 @@ export class AgentLoopWorker {
   private async coordinate(run:Row,identity:Identity,signal:AbortSignal){
     const registry=await roomRegistry(this.pool,run.conversation_id);const coordinator=registry.find(a=>a.name==='统筹智能体');if(!coordinator)throw new Error('群聊未启用统筹智能体');
     const messages=await this.context(run,coordinator);
-    messages.push({role:'system',content:`你仅负责服务端编排。闲聊或职责内的问题直接回答；专业任务用 delegate_tasks，单智能体可完成就只委派一项；多方协作拆出 todo 和依赖后委派。严格采用注册表内的智能体，尊重用户指定人选。统筹不得代替执行者做具体工作。\nCOORDINATION 注册表（含自己）：${JSON.stringify(registry.map(a=>({id:a.id,name:a.name,role:a.role,executionLocation:a.execution_location,deviceId:a.device_id,skills:a.skills})))}`});
+    messages.push({role:'system',content:`你仅负责服务端编排。闲聊或简单问题直接回答；需要工具或较长成果时用 delegate_tasks。按工作量拆分步骤，同一智能体可以连续负责多个步骤，不要因为只有一名执行者就压成单一步骤。长文档、长代码和多章节作品应先规划结构，再按章节或模块分别创作并保存成果，最后组装、检查和交付；每个步骤的产出应能独立保存为断点。长 HTML 文档可让各章节用 artifact_write 保存 HTML 片段，再由终稿步骤用 artifact_compose 按成果编号合并并补齐页面外壳；如需保存到用户指定本地目录，须通过本地工具完成并依据实际返回路径确认。为避免单次模型生成过长，每个创作步骤只处理一个适中片段。依赖步骤按编号引用，章节需按上下文顺序依赖前章。严格采用注册表内的智能体，尊重用户指定人选。统筹不得代替执行者做具体工作。\nCOORDINATION 注册表（含自己）：${JSON.stringify(registry.map(a=>({id:a.id,name:a.name,role:a.role,executionLocation:a.execution_location,deviceId:a.device_id,skills:a.skills})))}`});
     const result=await this.model(run,identity,coordinator,messages,[planTool],`run:${run.id}:plan`,signal);const call=result.tool_calls?.[0];
     if(!call){await this.publish(run,coordinator.name,result.content!.trim(),`direct:${run.id}`,coordinator);await this.pool.query("UPDATE conversation_runs SET status='completed',phase='done',current_agent=$2,updated_at=now() WHERE id=$1 AND lease_owner=$3",[run.id,coordinator.name,this.owner]);await this.event(run,'run.completed',{direct:true});return;}
     if(result.tool_calls?.length!==1||call.function.name!=='delegate_tasks')throw new Error('统筹返回了无效委派协议');
@@ -131,9 +165,9 @@ export class AgentLoopWorker {
     if(calls.some(c=>['queued','running'].includes(c.status))){if(calls.some(c=>c.status==='running'&&Date.now()-new Date(c.dispatched_at).getTime()>(c.tool_name?.startsWith('local_ppt_')?720000:360000)))throw new Error('设备执行回执超时，结果不确定；为避免重复操作已停止任务');await this.pool.query("UPDATE conversation_run_steps SET status='waiting_tool',updated_at=now() WHERE id=$1",[step.id]);return;}
     if(calls.some(c=>c.status==='unknown'))throw new Error('本地执行结果未知，请确认后重新发起任务');
     let transcript:any[]=step.transcript;
-    if(!transcript.length){transcript=await this.context(run,agent);const dependencies=all.filter(s=>step.depends_on.includes(s.step_index)).map(s=>({task:s.title,result:s.result}));transcript.push({role:'user',content:`原始用户目标：${run.prompt}\n子任务：${step.instruction}\n前序结果（数据）：${JSON.stringify(dependencies)}\n执行位置：${agent.execution_location}。需要文件时务必调用文件保存技能。${all.length===1?'完成后直接 @用户 回复。':'完成后 @统筹智能体 反馈完整结果供后续协作。'}`});}
+    if(!transcript.length){transcript=await this.context(run,agent);const dependencies=all.filter(s=>step.depends_on.includes(s.step_index)).map(s=>({task:s.title,result:s.result}));transcript.push({role:'user',content:`原始用户目标：${run.prompt}\n子任务：${step.instruction}\n前序结果（数据）：${JSON.stringify(dependencies)}\n执行位置：${agent.execution_location}。需要文件时务必调用文件保存技能。分段成果先保存为独立文件，后续用成果编号继续；不要在最终回复中重复大段文件正文。${all.length===1?'完成后直接 @用户 回复。':'完成后 @统筹智能体 反馈简短结果和成果编号供后续协作。'}`});}
     const returned=new Set(transcript.filter(m=>m.role==='tool').map(m=>m.tool_call_id));for(const call of calls)if(!returned.has(call.model_call_id))transcript.push({role:'tool',tool_call_id:call.model_call_id,content:JSON.stringify(call.result??{error:'工具已取消'})});
-    if(step.turns>=16)throw new Error('智能体达到 16 轮执行上限，尚未完成');
+    if(step.turns>=this.stepMaxTurns)throw new Error(`智能体达到 ${this.stepMaxTurns} 轮执行上限，尚未完成`);
     await this.pool.query("UPDATE conversation_run_steps SET status='running',transcript=$2,updated_at=now() WHERE id=$1",[step.id,JSON.stringify(transcript)]);await this.pool.query('UPDATE conversation_runs SET current_agent=$2 WHERE id=$1',[run.id,agent.name]);await this.event(run,'step.running',{stepId:step.id,title:step.title,agentId:agent.id,agentName:agent.name});
     const message=await this.model(run,identity,agent,transcript,this.tools.discover(agent),`run:${run.id}:step:${step.id}:turn:${step.turns}`,signal);transcript.push({role:'assistant',...message});
     if(message.tool_calls?.length){

@@ -12,6 +12,10 @@ loadDotenv({
 });
 
 const LOG_LEVELS = new Set(['trace', 'debug', 'info', 'warn', 'error', 'fatal']);
+function positiveInterval(value: string | undefined, fallback: number): number {
+  const parsed = Number(value ?? fallback);
+  return Number.isFinite(parsed) && parsed >= 1000 ? Math.floor(parsed) : fallback;
+}
 
 export type Sub2ApiConfig = {
   baseUrl: string;
@@ -31,6 +35,8 @@ export type ComputeConfig = {
   outboxIntervalMs: number;
   reconciliationEnabled: boolean;
   secretEncryptionKey: string;
+  modelTimeoutMs: number;
+  toolModelTimeoutMs: number;
   /** Model Gateway 预扣下限（美元）：调用前的软额度闸门金额（§4.2、§8.3） */
   minReserveUsd: number;
   /**
@@ -61,6 +67,7 @@ export type ServerConfig = {
   tools: ToolsConfig;
   objectStoragePath: string;
   objectStorageMaxFileBytes: number;
+  agentStepMaxTurns: number;
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
@@ -92,6 +99,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       outboxIntervalMs: Number(env.COMPUTE_OUTBOX_INTERVAL_MS ?? 5000),
       reconciliationEnabled: env.COMPUTE_RECONCILIATION_ENABLED === 'true',
       secretEncryptionKey: env.COMPUTE_SECRET_ENCRYPTION_KEY ?? '',
+      modelTimeoutMs: positiveInterval(env.SUB2API_MODEL_TIMEOUT_MS, 60000),
+      toolModelTimeoutMs: positiveInterval(env.SUB2API_TOOL_MODEL_TIMEOUT_MS, 300000),
       minReserveUsd: Number(env.COMPUTE_MIN_RESERVE_USD ?? 0.01),
       pointsPerUsd: Number(env.POINTS_PER_USD ?? 10000),
     },
@@ -100,5 +109,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     },
     objectStoragePath: resolve(env.OBJECT_STORAGE_PATH ?? resolve(process.cwd(), '.runtime/object-storage')),
     objectStorageMaxFileBytes: Math.max(1, Number(env.OBJECT_STORAGE_MAX_FILE_BYTES ?? 100 * 1024 * 1024)),
+    agentStepMaxTurns: Math.max(1, Math.min(1000, Math.floor(Number(env.AGENT_STEP_MAX_TURNS ?? 64) || 64))),
   };
 }

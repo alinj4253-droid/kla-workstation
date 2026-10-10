@@ -27,7 +27,7 @@ function bindRequestLog(request: FastifyRequest, bindings: Record<string, unknow
   log.setBindings?.(bindings);
 }
 
-export async function registerRoutes(app: FastifyInstance, deps: { accounts: AccountRepository; database?: PostgresDatabase; redis?: RedisDatabase; gateway?: Pick<ComputeGateway, 'completeChat'>; shortTermMemory?: ShortTermMemoryService; loopWorker?: Pick<AgentLoopWorker, 'kick' | 'cancel'>; mode?: 'postgres' | 'mock'; objectStore?: ObjectStore; objectStorageMaxFileBytes?: number }): Promise<void> {
+export async function registerRoutes(app: FastifyInstance, deps: { accounts: AccountRepository; database?: PostgresDatabase; redis?: RedisDatabase; gateway?: Pick<ComputeGateway, 'completeChat'>; shortTermMemory?: ShortTermMemoryService; loopWorker?: Pick<AgentLoopWorker, 'kick' | 'cancel'> & Partial<Pick<AgentLoopWorker, 'reserveRun' | 'resumeRun'>>; mode?: 'postgres' | 'mock'; objectStore?: ObjectStore; objectStorageMaxFileBytes?: number }): Promise<void> {
   const auth = async (request: FastifyRequest, reply: FastifyReply) => {
     const raw = request.headers.authorization;
     const token = typeof raw === 'string' && raw.startsWith('Bearer ') ? raw.slice(7) : '';
@@ -284,7 +284,7 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
     if (deps.mode !== 'mock') await ensureRuntimeRegistry(pool, identity.id);
     const [workspaces, agents, models, tasks] = await Promise.all([
       pool.query('SELECT id, type, name, project_id FROM workspaces WHERE identity_id = $1 ORDER BY created_at', [identity.id]),
-      pool.query('SELECT id, name, role, type, model_id, model_id AS "modelId", model_key_id, model_key_id AS "modelKeyId", execution_location AS "executionLocation", device_id AS "deviceId", enabled, version FROM agents WHERE identity_id = $1 ORDER BY created_at', [identity.id]),
+      pool.query('SELECT id, name, role, type, model_id, model_id AS "modelId", model_key_id, model_key_id AS "modelKeyId", model_mount_initialized AS "modelMountInitialized", execution_location AS "executionLocation", device_id AS "deviceId", enabled, version FROM agents WHERE identity_id = $1 ORDER BY created_at', [identity.id]),
       pool.query('SELECT id, name, provider, capabilities, enabled FROM models WHERE enabled = true ORDER BY name'),
       pool.query('SELECT id, title, status, result, created_at FROM tasks WHERE identity_id = $1 ORDER BY created_at DESC LIMIT 50', [identity.id]),
     ]);
@@ -299,7 +299,7 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
     const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return;
     const identity = await enforce(session, request, 'read', reply); if (!identity) return;
     if (deps.mode !== 'mock') await ensureRuntimeRegistry(deps.database.rawPool, identity.id);
-    return reply.send({ ok: true, data: (await deps.database.rawPool.query('SELECT id, name, role, type, model_id, model_id AS "modelId", model_key_id, model_key_id AS "modelKeyId", execution_location AS "executionLocation", device_id AS "deviceId", enabled, version FROM agents WHERE identity_id = $1 ORDER BY created_at', [identity?.id ?? ''])).rows });
+    return reply.send({ ok: true, data: (await deps.database.rawPool.query('SELECT id, name, role, type, model_id, model_id AS "modelId", model_key_id, model_key_id AS "modelKeyId", model_mount_initialized AS "modelMountInitialized", execution_location AS "executionLocation", device_id AS "deviceId", enabled, version FROM agents WHERE identity_id = $1 ORDER BY created_at', [identity?.id ?? ''])).rows });
   });
   app.get('/api/v1/models', async (_request, reply) => {
     if (!deps.database?.rawPool) return reply.code(503).send({ ok: false, error: { code: 'DATABASE_NOT_CONFIGURED', message: '数据库未配置' } });
@@ -449,7 +449,9 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
       const owner = await deps.database.rawPool.query(`SELECT p.owner_identity_id FROM conversations c JOIN projects p ON p.id=c.project_id WHERE c.id=$1`, [params.conversationId]);
       if (owner.rows[0]?.owner_identity_id !== identity.id) return reply.send({ ok: true, data: { message: userMessage, run: null } });
     }
-    const run = await deps.accounts.createRun(params.conversationId, userMessage.id, body.mode ?? 'balanced');
+    const run = deps.loopWorker?.reserveRun
+      ? await deps.loopWorker.reserveRun(params.conversationId, userMessage.id, body.mode ?? 'balanced')
+      : await deps.accounts.createRun(params.conversationId, userMessage.id, body.mode ?? 'balanced');
     if (!deps.loopWorker) { await deps.accounts.completeRun(run.id, 'failed', '统筹智能体', {error:'执行器未启动'}); }
     else deps.loopWorker.kick();
     return reply.send({ ok: true, data: { message: userMessage, run } });
@@ -561,7 +563,18 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
   app.post('/api/v1/conversations/:conversationId/runs/:runId/retry', async (request, reply) => {
     const session = await auth(request, reply); if (!session) return; const { conversationId, runId } = request.params as { conversationId: string; runId: string }; const identity = await enforce(session, request, 'execute', reply); if (!identity || !(await deps.accounts.listAllConversations(identity.id)).some((item) => item.id === conversationId)) return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: '运行记录不存在或无权访问' } });
     const run = await deps.accounts.listConversationRuns(conversationId); const source = run.find((item) => item.id === runId); if (!source) return reply.code(404).send({ ok: false, error: { code: 'RUN_NOT_FOUND', message: '运行记录不存在' } }); if (['queued','running','waiting_tool','waiting_device','waiting_approval'].includes(source.status)) return reply.code(409).send({ ok: false, error: { code: 'RUN_ACTIVE', message: '运行仍在执行中' } });
-    if (!source.triggerMessageId) return reply.code(400).send({ ok: false, error: { code: 'RUN_NOT_RETRYABLE', message: '该运行没有可重试的触发消息' } }); const retried = await deps.accounts.createRun(conversationId, source.triggerMessageId, source.mode); deps.loopWorker?.kick(); return reply.send({ ok: true, data: retried });
+    if (!source.triggerMessageId) return reply.code(400).send({ ok: false, error: { code: 'RUN_NOT_RETRYABLE', message: '该运行没有可重试的触发消息' } });
+    if (deps.loopWorker?.resumeRun) {
+      try {
+        const resumed = await deps.loopWorker.resumeRun(conversationId, runId);
+        if (resumed) return reply.send({ ok: true, data: resumed });
+      } catch (error) {
+        return reply.code(409).send({ ok: false, error: { code: 'RUN_RESUME_UNSAFE', message: error instanceof Error ? error.message : '无法从断点恢复' } });
+      }
+    }
+    const retried = deps.loopWorker?.reserveRun
+      ? await deps.loopWorker.reserveRun(conversationId, source.triggerMessageId, source.mode)
+      : await deps.accounts.createRun(conversationId, source.triggerMessageId, source.mode); deps.loopWorker?.kick(); return reply.send({ ok: true, data: retried });
   });
   app.post('/api/v1/memories/search', async (request, reply) => {
     const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return;

@@ -66,12 +66,13 @@ export async function createServer() {
     encryptionKey: config.compute.secretEncryptionKey,
     minReserveUsd: config.compute.minReserveUsd,
     points,
-    timeoutMs: config.sub2api.timeoutMs,
+    timeoutMs: config.compute.modelTimeoutMs,
+    toolTimeoutMs: config.compute.toolModelTimeoutMs,
   });
 
   const shortTermMemory = new ShortTermMemoryService(pool);
   const memoryRetention = new MemoryRetentionWorker(shortTermMemory, error => app.log.error({ err: error }, 'Memory retention failed'));
-  const loopWorker = new AgentLoopWorker(pool, accounts, gateway, shortTermMemory, process.env.KNOWLEDGE_SECRET_ENCRYPTION_KEY || config.compute.secretEncryptionKey, error => app.log.error({err:error}, 'Agent loop failed'), objectStore);
+  const loopWorker = new AgentLoopWorker(pool, accounts, gateway, shortTermMemory, process.env.KNOWLEDGE_SECRET_ENCRYPTION_KEY || config.compute.secretEncryptionKey, error => app.log.error({err:error}, 'Agent loop failed'), objectStore, config.agentStepMaxTurns);
   await registerRoutes(app, { accounts, database, redis, gateway, shortTermMemory, loopWorker, objectStore, objectStorageMaxFileBytes: config.objectStorageMaxFileBytes });
   await registerRuntimeRoutes(app, {pool, accounts, worker:loopWorker, computeRepo, sub2api, encryptionKey:config.compute.secretEncryptionKey, objectStore});
   await registerKnowledgeRoutes(app, { accounts, pool, store: new PostgresKnowledgeStore(pool), encryptionKey: process.env.KNOWLEDGE_SECRET_ENCRYPTION_KEY || config.compute.secretEncryptionKey });

@@ -66,8 +66,28 @@ describe('unified runtime tool gateway', () => {
       expect(call.status).toBe('completed');
       expect(call.result.artifactId).toBeTruthy();
       expect((await pool.query('SELECT kind FROM runtime_events WHERE run_id=$1 ORDER BY sequence', [run.id])).rows.map(row => row.kind)).toEqual(['tool.queued', 'tool.completed']);
+      expect(gateway.discover(agent).some(tool => tool.function.name === 'artifact_compose')).toBe(true);
+      const second = await gateway.prepare(scope, { id: 'write-2', function: { name: 'artifact_write', arguments: JSON.stringify({ fileName: 'chapter.md', content: '第二章' }) } });
+      const client2 = await pool.connect();
+      try {
+        await client2.query('BEGIN');
+        await gateway.enqueue(client2, scope, second);
+        await client2.query('COMMIT');
+      } finally { client2.release(); }
+      await gateway.executeServerCalls(scope, async () => undefined);
+      const chapter = (await pool.query("SELECT result->>'artifactId' AS id FROM runtime_tool_calls WHERE step_id=$1 AND model_call_id='write-2'", [step.id])).rows[0].id;
+      const secondResult = await gateway.prepare(scope, { id: 'compose-1', function: { name: 'artifact_compose', arguments: JSON.stringify({ fileName: 'book.md', artifactIds: [call.result.artifactId, chapter] }) } });
+      const client3 = await pool.connect();
+      try {
+        await client3.query('BEGIN');
+        await gateway.enqueue(client3, scope, secondResult);
+        await client3.query('COMMIT');
+      } finally { client3.release(); }
+      await gateway.executeServerCalls(scope, async () => undefined);
+      const composed = (await pool.query("SELECT result->>'artifactId' AS id FROM runtime_tool_calls WHERE step_id=$1 AND model_call_id='compose-1'", [step.id])).rows[0].id;
+      expect((await accounts.getArtifact(account.identity.id, composed))?.content).toBe('# 完成\n第二章');
       await pool.query("DELETE FROM agent_tool_mounts WHERE agent_id=$1 AND tool_code='artifact_write'", [agent.id]);
-      await expect(gateway.prepare(scope, { id: 'write-2', function: { name: 'artifact_write', arguments: '{}' } })).rejects.toThrow(/已停用/);
+      await expect(gateway.prepare(scope, { id: 'write-3', function: { name: 'artifact_write', arguments: '{}' } })).rejects.toThrow(/已停用/);
     } finally {
       await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
       await pool.end();

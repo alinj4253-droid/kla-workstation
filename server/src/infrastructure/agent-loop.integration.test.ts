@@ -12,6 +12,94 @@ const config = loadConfig();
 const dbCase = config.databaseUrl ? it : it.skip;
 
 describe('persisted multi-agent loop', () => {
+  dbCase('resumes a failed execution from completed steps and refuses uncertain local calls', async () => {
+    const schema = `kla_loop_test_${randomUUID().replaceAll('-', '')}`;
+    const pool = new Pool({ connectionString: config.databaseUrl, options: `-c search_path=${schema},public`, max: 6, connectionTimeoutMillis: 5000 });
+    try {
+      await runMigrations(pool, schema);
+      const accounts = new PostgresAccountRepository(pool);
+      const registered = await accounts.register({ email: 'resume@example.test', nickname: '断点测试', password: 'TestPass2026!' });
+      const project = await accounts.createProject(registered.identity.id, '断点项目');
+      const room = await accounts.createConversation(project.id, '断点群聊');
+      const agent = (await roomRegistry(pool, room.id)).find(item => item.name === '本地执行智能体')!;
+      const trigger = await accounts.createMessage(room.id, registered.user.id, '分段写作');
+      const worker = new AgentLoopWorker(pool, accounts, { completeChat: vi.fn() } as never, new ShortTermMemoryService(pool));
+      vi.spyOn(worker, 'kick').mockImplementation(() => {});
+      const run = await accounts.createRun(room.id, trigger.id, 'balanced');
+      await pool.query("UPDATE conversation_runs SET status='failed',phase='execution' WHERE id=$1", [run.id]);
+      await pool.query(`INSERT INTO conversation_run_steps(run_id,step_index,title,instruction,assigned_agent_id,status,result,transcript)
+        VALUES($1,1,'大纲','写大纲',$2,'completed',$3,'[]'),($1,2,'正文','写正文',$2,'cancelled','{}',$4),
+          ($1,3,'终稿','合并终稿',$2,'cancelled','{}','[]')`,
+      [run.id, agent.id, JSON.stringify({ text: '大纲完成', artifactIds: [randomUUID()] }), JSON.stringify([{ role: 'user', content: '正文' }])]);
+      expect((await worker.resumeRun(room.id, run.id))?.status).toBe('running');
+      const steps = (await pool.query('SELECT status,result,turns FROM conversation_run_steps WHERE run_id=$1 ORDER BY step_index', [run.id])).rows;
+      expect(steps[0]).toMatchObject({ status: 'completed', result: { text: '大纲完成' }, turns: 0 });
+      expect(steps[1]).toMatchObject({ status: 'pending', turns: 1 });
+      expect(steps[2]).toMatchObject({ status: 'pending', turns: 0 });
+      await pool.query("UPDATE conversation_runs SET status='failed' WHERE id=$1", [run.id]);
+      await pool.query("UPDATE conversation_run_steps SET status='cancelled' WHERE run_id=$1 AND step_index=2", [run.id]);
+      const secondStep = (await pool.query('SELECT id FROM conversation_run_steps WHERE run_id=$1 AND step_index=2', [run.id])).rows[0].id;
+      const session = await accounts.createSession(registered.user.id);
+      const device = (await pool.query(`INSERT INTO execution_devices(identity_id,session_id,installation_id,name,platform)
+        VALUES($1,$2,$3,'test-device','test') RETURNING id`, [registered.identity.id, session.id, randomUUID()])).rows[0].id;
+      await pool.query(`INSERT INTO runtime_tool_calls(step_id,identity_id,device_id,model_call_id,tool_name,arguments,status)
+        VALUES($1,$2,$3,'local-1','local_write','{}','unknown')`, [secondStep, registered.identity.id, device]);
+      await expect(worker.resumeRun(room.id, run.id)).rejects.toThrow('未确认');
+      expect((await accounts.listConversationRuns(room.id))[0].status).toBe('failed');
+    } finally {
+      await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+      await pool.end();
+    }
+  }, 25_000);
+
+  dbCase('keeps a newly submitted run on its originating worker while its lease is valid', async () => {
+    const schema = `kla_loop_test_${randomUUID().replaceAll('-', '')}`;
+    const pool = new Pool({ connectionString: config.databaseUrl, options: `-c search_path=${schema},public`, max: 6, connectionTimeoutMillis: 5000 });
+    let origin: AgentLoopWorker | undefined;
+    let peer: AgentLoopWorker | undefined;
+    try {
+      await runMigrations(pool, schema);
+      const accounts = new PostgresAccountRepository(pool);
+      const registered = await accounts.register({ email: 'lease@example.test', nickname: '租约测试', password: 'TestPass2026!' });
+      const project = await accounts.createProject(registered.identity.id, '租约项目');
+      const room = await accounts.createConversation(project.id, '租约群聊');
+      const registry = await roomRegistry(pool, room.id);
+      const executor = registry.find(agent => agent.name === '本地执行智能体')!;
+      await pool.query("UPDATE agents SET execution_location='server' WHERE id=$1", [executor.id]);
+      const trigger = await accounts.createMessage(room.id, registered.user.id, '你好');
+      const originChat = vi.fn(async (_identity, request: { requestId: string }) => ({ payload: { choices: [{ message: request.requestId.endsWith(':plan')
+        ? { tool_calls: [{ id: 'plan', type: 'function', function: { name: 'delegate_tasks', arguments: JSON.stringify({ tasks: [{ title: '回答', instruction: '回答用户', agentId: executor.id, dependsOn: [] }] }) } }] }
+        : { content: '你好' } }] } }));
+      const peerChat = vi.fn(async () => ({ payload: { choices: [{ message: { content: '其他实例回答' } }] } }));
+      origin = new AgentLoopWorker(pool, accounts, { completeChat: originChat } as never, new ShortTermMemoryService(pool));
+      peer = new AgentLoopWorker(pool, accounts, { completeChat: peerChat } as never, new ShortTermMemoryService(pool));
+      const originKick = vi.spyOn(origin, 'kick').mockImplementation(() => {});
+      const run = await origin.reserveRun(room.id, trigger.id, 'balanced');
+      peer.start(50);
+      await new Promise(resolve => setTimeout(resolve, 300));
+      expect((await accounts.listConversationRuns(room.id)).find(item => item.id === run.id)?.status).toBe('queued');
+      expect(peerChat).not.toHaveBeenCalled();
+      originKick.mockRestore();
+      origin.kick();
+      await vi.waitFor(async () => {
+        expect((await pool.query('SELECT phase,status,lease_owner FROM conversation_runs WHERE id=$1', [run.id])).rows[0]).toMatchObject({ phase: 'execution', status: 'running' });
+      }, { timeout: 10_000, interval: 100 });
+      await new Promise(resolve => setTimeout(resolve, 300));
+      expect(peerChat).not.toHaveBeenCalled();
+      origin.start(50);
+      await vi.waitFor(async () => {
+        expect((await accounts.listConversationRuns(room.id)).find(item => item.id === run.id)?.status).toBe('completed');
+      }, { timeout: 10_000, interval: 100 });
+      expect(peerChat).not.toHaveBeenCalled();
+      expect(originChat).toHaveBeenCalled();
+    } finally {
+      await origin?.stop();
+      await peer?.stop();
+      await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+      await pool.end();
+    }
+  }, 25_000);
+
   dbCase('plans dependent work, executes a real artifact tool, and publishes the summary', async () => {
     const schema = `kla_loop_test_${randomUUID().replaceAll('-', '')}`;
     const pool = new Pool({ connectionString: config.databaseUrl, options: `-c search_path=${schema},public`, max: 6, connectionTimeoutMillis: 5000 });

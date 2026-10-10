@@ -4,9 +4,10 @@ import { runtimeApi, type RuntimeAgent, type RuntimeDevice, type RuntimeSkill, t
 import { computeApi } from '../api/compute';
 import { klaApi } from '../api/client';
 import { Badge, IconButton } from './ui';
-import type { ExecutionLocation } from '@kla-workstation/contracts';
+import { DEFAULT_AGENT_MODEL_ID, DEFAULT_AGENT_MODEL_NAME, type ComputeKey, type ExecutionLocation } from '@kla-workstation/contracts';
 
 type Props = { identityId: string; notify: (text: string) => void };
+type AgentKey = Pick<ComputeKey, 'id' | 'name' | 'keyPrefix' | 'status' | 'isDefault'>;
 const isBuiltinAgent = (agent: RuntimeAgent): boolean => agent.type === 'official' || ['统筹智能体', '本地执行智能体', 'PPT助手'].includes(agent.name);
 const agentDescription = (agent: RuntimeAgent): string => agent.name === 'PPT助手' ? '从材料生成可编辑 PPTX，支持大纲确认、对话改稿、质量检查及真实 PDF 预览。通过统一网关在本地执行。' : agent.role || '暂无角色说明';
 
@@ -35,7 +36,7 @@ export function RuntimeAgentManagement({ identityId, notify }: Props): React.JSX
   const [devices, setDevices] = useState<RuntimeDevice[]>([]);
   const [draft, setDraft] = useState<{ id: string | null; name: string; role: string; modelId: string | null; modelKeyId: string | null; executionLocation: ExecutionLocation; deviceId: string | null; enabled: boolean } | null>(null);
   const [capabilityAgent, setCapabilityAgent] = useState<RuntimeAgent | null>(null);
-  const [keys, setKeys] = useState<Array<{id:string;name:string;keyPrefix:string;status:string}>>([]);
+  const [keys, setKeys] = useState<AgentKey[]>([]);
   const [keyModels, setKeyModels] = useState<Array<{id:string;name:string}>>([]);
   const [modelLoading, setModelLoading] = useState(false);
   const [modelError, setModelError] = useState('');
@@ -44,21 +45,31 @@ export function RuntimeAgentManagement({ identityId, notify }: Props): React.JSX
   const [view, setView] = useState<'mine' | 'market'>('mine');
   const [busy, setBusy] = useState(false);
 
-  const load = async (): Promise<void> => {
-    const [a, d] = await Promise.all([runtimeApi.agents(), runtimeApi.devices()]);
-    if (a.ok) setAgents(a.data); else notify(a.message);
-    if (d.ok) setDevices(d.data);
+  const load = async (isLive: () => boolean = () => true): Promise<void> => {
+    const [a, d, k] = await Promise.allSettled([runtimeApi.agents(), runtimeApi.devices(), computeApi.keys()]);
+    if (!isLive()) return;
+    if (a.status === 'fulfilled') { if (a.value.ok) setAgents(a.value.data); else notify(a.value.message); }
+    else notify('智能体加载失败');
+    if (d.status === 'fulfilled' && d.value.ok) setDevices(d.value.data);
+    if (k.status === 'fulfilled' && k.value.ok) setKeys(k.value.data.items.filter(key => key.status === 'active'));
   };
-  useEffect(() => { let live = true; void load().catch(() => notify('智能体加载失败')); return () => { live = false; }; }, [identityId]);
+  useEffect(() => { let live = true; setAgents([]); setKeys([]); void load(() => live); return () => { live = false; }; }, [identityId]);
+  const defaultsPending = agents.some(agent => agent.modelMountInitialized === false);
+  useEffect(() => {
+    if (!defaultsPending) return;
+    let live = true;
+    const timer = window.setInterval(() => { void load(() => live); }, 5000);
+    return () => { live = false; window.clearInterval(timer); };
+  }, [defaultsPending, identityId]);
 
   useEffect(() => {
     if (!draft) return;
     let live = true;
-    void computeApi.keys().then(result => { if (live) { if (result.ok) setKeys(result.data.items.filter(key => key.status === 'active')); else setModelError(result.message); } });
+    void computeApi.keys().then(result => { if (live) { if (result.ok) setKeys(result.data.items.filter(key => key.status === 'active')); else setModelError(result.message); } }).catch(() => { if (live) setModelError('获取 Key 失败，请稍后重试'); });
     return () => { live = false; };
   }, [Boolean(draft), identityId]);
   useEffect(() => {
-    if (!draft?.modelKeyId) { setKeyModels([]); setModelError(''); return; }
+    if (!draft?.modelKeyId) { setKeyModels([]); setModelError(''); setModelLoading(false); return; }
     let live = true;
     setModelLoading(true); setModelError(''); setKeyModels([]);
     void runtimeApi.keyModels(draft.modelKeyId).then(result => {
@@ -89,7 +100,7 @@ export function RuntimeAgentManagement({ identityId, notify }: Props): React.JSX
   return <div className="ws-agent-module">
     <div className="ws-agent-heading">
       <div><h1>智能体</h1><p>管理官方智能体、外接三方和自定义智能体；为每个角色配置模型与技能。</p></div>
-      {view === 'mine' && <button className="ws-primary" onClick={() => setDraft({ id: null, name: '', role: '', modelId: null, modelKeyId: null, executionLocation: 'server', deviceId: null, enabled: true })}><Plus size={15} /> 新建智能体</button>}
+      {view === 'mine' && <button className="ws-primary" onClick={() => { const key = keys.find(item => item.isDefault); setDraft({ id: null, name: '', role: '', modelId: key ? DEFAULT_AGENT_MODEL_ID : null, modelKeyId: key?.id ?? null, executionLocation: 'server', deviceId: null, enabled: true }); }}><Plus size={15} /> 新建智能体</button>}
     </div>
     <div className="ws-agent-tabs"><button className={view === 'mine' ? 'active' : ''} onClick={() => setView('mine')}>我的智能体 <small>· {agents.length}</small></button><button className={view === 'market' ? 'active' : ''} onClick={() => setView('market')}>智能体市场 <small>· {marketAgents.length}</small></button></div>
     {view === 'mine' ? <>
@@ -97,7 +108,7 @@ export function RuntimeAgentManagement({ identityId, notify }: Props): React.JSX
       <div className="ws-agent-grid">{visibleAgents.map(agent => <article className="ws-agent-card" key={agent.id}>
         <div className="ws-agent-card-head"><span className={`ws-agent-avatar is-${avatarTone(agent.name)}`}>{agent.name.slice(0, 1)}</span><div><h3>{agent.name}</h3><small className="ws-agent-code">{agent.type === 'external' || agent.type === 'external-cli' ? 'external.agent' : `builtin.${agent.id.slice(0, 8)}`}</small></div><button className={`ws-agent-switch ${agent.enabled ? 'active' : ''}`} aria-label="切换启用状态" disabled={agent.name === '统筹智能体'} onClick={() => void runtimeApi.toggleAgent(agent.id, !agent.enabled).then(result => { if (result.ok) void load(); else notify(result.message); }).catch(() => notify('操作失败'))}><span /></button></div>
         <div className="ws-agent-tags"><Badge tone={isBuiltinAgent(agent) || agent.type === 'external' || agent.type === 'external-cli' ? 'blue' : 'muted'}>{isBuiltinAgent(agent) ? '官方内置' : agent.type === 'external' || agent.type === 'external-cli' ? '外接三方' : '自定义'}</Badge><Badge tone={agent.enabled ? 'green' : 'muted'}>{agent.enabled ? '已启用' : '已停用'}</Badge></div>
-        <div className="ws-agent-fields"><span><b>运行方式</b>{agent.name === '统筹智能体' ? '服务端编排智能体' : (agent.executionLocation ?? agent.execution_location) === 'local' ? '本地执行智能体' : '服务端执行'}</span><span><b>挂载模型</b>{agent.modelId ?? agent.model_id ?? '使用默认槽位'}</span></div>
+        <div className="ws-agent-fields"><span><b>运行方式</b>{agent.name === '统筹智能体' ? '服务端编排智能体' : (agent.executionLocation ?? agent.execution_location) === 'local' ? '本地执行智能体' : '服务端执行'}</span><span><b>挂载模型</b>{(agent.modelId ?? agent.model_id) === DEFAULT_AGENT_MODEL_ID ? DEFAULT_AGENT_MODEL_NAME : agent.modelId ?? agent.model_id ?? (agent.modelMountInitialized === false ? '正在初始化默认 Key…' : '未挂载模型')}</span></div>
         <p className="ws-agent-description">{agentDescription(agent)}</p>
         <footer><button onClick={() => setDraft({ id: agent.id, name: agent.name, role: agent.role, modelId: agent.modelId ?? agent.model_id ?? null, modelKeyId: agent.modelKeyId ?? agent.model_key_id ?? null, executionLocation: agent.executionLocation ?? agent.execution_location ?? 'server', deviceId: agent.deviceId ?? agent.device_id ?? null, enabled: agent.enabled })}><Cpu size={14} /> 挂载模型</button><button onClick={() => setCapabilityAgent(agent)}><Sparkles size={14} /> 技能管理</button><button onClick={() => notify(`权限管理：${agent.name}`)}><KeyRound size={14} /> 权限</button></footer>
       </article>)}</div>
@@ -124,7 +135,7 @@ function AgentMarket({ notify, installedNames, onInstalled }: { notify: (text: s
 }
 
 type AgentDraft = { id: string | null; name: string; role: string; modelId: string | null; modelKeyId: string | null; executionLocation: ExecutionLocation; deviceId: string | null; enabled: boolean };
-function AgentEditor({ draft, setDraft, keys, keyModels, modelLoading, modelError, devices, busy, save }: { draft: AgentDraft; setDraft: (value: AgentDraft | null) => void; keys: Array<{id:string;name:string;keyPrefix:string;status:string}>; keyModels: Array<{id:string;name:string}>; modelLoading:boolean; modelError:string; devices: RuntimeDevice[]; busy: boolean; save: () => Promise<void> }): React.JSX.Element {
+function AgentEditor({ draft, setDraft, keys, keyModels, modelLoading, modelError, devices, busy, save }: { draft: AgentDraft; setDraft: (value: AgentDraft | null) => void; keys: AgentKey[]; keyModels: Array<{id:string;name:string}>; modelLoading:boolean; modelError:string; devices: RuntimeDevice[]; busy: boolean; save: () => Promise<void> }): React.JSX.Element {
   const coordinator = draft.name === '统筹智能体';
   const deviceOnline = devices.some(device => device.online && (!draft.deviceId || device.id === draft.deviceId));
   return <div className="ws-modal-backdrop"><div className="ws-modal ws-agent-editor"><header><h2>{draft.id ? '配置智能体 · ' + draft.name : '新建智能体'}</h2><IconButton title="关闭" onClick={() => setDraft(null)}><X size={18} /></IconButton></header>
@@ -133,8 +144,9 @@ function AgentEditor({ draft, setDraft, keys, keyModels, modelLoading, modelErro
       <label>执行位置<select value={coordinator ? 'server' : draft.executionLocation} disabled={coordinator} onChange={event => setDraft({ ...draft, executionLocation: event.target.value as ExecutionLocation, deviceId: null })}><option value="server">服务端执行</option><option value="local">本地设备执行</option></select></label>
       {!coordinator && draft.executionLocation === 'local' && <><label>执行设备<select value={draft.deviceId ?? ''} onChange={event => setDraft({ ...draft, deviceId: event.target.value || null })}><option value="">自动选择在线设备</option>{devices.map(device => <option key={device.id} value={device.id}>{device.name} · {device.online ? '在线' : '离线'}</option>)}</select></label>{!deviceOnline && <small className="ws-agent-model-note">当前身份没有在线桌面执行器。浏览器预览无法读取本地文件；请在桌面客户端登录同一账号和身份。</small>}</>}
       <p className="ws-agent-model-intro">每个智能体同一时间只能挂载一个模型，保存后按所选 Key 与模型路由。</p>
-      <label>当前身份的 API Key<select value={draft.modelKeyId ?? ''} onChange={event => setDraft({ ...draft, modelKeyId: event.target.value || null, modelId: null })}><option value="">选择 API Key</option>{keys.map(key => <option key={key.id} value={key.id}>{key.name} · {key.keyPrefix}</option>)}</select></label>
-      {!keys.length && <small className="ws-agent-model-note">当前身份没有可用 Key，可前往「算力 / API 密钥」创建。</small>}
+      {!draft.id && <small className="ws-agent-model-note">默认使用当前身份的默认 Key 和 GLM 5.3 Flash，可在此切换。Key 初始化完成后会自动挂载。</small>}
+      <label>当前身份的 API Key<select value={draft.modelKeyId ?? ''} onChange={event => setDraft({ ...draft, modelKeyId: event.target.value || null, modelId: null })}><option value="">选择 API Key</option>{keys.map(key => <option key={key.id} value={key.id}>{key.name}{key.isDefault ? '（默认）' : ''} · {key.keyPrefix}</option>)}</select></label>
+      {!keys.length && <small className="ws-agent-model-note">当前身份的默认 Key 尚未就绪，可在「算力 / API 密钥」查看初始化状态。新建智能体后会自动补齐挂载。</small>}
       <label>该 Key 下可用模型<select value={draft.modelId ?? ''} disabled={!draft.modelKeyId || modelLoading || Boolean(modelError)} onChange={event => setDraft({ ...draft, modelId: event.target.value || null })}><option value="">{modelLoading ? '正在读取模型…' : '选择模型'}</option>{keyModels.map(model => <option key={model.id} value={model.id}>{model.name}</option>)}</select></label>
       {modelError && <small role="alert" className="ws-agent-model-error">{modelError}</small>}
       {draft.modelKeyId && !modelLoading && !modelError && !keyModels.length && <small className="ws-agent-model-note">此 Key 下没有平台已启用的可用模型。</small>}

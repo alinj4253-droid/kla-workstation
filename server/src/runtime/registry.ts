@@ -1,6 +1,7 @@
 import type { Pool, PoolClient } from 'pg';
 import { runtimeSkillBundles, runtimeSkillCatalog, type TaskPlan } from '@kla-workstation/contracts';
 import { pptAssistantRole } from './ppt-assistant.js';
+import { initializeDefaultAgentModels } from './default-model.js';
 
 export type RegisteredAgent = { id: string; name: string; role: string; model_id: string | null; model_key_id: string | null; execution_location: 'server'|'local'; device_id: string|null; enabled: boolean; version: number; skills: string[] };
 export const effectiveToolCodesSql = `
@@ -44,6 +45,7 @@ export async function ensureRuntimeRegistry(pool: Pool | PoolClient, identityId:
     }
     await pool.query('UPDATE agents SET capabilities_initialized=true WHERE id=$1', [agent.id]);
   }
+  await initializeDefaultAgentModels(pool, identityId);
 }
 export async function roomRegistry(pool: Pool, conversationId: string): Promise<RegisteredAgent[]> {
   const scope = (await pool.query('SELECT p.owner_identity_id FROM conversations c JOIN projects p ON p.id=c.project_id WHERE c.id=$1', [conversationId])).rows[0];

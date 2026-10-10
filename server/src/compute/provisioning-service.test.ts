@@ -21,9 +21,25 @@ describe('existing Sub2API binding recovery', () => {
 
   it('leaves an already ready binding unchanged', async () => {
     const createUser = vi.fn();
-    const repo = { getBinding: async () => ({ sub2apiUserId: 'user-1', status: 'ready', managedPassword: 'plain-password' }) } as unknown as ComputeRepository;
+    const initializeAgentModels = vi.fn();
+    const repo = { getBinding: async () => ({ sub2apiUserId: 'user-1', status: 'ready', managedPassword: 'plain-password' }), initializeAgentModels } as unknown as ComputeRepository;
     const service = new ProvisioningService(repo, { createUser } as unknown as Sub2ApiClient, config, '');
     await service.provisionIdentity(context);
     expect(createUser).not.toHaveBeenCalled();
+    expect(initializeAgentModels).toHaveBeenCalledWith(context.identityId);
+  });
+
+  it('resumes after the default key was saved without creating another upstream key or user', async () => {
+    const createUser = vi.fn();
+    const createApiKey = vi.fn();
+    const initializeAgentModels = vi.fn();
+    const updateBindingStatus = vi.fn();
+    const repo = { getBinding: async () => ({ sub2apiUserId: 'user-1', status: 'default_key_created', managedPassword: 'plain-password' }), initializeAgentModels, updateBindingStatus } as unknown as ComputeRepository;
+    const service = new ProvisioningService(repo, { createUser, createApiKey } as unknown as Sub2ApiClient, config, '');
+    await service.provisionIdentity(context);
+    expect(initializeAgentModels).toHaveBeenCalledWith(context.identityId);
+    expect(updateBindingStatus).toHaveBeenCalledWith(context.identityId, 'ready');
+    expect(createUser).not.toHaveBeenCalled();
+    expect(createApiKey).not.toHaveBeenCalled();
   });
 });

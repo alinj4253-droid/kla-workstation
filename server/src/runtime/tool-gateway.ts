@@ -97,7 +97,7 @@ export class ToolGateway {
     if (skill.location === 'local' && (scope.agent.execution_location !== 'local' || !scope.deviceId)) {
       throw new Error('本地工具需要已认证的本地执行设备');
     }
-    const action: PermissionAction = skill.location === 'local' || name === 'knowledge_ocr' || name === 'web_search' ? 'execute' : name === 'artifact_write' ? 'write' : 'read';
+    const action: PermissionAction = skill.location === 'local' || name === 'knowledge_ocr' || name === 'web_search' ? 'execute' : name === 'artifact_write' || name === 'artifact_compose' ? 'write' : 'read';
     await requirePermission(this.pool, scope.identityId, action);
     return { location: skill.location, action };
   }

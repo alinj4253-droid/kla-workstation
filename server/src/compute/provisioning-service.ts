@@ -49,11 +49,16 @@ export class ProvisioningService {
     if (existing?.sub2apiUserId && !resolveManagedPassword(existing.managedPassword, this.encryptionKey)) {
       throw new Error('已有上游账号的托管凭据无法解密；请恢复原加密密钥或由管理员重置该账号密码，不能重新建号');
     }
-    if (existing?.status === 'ready') return;
+    if (existing?.status === 'ready' || existing?.status === 'default_key_created') {
+      await this.repo.initializeAgentModels(identityId);
+      if (existing.status === 'default_key_created') await this.repo.updateBindingStatus(identityId, 'ready');
+      return;
+    }
     if (existing?.sub2apiUserId && (existing.status === 'user_created' || existing.status === 'balance_granted')) {
       const password = resolveManagedPassword(existing.managedPassword, this.encryptionKey);
       if (password) {
         await this.createDefaultKey(identityId, existing.sub2apiUserId, existing.sub2apiUsername, password);
+        await this.repo.updateBindingStatus(identityId, 'ready');
         return;
       }
     }

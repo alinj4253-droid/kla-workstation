@@ -55,8 +55,10 @@ export async function registerRuntimeRoutes(app: FastifyInstance, deps: {pool:Po
     const s=await scope(request,reply,'write');if(!s)return;const b=agentDefinitionInputSchema.parse(request.body);
     if(b.name==='统筹智能体')throw app.httpErrors.conflict('统筹智能体由系统管理');await validateDevice(b.deviceId,s.identity.id);
     await validateModelMount(s.identity.id,b.modelKeyId,b.modelId);
-    const a=(await pool.query('INSERT INTO agents(identity_id,name,role,model_id,model_key_id,execution_location,device_id,enabled) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',[s.identity.id,b.name,b.role,b.modelId??null,b.modelKeyId??null,b.executionLocation,b.executionLocation==='local'?b.deviceId??null:null,b.enabled])).rows[0];
-    await ensureRuntimeRegistry(pool,s.identity.id);return reply.code(201).send({ok:true,data:a});
+    const a=(await pool.query('INSERT INTO agents(identity_id,name,role,model_id,model_key_id,execution_location,device_id,enabled,model_mount_initialized) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id',[s.identity.id,b.name,b.role,b.modelId??null,b.modelKeyId??null,b.executionLocation,b.executionLocation==='local'?b.deviceId??null:null,b.enabled,Boolean(b.modelKeyId)])).rows[0];
+    await ensureRuntimeRegistry(pool,s.identity.id);
+    const agent=(await pool.query('SELECT * FROM agents WHERE id=$1 AND identity_id=$2',[a.id,s.identity.id])).rows[0];
+    return reply.code(201).send({ok:true,data:agent});
   });
   app.patch('/api/v1/agents/:agentId',async(request,reply)=>{
     const s=await scope(request,reply,'write');if(!s)return;const agentId=id((request.params as {agentId:string}).agentId);const b=agentDefinitionPatchSchema.parse(request.body);
@@ -65,7 +67,7 @@ export async function registerRuntimeRoutes(app: FastifyInstance, deps: {pool:Po
       if(b.name==='统筹智能体'&&a.name!==b.name)throw app.httpErrors.badRequest('统筹名称保留');await validateDevice(b.deviceId,s.identity.id);
       const modelKeyId=b.modelKeyId===undefined?a.model_key_id:b.modelKeyId;
       if(b.modelKeyId!==undefined || b.modelId!==undefined) await validateModelMount(s.identity.id,modelKeyId,b.modelId===undefined?a.model_id:b.modelId);
-      const location=b.executionLocation??a.execution_location;const updated=(await client.query('UPDATE agents SET name=$2,role=$3,model_id=$4,model_key_id=$5,execution_location=$6,device_id=$7,enabled=$8,version=version+1 WHERE id=$1 RETURNING *',[agentId,b.name??a.name,b.role??a.role,b.modelId===undefined?a.model_id:b.modelId,modelKeyId,location,location==='local'?(b.deviceId===undefined?a.device_id:b.deviceId):null,b.enabled??a.enabled])).rows[0];await client.query('COMMIT');return{ok:true,data:updated};
+      const location=b.executionLocation??a.execution_location;const updated=(await client.query('UPDATE agents SET name=$2,role=$3,model_id=$4,model_key_id=$5,execution_location=$6,device_id=$7,enabled=$8,model_mount_initialized=$9,version=version+1 WHERE id=$1 RETURNING *',[agentId,b.name??a.name,b.role??a.role,b.modelId===undefined?a.model_id:b.modelId,modelKeyId,location,location==='local'?(b.deviceId===undefined?a.device_id:b.deviceId):null,b.enabled??a.enabled,b.modelKeyId!==undefined||b.modelId!==undefined?true:a.model_mount_initialized])).rows[0];await client.query('COMMIT');return{ok:true,data:updated};
     }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
   });
   app.patch('/api/v1/skills/:skillCode',async(request,reply)=>{

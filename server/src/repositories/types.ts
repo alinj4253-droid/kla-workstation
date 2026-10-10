@@ -57,7 +57,7 @@ export interface AccountRepository {
   createAgentMessage(conversationId: string, agentName: string, text: string, metadata?: Record<string, unknown>): Promise<Message>;
   listAgents(identityId: string): Promise<AgentProfile[]>;
   listConversationRuns(conversationId: string): Promise<ConversationRun[]>;
-  createRun(conversationId: string, triggerMessageId: string, mode: string): Promise<ConversationRun>;
+  createRun(conversationId: string, triggerMessageId: string, mode: string, leaseOwner?: string): Promise<ConversationRun>;
   completeRun(runId: string, status: string, agentName?: string, result?: Record<string, unknown>): Promise<ConversationRun>;
   createArtifact(identityId: string, conversationId: string, name: string, mimeType: string, content: string): Promise<Artifact>;
   listArtifacts(identityId: string, conversationId?: string): Promise<Artifact[]>;

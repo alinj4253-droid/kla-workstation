@@ -21,6 +21,7 @@ const properties: Record<RuntimeSkillCode, Record<string, unknown>> = {
   web_search: { query: string, count: integer, freshness: string,
     include: { type: 'array', items: string }, exclude: { type: 'array', items: string } },
   memory_recall: { query: string }, artifact_write: { fileName: string, content: string, mimeType: string },
+  artifact_compose: { fileName: string, artifactIds: { type: 'array', items: string }, prefix: string, separator: string, suffix: string, mimeType: string },
   artifact_read: { artifactId: string }, local_read: { path: string, offset: integer, maxChars: integer },
   file_read: { fileId: string, offset: integer, maxChars: integer }, local_file_fetch: { fileId: string, artifactId: string },
   local_file_publish: { path: string, fileName: string },
@@ -36,7 +37,7 @@ const properties: Record<RuntimeSkillCode, Record<string, unknown>> = {
 const required: Record<RuntimeSkillCode, string[]> = {
   knowledge_search: ['query'], knowledge_read: ['knowledgeBaseId','docId'], knowledge_ocr: ['artifactId'],
   web_search: ['query'], memory_recall: ['query'],
-  artifact_write: ['fileName','content'], artifact_read: ['artifactId'], local_read: ['path'], local_list: ['path'],
+  artifact_write: ['fileName','content'], artifact_compose: ['fileName','artifactIds'], artifact_read: ['artifactId'], local_read: ['path'], local_list: ['path'],
   file_read: ['fileId'], local_file_fetch: [],
   local_file_publish: ['path'],
   local_write: ['fileName','content'], local_code: ['fileName','content'], local_bat: ['script'], local_cli: ['executable'],
@@ -59,7 +60,7 @@ export class RuntimeTools {
   }
   async execute(name: string, raw: unknown, scope: { identityId: string; conversationId: string; agentId: string; toolCallId?: string }): Promise<unknown> {
     const args = parseToolArguments(name, raw);
-    await requirePermission(this.pool, scope.identityId, name === 'artifact_write' ? 'write'
+    await requirePermission(this.pool, scope.identityId, name === 'artifact_write' || name === 'artifact_compose' ? 'write'
       : name === 'knowledge_ocr' || name === 'web_search' ? 'execute' : 'read');
     if (name === 'web_search') {
       const results = await createBochaClient({ apiKey: process.env.BOCHA_API_KEY ?? '' }).searchWeb({
@@ -93,6 +94,20 @@ export class RuntimeTools {
       }
       if (artifact.contentEncoding === 'base64') return { id: artifact.id, name: artifact.name, mimeType: artifact.mimeType, sizeBytes: artifact.sizeBytes, binary: true, hint: '二进制内容不进入模型上下文。PPTX 请使用 local_ppt_inspect 读取本地 documentId；PDF/PNG 可在成果抽屉查看。' };
       return artifact;
+    }
+    if (name === 'artifact_compose') {
+      const parts: string[] = [];
+      for (const id of args.artifactIds as string[]) {
+        const artifact = await this.accounts.getArtifact(scope.identityId, id);
+        if (!artifact || artifact.conversationId !== scope.conversationId || artifact.contentEncoding === 'base64')
+          throw new Error('章节成果不存在、无权访问或不是文本文件');
+        const content = artifact.storageKey ? await this.objectStore?.get(artifact.storageKey) : null;
+        if (artifact.storageKey && !content) throw new Error('章节成果对象不可用');
+        parts.push(content ? content.toString('utf8') : artifact.content);
+      }
+      const merged = String(args.prefix) + parts.join(String(args.separator)) + String(args.suffix);
+      if (merged.length > 1_000_000) throw new Error('合并结果超过 100 万字符，请分批合并');
+      return this.execute('artifact_write', { fileName: args.fileName, content: merged, mimeType: args.mimeType }, scope);
     }
     if (name === 'artifact_write') {
       const content = String(args.content);
