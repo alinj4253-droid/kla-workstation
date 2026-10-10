@@ -16,13 +16,12 @@ ENV npm_config_manage_package_manager_versions=false
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
 COPY packages/contracts/package.json packages/contracts/package.json
 COPY server/package.json server/package.json
-# store 挂 BuildKit 缓存卷，重复构建无需重新下载依赖
-RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
-    pnpm install --frozen-lockfile
+# 不使用 BuildKit cache mount：该主机的缓存卷在 install 收尾写入时触发
+# EPERM（下载可写、收尾被拒）。依赖未变时本层直接命中层缓存，无需缓存卷。
+RUN pnpm install --frozen-lockfile
 COPY packages/contracts packages/contracts
 COPY server server
-RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
-    pnpm --filter @kla-workstation/contracts build \
+RUN pnpm --filter @kla-workstation/contracts build \
   && pnpm --filter @kla-workstation/server build \
   && pnpm --filter @kla-workstation/server deploy --prod /out \
   && test -f /out/dist/server.js \
