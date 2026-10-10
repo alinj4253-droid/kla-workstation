@@ -20,16 +20,21 @@ ENV npm_config_package_import_method=copy
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
 COPY packages/contracts/package.json packages/contracts/package.json
 COPY server/package.json server/package.json
-# 【临时排障】基础文件操作探针：在构建真实文件系统上逐项验证 fd 写入、
-# chmod 444 后重写、rename、硬链接、symlink、unlink。任一步失败会直接
-# 打印失败的 syscall 与路径。定位 EPERM 来源后删除本步。
-RUN node -e "const fs=require('fs');for(const d of ['/tmp','/root','/repo']){fs.mkdirSync(d,{recursive:true});const p=d+'/pnpm-probe';const fd=fs.openSync(p,'w');fs.writeSync(fd,'x');fs.closeSync(fd);fs.chmodSync(p,0o444);fs.writeFileSync(p,'y');fs.renameSync(p,p+'.2');fs.linkSync(p+'.2',p+'.3');fs.symlinkSync(p+'.3',p+'.4');fs.unlinkSync(p+'.2');fs.unlinkSync(p+'.3');fs.unlinkSync(p+'.4');console.log('FS-PROBE PASS',d)}"
 # 不使用 BuildKit cache mount：目标主机的缓存卷挂载同样触发 EPERM；
 # 依赖未变时本层直接命中层缓存。--ignore-scripts：镜像内不执行依赖
 # 构建脚本，esbuild 二进制随可选依赖预编译分发，无需 postinstall 校验。
-# 【临时排障】ndjson 重定向：失败时输出完整 JSON 错误（含调用栈与路径），定位后还原。
-RUN pnpm install --frozen-lockfile --ignore-scripts --loglevel debug --reporter=ndjson > /tmp/install.log 2>&1 \
-  || { tail -n 30 /tmp/install.log ; echo '--- 以上为 pnpm 完整错误 JSON ---' ; exit 1 ; }
+# 【临时排障】strace 记录 write/openat，失败时打印末尾 400 行：可看到
+# EPERM 的 write 用的 fd 是为哪个路径 openat 的。定位后还原为
+# RUN pnpm install --frozen-lockfile --ignore-scripts
+RUN apk add --no-cache strace \
+  && strace -f -s 0 -e trace=write,openat,open -o /tmp/strace.log \
+       pnpm install --frozen-lockfile --ignore-scripts > /tmp/install.log 2>&1 \
+  ; rc=$? ; if [ "$rc" -ne 0 ]; then \
+      echo '--- strace 末尾 400 行（EPERM write 的 fd 对应哪个 openat 路径） ---' \
+      && tail -n 400 /tmp/strace.log \
+      && echo '--- pnpm 输出末尾 ---' \
+      && tail -n 5 /tmp/install.log ; \
+    fi ; exit $rc
 COPY packages/contracts packages/contracts
 COPY server server
 RUN pnpm --filter @kla-workstation/contracts build \
