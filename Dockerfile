@@ -23,7 +23,7 @@ COPY server/package.json server/package.json
 # 【临时排障】基础文件操作探针：在构建真实文件系统上逐项验证 fd 写入、
 # chmod 444 后重写、rename、硬链接、symlink、unlink。任一步失败会直接
 # 打印失败的 syscall 与路径。定位 EPERM 来源后删除本步。
-RUN node -e "const fs=require('fs');for(const d of ['/tmp','/root','/repo']){fs.mkdirSync(d,{recursive:true});const p=d+'/pnpm-probe';const fd=fs.openSync(p,'w');fs.writeSync(fd,'x');fs.closeSync(fd);fs.chmodSync(p,0o444);fs.writeFileSync(p,'y');fs.renameSync(p,p+'.2');fs.linkSync(p+'.2',p+'.3');fs.symlinkSync(p+'.3',p+'.4');fs.unlinkSync(p);fs.unlinkSync(p+'.2');fs.unlinkSync(p+'.3');fs.unlinkSync(p+'.4');console.log('FS-PROBE PASS',d)}"
+RUN node -e "const fs=require('fs');for(const d of ['/tmp','/root','/repo']){fs.mkdirSync(d,{recursive:true});const p=d+'/pnpm-probe';const fd=fs.openSync(p,'w');fs.writeSync(fd,'x');fs.closeSync(fd);fs.chmodSync(p,0o444);fs.writeFileSync(p,'y');fs.renameSync(p,p+'.2');fs.linkSync(p+'.2',p+'.3');fs.symlinkSync(p+'.3',p+'.4');fs.unlinkSync(p+'.2');fs.unlinkSync(p+'.3');fs.unlinkSync(p+'.4');console.log('FS-PROBE PASS',d)}"
 # 不使用 BuildKit cache mount：目标主机的缓存卷挂载同样触发 EPERM；
 # 依赖未变时本层直接命中层缓存。--ignore-scripts：镜像内不执行依赖
 # 构建脚本，esbuild 二进制随可选依赖预编译分发，无需 postinstall 校验。
