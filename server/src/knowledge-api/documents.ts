@@ -4,6 +4,23 @@ import { z } from 'zod';
 import { documentListSchema, type SourceJobBinding, type SourceList, type RemoteDocument } from '@kla-workstation/contracts/knowledge';
 import { assertService, atomicJson } from './config.js';
 import { jsonRequest, KnowledgeError } from './transport.js';
+import { uploadSliceNameKey, type UploadNameCheck, type UploadNameCheckResult } from '@kla-workstation/contracts/knowledge';
+import { reservedSubmissionNames } from './submissions.js';
+
+/** Only disclose conflicts for proposed uploads, not the global document inventory. */
+export async function checkUploadNames(owner: number, input: UploadNameCheck): Promise<UploadNameCheckResult> {
+    const config = assertService(input.serviceInstanceId);
+    if (config.collection !== input.collection) throw new KnowledgeError('CONFLICT', '目标集合已变更，请重新检查名称。');
+    const result = await jsonRequest(owner, input.serviceInstanceId, '/v1/documents?category=' + encodeURIComponent('上传文档'), documentListSchema);
+    if (result.count !== result.documents.length) throw new KnowledgeError('KNOWLEDGE_INGEST_FAILED', '原件列表读取不完整，无法检查同名文件，请重试。');
+    assertService(input.serviceInstanceId);
+    const keys = new Set(result.documents.map(doc => uploadSliceNameKey(doc.name)));
+    reservedSubmissionNames(config.baseUrl, config.secretRef).forEach(name => keys.add(uploadSliceNameKey(name)));
+    for (const binding of state().bindings) {
+        if (binding.serverOrigin === config.baseUrl && binding.credentialRef === config.secretRef) keys.add(uploadSliceNameKey(binding.displayName));
+    }
+    return { conflicts: input.names.filter(name => keys.has(uploadSliceNameKey(name))) };
+}
 const bindingSchema = z.object({
     clientUploadId: z.string(), serviceInstanceId: z.string(), serverOrigin: z.string(), collection: z.string(),
     displayName: z.string(), jobId: z.string(), storedPath: z.string(), docId: z.string().optional(),

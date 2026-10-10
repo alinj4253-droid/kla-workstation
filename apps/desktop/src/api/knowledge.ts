@@ -36,6 +36,7 @@ async function watch(input: { serviceInstanceId: string; jobId: string; subscrip
   finally { if (subscriptions.get(input.subscriptionId) === controller) subscriptions.delete(input.subscriptionId); }
 }
 export const knowledgeClient: KnowledgeLibraryBridge = {
+  checkUploadNames: input => rpc('checkUploadNames', input),
   getConnection: () => rpc('getConnection'),
   configure: input => rpc('configure', input),
   acceptUploadConsent: input => rpc('acceptUploadConsent', input),

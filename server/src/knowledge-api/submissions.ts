@@ -21,3 +21,6 @@ export function getUnconfirmed(origin: string, collection: string, credentialRef
     return state().submissions.filter(item => item.serverOrigin === origin && item.collection === collection && item.credentialRef === credentialRef).map(({ serverOrigin: _origin, credentialRef: _ref, ...item }) => item);
 }
 export function hasSubmission(id: string): boolean { return state().submissions.some(item => item.clientUploadId === id); }
+export function reservedSubmissionNames(origin: string, credentialRef: string | null): string[] {
+    return state().submissions.filter(item => item.serverOrigin === origin && item.credentialRef === credentialRef).map(item => item.displayName);
+}
