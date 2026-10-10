@@ -3,6 +3,9 @@ packages:
   - packages/*
   - server
 
+overrides:
+  '@electron/get@^3.0.0': 3.1.0
+
 allowBuilds:
   core-js: false
   electron: true
