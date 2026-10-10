@@ -77,3 +77,19 @@ export async function disableLibrary(pool: Pool, identityId: string, id: string)
     WHERE id=$1 AND status='active' RETURNING id`, [id]);
   return Boolean(row.rows[0]);
 }
+
+/**
+ * 按文档 docId 反查它所属且当前身份可读的知识库。
+ *
+ * 读取类请求（切片/正文/元信息）前端只带 docId，不带 knowledgeBaseId，
+ * 因此必须由服务端从 knowledge_documents 的关联关系反查归属库，
+ * 再用同一套 access() 规则判权——不能因为知道一个 docId 就放行。
+ * 返回 null 表示该文档无归属记录、或所属库当前身份不可读。
+ */
+export async function findReadableLibraryByDocId(pool: Pool, identityId: string, docId: string) {
+  const row = (await pool.query<{ knowledge_base_id: string }>(
+    'SELECT knowledge_base_id FROM knowledge_documents WHERE doc_id = $1 AND knowledge_base_id IS NOT NULL',
+    [docId])).rows[0];
+  if (!row) return null;
+  return getAccessibleLibrary(pool, identityId, row.knowledge_base_id, 'read');
+}

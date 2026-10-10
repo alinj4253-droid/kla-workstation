@@ -65,7 +65,8 @@
 @media (prefers-reduced-motion: reduce) { .kl-skeleton, .kl-upload-indeterminate { animation: none !important; } }
 .kl-base-card { transition: border-color 160ms ease, box-shadow 160ms ease; }
 .kl-base-card:hover { border-color: var(--kq-border-strong); box-shadow: 0 6px 20px color-mix(in srgb, var(--kq-text) 5%, transparent); }
-.kl-card-collection { font-size: 11px; color: var(--kq-text-tertiary); padding-bottom: 16px; overflow-wrap: anywhere; }
+/* 服务地址较长，超出时省略；完整集合名放在 title 里 */
+.kl-card-collection { font-size: 11px; color: var(--kq-text-tertiary); padding-bottom: 16px; overflow-wrap: anywhere; cursor: help; }
 .kl-scope-project .kl-library-icon { background: var(--kq-info-bg); color: var(--kq-info); }
 .kl-scope-personal .kl-library-icon { background: var(--kq-success-bg); color: var(--kq-success); }
 .kl-catalog-note { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 22px; padding: 12px 16px; background: var(--kq-surface-muted); border-radius: 8px; }
