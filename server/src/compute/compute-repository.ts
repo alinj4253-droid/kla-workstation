@@ -22,13 +22,23 @@ import type {
   SyncLogStatus,
   OrgMemberQuota,
 } from './types.js';
+import { createPointsConverter, type PointsConverter } from './points.js';
 
 export type QueryClient = Pick<Pool, 'query'>;
 
 export class ComputeRepository {
-  constructor(public readonly pool: Pool) {}
+  constructor(public readonly pool: Pool, private readonly points: PointsConverter = createPointsConverter()) {}
 
   // ---- compute_bindings ----
+
+  /** Legacy shared upstream users cannot enforce per-identity spending limits. */
+  async countBindingsForSub2apiUser(userId: string): Promise<number> {
+    const { rows } = await this.pool.query<{ count: number }>(
+      'SELECT count(*)::int AS count FROM compute_bindings WHERE sub2api_user_id = $1 AND sub2api_status IN ($2, $3)',
+      [userId, 'ready', 'default_key_created'],
+    );
+    return Number(rows[0]?.count ?? 0);
+  }
 
   async upsertBinding(input: {
     identityId: string;
@@ -129,10 +139,13 @@ export class ComputeRepository {
     const sets: string[] = [];
     const vals: unknown[] = [];
     let idx = 1;
-    if (delta.total !== undefined) { sets.push(`quota_total = quota_total + $${idx++}`); vals.push(delta.total); }
-    if (delta.granted !== undefined) { sets.push(`quota_granted = quota_granted + $${idx++}`); vals.push(delta.granted); }
-    if (delta.used !== undefined) { sets.push(`quota_used = quota_used + $${idx++}`); vals.push(delta.used); }
-    if (delta.reserved !== undefined) { sets.push(`quota_reserved = quota_reserved + $${idx++}`); vals.push(delta.reserved); }
+    for (const [name, amount] of Object.entries(delta)) {
+      if (amount === undefined) continue;
+      const column = name === 'total' ? 'total' : name === 'granted' ? 'granted' : name === 'used' ? 'used' : 'reserved';
+      sets.push(`points_${column} = points_${column} + $${idx}, quota_${column} = quota_${column} + $${idx + 1}`);
+      vals.push(amount, this.points.toUsd(Math.abs(amount)) * Math.sign(amount));
+      idx += 2;
+    }
     sets.push(`version = version + 1`);
     sets.push(`updated_at = now()`);
     vals.push(entitlementId);
@@ -159,9 +172,9 @@ export class ComputeRepository {
     const c = client ?? this.pool;
     const { rows } = await c.query(
       `INSERT INTO compute_allocation_ledger
-        (entitlement_id, operation, amount, status, idempotency_key, request_id, related_ledger_id, operator_identity_id, metadata)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
-      [input.entitlementId, input.operation, input.amount, input.status, input.idempotencyKey, input.requestId ?? null, input.relatedLedgerId ?? null, input.operatorIdentityId ?? null, input.metadata ?? {}],
+        (entitlement_id, operation, amount, amount_points, rate_snapshot, status, idempotency_key, request_id, related_ledger_id, operator_identity_id, metadata)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+      [input.entitlementId, input.operation, this.points.toUsd(input.amount), input.amount, this.points.pointsPerUsd, input.status, input.idempotencyKey, input.requestId ?? null, input.relatedLedgerId ?? null, input.operatorIdentityId ?? null, input.metadata ?? {}],
     );
     return this.ledger(rows[0]);
   }
@@ -204,10 +217,10 @@ export class ComputeRepository {
               u.nickname AS user_nickname, u.email AS user_email,
               COALESCE(MAX(CASE WHEN r.name = '管理员' THEN 'admin' END), 'member') AS role,
               b.sub2api_status,
-              COALESCE(e.quota_total, 0) AS quota_total,
-              COALESCE(e.quota_granted, 0) AS quota_granted,
-              COALESCE(e.quota_used, 0) AS quota_used,
-              COALESCE(e.quota_reserved, 0) AS quota_reserved
+              COALESCE(e.points_total, 0) AS quota_total,
+              COALESCE(e.points_granted, 0) AS quota_granted,
+              COALESCE(e.points_used, 0) AS quota_used,
+              COALESCE(e.points_reserved, 0) AS quota_reserved
        FROM identities i
        JOIN users u ON u.id = i.user_id
        LEFT JOIN identity_roles ir ON ir.identity_id = i.id
@@ -216,7 +229,7 @@ export class ComputeRepository {
        LEFT JOIN compute_entitlements e ON e.identity_id = i.id
        WHERE i.organization_id = $1 AND i.type = 'enterprise' AND i.status = 'active'
        GROUP BY i.id, i.display_name, i.user_id, i.created_at, u.nickname, u.email, b.sub2api_status,
-                e.quota_total, e.quota_granted, e.quota_used, e.quota_reserved
+                e.points_total, e.points_granted, e.points_used, e.points_reserved
        ORDER BY role DESC, i.created_at ASC`,
       [orgId],
     );
@@ -360,7 +373,7 @@ export class ComputeRepository {
   async sumTodayUsageByKey(identityId: string, client?: QueryClient): Promise<Map<string, number>> {
     const c = client ?? this.pool;
     const { rows } = await c.query(
-      `SELECT key_id, COALESCE(SUM(amount_usd), 0) AS total
+      `SELECT key_id, COALESCE(SUM(amount_points), 0) AS total
        FROM compute_usage
        WHERE identity_id = $1 AND key_id IS NOT NULL AND recorded_at >= date_trunc('day', now())
        GROUP BY key_id`,
@@ -423,12 +436,12 @@ export class ComputeRepository {
     const c = client ?? this.pool;
     const { rows } = await c.query(
       `INSERT INTO compute_usage
-        (identity_id, ledger_id, sub2api_usage_id, model, amount_usd, prompt_tokens, completion_tokens, metadata, dedupe_hash, recorded_at,
+        (identity_id, ledger_id, sub2api_usage_id, model, amount_usd, amount_points, prompt_tokens, completion_tokens, metadata, dedupe_hash, recorded_at,
          organization_id, key_id, project_id, conversation_id, task_id, latency_ms, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
        ON CONFLICT (dedupe_hash) DO NOTHING RETURNING *`,
       [
-        input.identityId, input.ledgerId, input.sub2apiUsageId, input.model, input.amountUsd, input.promptTokens, input.completionTokens,
+        input.identityId, input.ledgerId, input.sub2apiUsageId, input.model, input.amountUsd, this.points.fromUsd(input.amountUsd), input.promptTokens, input.completionTokens,
         input.metadata ?? {}, input.dedupeHash, input.recordedAt,
         input.organizationId ?? null, input.keyId ?? null, input.projectId ?? null, input.conversationId ?? null, input.taskId ?? null,
         input.latencyMs ?? null, input.status ?? 'success',
@@ -586,10 +599,10 @@ export class ComputeRepository {
       id: r.id as string,
       identityId: (r.identity_id as string | null) ?? null,
       organizationId: (r.organization_id as string | null) ?? null,
-      quotaTotal: Number(r.quota_total ?? 0),
-      quotaGranted: Number(r.quota_granted ?? 0),
-      quotaUsed: Number(r.quota_used ?? 0),
-      quotaReserved: Number(r.quota_reserved ?? 0),
+      quotaTotal: Number(r.points_total ?? 0),
+      quotaGranted: Number(r.points_granted ?? 0),
+      quotaUsed: Number(r.points_used ?? 0),
+      quotaReserved: Number(r.points_reserved ?? 0),
       version: Number(r.version ?? 0),
       createdAt: new Date(r.created_at as string).toISOString(),
       updatedAt: new Date(r.updated_at as string).toISOString(),
@@ -601,7 +614,7 @@ export class ComputeRepository {
       id: r.id as string,
       entitlementId: r.entitlement_id as string,
       operation: r.operation as LedgerOperation,
-      amount: Number(r.amount ?? 0),
+      amount: Number(r.amount_points ?? 0),
       status: r.status as LedgerStatus,
       idempotencyKey: r.idempotency_key as string,
       requestId: (r.request_id as string | null) ?? null,

@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import { pageQuerySchema } from './envelope.js';
 
-// 算力额度统一以美元（USD）计价，与 Sub2API users.balance / api_keys.quota 保持一致（见方案 §4.2、§16.4）。
-export const COMPUTE_CURRENCY = 'usd' as const;
+// 面向用户的余额、额度、费用统一为算力点；Sub2API 的 USD 仅留在服务端成本边界。
+export const COMPUTE_CURRENCY = 'point' as const;
 
 /**
  * 权限码（§10）。服务端在每次请求内从 Session 重新计算并二次校验，前端开关与按钮状态一律不可信。
@@ -137,13 +137,13 @@ export const computeKeySchema = z.object({
   groupId: z.string().nullable(),
   isDefault: z.boolean(),
   status: computeKeyStatusSchema,
-  quotaUsd: z.number().nullable(),
+  quotaPoints: z.number().nullable(),
   rpm: z.number().int().nullable(),
   ipAllowList: z.array(z.string()),
   expiresAt: z.string().datetime().nullable(),
   createdAt: z.string().datetime(),
   lastSyncedAt: z.string().datetime().nullable(),
-  todayUsageUsd: z.number(),
+  todayUsagePoints: z.number(),
 });
 export type ComputeKey = z.infer<typeof computeKeySchema>;
 
@@ -202,8 +202,8 @@ export const computeModelSchema = z.object({
   provider: z.string(),
   capabilities: computeModelCapabilitiesSchema,
   contextWindow: z.number().int().positive().nullable(),
-  inputPricePerMillionTokensUsd: z.number().nullable(),
-  outputPricePerMillionTokensUsd: z.number().nullable(),
+  inputPricePerMillionTokensPoints: z.number().nullable(),
+  outputPricePerMillionTokensPoints: z.number().nullable(),
   available: z.boolean(),
   availableGroups: z.array(z.string()),
   status: computeModelStatusSchema,
@@ -244,7 +244,7 @@ export const computeUsageRecordSchema = z.object({
   requestCount: z.number().int().min(0),
   latencyMs: z.number().int().min(0).nullable(),
   status: z.string(),
-  costUsd: z.number(),
+  costPoints: z.number(),
   usageAt: z.string().datetime(),
 });
 export type ComputeUsageRecord = z.infer<typeof computeUsageRecordSchema>;
@@ -260,7 +260,7 @@ export const computeUsageBucketSchema = z.object({
   key: z.string().min(1),
   requestCount: z.number().int().min(0),
   totalTokens: z.number().int().min(0),
-  costUsd: z.number(),
+  costPoints: z.number(),
 });
 export type ComputeUsageBucket = z.infer<typeof computeUsageBucketSchema>;
 
@@ -272,7 +272,7 @@ export const computeUsageSummarySchema = z.object({
   inputTokens: z.number().int().min(0),
   outputTokens: z.number().int().min(0),
   totalTokens: z.number().int().min(0),
-  costUsd: z.number(),
+  costPoints: z.number(),
   successCount: z.number().int().min(0),
   failureCount: z.number().int().min(0),
   avgLatencyMs: z.number().nullable(),

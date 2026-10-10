@@ -14,6 +14,7 @@ import { registerRuntimeRoutes } from './runtime/routes.js';
 import { buildLoggerOptions, createRequestIdGenerator, shouldQuietRequestLogging } from './observability/logger.js';
 import { Sub2ApiClient } from './compute/sub2api-client.js';
 import { ComputeRepository } from './compute/compute-repository.js';
+import { createPointsConverter } from './compute/points.js';
 import { ProvisioningService } from './compute/provisioning-service.js';
 import { QuotaService } from './compute/quota-service.js';
 import { OutboxWorker } from './compute/outbox-worker.js';
@@ -28,6 +29,8 @@ import { PostgresKnowledgeStore } from './knowledge-api/context.js';
 import { ComputeGateway } from './compute/gateway.js';
 import { MemoryRetentionWorker, ShortTermMemoryService } from './memories/short-term.js';
 
+export const corsOptions = { origin: true, methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'] };
+
 export async function createServer() {
   const config = loadConfig();
   // logController 是 Fastify v5 的日志控制器（v6 将移除顶层 disableRequestLogging 选项）：
@@ -37,7 +40,7 @@ export async function createServer() {
     genReqId: createRequestIdGenerator(),
     logController: new LogController({ disableRequestLogging: shouldQuietRequestLogging }),
   });
-  await app.register(cors, { origin: true });
+  await app.register(cors, corsOptions);
   await app.register(sensible);
   const database = new PostgresDatabase(config.databaseUrl, config.databaseSchema);
   const redis = new RedisDatabase(config.redisUrl);
@@ -48,9 +51,10 @@ export async function createServer() {
 
   // 算力模块装配
   const sub2api = new Sub2ApiClient(config.sub2api, redis);
-  const computeRepo = new ComputeRepository(pool);
+  const points = createPointsConverter(config.compute.pointsPerUsd);
+  const computeRepo = new ComputeRepository(pool, points);
   const provisioning = new ProvisioningService(computeRepo, sub2api, config.sub2api, config.compute.secretEncryptionKey);
-  const quota = new QuotaService(pool, computeRepo, sub2api);
+  const quota = new QuotaService(pool, computeRepo, sub2api, points);
   app.decorate('quotaService', quota);
   const gateway = new ComputeGateway({
     computeRepo,
@@ -58,6 +62,7 @@ export async function createServer() {
     sub2api,
     encryptionKey: config.compute.secretEncryptionKey,
     minReserveUsd: config.compute.minReserveUsd,
+    points,
     timeoutMs: config.sub2api.timeoutMs,
   });
 
@@ -65,11 +70,11 @@ export async function createServer() {
   const memoryRetention = new MemoryRetentionWorker(shortTermMemory, error => app.log.error({ err: error }, 'Memory retention failed'));
   const loopWorker = new AgentLoopWorker(pool, accounts, gateway, shortTermMemory, process.env.KNOWLEDGE_SECRET_ENCRYPTION_KEY || config.compute.secretEncryptionKey, error => app.log.error({err:error}, 'Agent loop failed'));
   await registerRoutes(app, { accounts, database, redis, gateway, shortTermMemory, loopWorker });
-  await registerRuntimeRoutes(app, {pool, accounts, worker:loopWorker});
+  await registerRuntimeRoutes(app, {pool, accounts, worker:loopWorker, computeRepo, sub2api, encryptionKey:config.compute.secretEncryptionKey});
   await registerKnowledgeRoutes(app, { accounts, pool, store: new PostgresKnowledgeStore(pool), encryptionKey: process.env.KNOWLEDGE_SECRET_ENCRYPTION_KEY || config.compute.secretEncryptionKey });
   await registerComputeRoutes(app, { accounts, computeRepo, quota });
   await registerComputeRoutesB(app, { accounts, computeRepo });
-  await registerComputeAccountRoutes(app, { accounts, computeRepo, sub2api, provisioning, quota });
+  await registerComputeAccountRoutes(app, { accounts, computeRepo, sub2api, provisioning });
   await registerComputeKeyRoutes(app, {
     accounts,
     computeRepo,
@@ -80,7 +85,7 @@ export async function createServer() {
   await registerComputeGatewayRoutes(app, { accounts, computeRepo, gateway });
 
   const outboxWorker = new OutboxWorker(computeRepo, provisioning, config.compute.outboxIntervalMs);
-  const usageSyncWorker = new UsageSyncWorker(computeRepo, sub2api, config.compute.usageSyncIntervalMs);
+  const usageSyncWorker = new UsageSyncWorker(computeRepo, sub2api, quota, config.compute.usageSyncIntervalMs);
   loopWorker.start();
   outboxWorker.start();
   usageSyncWorker.start();

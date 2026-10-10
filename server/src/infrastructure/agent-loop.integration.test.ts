@@ -24,6 +24,8 @@ describe('persisted multi-agent loop', () => {
       const room = await accounts.createConversation(project.id, '循环群聊');
       const registry = await roomRegistry(pool, room.id);
       const executor = registry.find(agent => agent.name === '本地执行智能体')!;
+      await pool.query("UPDATE agents SET execution_location='server' WHERE id=$1", [executor.id]);
+      executor.execution_location = 'server';
       const trigger = await accounts.createMessage(room.id, registered.user.id, '先写大纲，再检查内容');
       const calls: string[] = [];
       const modelRequests: Array<{ requestId: string; messages: unknown[] }> = [];

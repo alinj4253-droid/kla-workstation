@@ -73,7 +73,7 @@ describe('resolveManagedPassword', () => {
 describe('toKeyDto', () => {
   it('永不包含 secret 与指纹', () => {
     const dto = toKeyDto(keyFixture(), 3.5);
-    expect(dto).toMatchObject({ keyPrefix: 'sk-kla-ab', todayUsageUsd: 3.5, quotaUsd: 12.5, rpm: 60, ipAllowList: ['10.0.0.0/8'] });
+    expect(dto).toMatchObject({ keyPrefix: 'sk-kla-ab', todayUsagePoints: 3.5, quotaPoints: 12500, rpm: 60, ipAllowList: ['10.0.0.0/8'] });
     const serialized = JSON.stringify(dto);
     expect(serialized).not.toContain('secret');
     expect(serialized).not.toContain('keyFingerprint');
@@ -92,8 +92,8 @@ describe('§7.2 GET /compute/keys', () => {
     expect(response.statusCode).toBe(200);
     const body = response.json();
     expect(body.data.items).toHaveLength(2);
-    expect(body.data.items[0]).toMatchObject({ todayUsageUsd: 1.25, isDefault: true });
-    expect(body.data.items[1]).toMatchObject({ todayUsageUsd: 0 });
+    expect(body.data.items[0]).toMatchObject({ todayUsagePoints: 1.25, isDefault: true });
+    expect(body.data.items[1]).toMatchObject({ todayUsagePoints: 0 });
     expect(JSON.stringify(body.data)).not.toContain('secret');
     expect(JSON.stringify(body.data)).not.toContain('fp-1');
     await app.close();
@@ -104,6 +104,24 @@ describe('§7.2 GET /compute/keys', () => {
     const app = await buildApp(repo, {});
     const response = await app.inject({ method: 'GET', url: '/api/v1/compute/keys', headers: { authorization: 'Bearer t' } });
     expect(response.statusCode).toBe(403);
+    await app.close();
+  });
+});
+
+describe('Key 模型发现', () => {
+  it('按当前身份和 Key 限定模型，且不返回密钥', async () => {
+    const repo = repoWith((sql) => sql.includes('SELECT id,name FROM models')
+      ? { rows: [{ id: 'm1', name: '模型一' }], rowCount: 1 }
+      : grantPermissions()(sql), {
+      getKey: async (keyId, identityId) => identityId === 'i1' && keyId === 'k1' ? keyFixture() : null,
+      getBinding: async () => ({ identityId: 'i1', sub2apiUserId: 'u1', sub2apiUsername: 'u', managedPassword: 'pass', status: 'ready', provisionJobId: null, lastError: null, createdAt: NOW, updatedAt: NOW }),
+    });
+    const app = await buildApp(repo, { getUserJwt: async () => 'jwt', resolveApiKeySecret: async () => 'secret', listModels: async () => ['m1', 'm2'] });
+    const found = await app.inject({ method: 'GET', url: '/api/v1/compute/keys/k1/models', headers: AUTH });
+    expect(found.statusCode).toBe(200);
+    expect(found.json().data).toEqual([{ id: 'm1', name: '模型一' }]);
+    expect(found.body).not.toContain('secret');
+    expect((await app.inject({ method: 'GET', url: '/api/v1/compute/keys/foreign/models', headers: AUTH })).statusCode).toBe(404);
     await app.close();
   });
 });
@@ -129,8 +147,8 @@ describe('§7.2 POST /compute/keys', () => {
     expect(response.statusCode).toBe(201);
     const body = response.json();
     expect(body.data.secret).toBe('sk-kla-cd-FULL-SECRET');
-    expect(body.data.key).toMatchObject({ keyPrefix: 'sk-kla-cd', groupId: 'group-default', quotaUsd: 12.5, rpm: 60, ipAllowList: ['10.0.0.0/8'] });
-    expect(captured).toMatchObject({ identityId: 'i1', sub2apiKeyId: 'sk-new', quota: 12.5, rpm: 60, ipAllowList: ['10.0.0.0/8'], expiresAt: '2026-12-31T00:00:00.000Z' });
+    expect(body.data.key).toMatchObject({ keyPrefix: 'sk-kla-cd', groupId: 'group-default', quotaPoints: 12500, rpm: 60, ipAllowList: ['10.0.0.0/8'] });
+    expect(captured).toMatchObject({ identityId: 'i1', sub2apiKeyId: 'sk-new', quota: 0.0125, rpm: 60, ipAllowList: ['10.0.0.0/8'], expiresAt: '2026-12-31T00:00:00.000Z' });
     await app.close();
   });
 

@@ -1,8 +1,8 @@
 // Model Gateway（§8）：智能体与前端统一入口，不直接调用 Sub2API 上游配置。
 //
-// 流程：Session→当前 identity → 校验 model.use 与模型目录 → 锁定并预扣额度（美元）
+// 流程：Session→当前 identity → 校验 model.use 与模型目录 → 锁定并预扣算力点
 //      → 按身份选 Key → 注入业务标签 → 透传普通响应 / SSE / tool calling / usage
-//      → 写 compute_usage → 预扣转实际扣减；失败释放预扣。
+//      → 释放预扣；实际费用只由 Sub2API 用量明细同步入账。
 //
 // 约束：所有路由来自服务端模型目录，前端传入的 URL/Key 一律忽略（§8、§12）。
 
@@ -12,7 +12,8 @@ import type { ComputeRepository } from './compute-repository.js';
 import type { QuotaService } from './quota-service.js';
 import type { Sub2ApiClient } from './sub2api-client.js';
 import { resolveManagedPassword } from './encryption.js';
-import { COMPUTE_READY_STATES, roundUsd } from './types.js';
+import { COMPUTE_READY_STATES } from './types.js';
+import { createPointsConverter, type PointsConverter } from './points.js';
 
 export type GatewayUsage = {
   promptTokens: number | null;
@@ -31,6 +32,8 @@ export type GatewayBusinessTags = {
 
 export type GatewayChatInput = {
   model: string;
+  /** Server-side agent binding only; never forwarded to Sub2API. */
+  keyId?: string | null;
   messages: unknown[];
   stream?: boolean;
   tools?: unknown;
@@ -49,6 +52,7 @@ export type ComputeGatewayDeps = {
   /** 预扣下限（美元） */
   minReserveUsd: number;
   timeoutMs: number;
+  points?: PointsConverter;
 };
 
 /** 网关错误：携带可直接映射到 HTTP 的语义码。 */
@@ -132,6 +136,7 @@ type Prepared = {
 
 export class ComputeGateway {
   constructor(private readonly deps: ComputeGatewayDeps) {}
+  private get points(): PointsConverter { return this.deps.points ?? createPointsConverter(); }
 
   /** §8.1–§8.4：模型目录校验、凭据、预扣额度、选 Key。 */
   private async prepare(identity: Identity, input: GatewayChatInput): Promise<Prepared> {
@@ -142,13 +147,16 @@ export class ComputeGateway {
     const binding = await this.deps.computeRepo.getBinding(identity.id);
     if (!binding) throw new GatewayError('CONFLICT', '算力账号尚未初始化，请先重试初始化', 409);
     if (!COMPUTE_READY_STATES.has(binding.status)) throw new GatewayError('CONFLICT', `算力账号未就绪（${binding.status}）`, 409);
+    if (await this.deps.computeRepo.countBindingsForSub2apiUser(binding.sub2apiUserId) > 1) {
+      throw new GatewayError('CONFLICT', '多个身份共用同一上游算力账号，无法保证独立计费；请为当前身份重新绑定独立账号', 409);
+    }
     const password = resolveManagedPassword(binding.managedPassword, this.deps.encryptionKey);
     if (!password) throw new GatewayError('CONFLICT', '托管凭据不可用，无法调用模型', 409);
 
     // §8.3 锁定并预扣额度；并发下由 SELECT FOR UPDATE 行锁保证不超发
     let ledgerId: string;
     try {
-      ({ ledgerId } = await this.deps.quota.reserve(identity.id, this.deps.minReserveUsd, input.requestId));
+      ({ ledgerId } = await this.deps.quota.reserve(identity.id, this.points.fromUsd(this.deps.minReserveUsd), input.requestId));
     } catch (error) {
       if (error instanceof Error && error.name === 'QuotaInsufficientError') throw new GatewayError('FORBIDDEN', error.message, 403);
       throw error;
@@ -163,10 +171,12 @@ export class ComputeGateway {
     }
 
     // §8.4 按身份选 Key（默认优先、状态 active）
-    const key = await this.deps.computeRepo.getActiveKey(identity.id);
-    if (!key?.sub2apiKeyId) {
+    const key = input.keyId
+      ? await this.deps.computeRepo.getKey(input.keyId, identity.id)
+      : await this.deps.computeRepo.getActiveKey(identity.id);
+    if (!key?.sub2apiKeyId || (input.keyId && key.status !== 'active')) {
       await this.settle({ identity, ledgerId, credential: '', keyId: null, modelId: catalogModel.id, startedAt: Date.now() }, input, EMPTY_USAGE, 'failure');
-      throw new GatewayError('CONFLICT', '当前身份没有可用的 API Key，请先在「API 密钥」页创建', 409);
+      throw new GatewayError('CONFLICT', input.keyId ? '智能体挂载的 API Key 已不可用，请重新挂载' : '当前身份没有可用的 API Key，请先在「API 密钥」页创建', 409);
     }
 
     // 代理面只认 API Key：用托管账号 JWT 现取该 Key 明文（仅内存短缓存，不落库）
@@ -182,11 +192,11 @@ export class ComputeGateway {
     return { identity, ledgerId, credential, keyId: key.id, modelId: catalogModel.id, startedAt: Date.now() };
   }
 
-  /** §8.7：写 compute_usage 并完成预扣转扣减 / 释放。返回实际结算金额（美元）。 */
+  /** The upstream usage ledger is authoritative; a response only releases the hold. */
   private async settle(prepared: Prepared, input: GatewayChatInput, usage: GatewayUsage, status: 'success' | 'failure'): Promise<number> {
-    const amountUsd = status === 'success' ? await this.resolveAmountUsd(prepared.modelId, usage) : 0;
+    const amountUsd = 0;
     try {
-      await this.deps.computeRepo.upsertUsage({
+      if (status === 'failure') await this.deps.computeRepo.upsertUsage({
         identityId: prepared.identity.id,
         organizationId: prepared.identity.organizationId,
         ledgerId: prepared.ledgerId,
@@ -203,30 +213,17 @@ export class ComputeGateway {
         conversationId: input.tags?.conversationId ?? null,
         taskId: input.tags?.taskId ?? null,
         latencyMs: Date.now() - prepared.startedAt,
-        status,
+        status: 'failure',
       });
     } catch {
       // 用量写入失败不阻断响应；交由对账与 Usage Sync 补偿（§11.2）
     }
     try {
-      if (status === 'success') await this.deps.quota.commit(prepared.ledgerId, amountUsd);
-      else await this.deps.quota.release(prepared.ledgerId);
+      await this.deps.quota.release(prepared.ledgerId);
     } catch {
       // 结算失败由对账补偿；不覆盖已成功的模型响应
     }
     return amountUsd;
-  }
-
-  /** 成本换算优先级：上游金额 > 模型费率 × Token > 预扣下限（§16 费率来源待联调确认）。 */
-  private async resolveAmountUsd(modelId: string, usage: GatewayUsage): Promise<number> {
-    if (usage.costUsd !== null && usage.costUsd >= 0) return roundUsd(usage.costUsd);
-    const pricing = await this.deps.computeRepo.getModelPricing(modelId);
-    if (pricing && (pricing.inputPricePerMtokUsd !== null || pricing.outputPricePerMtokUsd !== null)) {
-      const inputCost = ((usage.promptTokens ?? 0) / 1_000_000) * (pricing.inputPricePerMtokUsd ?? 0);
-      const outputCost = ((usage.completionTokens ?? 0) / 1_000_000) * (pricing.outputPricePerMtokUsd ?? 0);
-      return roundUsd(inputCost + outputCost);
-    }
-    return this.deps.minReserveUsd;
   }
 
   /** 普通（非流式）请求：透传响应体与 usage。 */

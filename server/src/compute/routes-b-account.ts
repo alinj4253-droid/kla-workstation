@@ -7,7 +7,6 @@ import type { ComputeBalance, ComputeDefaultKeySummary, ComputePermissionFlags, 
 import type { AccountRepository } from '../repositories/types.js';
 import type { ComputeRepository } from './compute-repository.js';
 import type { ProvisioningService } from './provisioning-service.js';
-import type { QuotaService } from './quota-service.js';
 import type { Sub2ApiClient } from './sub2api-client.js';
 import { COMPUTE_PERMISSION, errorBody, hasPermission, requireIdentity } from './permissions.js';
 import { availableBalance } from './types.js';
@@ -17,7 +16,6 @@ export type ComputeAccountRouteDeps = {
   computeRepo: ComputeRepository;
   sub2api: Sub2ApiClient;
   provisioning: ProvisioningService;
-  quota: QuotaService;
 };
 
 /** §5.3 建号状态机的正向顺序，用于生成进度步骤。 */
@@ -62,19 +60,12 @@ export async function registerComputeAccountRoutes(app: FastifyInstance, deps: C
       hasPermission(pool, identity.id, COMPUTE_PERMISSION.allocate),
       hasPermission(pool, identity.id, COMPUTE_PERMISSION.reclaim),
     ]);
-    // 拉取 Sub2API 实时余额，若用户直接在上游充值则回写到 KLA 台账
-    let currentEntitlement = entitlement;
-    try {
-      const rec = await deps.quota.reconcileBalanceFromSub2api(identity.id);
-      if (rec.synced) currentEntitlement = await deps.computeRepo.getEntitlement({ identityId: identity.id });
-    } catch {
-      // 对账失败不影响概览返回
-    }
+    // 只读当前身份台账。上游账号可能被多个身份共用，不能把其余额当作本身份充值。
     const quota = {
-      quotaTotal: currentEntitlement?.quotaTotal ?? 0,
-      quotaGranted: currentEntitlement?.quotaGranted ?? 0,
-      quotaUsed: currentEntitlement?.quotaUsed ?? 0,
-      quotaReserved: currentEntitlement?.quotaReserved ?? 0,
+      quotaTotal: entitlement?.quotaTotal ?? 0,
+      quotaGranted: entitlement?.quotaGranted ?? 0,
+      quotaUsed: entitlement?.quotaUsed ?? 0,
+      quotaReserved: entitlement?.quotaReserved ?? 0,
     };
     const defaultKeyRow = keys.find((key) => key.isDefault && key.status !== 'deleted') ?? null;
     const defaultKey: ComputeDefaultKeySummary | null = defaultKeyRow
@@ -96,7 +87,7 @@ export async function registerComputeAccountRoutes(app: FastifyInstance, deps: C
       identityId: identity.id,
       identityType: identity.type,
       organizationId: identity.organizationId,
-      currency: 'usd',
+      currency: 'point',
       balance: availableBalance(quota),
       used: quota.quotaUsed,
       reserved: quota.quotaReserved,
@@ -122,7 +113,7 @@ export async function registerComputeAccountRoutes(app: FastifyInstance, deps: C
       quotaReserved: entitlement?.quotaReserved ?? 0,
     });
     const data: ComputeBalance = {
-      currency: 'usd',
+      currency: 'point',
       balance: available,
       used: entitlement?.quotaUsed ?? 0,
       reserved: entitlement?.quotaReserved ?? 0,

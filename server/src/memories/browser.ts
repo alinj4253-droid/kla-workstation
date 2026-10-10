@@ -7,10 +7,16 @@ import { shortTermRetainedUntil } from './short-term.js';
 // as text, so malformed or historical metadata cannot cause UUID cast failures.
 // Historical browsing is independent from the bounded/weighted conversation context.
 const entriesCte = `WITH owned_projects AS (
-  SELECT id,name FROM projects WHERE owner_identity_id=$1
+  SELECT DISTINCT p.id,p.name FROM projects p
+  JOIN project_members pm ON pm.project_id=p.id AND pm.identity_id=$1
+  JOIN conversation_members cm ON cm.project_id=p.id AND cm.identity_id=$1
+  JOIN identities i ON i.id=$1 AND i.status='active'
+  WHERE (p.organization_id IS NULL AND i.type='personal' AND p.owner_identity_id=i.id
+    OR p.organization_id=i.organization_id AND i.type='enterprise')
 ), owned_conversations AS (
   SELECT c.id,c.name,c.project_id,p.name AS project_name
   FROM conversations c JOIN owned_projects p ON p.id=c.project_id
+  JOIN conversation_members cm ON cm.conversation_id=c.id AND cm.identity_id=$1
 ), stored AS (
   SELECT 'memory:' || m.id::text AS id,m.content,m.kind,
     CASE WHEN m.kind IN ('short_term','short-term','task_summary','task_context') THEN 'short_term' ELSE 'long_term' END AS term,
@@ -35,7 +41,7 @@ const entriesCte = `WITH owned_projects AS (
   ) a ON true
   WHERE (m.expires_at IS NULL OR m.expires_at>now())
     AND (m.retained_until IS NULL OR m.retained_until>now())
-    AND (COALESCE(m.metadata->>'conversationId',m.metadata->>'chatId') IS NULL OR c.id IS NOT NULL)
+    AND c.id IS NOT NULL
     AND (w.project_id IS NULL OR p.id=w.project_id)
     AND (m.metadata->>'projectId' IS NULL OR p.id::text=m.metadata->>'projectId')
 ), recent_messages AS (
@@ -88,8 +94,18 @@ export class MemoryBrowserRepository {
 
   async scopes(identityId: string): Promise<MemoryBrowserScopes> {
     const [projects, conversations, sources, totals] = await Promise.all([
-      this.pool.query<{ id: string; name: string }>('SELECT id,name FROM projects WHERE owner_identity_id=$1 ORDER BY created_at DESC,id', [identityId]),
-      this.pool.query<{ id: string; name: string; project_id: string }>(`SELECT c.id,c.name,c.project_id FROM conversations c JOIN projects p ON p.id=c.project_id WHERE p.owner_identity_id=$1 ORDER BY c.created_at DESC,c.id`, [identityId]),
+      this.pool.query<{ id: string; name: string }>(`SELECT DISTINCT p.id,p.name,p.created_at FROM projects p
+        JOIN project_members pm ON pm.project_id=p.id AND pm.identity_id=$1
+        JOIN conversation_members cm ON cm.project_id=p.id AND cm.identity_id=$1
+        JOIN identities i ON i.id=$1 AND i.status='active'
+        WHERE (p.organization_id IS NULL AND i.type='personal' AND p.owner_identity_id=i.id
+          OR p.organization_id=i.organization_id AND i.type='enterprise') ORDER BY p.created_at DESC,p.id`, [identityId]),
+      this.pool.query<{ id: string; name: string; project_id: string }>(`SELECT c.id,c.name,c.project_id FROM conversations c
+        JOIN conversation_members cm ON cm.conversation_id=c.id AND cm.identity_id=$1
+        JOIN project_members pm ON pm.project_id=cm.project_id AND pm.identity_id=$1
+        JOIN projects p ON p.id=c.project_id JOIN identities i ON i.id=$1 AND i.status='active'
+        WHERE (p.organization_id IS NULL AND i.type='personal' AND p.owner_identity_id=i.id
+          OR p.organization_id=i.organization_id AND i.type='enterprise') ORDER BY c.created_at DESC,c.id`, [identityId]),
       this.pool.query<{ project_id: string | null; conversation_id: string | null; agent_key: string; agent_name: string }>(`${entriesCte}
         SELECT DISTINCT project_id,conversation_id,agent_key,agent_name FROM entries WHERE NOT shared
         UNION SELECT c.project_id::text,ca.conversation_id::text,a.id::text,a.name

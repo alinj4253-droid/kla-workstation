@@ -1,5 +1,5 @@
 // KLA 算力模块领域类型
-// 额度单位统一为 USD（与 Sub2API 计价一致）
+// 额度及台账面向用户统一为算力点；Sub2API 用量成本仍以 USD 保存。
 
 export type Usd = number;
 

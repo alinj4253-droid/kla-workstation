@@ -42,6 +42,8 @@ export type Sub2ApiKey = {
 export type Sub2ApiUsageItem = {
   id: string;
   userId: string;
+  apiKeyId: string | null;
+  requestId: string | null;
   model: string;
   amountUsd: number;
   promptTokens: number;
@@ -97,6 +99,9 @@ export class Sub2ApiClient {
   ) {}
 
   private async request<T>(opts: RequestOptions): Promise<T> {
+    if (!/^https?:\/\/[^/]+/i.test(this.config.baseUrl.trim())) {
+      throw new Sub2ApiError('UNAVAILABLE', 'Sub2API 服务地址未配置，请检查服务端 SUB2API_BASE_URL', 503, false);
+    }
     const maxAttempts = 3;
     let lastError: Error | null = null;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -223,15 +228,27 @@ export class Sub2ApiClient {
   }
 
   async listUsage(userId: string, since?: string, until?: string): Promise<Sub2ApiUsageItem[]> {
-    const params = new URLSearchParams();
-    if (since) params.set('since', since);
-    if (until) params.set('until', until);
-    const qs = params.toString();
-    return this.request<Sub2ApiUsageItem[]>({
-      method: 'GET',
-      path: `/api/v1/admin/users/${userId}/usage${qs ? `?${qs}` : ''}`,
-      apiKey: this.config.adminApiKey,
-    });
+    const items: Sub2ApiUsageItem[] = [];
+    for (let page = 1; page <= 100; page++) {
+      const params = new URLSearchParams({ user_id: userId, page: String(page), page_size: '100' });
+      const result = await this.request<{ items?: Record<string, unknown>[]; pages?: number }>({
+        method: 'GET', path: `/api/v1/admin/usage?${params}`, apiKey: this.config.adminApiKey,
+      });
+      const rows = Array.isArray(result.items) ? result.items : [];
+      for (const row of rows) {
+        const timestamp = String(row.created_at ?? '');
+        if ((since && Date.parse(timestamp) < Date.parse(since)) || (until && Date.parse(timestamp) > Date.parse(until))) continue;
+        items.push({
+          id: String(row.id), userId: String(row.user_id),
+          apiKeyId: row.api_key_id == null ? null : String(row.api_key_id),
+          requestId: row.request_id == null ? null : String(row.request_id),
+          model: String(row.model ?? ''), amountUsd: Number(row.total_cost ?? 0),
+          promptTokens: Number(row.input_tokens ?? 0), completionTokens: Number(row.output_tokens ?? 0), timestamp,
+        });
+      }
+      if (rows.length === 0 || page >= Number(result.pages ?? page) || (since && rows.every(row => Date.parse(String(row.created_at)) < Date.parse(since)))) break;
+    }
+    return items;
   }
 
   // ---- User API（真实路径：/api/v1/*；实测 /api/user/*、/api/auth/* 均为 404） ----
@@ -256,7 +273,17 @@ export class Sub2ApiClient {
   async getUserJwt(userId: string, username: string, managedPassword: string): Promise<string> {
     const cached = this.jwtCache.get(userId);
     if (cached && cached.expiresAt > Date.now() + 30_000) return cached.token;
-    const { token } = await this.loginUser(username, managedPassword);
+    let token = '';
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        ({ token } = await this.loginUser(username, managedPassword));
+        break;
+      } catch (error) {
+        if (!(error instanceof Sub2ApiError) || error.status !== 401 || attempt > 0) throw error;
+        await new Promise(resolve => setTimeout(resolve, 250));
+      }
+    }
+    if (!token) throw new Sub2ApiError('UNAUTHENTICATED', 'Sub2API 登录未返回访问令牌', 401, false);
     // 保守估计 1 小时过期（Sub2API 实际过期时间由服务端决定，留 30s 缓冲）
     this.jwtCache.set(userId, { token, expiresAt: Date.now() + 3_600_000 });
     return token;
@@ -349,6 +376,15 @@ export class Sub2ApiClient {
       apiKey: '',
       bearer: jwt,
     });
+  }
+
+  /** Proxy-side model list is scoped by the selected API Key's group. */
+  async listModels(apiKey: string): Promise<string[]> {
+    const raw = await this.request<Array<{ id?: string }> | { data?: Array<{ id?: string }> }>({
+      method: 'GET', path: '/v1/models', apiKey: '', bearer: apiKey,
+    });
+    const items = Array.isArray(raw) ? raw : raw.data ?? [];
+    return [...new Set(items.map(item => item.id).filter((id): id is string => typeof id === 'string' && id.length > 0))];
   }
 
   // ---- 健康检查 ----

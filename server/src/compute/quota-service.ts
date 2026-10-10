@@ -1,15 +1,17 @@
-// 额度台账：发放 / 分配 / 回收 / 预扣 / 扣减 / 释放
+// 算力点台账：发放 / 分配 / 回收 / 预扣 / 释放 / 上游实际用量扣减。
 // 所有变更走事务 + SELECT FOR UPDATE 行锁，保证并发安全。
-// commit 后异步同步余额到 Sub2API（通过 Outbox 事件）。
 
 import type { Pool } from 'pg';
 import type { ComputeRepository, QueryClient } from './compute-repository.js';
 import type { Sub2ApiClient } from './sub2api-client.js';
 import { availableBalance } from './types.js';
+import { createPointsConverter, type PointsConverter } from './points.js';
+import { createHash } from 'node:crypto';
+import type { Sub2ApiUsageItem } from './sub2api-client.js';
 
 export class QuotaInsufficientError extends Error {
   constructor(public readonly available: number, public readonly requested: number) {
-    super(`额度不足：可用 ${available} USD，请求 ${requested} USD`);
+    super(`算力点不足：可用 ${available} 点，请求 ${requested} 点`);
     this.name = 'QuotaInsufficientError';
   }
 }
@@ -19,7 +21,52 @@ export class QuotaService {
     private readonly pool: Pool,
     private readonly repo: ComputeRepository,
     private readonly sub2api: Sub2ApiClient,
+    private readonly points: PointsConverter = createPointsConverter(),
   ) {}
+
+  /** An upstream usage row is the only source of an actual model charge. */
+  async recordUpstreamUsage(identityId: string, item: Sub2ApiUsageItem, keyId: string | null): Promise<boolean> {
+    if (!Number.isFinite(item.amountUsd) || item.amountUsd < 0) throw new Error('Sub2API 用量金额无效');
+    const amountPoints = this.points.fromUsd(item.amountUsd);
+    const idempotencyKey = `sub2api-usage:${item.userId}:${item.id}`;
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      if (await this.repo.getLedgerByIdempotency(idempotencyKey, client)) {
+        await client.query('COMMIT');
+        return false;
+      }
+      await this.repo.getOrCreateEntitlement({ identityId }, client);
+      const entitlement = await this.repo.lockEntitlement(client, { identityId });
+      if (await this.repo.getLedgerByIdempotency(idempotencyKey, client)) {
+        await client.query('COMMIT');
+        return false;
+      }
+      await client.query("SELECT set_config('kla.upstream_usage', 'on', true)");
+      await this.repo.updateEntitlementAmounts(client, entitlement.id, { used: amountPoints });
+      const ledger = await this.repo.createLedger({
+        entitlementId: entitlement.id, operation: 'commit', amount: amountPoints,
+        status: 'completed', idempotencyKey, requestId: item.requestId,
+        metadata: { source: 'sub2api_usage', upstreamUsageId: item.id },
+      }, client);
+      const usage = await this.repo.upsertUsage({
+        identityId, ledgerId: ledger.id, sub2apiUsageId: item.id, model: item.model,
+        amountUsd: item.amountUsd, promptTokens: item.promptTokens,
+        completionTokens: item.completionTokens,
+        dedupeHash: createHash('sha256').update(idempotencyKey).digest('hex'),
+        recordedAt: item.timestamp, keyId,
+        metadata: { source: 'sub2api_usage', upstreamRequestId: item.requestId },
+      }, client);
+      if (!usage) throw new Error('Sub2API 用量与现有记录冲突');
+      await client.query('COMMIT');
+      return true;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
 
   /** 发放额度（平台充值/运营发放，增加 quota_total） */
   async grant(owner: { identityId?: string; organizationId?: string }, amount: number, requestId: string): Promise<{ entitlementId: string; ledgerId: string }> {
@@ -132,7 +179,7 @@ export class QuotaService {
     }
 
     const synced = await this.transferSub2apiBalances(
-      adminIdentityId, memberIdentityId, -amount, amount, requestId, 'allocate', orgId,
+      adminIdentityId, memberIdentityId, -this.points.toUsd(amount), this.points.toUsd(amount), requestId, 'allocate', orgId,
     );
     if (synced) {
       await Promise.all([
@@ -214,7 +261,7 @@ export class QuotaService {
     }
 
     const synced = await this.transferSub2apiBalances(
-      memberIdentityId, adminIdentityId, -amount, amount, requestId, 'reclaim', orgId,
+      memberIdentityId, adminIdentityId, -this.points.toUsd(amount), this.points.toUsd(amount), requestId, 'reclaim', orgId,
     );
     if (synced) {
       await Promise.all([
@@ -288,43 +335,22 @@ export class QuotaService {
       await client.query('BEGIN');
       await this.repo.getOrCreateEntitlement({ identityId }, client as unknown as QueryClient);
       const ent = await this.repo.lockEntitlement(client as unknown as QueryClient, { identityId });
-      if (availableBalance(ent) < amount) {
-        throw new QuotaInsufficientError(availableBalance(ent), amount);
-      }
-      await this.repo.updateEntitlementAmounts(client as unknown as QueryClient, ent.id, { reserved: amount });
+      const available = availableBalance(ent);
+      if (available <= 0) throw new QuotaInsufficientError(available, amount);
+      // This is a concurrency hold, not the charge. Sub2API enforces the real
+      // balance, so a small positive balance must not fail a larger fixed hold.
+      const reserved = Math.min(amount, available);
+      await this.repo.updateEntitlementAmounts(client as unknown as QueryClient, ent.id, { reserved });
       const ledger = await this.repo.createLedger({
         entitlementId: ent.id,
         operation: 'reserve',
-        amount,
+        amount: reserved,
         status: 'pending',
         idempotencyKey,
         requestId,
       }, client as unknown as QueryClient);
       await client.query('COMMIT');
       return { ledgerId: ledger.id };
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
-  }
-
-  /** 实际扣减（commit，收到 usage 后调用） */
-  async commit(ledgerId: string, amount: number): Promise<void> {
-    const ledger = await this.repo.getLedger(ledgerId);
-    if (!ledger) throw new Error('流水不存在');
-    if (ledger.status !== 'pending') return; // 幂等
-
-    const client = await this.pool.connect();
-    try {
-      await client.query('BEGIN');
-      const ent = await this.repo.lockEntitlement(client as unknown as QueryClient, { identityId: await this.identityIdByLedger(client, ledgerId) });
-      // reserved → used：先释放预扣，再增加已用
-      await this.repo.updateEntitlementAmounts(client as unknown as QueryClient, ent.id, { reserved: -ledger.amount, used: amount });
-      await this.repo.updateLedgerStatus(ledgerId, 'completed', false, client as unknown as QueryClient);
-      // 代理面已按本次模型调用扣费，不再向上游重复调整余额。
-      await client.query('COMMIT');
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
@@ -361,7 +387,7 @@ export class QuotaService {
     const binding = await this.repo.getBinding(owner.identityId, client);
     if (!binding || !binding.sub2apiUserId) return;
     try {
-      await this.sub2api.adjustBalance(binding.sub2apiUserId, delta);
+      await this.sub2api.adjustBalance(binding.sub2apiUserId, this.points.toUsd(delta));
     } catch (error) {
       // 同步失败仅记录，不影响主事务；后续由对账/重试修复
       await this.repo.insertSyncLog({
@@ -382,70 +408,4 @@ export class QuotaService {
     return rows[0].identity_id as string;
   }
 
-  /**
-   * 从 Sub2API 拉取实时余额，回写到 KLA entitlement。
-   * 用于用户直接在 Sub2API 后台充值后，工作台能感知到余额变化。
-   * 仅处理正向漂移（上游余额 > KLA 应有余额），记为 recharge；负向漂移只记日志不改台账。
-   */
-  async reconcileBalanceFromSub2api(identityId: string): Promise<{ synced: boolean; driftUsd: number; sub2apiBalance: number; klaAvailable: number }> {
-    const binding = await this.repo.getBinding(identityId);
-    if (!binding || !binding.sub2apiUserId) {
-      return { synced: false, driftUsd: 0, sub2apiBalance: 0, klaAvailable: 0 };
-    }
-    let sub2apiBalance = 0;
-    try {
-      const user = await this.sub2api.getUser(binding.sub2apiUserId);
-      sub2apiBalance = user?.balance ?? 0;
-    } catch (error) {
-      await this.repo.insertSyncLog({
-        syncType: 'balance', identityId, status: 'error',
-        message: error instanceof Error ? error.message : 'Sub2API 余额查询失败',
-      });
-      return { synced: false, driftUsd: 0, sub2apiBalance: 0, klaAvailable: 0 };
-    }
-
-    const owner = { identityId };
-    const client = await this.pool.connect();
-    try {
-      await client.query('BEGIN');
-      const ent = await this.repo.getOrCreateEntitlement(owner, client as unknown as QueryClient);
-      const klaAvailable = availableBalance(ent);
-      const driftUsd = Math.round((sub2apiBalance - klaAvailable) * 1e8) / 1e8;
-
-      if (driftUsd > 0.0001) {
-        // 上游余额多于 KLA 应有余额 → 视为充值，补记到 quota_total
-        const idempotencyKey = `reconcile_recharge:${identityId}:${sub2apiBalance}`;
-        const existing = await this.repo.getLedgerByIdempotency(idempotencyKey, client as unknown as QueryClient);
-        if (!existing) {
-          await this.repo.updateEntitlementAmounts(client as unknown as QueryClient, ent.id, { total: driftUsd });
-          await this.repo.createLedger({
-            entitlementId: ent.id, operation: 'recharge', amount: driftUsd, status: 'completed',
-            idempotencyKey, requestId: `reconcile-${Date.now()}`, operatorIdentityId: identityId,
-            metadata: { source: 'sub2api_reconciliation', sub2apiBalance, klaAvailable },
-          }, client as unknown as QueryClient);
-        }
-        await this.repo.insertSyncLog({
-          syncType: 'balance', identityId, klaAmount: klaAvailable, sub2apiAmount: sub2apiBalance,
-          driftUsd, status: 'ok', message: `检测到上游充值 ${driftUsd} USD，已同步到台账`,
-        }, client);
-        await client.query('COMMIT');
-        return { synced: true, driftUsd, sub2apiBalance, klaAvailable };
-      }
-
-      // 负向漂移：只记日志，不改台账（避免误扣；用量漂移由用量对账处理）
-      if (driftUsd < -0.0001) {
-        await this.repo.insertSyncLog({
-          syncType: 'balance', identityId, klaAmount: klaAvailable, sub2apiAmount: sub2apiBalance,
-          driftUsd, status: 'warning', message: `上游余额低于台账 ${-driftUsd} USD，等待用量对账`,
-        }, client);
-      }
-      await client.query('COMMIT');
-      return { synced: false, driftUsd, sub2apiBalance, klaAvailable };
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
-  }
 }

@@ -5,6 +5,7 @@ export type ExecutionLocation = z.infer<typeof executionLocationSchema>;
 export const agentDefinitionInputSchema = z.object({
   name: z.string().trim().min(1).max(80), role: z.string().trim().min(1).max(8000),
   modelId: z.string().max(200).nullable().optional(), executionLocation: executionLocationSchema.default('server'),
+  modelKeyId: z.string().uuid().nullable().optional(),
   deviceId: z.string().uuid().nullable().optional(), enabled: z.boolean().default(true),
 });
 export const agentDefinitionPatchSchema = agentDefinitionInputSchema.partial();
@@ -27,6 +28,14 @@ export const runtimeSkillCatalog = [
   { code: 'local_cli', name: '本地 CLI 执行', description: '运行本地命令行程序及参数，支持超时和取消', location: 'local' },
 ] as const;
 export type RuntimeSkillCode = typeof runtimeSkillCatalog[number]['code'];
+export const runtimeSkillBundles = [
+  { code: 'knowledge_research', name: '知识资料处理', description: '检索并读取当前身份已授权的知识内容', tools: ['knowledge_search', 'knowledge_read'] },
+  { code: 'memory_context', name: '短期记忆', description: '读取当前群聊和智能体的短期记忆', tools: ['memory_recall'] },
+  { code: 'artifact_management', name: '成果管理', description: '读取和保存群聊成果文件', tools: ['artifact_read', 'artifact_write'] },
+  { code: 'local_files', name: '本地文件处理', description: '查看、读取并写入当前设备的文件', tools: ['local_list', 'local_read', 'local_write'] },
+  { code: 'local_development', name: '本地代码开发', description: '编写代码并执行本地命令', tools: ['local_code', 'local_cli', 'local_bat'] },
+] as const satisfies ReadonlyArray<{ code: string; name: string; description: string; tools: readonly RuntimeSkillCode[] }>;
+export type RuntimeSkillBundleCode = typeof runtimeSkillBundles[number]['code'];
 export const toolArguments = {
   knowledge_search: z.object({ serviceInstanceId: z.string().min(1), query: z.string().min(1), topK: z.number().int().min(1).max(20).default(5) }),
   knowledge_read: z.object({ serviceInstanceId: z.string().min(1), docId: z.union([z.string(), z.number()]), offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(200).default(20) }),

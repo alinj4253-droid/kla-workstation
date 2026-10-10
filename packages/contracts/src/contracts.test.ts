@@ -83,7 +83,7 @@ describe('compute', () => {
     expect(new Set(COMPUTE_PERMISSION_CODES).size).toBe(COMPUTE_PERMISSION_CODES.length);
   });
 
-  it('创建 Key 校验必填名称并允许可选额度（美元）', () => {
+  it('创建 Key 校验必填名称并允许可选额度（算力点）', () => {
     expect(createComputeKeyRequestSchema.safeParse({}).success).toBe(false);
     expect(createComputeKeyRequestSchema.safeParse({ name: '生产 Key' }).success).toBe(true);
     expect(createComputeKeyRequestSchema.safeParse({ name: '生产 Key', quota: -1 }).success).toBe(false);
@@ -101,12 +101,12 @@ describe('compute', () => {
     expect(computeUsageQuerySchema.safeParse({ scope: 'everyone' }).success).toBe(false);
   });
 
-  it('summary 不包含 secret 且以美元下发余额', () => {
+  it('summary 不包含 secret 且以算力点下发余额', () => {
     const parsed = computeSummarySchema.safeParse({
       identityId: 'id-1',
       identityType: 'personal',
       organizationId: null,
-      currency: 'usd',
+      currency: 'point',
       balance: 0,
       used: 0,
       reserved: 0,

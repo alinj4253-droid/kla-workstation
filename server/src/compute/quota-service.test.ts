@@ -80,15 +80,14 @@ function buildService(opts: { adminBalance: number; memberBalance: number; sameS
 }
 
 describe('QuotaService 企业额度转账', () => {
-  it('发放只向 Sub2API 同步本次增量，模型结算不重复加余额', async () => {
+  it('发放只向 Sub2API 同步本次增量', async () => {
     const { service, deps } = buildService({ adminBalance: 0, memberBalance: 0 });
     await service.grant({ identityId: 'admin-i' }, 0.1, 'grant-1');
     await service.grant({ identityId: 'admin-i' }, 0.2, 'grant-2');
     expect(deps.sub2api.adjustments).toEqual([
-      { userId: 'sub-admin', delta: 0.1 },
-      { userId: 'sub-admin', delta: 0.2 },
+      { userId: 'sub-admin', delta: 0.0001 },
+      { userId: 'sub-admin', delta: 0.0002 },
     ]);
-    await service.commit('led-1', 0.005);
     expect(deps.sub2api.adjustments).toHaveLength(2);
   });
 
@@ -99,8 +98,8 @@ describe('QuotaService 企业额度转账', () => {
     expect(result.sub2apiSynced).toBe(true);
     expect(result.counterpartyLedgerId).toBeTruthy();
     expect(deps.sub2api.adjustments).toEqual([
-      { userId: 'sub-admin', delta: -30 },
-      { userId: 'sub-member', delta: 30 },
+      { userId: 'sub-admin', delta: -0.03 },
+      { userId: 'sub-member', delta: 0.03 },
     ]);
     // 两条流水都被标记为已同步
     expect(deps.repo.calls).toContain('sync:led-1:true');
@@ -126,8 +125,8 @@ describe('QuotaService 企业额度转账', () => {
     const result = await service.reclaim('admin-i', 'org1', 'member-i', 12, 'req-4');
     expect(result.sub2apiSynced).toBe(true);
     expect(deps.sub2api.adjustments).toEqual([
-      { userId: 'sub-member', delta: -12 },
-      { userId: 'sub-admin', delta: 12 },
+      { userId: 'sub-member', delta: -0.012 },
+      { userId: 'sub-admin', delta: 0.012 },
     ]);
   });
 
@@ -140,5 +139,59 @@ describe('QuotaService 企业额度转账', () => {
     const { service } = buildService({ adminBalance: 100, memberBalance: 0 });
     await expect(service.allocate('admin-i', 'org1', 'admin-i', 1, 'req-6')).rejects.toThrow('管理员本人');
     await expect(service.reclaim('admin-i', 'org1', 'admin-i', 1, 'req-7')).rejects.toThrow('管理员本人');
+  });
+});
+
+describe('QuotaService actual usage billing', () => {
+  it('holds only the available points when the fixed hold is larger', async () => {
+    const entitlement = makeEntitlement('e1', 'i1', 1);
+    const updates: number[] = [];
+    const repo = {
+      getLedgerByIdempotency: async () => null,
+      getOrCreateEntitlement: async () => entitlement,
+      lockEntitlement: async () => entitlement,
+      updateEntitlementAmounts: async (_client: unknown, _id: string, delta: { reserved: number }) => { updates.push(delta.reserved); return entitlement; },
+      createLedger: async (input: { amount: number }) => ({ id: 'hold-1', amount: input.amount }),
+    } as unknown as ComputeRepository;
+    const pool = { connect: async () => ({ query: async () => ({ rows: [] }), release: () => {} }) } as unknown as Pool;
+    const service = new QuotaService(pool, repo, {} as never);
+
+    expect(await service.reserve('i1', 10, 'r1')).toEqual({ ledgerId: 'hold-1' });
+    expect(updates).toEqual([1]);
+  });
+
+  it('books one upstream usage row exactly once and never adjusts the upstream balance again', async () => {
+    const ledgerKeys = new Set<string>();
+    const entitlement = makeEntitlement('e1', 'i1', 100);
+    const deltas: number[] = [];
+    const recorded: Array<Parameters<ComputeRepository['upsertUsage']>[0]> = [];
+    const sql: string[] = [];
+    const client = {
+      query: async (statement: string) => { sql.push(statement); return { rows: [] }; },
+      release: () => {},
+    };
+    const pool = { connect: async () => client } as unknown as Pool;
+    const repo = {
+      getLedgerByIdempotency: async (key: string) => ledgerKeys.has(key) ? { id: 'ledger-1' } : null,
+      getOrCreateEntitlement: async () => entitlement,
+      lockEntitlement: async () => entitlement,
+      updateEntitlementAmounts: async (_client: unknown, _id: string, delta: { used: number }) => { deltas.push(delta.used); return entitlement; },
+      createLedger: async (input: { idempotencyKey: string }) => { ledgerKeys.add(input.idempotencyKey); return { id: 'ledger-1' }; },
+      upsertUsage: async (input: Parameters<ComputeRepository['upsertUsage']>[0]) => { recorded.push(input); return { id: 'usage-1' }; },
+    } as unknown as ComputeRepository;
+    const adjustBalance = vi.fn();
+    const service = new QuotaService(pool, repo, { adjustBalance } as never);
+    const item = {
+      id: '39', userId: '52', apiKeyId: '65', requestId: 'r-39', model: 'glm-4',
+      amountUsd: 0.00036205, promptTokens: 120, completionTokens: 40, timestamp: NOW,
+    };
+
+    expect(await service.recordUpstreamUsage('i1', item, 'k1')).toBe(true);
+    expect(await service.recordUpstreamUsage('i1', item, 'k1')).toBe(false);
+    expect(deltas).toEqual([0.362]);
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]).toMatchObject({ identityId: 'i1', keyId: 'k1', sub2apiUsageId: '39', amountUsd: 0.00036205 });
+    expect(sql).toContain("SELECT set_config('kla.upstream_usage', 'on', true)");
+    expect(adjustBalance).not.toHaveBeenCalled();
   });
 });

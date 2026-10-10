@@ -46,6 +46,7 @@ describe('unified runtime tool gateway', () => {
       const project = await accounts.createProject(account.identity.id, '工具项目');
       const room = await accounts.createConversation(project.id, '工具群聊');
       const agent = (await roomRegistry(pool, room.id)).find(item => item.name === '本地执行智能体')!;
+      agent.execution_location = 'server';
       const trigger = await accounts.createMessage(room.id, account.user.id, '保存成果');
       const run = await accounts.createRun(room.id, trigger.id, 'balanced');
       const step = (await pool.query('INSERT INTO conversation_run_steps(run_id,step_index,title,instruction,assigned_agent_id) VALUES($1,1,$2,$3,$4) RETURNING id', [run.id, '保存成果', '写文件', agent.id])).rows[0];
@@ -65,7 +66,7 @@ describe('unified runtime tool gateway', () => {
       expect(call.status).toBe('completed');
       expect(call.result.artifactId).toBeTruthy();
       expect((await pool.query('SELECT kind FROM runtime_events WHERE run_id=$1 ORDER BY sequence', [run.id])).rows.map(row => row.kind)).toEqual(['tool.queued', 'tool.completed']);
-      await pool.query("UPDATE skills SET enabled=false WHERE agent_id=$1 AND definition->>'code'='artifact_write'", [agent.id]);
+      await pool.query("DELETE FROM agent_tool_mounts WHERE agent_id=$1 AND tool_code='artifact_write'", [agent.id]);
       await expect(gateway.prepare(scope, { id: 'write-2', function: { name: 'artifact_write', arguments: '{}' } })).rejects.toThrow(/已停用/);
     } finally {
       await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);

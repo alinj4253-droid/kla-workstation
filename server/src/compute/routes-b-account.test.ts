@@ -14,8 +14,6 @@ function identity(overrides: Partial<Identity> = {}): Identity {
   return { id: 'i1', userId: 'u1', type: 'personal', displayName: '测试用户', organizationId: null, status: 'active', isDefault: true, role: 'personal', ...overrides };
 }
 
-const mockQuota = { reconcileBalanceFromSub2api: async () => ({ synced: false, driftUsd: 0, sub2apiBalance: 0, klaAvailable: 0 }) } as unknown as QuotaService;
-
 function authedAccounts(target: Identity): AccountRepository {
   const session: Session = { id: 's1', userId: target.userId, accessToken: 't', refreshToken: 'r', expiresAt: NOW };
   return { getSession: async () => session, listIdentities: async () => [target] } as unknown as AccountRepository;
@@ -56,7 +54,7 @@ describe('§7.1 当前身份与余额', () => {
         return undefined;
       },
       {
-        getEntitlement: async () => ({ id: 'e1', identityId: 'i1', organizationId: null, quotaTotal: 10, quotaGranted: 0, quotaUsed: 1, quotaReserved: 0.5, version: 1, createdAt: NOW, updatedAt: NOW }),
+        getEntitlement: async () => ({ id: 'e1', identityId: 'i1', organizationId: null, quotaTotal: 10000, quotaGranted: 0, quotaUsed: 1000, quotaReserved: 500, version: 1, createdAt: NOW, updatedAt: NOW }),
         getBinding: async () => ({ identityId: 'i1', sub2apiUserId: 'u1', sub2apiUsername: 'kla-personal-i1', managedPassword: null, status: 'ready', provisionJobId: null, lastError: null, createdAt: NOW, updatedAt: NOW }),
         listKeys: async () => [
           { id: 'k1', identityId: 'i1', sub2apiKeyId: 'sk1', keyPrefix: 'sk-kla-ab', keyFingerprint: 'fp', name: '默认工作站 Key', isDefault: true, status: 'active', groupId: 'group-personal', quotaUsd: null, rpm: null, ipAllowList: [], expiresAt: null, lastSyncedAt: null, createdAt: NOW, updatedAt: NOW },
@@ -68,7 +66,6 @@ describe('§7.1 当前身份与余额', () => {
       computeRepo: repo,
       sub2api: { health: async () => ({ ok: true }) } as unknown as Sub2ApiClient,
       provisioning: {} as unknown as ProvisioningService,
-      quota: mockQuota,
     });
     const response = await app.inject({ method: 'GET', url: '/api/v1/compute/summary', headers: { authorization: 'Bearer t' } });
     expect(response.statusCode).toBe(200);
@@ -76,11 +73,11 @@ describe('§7.1 当前身份与余额', () => {
     expect(body.data).toMatchObject({
       identityId: 'i1',
       identityType: 'personal',
-      currency: 'usd',
-      balance: 8.5,
-      available: 8.5,
-      used: 1,
-      reserved: 0.5,
+      currency: 'point',
+      balance: 8500,
+      available: 8500,
+      used: 1000,
+      reserved: 500,
       provisionState: 'ready',
       availableModelCount: 3,
       sub2apiHealth: 'healthy',
@@ -103,7 +100,6 @@ describe('§7.1 当前身份与余额', () => {
       computeRepo: repo,
       sub2api: { health: async () => ({ ok: true }) } as unknown as Sub2ApiClient,
       provisioning: {} as unknown as ProvisioningService,
-      quota: mockQuota,
     });
     const response = await app.inject({ method: 'GET', url: '/api/v1/compute/summary', headers: { authorization: 'Bearer t' } });
     expect(response.json().data.permissions).toMatchObject({
@@ -120,7 +116,6 @@ describe('§7.1 当前身份与余额', () => {
       computeRepo: repo,
       sub2api: { health: async () => { throw new Error('down'); } } as unknown as Sub2ApiClient,
       provisioning: {} as unknown as ProvisioningService,
-      quota: mockQuota,
     });
     const response = await app.inject({ method: 'GET', url: '/api/v1/compute/summary', headers: { authorization: 'Bearer t' } });
     expect(response.json().data).toMatchObject({ sub2apiHealth: 'unavailable', provisionState: 'pending', balance: 0, defaultKey: null });

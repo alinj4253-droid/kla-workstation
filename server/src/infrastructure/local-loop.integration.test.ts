@@ -29,7 +29,7 @@ describe('local multi-agent conversation loop', () => {
       const project = await accounts.createProject(account.identity.id, '本地联调项目');
       const room = await accounts.createConversation(project.id, '本地联调群聊');
       const agent = (await roomRegistry(pool, room.id)).find(item => item.name === '本地执行智能体')!;
-      await pool.query("UPDATE agents SET execution_location='local' WHERE id=$1", [agent.id]);
+      expect(agent.execution_location).toBe('local');
       const completeChat = vi.fn(async (_identity, request: { requestId: string }) => {
         let message: unknown;
         if (request.requestId.endsWith(':plan')) message = { tool_calls: [{ id: 'plan-local', type: 'function', function: {

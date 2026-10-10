@@ -11,6 +11,7 @@ import type { ComputeRepository } from './compute-repository.js';
 import type { Sub2ApiClient } from './sub2api-client.js';
 import { resolveManagedPassword } from './encryption.js';
 import { COMPUTE_PERMISSION, errorBody, requireIdentity, requirePermission } from './permissions.js';
+import { createPointsConverter } from './points.js';
 
 export type ComputeKeyRouteDeps = {
   accounts: AccountRepository;
@@ -23,7 +24,7 @@ export type ComputeKeyRouteDeps = {
 };
 
 /** 领域对象 → 契约 DTO；secret 永不在此出现。 */
-export function toKeyDto(key: ComputeKey, todayUsageUsd: number): ComputeKeyDto {
+export function toKeyDto(key: ComputeKey, todayUsagePoints: number): ComputeKeyDto {
   return {
     id: key.id,
     name: key.name,
@@ -31,13 +32,13 @@ export function toKeyDto(key: ComputeKey, todayUsageUsd: number): ComputeKeyDto 
     groupId: key.groupId,
     isDefault: key.isDefault,
     status: key.status,
-    quotaUsd: key.quotaUsd,
+    quotaPoints: key.quotaUsd === null ? null : createPointsConverter().fromUsd(key.quotaUsd),
     rpm: key.rpm,
     ipAllowList: key.ipAllowList,
     expiresAt: key.expiresAt,
     createdAt: key.createdAt,
     lastSyncedAt: key.lastSyncedAt,
-    todayUsageUsd,
+    todayUsagePoints,
   };
 }
 
@@ -100,6 +101,26 @@ export async function registerComputeKeyRoutes(app: FastifyInstance, deps: Compu
     return reply.send({ ok: true, data });
   });
 
+  app.get('/api/v1/compute/keys/:keyId/models', async (request: FastifyRequest, reply: FastifyReply) => {
+    const ctx = await requireIdentity(deps.accounts, request, reply);
+    if (!ctx) return;
+    if (!(await requirePermission(pool, ctx.identity, COMPUTE_PERMISSION.modelUse, request, reply, '无权使用模型'))) return;
+    const { keyId } = request.params as { keyId: string };
+    const key = await deps.computeRepo.getKey(keyId, ctx.identity.id);
+    if (!key || key.status !== 'active') return reply.code(404).send(errorBody('NOT_FOUND', '当前身份没有此可用 Key', request.id));
+    const resolved = await resolveUserJwt(ctx.identity.id);
+    if (!resolved.ok) return upstreamFailure(reply, resolved.code, resolved.message, request.id);
+    try {
+      const secret = await deps.sub2api.resolveApiKeySecret(resolved.jwt, key.sub2apiKeyId);
+      if (!secret) return upstreamFailure(reply, 'UNAVAILABLE', '无法读取该 Key 的上游凭据', request.id);
+      const ids = await deps.sub2api.listModels(secret);
+      const catalog = await pool.query<{id:string;name:string}>('SELECT id,name FROM models WHERE enabled=true AND id=ANY($1::text[]) ORDER BY name', [ids]);
+      return reply.send({ ok: true, data: catalog.rows });
+    } catch (error) {
+      return upstreamFailure(reply, 'UNAVAILABLE', error instanceof Error ? error.message : '获取 Key 可用模型失败', request.id);
+    }
+  });
+
   // §7.2 创建：完整 secret 只在此响应出现一次。
   app.post('/api/v1/compute/keys', async (request: FastifyRequest, reply: FastifyReply) => {
     const ctx = await requireIdentity(deps.accounts, request, reply);
@@ -125,7 +146,7 @@ export async function registerComputeKeyRoutes(app: FastifyInstance, deps: Compu
     let upstream;
     try {
       upstream = await deps.sub2api.createApiKey(resolved.jwt, body.name.trim(), groupId, {
-        quota: quota.value,
+        quota: quota.value === undefined ? undefined : createPointsConverter().toUsd(quota.value),
         rpm: rpm.value,
         ipAllowList: ipAllowList.value,
         expiresAt: expiresAt.value,
@@ -141,7 +162,7 @@ export async function registerComputeKeyRoutes(app: FastifyInstance, deps: Compu
       keyFingerprint: upstream.keyFingerprint,
       name: body.name.trim(),
       groupId: groupId || null,
-      quota: quota.value ?? null,
+      quota: quota.value === undefined ? null : createPointsConverter().toUsd(quota.value),
       rpm: rpm.value ?? null,
       ipAllowList: ipAllowList.value ?? [],
       expiresAt: expiresAt.value ?? null,
@@ -176,7 +197,7 @@ export async function registerComputeKeyRoutes(app: FastifyInstance, deps: Compu
       else {
         const parsed = optionalPositiveNumber(body.quota, 'quota');
         if (!parsed.ok) return reply.code(400).send(errorBody('INVALID_ARGUMENT', parsed.message, request.id));
-        patch.quota = parsed.value ?? null;
+        patch.quota = parsed.value === undefined ? null : createPointsConverter().toUsd(parsed.value);
       }
     }
     if (body.rpm !== undefined) {

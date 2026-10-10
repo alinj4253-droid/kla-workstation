@@ -30,6 +30,11 @@ export function formatUsd(value: number | null | undefined): string {
   return `$${value.toFixed(4)}`;
 }
 
+export function formatPoints(value: number | null | undefined): string {
+  if (value === null || value === undefined) return '—';
+  return `${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(value)} 点`;
+}
+
 export function formatTokens(value: number | null | undefined): string {
   if (value === null || value === undefined) return '—';
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`;

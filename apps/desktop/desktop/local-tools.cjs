@@ -30,6 +30,14 @@ async function allowedPath(target, taskRoot, writing = false) {
   if (!resolvedRoots.some(root => within(real, root))) throw new Error('路径不在本地允许目录内');
   return target;
 }
+async function approvedReadPath(target, taskRoot, approved) {
+  try { return await allowedPath(target, taskRoot); }
+  catch (error) {
+    if (!approved || error.message !== '路径不在本地允许目录内') throw error;
+    if ((await fs.lstat(target)).isSymbolicLink()) throw new Error('审批路径不能是符号链接，请使用实际路径重新请求', { cause: error });
+    return target;
+  }
+}
 function kill(child) {
   if (!child.pid) return;
   if (process.platform === 'win32') { const killer=spawn('taskkill.exe',['/PID',String(child.pid),'/T','/F'],{windowsHide:true,stdio:'ignore'}); killer.on('error',()=>child.kill()); }
@@ -48,11 +56,11 @@ function command(executable,args,cwd,timeoutMs,signal) {
     child.on('close',exitCode=>{cleanup();if(reason)reject(new Error(reason));else resolve({exitCode,stdout,stderr,...(exitCode!==0?{error:`程序退出码 ${exitCode}`}:{})});});
   });
 }
-async function executeLocal(call,root,signal) {
+async function executeLocal(call,root,signal,approvedRead=false) {
   if(!capabilities.includes(call.tool))throw new Error('不支持的本地技能');signal.throwIfAborted();
   const a=call.arguments;const folder=path.join(root,call.runId,call.stepId);await fs.mkdir(folder,{recursive:true});
-  if(call.tool==='local_read'){const target=await allowedPath(absolute(a.path),root);const stat=await fs.stat(target);if(stat.size>10_000_000)throw new Error('文本读取限 10 MB，请用 CLI 分段处理');const text=await fs.readFile(target,'utf8');return{result:{content:text.slice(a.offset??0,(a.offset??0)+(a.maxChars??20000)),sizeBytes:stat.size,truncated:text.length>(a.offset??0)+(a.maxChars??20000)}};}
-  if(call.tool==='local_list'){const target=await allowedPath(absolute(a.path),root);const entries=await fs.readdir(target,{withFileTypes:true});return{result:{entries:entries.slice(0,2000).map(e=>({name:e.name,directory:e.isDirectory()})),truncated:entries.length>2000}};}
+  if(call.tool==='local_read'){const target=await approvedReadPath(absolute(a.path),root,approvedRead);const stat=await fs.stat(target);if(stat.size>10_000_000)throw new Error('文本读取限 10 MB，请用 CLI 分段处理');const text=await fs.readFile(target,'utf8');return{result:{content:text.slice(a.offset??0,(a.offset??0)+(a.maxChars??20000)),sizeBytes:stat.size,truncated:text.length>(a.offset??0)+(a.maxChars??20000)}};}
+  if(call.tool==='local_list'){const target=await approvedReadPath(absolute(a.path),root,approvedRead);const entries=await fs.readdir(target,{withFileTypes:true});return{result:{entries:entries.slice(0,2000).map(e=>({name:e.name,directory:e.isDirectory()})),truncated:entries.length>2000}};}
   if(call.tool==='local_write'||call.tool==='local_code'){
     const name=filename(a.fileName);if(typeof a.content!=='string'||a.content.length>1_000_000)throw new Error('文件内容过大或无效');const target=await allowedPath(a.path?absolute(a.path):path.join(folder,name),root,true);
     signal.throwIfAborted();await fs.mkdir(path.dirname(target),{recursive:true});await fs.writeFile(target,a.content,'utf8');
@@ -66,7 +74,7 @@ async function executeLocal(call,root,signal) {
   if(call.tool==='local_bat'){
     if(process.platform!=='win32')throw new Error('BAT 仅支持 Windows 设备');
     const script=path.join(folder,`command-${filename(call.id)}.bat`);await fs.writeFile(script,'@echo off\r\nchcp 65001 >nul\r\n'+a.script,'utf8');
-    return{result:await command('cmd.exe',['/d','/s','/c',`"${script}"`],cwd,timeout,signal)};
+    return{result:await command('cmd.exe',['/d','/c',script],cwd,timeout,signal)};
   }
   if(typeof a.executable!=='string'||!a.executable||!Array.isArray(a.args)||a.args.some(x=>typeof x!=='string'))throw new Error('CLI 参数无效');
   return{result:await command(a.executable,a.args,cwd,timeout,signal)};

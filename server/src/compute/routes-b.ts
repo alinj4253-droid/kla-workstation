@@ -14,6 +14,7 @@ import type {
 import type { AccountRepository, Identity } from '../repositories/types.js';
 import type { ComputeRepository } from './compute-repository.js';
 import { COMPUTE_PERMISSION, errorBody, hasPermission, requireIdentity } from './permissions.js';
+import { createPointsConverter } from './points.js';
 
 export type ComputeRouteBDeps = {
   accounts: AccountRepository;
@@ -60,8 +61,8 @@ export function mapComputeModel(row: ComputeModelRow): ComputeModel {
       streaming: capabilities.streaming === true,
     },
     contextWindow: context,
-    inputPricePerMillionTokensUsd: toNumber(row.input_price_per_mtok_usd),
-    outputPricePerMillionTokensUsd: toNumber(row.output_price_per_mtok_usd),
+    inputPricePerMillionTokensPoints: row.input_price_per_mtok_usd === null ? null : createPointsConverter().fromUsd(Number(row.input_price_per_mtok_usd)),
+    outputPricePerMillionTokensPoints: row.output_price_per_mtok_usd === null ? null : createPointsConverter().fromUsd(Number(row.output_price_per_mtok_usd)),
     available: row.enabled === true,
     availableGroups: Array.isArray(row.available_groups) ? row.available_groups.filter((group): group is string => typeof group === 'string') : [],
     status,
@@ -83,6 +84,7 @@ export type ComputeUsageRow = {
   latency_ms: number | null;
   status: string;
   amount_usd: string | number | null;
+  amount_points?: string | number | null;
   recorded_at: Date | string;
 };
 
@@ -104,12 +106,12 @@ export function mapUsageRecord(row: ComputeUsageRow): ComputeUsageRecord {
     requestCount: 1,
     latencyMs: row.latency_ms,
     status: row.status,
-    costUsd: toNumber(row.amount_usd) ?? 0,
+    costPoints: toNumber(row.amount_points) ?? 0,
     usageAt: new Date(row.recorded_at).toISOString(),
   };
 }
 
-const CSV_HEADERS = ['时间', '模型', 'Key前缀', '项目', '输入Token', '输出Token', '总Token', '状态', '耗时ms', '费用USD'];
+const CSV_HEADERS = ['时间', '模型', 'Key前缀', '项目', '输入Token', '输出Token', '总Token', '状态', '耗时ms', '费用算力点'];
 
 function csvCell(value: string | number | null): string {
   const text = value === null ? '' : String(value);
@@ -131,7 +133,7 @@ export function buildUsageCsv(records: ComputeUsageRecord[]): string {
         record.totalTokens,
         record.status,
         record.latencyMs ?? '',
-        record.costUsd,
+        record.costPoints,
       ]
         .map(csvCell)
         .join(','),
@@ -274,7 +276,7 @@ export async function registerComputeRoutesB(app: FastifyInstance, deps: Compute
     filter.projectId,
   ];
   const USAGE_COLUMNS = `u.id, u.identity_id, u.model, u.key_id, k.key_prefix, u.project_id, u.conversation_id, u.task_id,
-              u.prompt_tokens, u.completion_tokens, u.latency_ms, u.status, u.amount_usd, u.recorded_at`;
+              u.prompt_tokens, u.completion_tokens, u.latency_ms, u.status, u.amount_usd, u.amount_points, u.recorded_at`;
 
   app.get('/api/v1/compute/usage', async (request: FastifyRequest, reply: FastifyReply) => {
     const ctx = await requireIdentity(deps.accounts, request, reply);
@@ -318,7 +320,7 @@ export async function registerComputeRoutesB(app: FastifyInstance, deps: Compute
       request_count: number;
       prompt_tokens: string | null;
       completion_tokens: string | null;
-      amount_usd: string | number | null;
+      amount_points: string | number | null;
       success_count: number;
       failure_count: number;
       avg_latency_ms: string | number | null;
@@ -328,33 +330,33 @@ export async function registerComputeRoutesB(app: FastifyInstance, deps: Compute
         `SELECT COUNT(*)::int AS request_count,
                 COALESCE(SUM(u.prompt_tokens),0)::bigint AS prompt_tokens,
                 COALESCE(SUM(u.completion_tokens),0)::bigint AS completion_tokens,
-                COALESCE(SUM(u.amount_usd),0) AS amount_usd,
+                COALESCE(SUM(u.amount_points),0) AS amount_points,
                 COUNT(*) FILTER (WHERE u.status = 'success')::int AS success_count,
                 COUNT(*) FILTER (WHERE u.status <> 'success')::int AS failure_count,
                 AVG(u.latency_ms) AS avg_latency_ms
          ${USAGE_FROM} WHERE ${where}`,
         params,
       ),
-      rawPool.query<{ key: string; request_count: number; total_tokens: string | null; cost_usd: string | number | null }>(
+      rawPool.query<{ key: string; request_count: number; total_tokens: string | null; cost_points: string | number | null }>(
         `SELECT COALESCE(u.model, '未标注') AS key, COUNT(*)::int AS request_count,
                 COALESCE(SUM(COALESCE(u.prompt_tokens,0) + COALESCE(u.completion_tokens,0)),0)::bigint AS total_tokens,
-                COALESCE(SUM(u.amount_usd),0) AS cost_usd
-         ${USAGE_FROM} WHERE ${where} GROUP BY 1 ORDER BY cost_usd DESC`,
+                COALESCE(SUM(u.amount_points),0) AS cost_points
+         ${USAGE_FROM} WHERE ${where} GROUP BY 1 ORDER BY cost_points DESC`,
         params,
       ),
-      rawPool.query<{ key: string; request_count: number; total_tokens: string | null; cost_usd: string | number | null }>(
+      rawPool.query<{ key: string; request_count: number; total_tokens: string | null; cost_points: string | number | null }>(
         `SELECT to_char(date_trunc('day', u.recorded_at), 'YYYY-MM-DD') AS key, COUNT(*)::int AS request_count,
                 COALESCE(SUM(COALESCE(u.prompt_tokens,0) + COALESCE(u.completion_tokens,0)),0)::bigint AS total_tokens,
-                COALESCE(SUM(u.amount_usd),0) AS cost_usd
+                COALESCE(SUM(u.amount_points),0) AS cost_points
          ${USAGE_FROM} WHERE ${where} GROUP BY 1 ORDER BY 1`,
         params,
       ),
     ]);
-    const bucket = (row: { key: string; request_count: number; total_tokens: string | null; cost_usd: string | number | null }) => ({
+    const bucket = (row: { key: string; request_count: number; total_tokens: string | null; cost_points: string | number | null }) => ({
       key: row.key,
       requestCount: row.request_count,
       totalTokens: toNumber(row.total_tokens) ?? 0,
-      costUsd: toNumber(row.cost_usd) ?? 0,
+      costPoints: toNumber(row.cost_points) ?? 0,
     });
     const row = totals.rows[0];
     const inputTokens = toNumber(row?.prompt_tokens) ?? 0;
@@ -366,7 +368,7 @@ export async function registerComputeRoutesB(app: FastifyInstance, deps: Compute
       inputTokens,
       outputTokens,
       totalTokens: inputTokens + outputTokens,
-      costUsd: toNumber(row?.amount_usd) ?? 0,
+      costPoints: toNumber(row?.amount_points) ?? 0,
       successCount: row?.success_count ?? 0,
       failureCount: row?.failure_count ?? 0,
       avgLatencyMs: toNumber(row?.avg_latency_ms),

@@ -7,6 +7,7 @@ import { agentTools, parseToolArguments, RuntimeTools } from './tools.js';
 import type { ComputeGateway, GatewayChatInput } from '../compute/gateway.js';
 import type { Identity } from '../repositories/types.js';
 import type { AgentMemoryScope, ShortTermMemoryService } from '../memories/short-term.js';
+import { effectiveToolCodes } from './registry.js';
 
 export type ToolScope = {
   identityId: string;
@@ -85,10 +86,9 @@ export class ToolGateway {
     if (!skill || !scope.agent.skills.includes(skill.code) || !this.discover(scope.agent).some(tool => tool.function.name === name)) {
       throw new Error(`智能体无权调用未挂载或已停用的工具：${name}`);
     }
-    const enabled = await this.pool.query(`SELECT 1 FROM skills s JOIN agents a ON a.id=s.agent_id
-      WHERE a.id=$1 AND a.identity_id=$2 AND a.enabled AND s.enabled AND s.definition->>'code'=$3`,
-    [scope.agent.id, scope.identityId, name]);
-    if (!enabled.rows[0]) throw new Error(`工具已停用或智能体已失效：${name}`);
+    const agent = await this.pool.query('SELECT enabled FROM agents WHERE id=$1 AND identity_id=$2', [scope.agent.id, scope.identityId]);
+    const enabled = await effectiveToolCodes(this.pool, scope.agent.id);
+    if (!agent.rows[0]?.enabled || !enabled.includes(name)) throw new Error(`工具已停用或智能体已失效：${name}`);
     if (skill.location === 'local' && (scope.agent.execution_location !== 'local' || !scope.deviceId)) {
       throw new Error('本地工具需要已认证的本地执行设备');
     }

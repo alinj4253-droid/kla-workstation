@@ -33,8 +33,8 @@ describe('mapComputeModel', () => {
       provider: 'deepseek',
       capabilities: { vision: false, reasoning: false, tools: false, streaming: true },
       contextWindow: 128000,
-      inputPricePerMillionTokensUsd: 0.5,
-      outputPricePerMillionTokensUsd: null,
+      inputPricePerMillionTokensPoints: 500,
+      outputPricePerMillionTokensPoints: null,
       available: true,
       availableGroups: ['group-chat', 'group-personal'],
       status: 'active',
@@ -78,10 +78,11 @@ describe('mapUsageRecord', () => {
       latency_ms: 123,
       status: 'success',
       amount_usd: '0.00012345',
+      amount_points: '0.12345',
       recorded_at: new Date('2026-10-07T00:00:00.000Z'),
     });
     expect(record.totalTokens).toBe(30);
-    expect(record.costUsd).toBeCloseTo(0.00012345);
+    expect(record.costPoints).toBeCloseTo(0.12345);
     expect(record.usageAt).toBe('2026-10-07T00:00:00.000Z');
     expect(record.keyPrefix).toBe('sk-kla-ab');
     expect(record.requestCount).toBe(1);
@@ -102,12 +103,13 @@ describe('mapUsageRecord', () => {
       latency_ms: null,
       status: 'success',
       amount_usd: null,
+      amount_points: null,
       recorded_at: '2026-10-07T00:00:00.000Z',
     });
     expect(record.modelId).toBeNull();
     expect(record.inputTokens).toBe(0);
     expect(record.totalTokens).toBe(0);
-    expect(record.costUsd).toBe(0);
+    expect(record.costPoints).toBe(0);
   });
 });
 
@@ -129,7 +131,7 @@ describe('buildUsageCsv', () => {
         requestCount: 1,
         latencyMs: null,
         status: 'success',
-        costUsd: 0,
+        costPoints: 0,
         usageAt: '2026-10-07T00:00:00.000Z',
       },
     ]);

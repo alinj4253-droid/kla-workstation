@@ -46,7 +46,7 @@ describe('points converter', () => {
     expect(() => normalizePointsPerUsd(-1000)).toThrow(/POINTS_PER_USD/);
     expect(() => normalizePointsPerUsd(Number.NaN)).toThrow(/POINTS_PER_USD/);
     expect(() => normalizePointsPerUsd(Number.POSITIVE_INFINITY)).toThrow(/POINTS_PER_USD/);
-    expect(() => createPointsConverter(999.6)).not.toThrow(); // 归一为 1000
+    expect(() => createPointsConverter(999.6)).toThrow(/迁移台账/);
 
     expect(() => converter.fromUsd(-0.01)).toThrow(/USD 成本/);
     expect(() => converter.fromUsd(Number.NaN)).toThrow(/USD 成本/);
@@ -54,10 +54,8 @@ describe('points converter', () => {
     expect(() => converter.toUsd(Number.POSITIVE_INFINITY)).toThrow(/算力点/);
   });
 
-  it('自定义汇率按整数点规划', () => {
-    expect(normalizePointsPerUsd(999.6)).toBe(1000);
-    const custom = createPointsConverter(500);
-    expect(custom.fromUsd(0.0042)).toBe(2.1);
-    expect(custom.toUsd(2.1)).toBeCloseTo(0.0042, 8);
+  it('非 1000 的汇率必须先完成台账迁移', () => {
+    expect(normalizePointsPerUsd(1000)).toBe(1000);
+    expect(() => createPointsConverter(500)).toThrow(/迁移台账/);
   });
 });

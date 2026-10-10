@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Check, ChevronDown, Cpu, KeyRound, Link2, Plus, Search, Settings, Sparkles, Wrench, X, Cable, Gauge, ShieldCheck, Sun, UserCircle, Users } from 'lucide-react';
 import { runtimeApi, type RuntimeAgent, type RuntimeDevice, type RuntimeSkill, type RuntimeTool } from '../api/runtime';
+import { computeApi } from '../api/compute';
 import { klaApi } from '../api/client';
 import { Badge, IconButton } from './ui';
 import type { ExecutionLocation } from '@kla-workstation/contracts';
@@ -30,22 +31,41 @@ function avatarTone(name: string): string {
 export function RuntimeAgentManagement({ identityId, notify }: Props): React.JSX.Element {
   const [agents, setAgents] = useState<RuntimeAgent[]>([]);
   const [devices, setDevices] = useState<RuntimeDevice[]>([]);
-  const [skills, setSkills] = useState<RuntimeSkill[]>([]);
-  const [models, setModels] = useState<Array<{ id: string; name: string }>>([]);
-  const [draft, setDraft] = useState<{ id: string | null; name: string; role: string; modelId: string | null; executionLocation: ExecutionLocation; deviceId: string | null; enabled: boolean } | null>(null);
+  const [draft, setDraft] = useState<{ id: string | null; name: string; role: string; modelId: string | null; modelKeyId: string | null; executionLocation: ExecutionLocation; deviceId: string | null; enabled: boolean } | null>(null);
+  const [capabilityAgent, setCapabilityAgent] = useState<RuntimeAgent | null>(null);
+  const [keys, setKeys] = useState<Array<{id:string;name:string;keyPrefix:string;status:string}>>([]);
+  const [keyModels, setKeyModels] = useState<Array<{id:string;name:string}>>([]);
+  const [modelLoading, setModelLoading] = useState(false);
+  const [modelError, setModelError] = useState('');
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<'all' | 'builtin' | 'external' | 'custom'>('all');
   const [view, setView] = useState<'mine' | 'market'>('mine');
   const [busy, setBusy] = useState(false);
 
   const load = async (): Promise<void> => {
-    const [a, d, s, m] = await Promise.all([runtimeApi.agents(), runtimeApi.devices(), runtimeApi.skills(), klaApi.request<Array<{ id: string; name: string }>>('/v1/models')]);
+    const [a, d] = await Promise.all([runtimeApi.agents(), runtimeApi.devices()]);
     if (a.ok) setAgents(a.data); else notify(a.message);
     if (d.ok) setDevices(d.data);
-    if (s.ok) setSkills(s.data);
-    if (m.ok) setModels(m.data);
   };
   useEffect(() => { let live = true; void load().catch(() => notify('智能体加载失败')); return () => { live = false; }; }, [identityId]);
+
+  useEffect(() => {
+    if (!draft) return;
+    let live = true;
+    void computeApi.keys().then(result => { if (live) { if (result.ok) setKeys(result.data.items.filter(key => key.status === 'active')); else setModelError(result.message); } });
+    return () => { live = false; };
+  }, [Boolean(draft), identityId]);
+  useEffect(() => {
+    if (!draft?.modelKeyId) { setKeyModels([]); setModelError(''); return; }
+    let live = true;
+    setModelLoading(true); setModelError(''); setKeyModels([]);
+    void runtimeApi.keyModels(draft.modelKeyId).then(result => {
+      if (!live) return;
+      if (result.ok) setKeyModels(result.data);
+      else setModelError(result.message);
+    }).catch(() => { if (live) setModelError('获取模型失败'); }).finally(() => { if (live) setModelLoading(false); });
+    return () => { live = false; };
+  }, [draft?.modelKeyId, identityId]);
 
   const visibleAgents = useMemo(() => agents.filter((agent) => {
     const textMatch = `${agent.name} ${agent.role}`.toLowerCase().includes(query.toLowerCase());
@@ -55,6 +75,7 @@ export function RuntimeAgentManagement({ identityId, notify }: Props): React.JSX
 
   const save = async (): Promise<void> => {
     if (!draft) return;
+    if (draft.modelKeyId && (!draft.modelId || !keyModels.some(model => model.id === draft.modelId))) { notify('请先选择该 Key 下可用的模型'); return; }
     setBusy(true);
     try {
       const result = await runtimeApi.saveAgent(draft.id, draft);
@@ -66,14 +87,21 @@ export function RuntimeAgentManagement({ identityId, notify }: Props): React.JSX
   return <div className="ws-agent-module">
     <div className="ws-agent-heading">
       <div><h1>智能体</h1><p>管理官方智能体、外接三方和自定义智能体；为每个角色配置模型与技能。</p></div>
-      {view === 'mine' && <button className="ws-primary" onClick={() => setDraft({ id: null, name: '', role: '', modelId: null, executionLocation: 'server', deviceId: null, enabled: true })}><Plus size={15} /> 新建智能体</button>}
+      {view === 'mine' && <button className="ws-primary" onClick={() => setDraft({ id: null, name: '', role: '', modelId: null, modelKeyId: null, executionLocation: 'server', deviceId: null, enabled: true })}><Plus size={15} /> 新建智能体</button>}
     </div>
     <div className="ws-agent-tabs"><button className={view === 'mine' ? 'active' : ''} onClick={() => setView('mine')}>我的智能体 <small>· {agents.length}</small></button><button className={view === 'market' ? 'active' : ''} onClick={() => setView('market')}>智能体市场 <small>· {marketAgents.length}</small></button></div>
     {view === 'mine' ? <>
       <div className="ws-agent-toolbar"><label className="ws-agent-search"><Search size={15} /><input placeholder="搜索智能体..." value={query} onChange={(event) => setQuery(event.target.value)} /></label><div className="ws-agent-chips"><button className={filter === 'all' ? 'active' : ''} onClick={() => setFilter('all')}>全部 {agents.length}</button><button className={filter === 'builtin' ? 'active' : ''} onClick={() => setFilter('builtin')}>官方内置 {agents.filter(a => a.name === '统筹智能体' || a.name === '本地执行智能体').length}</button><button className={filter === 'external' ? 'active' : ''} onClick={() => setFilter('external')}>外接三方 {agents.filter(a => a.type === 'external' || a.type === 'external-cli').length}</button><button className={filter === 'custom' ? 'active' : ''} onClick={() => setFilter('custom')}>自定义 {agents.filter(a => a.name !== '统筹智能体' && a.name !== '本地执行智能体' && a.type !== 'external' && a.type !== 'external-cli').length}</button></div></div>
-      <div className="ws-agent-grid">{visibleAgents.map((agent) => <article className="ws-agent-card" key={agent.id}><div className="ws-agent-card-head"><span className={`ws-agent-avatar is-${avatarTone(agent.name)}`}>{agent.name.slice(0, 1)}</span><div><h3>{agent.name}</h3><small className="ws-agent-code">{agent.type === 'external' || agent.type === 'external-cli' ? 'external.agent' : `builtin.${agent.id.slice(0, 8)}`}</small></div><button className={`ws-agent-switch ${agent.enabled ? 'active' : ''}`} aria-label="切换启用状态" disabled={agent.name === '统筹智能体'} onClick={() => void runtimeApi.toggleAgent(agent.id, !agent.enabled).then((result) => { if (result.ok) void load(); else notify(result.message); }).catch(() => notify('操作失败'))}><span /></button></div><div className="ws-agent-tags"><Badge tone={agent.name === '统筹智能体' || agent.name === '本地执行智能体' || agent.type === 'external' || agent.type === 'external-cli' ? 'blue' : 'muted'}>{agent.name === '统筹智能体' || agent.name === '本地执行智能体' ? '官方内置' : agent.type === 'external' || agent.type === 'external-cli' ? '外接三方' : '自定义'}</Badge><Badge tone={agent.enabled ? 'green' : 'muted'}>{agent.enabled ? '已启用' : '已停用'}</Badge></div><div className="ws-agent-fields"><span><b>运行方式</b>{agent.name === '统筹智能体' ? '服务端编排智能体' : (agent.executionLocation ?? agent.execution_location) === 'local' ? '本地执行智能体' : '服务端执行'}</span><span><b>挂载模型</b>{agent.modelId ?? agent.model_id ?? '使用默认槽位'}</span></div><p className="ws-agent-description">{agent.role || '暂无角色说明'}</p><div className="ws-agent-skills">{skills.filter(skill => skill.agent_id === agent.id && skill.enabled).slice(0, 4).map(skill => <span key={skill.id}>{skill.name}</span>)}{!skills.some(skill => skill.agent_id === agent.id && skill.enabled) && <span className="muted">暂无已启用技能</span>}</div><footer><button onClick={() => setDraft({ id: agent.id, name: agent.name, role: agent.role, modelId: agent.modelId ?? agent.model_id ?? null, executionLocation: agent.executionLocation ?? agent.execution_location ?? 'server', deviceId: agent.deviceId ?? agent.device_id ?? null, enabled: agent.enabled })}><Cpu size={14} /> 挂载模型</button><button onClick={() => setDraft({ id: agent.id, name: agent.name, role: agent.role, modelId: agent.modelId ?? agent.model_id ?? null, executionLocation: agent.executionLocation ?? agent.execution_location ?? 'server', deviceId: agent.deviceId ?? agent.device_id ?? null, enabled: agent.enabled })}><Sparkles size={14} /> 技能管理</button><button onClick={() => notify(`权限管理：${agent.name}`)}><KeyRound size={14} /> 权限</button></footer></article>)}</div>
+      <div className="ws-agent-grid">{visibleAgents.map(agent => <article className="ws-agent-card" key={agent.id}>
+        <div className="ws-agent-card-head"><span className={`ws-agent-avatar is-${avatarTone(agent.name)}`}>{agent.name.slice(0, 1)}</span><div><h3>{agent.name}</h3><small className="ws-agent-code">{agent.type === 'external' || agent.type === 'external-cli' ? 'external.agent' : `builtin.${agent.id.slice(0, 8)}`}</small></div><button className={`ws-agent-switch ${agent.enabled ? 'active' : ''}`} aria-label="切换启用状态" disabled={agent.name === '统筹智能体'} onClick={() => void runtimeApi.toggleAgent(agent.id, !agent.enabled).then(result => { if (result.ok) void load(); else notify(result.message); }).catch(() => notify('操作失败'))}><span /></button></div>
+        <div className="ws-agent-tags"><Badge tone={agent.name === '统筹智能体' || agent.name === '本地执行智能体' || agent.type === 'external' || agent.type === 'external-cli' ? 'blue' : 'muted'}>{agent.name === '统筹智能体' || agent.name === '本地执行智能体' ? '官方内置' : agent.type === 'external' || agent.type === 'external-cli' ? '外接三方' : '自定义'}</Badge><Badge tone={agent.enabled ? 'green' : 'muted'}>{agent.enabled ? '已启用' : '已停用'}</Badge></div>
+        <div className="ws-agent-fields"><span><b>运行方式</b>{agent.name === '统筹智能体' ? '服务端编排智能体' : (agent.executionLocation ?? agent.execution_location) === 'local' ? '本地执行智能体' : '服务端执行'}</span><span><b>挂载模型</b>{agent.modelId ?? agent.model_id ?? '使用默认槽位'}</span></div>
+        <p className="ws-agent-description">{agent.role || '暂无角色说明'}</p>
+        <footer><button onClick={() => setDraft({ id: agent.id, name: agent.name, role: agent.role, modelId: agent.modelId ?? agent.model_id ?? null, modelKeyId: agent.modelKeyId ?? agent.model_key_id ?? null, executionLocation: agent.executionLocation ?? agent.execution_location ?? 'server', deviceId: agent.deviceId ?? agent.device_id ?? null, enabled: agent.enabled })}><Cpu size={14} /> 挂载模型</button><button onClick={() => setCapabilityAgent(agent)}><Sparkles size={14} /> 技能管理</button><button onClick={() => notify(`权限管理：${agent.name}`)}><KeyRound size={14} /> 权限</button></footer>
+      </article>)}</div>
     </> : <AgentMarket notify={notify} installedNames={agents.map(agent => agent.name)} onInstalled={load} />}
-    {draft && <AgentEditor draft={draft} setDraft={setDraft} models={models} devices={devices} busy={busy} save={save} />}
+    {draft && <AgentEditor draft={draft} setDraft={setDraft} keys={keys} keyModels={keyModels} modelLoading={modelLoading} modelError={modelError} devices={devices} busy={busy} save={save} />}
+    {capabilityAgent && <AgentCapabilityEditor agent={capabilityAgent} notify={notify} onClose={() => setCapabilityAgent(null)} />}
   </div>;
 }
 
@@ -85,7 +113,7 @@ function AgentMarket({ notify, installedNames, onInstalled }: { notify: (text: s
   const install = async (agent: typeof marketAgents[number]): Promise<void> => {
     setInstalling(agent.name);
     try {
-      const result = await runtimeApi.saveAgent(null, { name: agent.name, role: agent.description, modelId: null, executionLocation: 'server', deviceId: null, enabled: true });
+      const result = await runtimeApi.saveAgent(null, { name: agent.name, role: agent.description, modelId: null, modelKeyId: null, executionLocation: 'server', deviceId: null, enabled: true });
       if (!result.ok) { notify(result.message); return; }
       await onInstalled(); notify(`${agent.name}已安装到我的智能体`);
     } catch { notify('安装失败，请检查后端连接'); } finally { setInstalling(null); }
@@ -93,19 +121,67 @@ function AgentMarket({ notify, installedNames, onInstalled }: { notify: (text: s
   return <div className="ws-agent-market"><div className="ws-market-controls"><label className="ws-agent-search"><Search size={15} /><input placeholder="搜索市面上的通用智能体..." value={query} onChange={event => setQuery(event.target.value)} /></label><label className="ws-market-select"><select value={category} onChange={event => setCategory(event.target.value)}><option>全部分类</option><option>办公协作</option><option>研发工具</option><option>数据与检索</option><option>行业专业</option></select><ChevronDown size={14} /></label></div><div className="ws-agent-chips"><button className={category === '全部分类' ? 'active' : ''} onClick={() => setCategory('全部分类')}>全部 {marketAgents.length}</button><button className={category === '办公协作' ? 'active' : ''} onClick={() => setCategory('办公协作')}>办公协作</button><button className={category === '研发工具' ? 'active' : ''} onClick={() => setCategory('研发工具')}>研发工具</button><button className={category === '数据与检索' ? 'active' : ''} onClick={() => setCategory('数据与检索')}>数据与检索</button><button className={category === '行业专业' ? 'active' : ''} onClick={() => setCategory('行业专业')}>行业专业</button></div><div className="ws-market-grid">{list.map(agent => <article className="ws-market-card" key={agent.name}><div className="ws-agent-card-head"><span className={`ws-agent-avatar is-${agent.tone}`}>{agent.name.slice(0, 1)}</span><div><h3>{agent.name}</h3><small>{agent.category} · 通用能力</small></div></div><p>{agent.description}</p><div className="ws-agent-tags">{agent.tags.map(tag => <Badge key={tag}>{tag}</Badge>)}</div><footer><small>原型预设 · 评分 {agent.rating}</small><button className="ws-primary" disabled={installedNames.includes(agent.name) || installing === agent.name} onClick={() => void install(agent)}>{installedNames.includes(agent.name) ? '已安装' : installing === agent.name ? '安装中…' : <><Plus size={14} /> 安装</>}</button></footer></article>)}</div></div>;
 }
 
-function AgentEditor({ draft, setDraft, models, devices, busy, save }: { draft: { id: string | null; name: string; role: string; modelId: string | null; executionLocation: ExecutionLocation; deviceId: string | null; enabled: boolean }; setDraft: (value: typeof draft | null) => void; models: Array<{ id: string; name: string }>; devices: RuntimeDevice[]; busy: boolean; save: () => Promise<void> }): React.JSX.Element {
-  const fixed = draft.name === '统筹智能体';
-  return <div className="ws-modal-backdrop"><div className="ws-modal ws-agent-editor"><header><h2>{draft.id ? '配置智能体' : '新建智能体'}</h2><IconButton title="关闭" onClick={() => setDraft(null)}><X size={18} /></IconButton></header><form onSubmit={event => { event.preventDefault(); void save(); }}><label>名称<input required disabled={fixed} value={draft.name} onChange={event => setDraft({ ...draft, name: event.target.value })} /></label><label>身份与职责<textarea required value={draft.role} onChange={event => setDraft({ ...draft, role: event.target.value })} /></label><label>执行位置<select disabled={fixed} value={fixed ? 'server' : draft.executionLocation} onChange={event => setDraft({ ...draft, executionLocation: event.target.value as ExecutionLocation, deviceId: null })}><option value="server">服务端执行</option><option value="local">本地设备执行</option></select></label>{draft.executionLocation === 'local' && <label>执行设备<select value={draft.deviceId ?? ''} onChange={event => setDraft({ ...draft, deviceId: event.target.value || null })}><option value="">自动选择在线设备</option>{devices.map(device => <option key={device.id} value={device.id}>{device.name} · {device.online ? '在线' : '离线'}</option>)}</select></label>}<label>挂载模型<select value={draft.modelId ?? ''} onChange={event => setDraft({ ...draft, modelId: event.target.value || null })}><option value="">平台默认模型</option>{models.map(model => <option key={model.id} value={model.id}>{model.name}</option>)}</select></label><footer><button type="button" onClick={() => setDraft(null)}>取消</button><button className="ws-primary" disabled={busy}>{busy ? '保存中…' : '保存'}</button></footer></form></div></div>;
+type AgentDraft = { id: string | null; name: string; role: string; modelId: string | null; modelKeyId: string | null; executionLocation: ExecutionLocation; deviceId: string | null; enabled: boolean };
+function AgentEditor({ draft, setDraft, keys, keyModels, modelLoading, modelError, devices, busy, save }: { draft: AgentDraft; setDraft: (value: AgentDraft | null) => void; keys: Array<{id:string;name:string;keyPrefix:string;status:string}>; keyModels: Array<{id:string;name:string}>; modelLoading:boolean; modelError:string; devices: RuntimeDevice[]; busy: boolean; save: () => Promise<void> }): React.JSX.Element {
+  const coordinator = draft.name === '统筹智能体';
+  const deviceOnline = devices.some(device => device.online && (!draft.deviceId || device.id === draft.deviceId));
+  return <div className="ws-modal-backdrop"><div className="ws-modal ws-agent-editor"><header><h2>{draft.id ? '配置智能体 · ' + draft.name : '新建智能体'}</h2><IconButton title="关闭" onClick={() => setDraft(null)}><X size={18} /></IconButton></header>
+    <form onSubmit={event => { event.preventDefault(); void save(); }}>
+      {!draft.id && <><label>名称<input required value={draft.name} onChange={event => setDraft({ ...draft, name: event.target.value })} /></label><label>身份与职责<textarea required value={draft.role} onChange={event => setDraft({ ...draft, role: event.target.value })} /></label></>}
+      <label>执行位置<select value={coordinator ? 'server' : draft.executionLocation} disabled={coordinator} onChange={event => setDraft({ ...draft, executionLocation: event.target.value as ExecutionLocation, deviceId: null })}><option value="server">服务端执行</option><option value="local">本地设备执行</option></select></label>
+      {!coordinator && draft.executionLocation === 'local' && <><label>执行设备<select value={draft.deviceId ?? ''} onChange={event => setDraft({ ...draft, deviceId: event.target.value || null })}><option value="">自动选择在线设备</option>{devices.map(device => <option key={device.id} value={device.id}>{device.name} · {device.online ? '在线' : '离线'}</option>)}</select></label>{!deviceOnline && <small className="ws-agent-model-note">当前身份没有在线桌面执行器。浏览器预览无法读取本地文件；请在桌面客户端登录同一账号和身份。</small>}</>}
+      <p className="ws-agent-model-intro">每个智能体同一时间只能挂载一个模型，保存后按所选 Key 与模型路由。</p>
+      <label>当前身份的 API Key<select value={draft.modelKeyId ?? ''} onChange={event => setDraft({ ...draft, modelKeyId: event.target.value || null, modelId: null })}><option value="">选择 API Key</option>{keys.map(key => <option key={key.id} value={key.id}>{key.name} · {key.keyPrefix}</option>)}</select></label>
+      {!keys.length && <small className="ws-agent-model-note">当前身份没有可用 Key，可前往「算力 / API 密钥」创建。</small>}
+      <label>该 Key 下可用模型<select value={draft.modelId ?? ''} disabled={!draft.modelKeyId || modelLoading || Boolean(modelError)} onChange={event => setDraft({ ...draft, modelId: event.target.value || null })}><option value="">{modelLoading ? '正在读取模型…' : '选择模型'}</option>{keyModels.map(model => <option key={model.id} value={model.id}>{model.name}</option>)}</select></label>
+      {modelError && <small role="alert" className="ws-agent-model-error">{modelError}</small>}
+      {draft.modelKeyId && !modelLoading && !modelError && !keyModels.length && <small className="ws-agent-model-note">此 Key 下没有平台已启用的可用模型。</small>}
+      <footer><button type="button" onClick={() => setDraft({ ...draft, modelKeyId: null, modelId: null })}>取消挂载</button><button type="button" onClick={() => setDraft(null)}>取消</button><button className="ws-primary" disabled={busy || modelLoading || Boolean(draft.modelKeyId && !draft.modelId)}>{busy ? '保存中…' : '保存挂载'}</button></footer>
+    </form></div></div>;
+}
+
+function AgentCapabilityEditor({ agent, notify, onClose }: { agent: RuntimeAgent; notify: (text: string) => void; onClose: () => void }): React.JSX.Element {
+  const [data, setData] = useState<Awaited<ReturnType<typeof runtimeApi.agentCapabilities>> | null>(null);
+  const [skillCodes, setSkillCodes] = useState<string[]>([]);
+  const [toolCodes, setToolCodes] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let live = true;
+    void runtimeApi.agentCapabilities(agent.id).then(result => {
+      if (!live) return;
+      setData(result);
+      if (result.ok) {
+        setSkillCodes(result.data.skills.filter(skill => skill.mounted).map(skill => skill.code));
+        setToolCodes(result.data.tools.filter(tool => tool.mounted).map(tool => tool.code));
+      }
+    }).catch(() => { if (live) notify('能力目录加载失败'); });
+    return () => { live = false; };
+  }, [agent.id]);
+  const toggle = (items: string[], code: string, checked: boolean): string[] => checked ? [...items, code] : items.filter(item => item !== code);
+  const save = async (): Promise<void> => {
+    setBusy(true);
+    try {
+      const result = await runtimeApi.saveAgentCapabilities(agent.id, skillCodes, toolCodes);
+      if (!result.ok) { notify(result.message); return; }
+      notify('智能体能力挂载已保存'); onClose();
+    } catch (error) { notify(error instanceof Error ? error.message : '挂载保存失败'); }
+    finally { setBusy(false); }
+  };
+  return <div className="ws-modal-backdrop"><div className="ws-modal ws-capability-editor"><header><h2>{agent.name} · 技能管理</h2><IconButton title="关闭" onClick={onClose}><X size={18} /></IconButton></header>
+    {!data ? <p>正在加载能力目录…</p> : !data.ok ? <p role="alert">{data.message}</p> : <>
+      <section><h3>挂载技能</h3><div className="ws-capability-list">{data.data.skills.map(skill => <label key={skill.code}><input type="checkbox" checked={skillCodes.includes(skill.code)} onChange={event => setSkillCodes(items => toggle(items, skill.code, event.target.checked))} /><span><b>{skill.name}</b><small>{skill.description}</small><small>调用工具：{skill.tool_codes.join('、')}</small>{skill.tool_codes.some(code => code.startsWith('local_')) && (agent.executionLocation ?? agent.execution_location) !== 'local' && <small>当前为服务端执行；本地工具不会提供给此智能体</small>}</span></label>)}</div></section>
+      <section><h3>直接挂载工具</h3><div className="ws-capability-list">{data.data.tools.filter(tool => tool.location === 'server' || (agent.executionLocation ?? agent.execution_location) === 'local').map(tool => <label key={tool.code}><input type="checkbox" checked={toolCodes.includes(tool.code)} onChange={event => setToolCodes(items => toggle(items, tool.code, event.target.checked))} /><span><b>{tool.name}</b><small>{tool.description}</small></span></label>)}</div></section>
+      <footer><button onClick={onClose}>取消</button><button className="ws-primary" disabled={busy} onClick={() => void save()}>{busy ? '保存中…' : '保存挂载'}</button></footer>
+    </>}</div></div>;
 }
 
 export function RuntimeSkillManagement({ identityId, notify }: Props): React.JSX.Element {
   const [skills, setSkills] = useState<RuntimeSkill[]>([]);
   const [query, setQuery] = useState('');
-  const [agentFilter, setAgentFilter] = useState('');
   const [loading, setLoading] = useState(true);
   useEffect(() => { let live = true; setLoading(true); void runtimeApi.skills().then(result => { if (!live) return; if (result.ok) setSkills(result.data); else notify(result.message); }).catch(() => notify('技能加载失败')).finally(() => { if (live) setLoading(false); }); return () => { live = false; }; }, [identityId]);
-  const visible = skills.filter(skill => (!agentFilter || skill.agent_name === agentFilter) && (!query || `${skill.name} ${skill.description}`.toLowerCase().includes(query.toLowerCase())));
-  return <div className="ws-agent-module"><div className="ws-agent-heading"><div><h1>技能</h1><p>管理各智能体独有的内置技能包及其运行权限。</p></div><button className="ws-primary" onClick={() => notify('新建技能将在技能定义接口开放后可用')}><Plus size={15} /> 新建技能</button></div><div className="ws-skill-toolbar"><label className="ws-agent-search"><Search size={15} /><input placeholder="搜索技能名称…" value={query} onChange={event => setQuery(event.target.value)} /></label><select value={agentFilter} onChange={event => setAgentFilter(event.target.value)}><option value="">全部智能体</option>{[...new Set(skills.map(skill => skill.agent_name))].map(name => <option key={name}>{name}</option>)}</select><Badge tone="blue">内置技能 {skills.length}</Badge></div>{loading ? <p className="ws-empty-line">正在加载技能…</p> : <div className="ws-skill-table"><div className="ws-skill-row ws-skill-header"><span>技能</span><span>绑定智能体</span><span>所需工具</span><span>开关</span></div>{visible.map(skill => <div className="ws-skill-row" key={skill.id}><span><b>{skill.name}</b><small>{skill.description}</small></span><span><b>{skill.agent_name}</b><small>runtime.agent</small></span><span className="ws-skill-tools">{skill.definition?.code ?? '服务端能力'}</span><button className={`ws-agent-switch ${skill.enabled ? 'active' : ''}`} onClick={() => void runtimeApi.toggleSkill(skill.id, !skill.enabled).then(result => { if (result.ok) setSkills(items => items.map(item => item.id === skill.id ? { ...item, enabled: !item.enabled } : item)); else notify(result.message); }).catch(() => notify('技能更新失败'))}><span /></button></div>)}</div>}</div>;
+  const visible = skills.filter(skill => !query || `${skill.name} ${skill.description} ${skill.tool_codes.join(' ')}`.toLowerCase().includes(query.toLowerCase()));
+  return <div className="ws-agent-module"><div className="ws-agent-heading"><div><h1>技能</h1><p>技能包定义及其调用工具。</p></div></div><div className="ws-skill-toolbar"><label className="ws-agent-search"><Search size={15} /><input placeholder="搜索技能名称…" value={query} onChange={event => setQuery(event.target.value)} /></label><Badge tone="blue">技能目录 {skills.length}</Badge></div>{loading ? <p className="ws-empty-line">正在加载技能…</p> : <div className="ws-skill-table"><div className="ws-skill-row ws-skill-header"><span>技能</span><span>编号</span><span>所需工具</span><span>状态</span></div>{visible.map(skill => <div className="ws-skill-row" key={skill.code}><span><b>{skill.name}</b><small>{skill.description}</small></span><span>{skill.code}</span><span className="ws-skill-tools">{skill.tool_codes.join('、')}</span><Badge tone={skill.enabled ? 'green' : 'muted'}>{skill.enabled ? '可用' : '停用'}</Badge></div>)}</div>}</div>;
 }
 
 export function RuntimeToolManagement({ identityId, notify }: Props): React.JSX.Element {
@@ -124,14 +200,12 @@ export function RuntimeToolManagement({ identityId, notify }: Props): React.JSX.
   }, [identityId]);
   const list = tools.filter(tool => !query || `${tool.name} ${tool.code} ${tool.description}`.toLowerCase().includes(query.toLowerCase()));
   return <div className="ws-agent-module">
-    <div className="ws-agent-heading"><div><h1>工具</h1><p>查看已注册的服务端与本地工具，以及当前身份下的授权状态。</p></div></div>
+    <div className="ws-agent-heading"><div><h1>工具</h1><p>服务端与本地执行器的底层工具目录。</p></div></div>
     <div className="ws-tool-stats"><article><strong>{tools.length}</strong><span>工具目录</span><small>服务端实际注册</small></article><article><strong>待接入</strong><span>MCP Server</span><small>尚无外部服务注册接口</small></article></div>
     <section className="ws-mcp-card"><div><span className="ws-agent-avatar is-purple"><Link2 size={17} /></span><div><h3>MCP Server</h3><p>外部 MCP 工具尚未注册，不会加入智能体可调用目录。</p></div></div><Badge tone="muted">未接入</Badge></section>
     <div className="ws-tool-controls"><label className="ws-agent-search"><Search size={15} /><input placeholder="搜索工具名称…" value={query} onChange={event => setQuery(event.target.value)} /></label><Badge tone="blue">工具目录 {list.length}</Badge></div>
     {loading ? <p className="ws-empty-line">正在加载工具目录…</p> : <div className="ws-tool-grid">{list.map(tool => {
-      const active = tool.agents.filter(agent => agent.enabled);
-      const available = active.some(agent => tool.location === 'server' || agent.deviceOnline);
-      return <article key={tool.code}><div className="ws-tool-icon"><Wrench size={17} /></div><div><h3>{tool.name}</h3><small>{tool.code} · {tool.location === 'local' ? '本地设备' : '服务端'}</small></div><Badge tone={available ? 'green' : 'muted'}>{available ? '可调用' : tool.location === 'local' && !tool.deviceOnline ? '设备离线' : '未启用'}</Badge><p>{tool.description}</p><small>{active.length ? `已启用：${active.map(agent => agent.name).join('、')}` : '尚无智能体启用此工具'}</small></article>;
+      return <article key={tool.code}><div className="ws-tool-icon"><Wrench size={17} /></div><div><h3>{tool.name}</h3><small>{tool.code} · {tool.location === 'local' ? '本地设备' : '服务端'}</small></div><Badge tone={tool.location === 'server' || tool.deviceOnline ? 'green' : 'muted'}>{tool.location === 'server' ? '服务端可用' : tool.deviceOnline ? '设备在线' : '设备离线'}</Badge><p>{tool.description}</p></article>;
     })}</div>}
   </div>;
 }

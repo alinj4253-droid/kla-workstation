@@ -40,7 +40,20 @@ describe('authenticated desktop execution protocol', () => {
       const deviceId = registered.json().data.id;
       const catalog = await app.inject({ method: 'GET', url: '/api/v1/runtime/tools', headers });
       expect(catalog.statusCode, catalog.body).toBe(200);
-      expect(catalog.json().data.find((tool: { code: string }) => tool.code === 'local_code').agents.find((item: { id: string }) => item.id === agent.id)).toMatchObject({ enabled: true, deviceOnline: true });
+      expect(catalog.json().data.find((tool: { code: string }) => tool.code === 'local_code')).toMatchObject({ code: 'local_code', deviceOnline: true });
+      expect(catalog.json().data.find((tool: { code: string }) => tool.code === 'local_code').agents).toBeUndefined();
+      const capabilitiesUrl = `/api/v1/agents/${agent.id}/capabilities`;
+      const existingCapabilities = await app.inject({ method: 'GET', url: capabilitiesUrl, headers });
+      expect(existingCapabilities.statusCode, existingCapabilities.body).toBe(200);
+      expect(existingCapabilities.json().data.effectiveTools).toContain('local_code');
+      const mounted = await app.inject({ method: 'PUT', url: capabilitiesUrl, headers,
+        payload: { skillCodes: ['local_development'], toolCodes: ['local_read'] } });
+      expect(mounted.statusCode, mounted.body).toBe(200);
+      const savedCapabilities = await app.inject({ method: 'GET', url: capabilitiesUrl, headers });
+      expect(savedCapabilities.json().data.skills.find((item: { code: string }) => item.code === 'local_development').mounted).toBe(true);
+      expect(savedCapabilities.json().data.tools.find((item: { code: string }) => item.code === 'local_read').mounted).toBe(true);
+      expect(savedCapabilities.json().data.effectiveTools).toContain('local_code');
+      expect(savedCapabilities.json().data.effectiveTools).not.toContain('artifact_write');
       const call = (await pool.query("INSERT INTO runtime_tool_calls(step_id,identity_id,device_id,model_call_id,tool_name,arguments) VALUES($1,$2,$3,'call-1','local_code',$4) RETURNING id", [step.id, account.identity.id, deviceId, JSON.stringify({ fileName: 'app.py', content: 'print(1)' })])).rows[0];
       await pool.query("UPDATE conversation_runs SET status='waiting_tool' WHERE id=$1", [run.id]);
       const url = `/api/v1/runtime/devices/${deviceId}/poll`;
@@ -65,6 +78,9 @@ describe('authenticated desktop execution protocol', () => {
       expect(artifacts[0].content).toBe(content);
       const other = await accounts.register({ email: 'other-device@example.test', nickname: '其他身份', password: 'TestPass2026!' });
       const otherSession = await accounts.createSession(other.user.id);
+      const isolatedCapabilities = await app.inject({ method: 'GET', url: capabilitiesUrl,
+        headers: { authorization: `Bearer ${otherSession.accessToken}`, 'x-identity-id': other.identity.id } });
+      expect(isolatedCapabilities.statusCode).toBe(404);
       const denied = await app.inject({ method: 'POST', url, headers: { authorization: `Bearer ${otherSession.accessToken}`, 'x-identity-id': other.identity.id } });
       expect(denied.statusCode).toBe(404);
       const next = (await pool.query("INSERT INTO runtime_tool_calls(step_id,identity_id,device_id,model_call_id,tool_name,arguments) VALUES($1,$2,$3,'call-2','local_code',$4) RETURNING id", [step.id, account.identity.id, deviceId, JSON.stringify({ fileName: 'next.py', content: 'print(2)' })])).rows[0];

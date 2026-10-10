@@ -12,6 +12,7 @@ import { ensureRuntimeRegistry, roomRegistry } from './runtime/registry.js';
 import { memoryBrowserQuerySchema } from '@kla-workstation/contracts';
 import { MemoryBrowserRepository } from './memories/browser.js';
 import { ShortTermMemoryService } from './memories/short-term.js';
+import { canAccessConversation, canManageProject, resolveKnowledgeAccessScope } from './auth/resource-scope.js';
 
 /** pino 子 logger 支持运行时 setBindings；FastifyBaseLogger 类型未暴露，且 logger:false 的 noop 实现没有该方法（规范 §3）。 */
 function bindRequestLog(request: FastifyRequest, bindings: Record<string, unknown>): void {
@@ -262,11 +263,14 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
     let projects = await deps.accounts.listProjects(identity.id);
     if (projects.length === 0) projects = [await deps.accounts.createProject(identity.id, '我的协作项目')];
     let conversations = await deps.accounts.listConversations(undefined, identity.id);
-    if (conversations.length === 0) conversations = [await deps.accounts.createConversation(projects[0].id, '默认协作群聊')];
+    if (conversations.length === 0) {
+      const owned = projects.find(project => project.ownerIdentityId === identity.id);
+      if (owned) conversations = [await deps.accounts.createConversation(owned.id, '默认协作群聊')];
+    }
     if (deps.mode !== 'mock') await ensureRuntimeRegistry(pool, identity.id);
     const [workspaces, agents, models, tasks] = await Promise.all([
       pool.query('SELECT id, type, name, project_id FROM workspaces WHERE identity_id = $1 ORDER BY created_at', [identity.id]),
-      pool.query('SELECT id, name, role, type, model_id, model_id AS "modelId", execution_location AS "executionLocation", device_id AS "deviceId", enabled, version FROM agents WHERE identity_id = $1 ORDER BY created_at', [identity.id]),
+      pool.query('SELECT id, name, role, type, model_id, model_id AS "modelId", model_key_id, model_key_id AS "modelKeyId", execution_location AS "executionLocation", device_id AS "deviceId", enabled, version FROM agents WHERE identity_id = $1 ORDER BY created_at', [identity.id]),
       pool.query('SELECT id, name, provider, capabilities, enabled FROM models WHERE enabled = true ORDER BY name'),
       pool.query('SELECT id, title, status, result, created_at FROM tasks WHERE identity_id = $1 ORDER BY created_at DESC LIMIT 50', [identity.id]),
     ]);
@@ -281,7 +285,7 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
     const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return;
     const identity = await enforce(session, request, 'read', reply); if (!identity) return;
     if (deps.mode !== 'mock') await ensureRuntimeRegistry(deps.database.rawPool, identity.id);
-    return reply.send({ ok: true, data: (await deps.database.rawPool.query('SELECT id, name, role, type, model_id, model_id AS "modelId", execution_location AS "executionLocation", device_id AS "deviceId", enabled, version FROM agents WHERE identity_id = $1 ORDER BY created_at', [identity?.id ?? ''])).rows });
+    return reply.send({ ok: true, data: (await deps.database.rawPool.query('SELECT id, name, role, type, model_id, model_id AS "modelId", model_key_id, model_key_id AS "modelKeyId", execution_location AS "executionLocation", device_id AS "deviceId", enabled, version FROM agents WHERE identity_id = $1 ORDER BY created_at', [identity?.id ?? ''])).rows });
   });
   app.get('/api/v1/models', async (_request, reply) => {
     if (!deps.database?.rawPool) return reply.code(503).send({ ok: false, error: { code: 'DATABASE_NOT_CONFIGURED', message: '数据库未配置' } });
@@ -309,8 +313,75 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
 
   app.get('/api/v1/projects', async (request, reply) => { const session = await auth(request, reply); if (!session) return; const identity = await enforce(session, request, 'read', reply); if (!identity) return; return reply.send({ ok: true, data: await deps.accounts.listProjects(identity.id) }); });
   app.post('/api/v1/projects', async (request, reply) => { const session = await auth(request, reply); if (!session) return; const identity = await enforce(session, request, 'write', reply); if (!identity) return; const body = request.body as { name?: string }; if (!body.name?.trim()) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: '项目名称不能为空', retryable: false } }); return reply.send({ ok: true, data: await deps.accounts.createProject(identity.id, body.name.trim()) }); });
+  app.get('/api/v1/me/knowledge-access-scope', async (request, reply) => {
+    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return;
+    const identity = await enforce(session, request, 'read', reply); if (!identity) return;
+    return reply.send({ ok: true, data: await resolveKnowledgeAccessScope(deps.database.rawPool, identity.id) });
+  });
+  app.get('/api/v1/projects/:projectId/members', async (request, reply) => {
+    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return;
+    const identity = await enforce(session, request, 'read', reply); if (!identity) return;
+    const { projectId } = request.params as { projectId: string };
+    if (!(await deps.accounts.listProjects(identity.id)).some(project => project.id === projectId)) return reply.code(404).send({ ok: false, error: { code: 'PROJECT_NOT_FOUND', message: '项目不存在或无权访问' } });
+    const members = await deps.database.rawPool.query(`SELECT pm.identity_id,pm.role,pm.joined_at,i.display_name
+      FROM project_members pm JOIN identities i ON i.id=pm.identity_id
+      WHERE pm.project_id=$1 AND i.status='active' ORDER BY pm.joined_at`, [projectId]);
+    return reply.send({ ok: true, data: members.rows });
+  });
+  app.delete('/api/v1/projects/:projectId/members/:memberIdentityId', async (request, reply) => {
+    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return;
+    const identity = await enforce(session, request, 'manage', reply); if (!identity) return;
+    const { projectId, memberIdentityId } = request.params as { projectId: string; memberIdentityId: string };
+    if (!(await canManageProject(deps.database.rawPool, identity.id, projectId))) return reply.code(403).send({ ok: false, error: { code: 'FORBIDDEN', message: '无权管理该项目' } });
+    const result = await deps.database.rawPool.query(`DELETE FROM project_members WHERE project_id=$1 AND identity_id=$2 AND role<>'owner' RETURNING identity_id`, [projectId, memberIdentityId]);
+    if (!result.rows[0]) return reply.code(404).send({ ok: false, error: { code: 'MEMBER_NOT_FOUND', message: '项目成员不存在或不可移除' } });
+    return reply.send({ ok: true, data: null });
+  });
+  app.get('/api/v1/conversations/:conversationId/members', async (request, reply) => {
+    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return;
+    const identity = await enforce(session, request, 'read', reply); if (!identity) return;
+    const { conversationId } = request.params as { conversationId: string };
+    if (!(await canAccessConversation(deps.database.rawPool, identity.id, conversationId))) return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: '群聊不存在或无权访问' } });
+    const members = await deps.database.rawPool.query(`SELECT cm.identity_id,cm.role,cm.joined_at,i.display_name FROM conversation_members cm
+      JOIN identities i ON i.id=cm.identity_id WHERE cm.conversation_id=$1 AND i.status='active' ORDER BY cm.joined_at`, [conversationId]);
+    return reply.send({ ok: true, data: members.rows });
+  });
+  app.post('/api/v1/conversations/:conversationId/members', async (request, reply) => {
+    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return;
+    const identity = await enforce(session, request, 'manage', reply); if (!identity) return;
+    const { conversationId } = request.params as { conversationId: string };
+    const { identityId } = (request.body ?? {}) as { identityId?: string };
+    if (!identityId || !/^[0-9a-f-]{36}$/i.test(identityId)) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: 'identityId 必须为有效 UUID' } });
+    const room = await deps.database.rawPool.query(`SELECT c.project_id,p.organization_id FROM conversations c JOIN projects p ON p.id=c.project_id WHERE c.id=$1`, [conversationId]);
+    if (!room.rows[0]) return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: '群聊不存在' } });
+    const projectId = room.rows[0].project_id as string;
+    if (!(await canManageProject(deps.database.rawPool, identity.id, projectId))) return reply.code(403).send({ ok: false, error: { code: 'FORBIDDEN', message: '无权邀请该群聊成员' } });
+    const target = await deps.database.rawPool.query(`SELECT id FROM identities WHERE id=$1 AND type='enterprise' AND status='active' AND organization_id=$2::uuid`, [identityId, room.rows[0].organization_id]);
+    if (!room.rows[0].organization_id || !target.rows[0]) return reply.code(403).send({ ok: false, error: { code: 'IDENTITY_SCOPE_MISMATCH', message: '仅可邀请同企业身份；个人身份不能加入企业项目' } });
+    const client = await deps.database.rawPool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`INSERT INTO project_members(project_id,identity_id,role) VALUES($1,$2,'member') ON CONFLICT DO NOTHING`, [projectId, identityId]);
+      const added = await client.query(`INSERT INTO conversation_members(conversation_id,project_id,identity_id,role)
+        VALUES($1,$2,$3,'member') ON CONFLICT (conversation_id,identity_id) DO UPDATE SET role=conversation_members.role
+        RETURNING identity_id,role,joined_at`, [conversationId, projectId, identityId]);
+      await client.query('COMMIT');
+      return reply.code(201).send({ ok: true, data: added.rows[0] });
+    } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
+  });
+  app.delete('/api/v1/conversations/:conversationId/members/:memberIdentityId', async (request, reply) => {
+    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return;
+    const identity = await enforce(session, request, 'manage', reply); if (!identity) return;
+    const { conversationId, memberIdentityId } = request.params as { conversationId: string; memberIdentityId: string };
+    const room = await deps.database.rawPool.query('SELECT project_id FROM conversations WHERE id=$1', [conversationId]);
+    if (!room.rows[0]) return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: '群聊不存在' } });
+    if (!(await canManageProject(deps.database.rawPool, identity.id, room.rows[0].project_id))) return reply.code(403).send({ ok: false, error: { code: 'FORBIDDEN', message: '无权管理该群聊' } });
+    const result = await deps.database.rawPool.query(`DELETE FROM conversation_members WHERE conversation_id=$1 AND identity_id=$2 AND role<>'owner' RETURNING identity_id`, [conversationId, memberIdentityId]);
+    if (!result.rows[0]) return reply.code(404).send({ ok: false, error: { code: 'MEMBER_NOT_FOUND', message: '群聊成员不存在或不可移除' } });
+    return reply.send({ ok: true, data: null });
+  });
   app.get('/api/v1/conversations', async (request, reply) => { const session = await auth(request, reply); if (!session) return; const identity = await enforce(session, request, 'read', reply); if (!identity) return; return reply.send({ ok: true, data: await deps.accounts.listAllConversations(identity.id) }); });
-  app.post('/api/v1/conversations', async (request, reply) => { const session = await auth(request, reply); if (!session) return; const identity = await enforce(session, request, 'write', reply); if (!identity) return; const body = request.body as { projectId?: string; name?: string }; let projectId = body.projectId; if (!projectId) { const projects = await deps.accounts.listProjects(identity.id); projectId = projects[0]?.id ?? (await deps.accounts.createProject(identity.id, '我的协作项目')).id; } if (!projectId || !body.name?.trim()) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: 'name 为必填项', retryable: false } }); const projects = await deps.accounts.listProjects(identity.id); if (!projects.some((project) => project.id === projectId)) return reply.code(403).send({ ok: false, error: { code: 'FORBIDDEN', message: '无权访问该项目' } }); const conversation = await deps.accounts.createConversation(projectId, body.name.trim()); if (deps.mode !== 'mock' && deps.database?.rawPool) await roomRegistry(deps.database.rawPool, conversation.id); return reply.send({ ok: true, data: conversation }); });
+  app.post('/api/v1/conversations', async (request, reply) => { const session = await auth(request, reply); if (!session) return; const identity = await enforce(session, request, 'write', reply); if (!identity) return; const body = request.body as { projectId?: string; name?: string }; let projectId = body.projectId; if (!projectId) { const projects = await deps.accounts.listProjects(identity.id); projectId = projects.find(project => project.ownerIdentityId === identity.id)?.id ?? (await deps.accounts.createProject(identity.id, '我的协作项目')).id; } if (!projectId || !body.name?.trim()) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: 'name 为必填项', retryable: false } }); if (deps.mode !== 'mock' && deps.database?.rawPool) { if (!(await canManageProject(deps.database.rawPool, identity.id, projectId))) return reply.code(403).send({ ok: false, error: { code: 'FORBIDDEN', message: '无权管理该项目' } }); } else { const projects = await deps.accounts.listProjects(identity.id); if (!projects.some((project) => project.id === projectId)) return reply.code(403).send({ ok: false, error: { code: 'FORBIDDEN', message: '无权访问该项目' } }); } const conversation = await deps.accounts.createConversation(projectId, body.name.trim()); if (deps.mode !== 'mock' && deps.database?.rawPool) await roomRegistry(deps.database.rawPool, conversation.id); return reply.send({ ok: true, data: conversation }); });
   app.get('/api/v1/conversations/:conversationId/messages', async (request, reply) => { const session = await auth(request, reply); if (!session) return; const identity = await enforce(session, request, 'read', reply); if (!identity) return; const params = request.params as { conversationId: string }; const conversations = await deps.accounts.listAllConversations(identity.id); if (!conversations.some((item) => item.id === params.conversationId)) return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: '群聊不存在或无权访问', retryable: false } }); return reply.send({ ok: true, data: await deps.accounts.listMessages(params.conversationId) }); });
   app.post('/api/v1/conversations/:conversationId/messages', async (request, reply) => {
     const session = await auth(request, reply); if (!session) return;
@@ -321,6 +392,10 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
     if (!body.text?.trim()) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: '消息不能为空', retryable: false }, meta: { requestId: request.id } } satisfies ApiErrorBody);
     if (!identity || !(await deps.accounts.listAllConversations(identity.id)).some((item) => item.id === params.conversationId)) return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: '群聊不存在或无权访问', retryable: false } });
     const userMessage = await deps.accounts.createMessage(params.conversationId, session.userId, body.text.trim());
+    if (deps.mode !== 'mock' && deps.database?.rawPool) {
+      const owner = await deps.database.rawPool.query(`SELECT p.owner_identity_id FROM conversations c JOIN projects p ON p.id=c.project_id WHERE c.id=$1`, [params.conversationId]);
+      if (owner.rows[0]?.owner_identity_id !== identity.id) return reply.send({ ok: true, data: { message: userMessage, run: null } });
+    }
     const run = await deps.accounts.createRun(params.conversationId, userMessage.id, body.mode ?? 'balanced');
     if (!deps.loopWorker) { await deps.accounts.completeRun(run.id, 'failed', '统筹智能体', {error:'执行器未启动'}); }
     else deps.loopWorker.kick();
@@ -434,7 +509,7 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
   });
   app.get('/api/v1/skills', async (request, reply) => {
     const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return; const identity = await enforce(session, request, 'read', reply); if (!identity) return;
-    if (deps.mode !== 'mock') await ensureRuntimeRegistry(deps.database.rawPool, identity.id); const result = await deps.database.rawPool.query('SELECT s.id,s.agent_id,s.name,s.description,s.definition,s.enabled,s.version,a.name AS agent_name FROM skills s JOIN agents a ON a.id=s.agent_id WHERE a.identity_id=$1 ORDER BY s.created_at', [identity?.id ?? '']); return reply.send({ ok: true, data: result.rows });
+    if (deps.mode !== 'mock') await ensureRuntimeRegistry(deps.database.rawPool, identity.id); const result = await deps.database.rawPool.query('SELECT code,name,description,tool_codes,enabled FROM runtime_skill_catalog WHERE identity_id=$1 ORDER BY created_at,code', [identity.id]); return reply.send({ ok: true, data: result.rows });
   });
   app.post('/api/v1/conversations/:conversationId/runs/:runId/cancel', async (request, reply) => {
     const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return; const identity = await enforce(session, request, 'write', reply); if (!identity) return; const { conversationId, runId } = request.params as { conversationId: string; runId: string }; if (!(await deps.accounts.listAllConversations(identity.id)).some((item) => item.id === conversationId)) return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: '运行记录不存在或无权访问' } }); const result = await deps.database.rawPool.query("UPDATE conversation_runs SET status='cancelled', result=jsonb_build_object('cancelled',true), updated_at=now() WHERE id=$1 AND conversation_id=$2 AND status IN('queued','running','waiting_device','waiting_tool','waiting_approval') RETURNING *", [runId, conversationId]); if (!result.rows[0]) return reply.code(409).send({ ok: false, error: { code: 'RUN_NOT_ACTIVE', message: '运行已结束，无法取消' } }); await deps.database.rawPool.query("UPDATE runtime_tool_calls SET status='cancelled' WHERE step_id IN(SELECT id FROM conversation_run_steps WHERE run_id=$1) AND status IN('queued','running')", [runId]); await deps.database.rawPool.query("UPDATE conversation_run_steps SET status='cancelled' WHERE run_id=$1 AND status NOT IN('completed','failed')",[runId]); deps.loopWorker?.cancel(runId); return reply.send({ ok: true, data: result.rows[0] });

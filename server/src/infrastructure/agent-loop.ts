@@ -5,7 +5,7 @@ import type { AccountRepository, Identity } from '../repositories/types.js';
 import type { ComputeGateway } from '../compute/gateway.js';
 import type { ShortTermMemoryService } from '../memories/short-term.js';
 import { requirePermission } from '../auth/permission-service.js';
-import { roomRegistry, validatePlan, type RegisteredAgent } from '../runtime/registry.js';
+import { effectiveToolCodes, roomRegistry, validatePlan, type RegisteredAgent } from '../runtime/registry.js';
 import { RuntimeTools } from '../runtime/tools.js';
 import { ToolGateway } from '../runtime/tool-gateway.js';
 
@@ -56,10 +56,16 @@ export class AgentLoopWorker {
       else await this.execute(run,identity,controller.signal);
     }catch(error){
       if(!controller.signal.aborted && !(error instanceof Error && error.name==='AbortError')){
-        await this.pool.query("UPDATE conversation_runs SET status='failed',result=$2,updated_at=now() WHERE id=$1 AND lease_owner=$3 AND status=ANY($4::text[])",[run.id,JSON.stringify({error:error instanceof Error?error.message:String(error)}),this.owner,activeStates]);
+        const reason=error instanceof Error?error.message:String(error);
+        const completedLocal=(await this.pool.query(`SELECT t.tool_name,t.result FROM runtime_tool_calls t
+          JOIN conversation_run_steps st ON st.id=t.step_id
+          WHERE st.run_id=$1 AND t.status='completed' AND t.tool_name LIKE 'local_%' ORDER BY t.completed_at`,[run.id])).rows;
+        const listed=completedLocal.find(call=>call.tool_name==='local_list'&&Array.isArray(call.result?.entries));
+        const completedNote=listed?`本地目录读取已成功（返回 ${listed.result.entries.length} 项），但模型续跑失败：`:completedLocal.length?'本地工具已执行成功，但模型续跑失败：':'';
+        await this.pool.query("UPDATE conversation_runs SET status='failed',result=$2,updated_at=now() WHERE id=$1 AND lease_owner=$3 AND status=ANY($4::text[])",[run.id,JSON.stringify({error:reason,completedLocalTools:completedLocal.map(call=>call.tool_name)}),this.owner,activeStates]);
         await this.pool.query("UPDATE conversation_run_steps SET status='cancelled' WHERE run_id=$1 AND status NOT IN ('completed','failed')",[run.id]);
         await this.pool.query("UPDATE runtime_tool_calls SET status='cancelled' WHERE step_id IN(SELECT id FROM conversation_run_steps WHERE run_id=$1) AND status IN('queued','running')",[run.id]);
-        if(run.identity_id){await this.publish(run,'统筹智能体',`任务执行失败：${error instanceof Error?error.message:String(error)}`,`failure:${run.id}`);await this.event(run,'run.failed',{error:error instanceof Error?error.message:String(error)});}
+        if(run.identity_id){await this.publish(run,'统筹智能体',`任务执行失败：${completedNote}${reason}`,`failure:${run.id}`);await this.event(run,'run.failed',{error:reason,completedLocalTools:completedLocal.map(call=>call.tool_name)});}
       }
     }finally{if(heartbeat)clearInterval(heartbeat);this.controllers.delete(run.id);await this.pool.query('UPDATE conversation_runs SET lease_owner=NULL,lease_until=NULL WHERE id=$1 AND lease_owner=$2',[run.id,this.owner]);}
   }
@@ -69,7 +75,7 @@ export class AgentLoopWorker {
   }
   private async model(run:Row,identity:Identity,agent:RegisteredAgent,messages:unknown[],tools:unknown[],requestId:string,signal:AbortSignal):Promise<ModelMessage>{
     await this.alive(run,signal);
-    const response=await cancellable(this.tools.completeModel(identity,{model:agent.model_id??process.env.MODEL_ID??'deepseek-v4-flash',messages,tools:tools.length?tools:undefined,temperature:0.2,requestId,tags:{projectId:run.project_id,conversationId:run.conversation_id,agentId:agent.id}}),signal);
+    const response=await cancellable(this.tools.completeModel(identity,{model:agent.model_id??process.env.MODEL_ID??'deepseek-v4-flash',keyId:agent.model_key_id,messages,tools:tools.length?tools:undefined,temperature:0.2,requestId,tags:{projectId:run.project_id,conversationId:run.conversation_id,agentId:agent.id}}),signal);
     await this.alive(run,signal);const message=(response.payload as {choices?:Array<{message?:ModelMessage}>})?.choices?.[0]?.message;
     if(!message||(!message.content?.trim()&&!message.tool_calls?.length))throw new Error('模型未返回有效答复或工具调用');return message;
   }
@@ -110,7 +116,7 @@ export class AgentLoopWorker {
   private async executeStep(run:Row,step:Row,all:Row[],identity:Identity,signal:AbortSignal){
     const agent=step.agent_snapshot as RegisteredAgent;if(!agent)throw new Error('子任务缺少角色快照');
     const current=(await this.pool.query('SELECT enabled FROM agents WHERE id=$1 AND identity_id=$2',[agent.id,identity.id])).rows[0];if(!current?.enabled)throw new Error(`智能体已停用：${agent.name}`);
-    const enabled=(await this.pool.query("SELECT definition->>'code' AS code FROM skills WHERE agent_id=$1 AND enabled",[agent.id])).rows.map(s=>s.code);agent.skills=agent.skills.filter(code=>enabled.includes(code));
+    const enabled=await effectiveToolCodes(this.pool,agent.id);agent.skills=agent.skills.filter(code=>enabled.includes(code));
     const bound=(await this.pool.query('SELECT device_id FROM runtime_tool_calls WHERE step_id=$1 AND device_id IS NOT NULL ORDER BY created_at,id LIMIT 1',[step.id])).rows[0];
     let deviceId:string|null=bound?.device_id??agent.device_id??run.device_id;
     if(agent.execution_location==='local'){

@@ -1,23 +1,24 @@
-// 用量同步 Worker：定时从 Sub2API 拉取增量用量，去重后写入 compute_usage。
-// 去重哈希 = sha256(id:userId:timestamp)。
-
-import { createHash } from 'node:crypto';
 import type { ComputeRepository } from './compute-repository.js';
 import type { Sub2ApiClient } from './sub2api-client.js';
+import type { QuotaService } from './quota-service.js';
+
+type BindingRow = { identity_id: string; sub2api_user_id: string; key_id: string | null; sub2api_key_id: string | null };
 
 export class UsageSyncWorker {
   private timer: ReturnType<typeof setInterval> | null = null;
   private running = false;
-  private lastSyncAt: string | null = null;
+  private cutoverAt: string | null = null;
 
   constructor(
     private readonly repo: ComputeRepository,
     private readonly sub2api: Sub2ApiClient,
-    private readonly intervalMs: number = 60_000,
+    private readonly quota: QuotaService,
+    private readonly intervalMs: number = 5_000,
   ) {}
 
   start(): void {
     if (this.timer) return;
+    void this.tick();
     this.timer = setInterval(() => { void this.tick(); }, this.intervalMs);
   }
 
@@ -28,42 +29,44 @@ export class UsageSyncWorker {
     }
   }
 
+  private async getCutoverAt(): Promise<string> {
+    if (this.cutoverAt) return this.cutoverAt;
+    const { rows } = await this.repo.pool.query<{ started_at: Date }>(
+      'INSERT INTO compute_billing_cutover (id) VALUES (true) ON CONFLICT (id) DO UPDATE SET id = EXCLUDED.id RETURNING started_at',
+    );
+    this.cutoverAt = rows[0].started_at.toISOString();
+    return this.cutoverAt;
+  }
+
   private async tick(): Promise<void> {
     if (this.running) return;
     this.running = true;
     try {
-      const since = this.lastSyncAt ?? new Date(Date.now() - this.intervalMs * 2).toISOString();
-      const until = new Date().toISOString();
-
-      // 遍历所有已绑定的 identity，拉取 Sub2API 用量
-      const { rows } = await this.repo.pool.query(
-        "SELECT identity_id, sub2api_user_id FROM compute_bindings WHERE sub2api_status IN ('ready','user_created','default_key_created','balance_granted')",
+      const since = await this.getCutoverAt();
+      const { rows } = await this.repo.pool.query<BindingRow>(
+        `SELECT b.identity_id, b.sub2api_user_id, k.id AS key_id, k.sub2api_key_id
+         FROM compute_bindings b LEFT JOIN compute_keys k ON k.identity_id = b.identity_id
+         WHERE b.sub2api_status IN ('ready','user_created','default_key_created','balance_granted')`,
       );
-      for (const row of rows) {
+      const byUser = new Map<string, BindingRow[]>();
+      for (const row of rows) byUser.set(row.sub2api_user_id, [...(byUser.get(row.sub2api_user_id) ?? []), row]);
+      for (const [userId, bindings] of byUser) {
         try {
-          const usageItems = await this.sub2api.listUsage(row.sub2api_user_id, since, until);
-          for (const item of usageItems) {
-            const dedupeHash = createHash('sha256').update(`${item.id}:${item.userId}:${item.timestamp}`).digest('hex');
-            await this.repo.upsertUsage({
-              identityId: row.identity_id as string,
-              ledgerId: null,
-              sub2apiUsageId: item.id,
-              model: item.model,
-              amountUsd: item.amountUsd,
-              promptTokens: item.promptTokens,
-              completionTokens: item.completionTokens,
-              metadata: {},
-              dedupeHash,
-              recordedAt: item.timestamp,
-            });
+          const usageItems = await this.sub2api.listUsage(userId, since);
+          for (const item of usageItems.reverse()) {
+            const match = bindings.find(row => row.sub2api_key_id === item.apiKeyId)
+              ?? (new Set(bindings.map(row => row.identity_id)).size === 1 ? bindings[0] : null);
+            if (!match) continue;
+            await this.quota.recordUpstreamUsage(match.identity_id, item, match.key_id);
           }
-        } catch {
-          // 单个用户失败不影响其他用户
+        } catch (error) {
+          await this.repo.insertSyncLog({ syncType: 'usage', status: 'error',
+            message: `Sub2API 用户 ${userId} 用量同步失败：${error instanceof Error ? error.message : String(error)}` });
         }
       }
-      this.lastSyncAt = until;
-    } catch {
-      // 下次重试
+    } catch (error) {
+      await this.repo.insertSyncLog({ syncType: 'usage', status: 'error',
+        message: `用量同步失败：${error instanceof Error ? error.message : String(error)}` });
     } finally {
       this.running = false;
     }
