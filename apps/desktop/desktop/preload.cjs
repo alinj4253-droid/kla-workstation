@@ -1,8 +1,15 @@
 const { contextBridge, ipcRenderer } = require('electron');
+function argumentValue(prefix, fallback = '') {
+  const value = process.argv.find(item => item.startsWith(prefix));
+  return value ? value.slice(prefix.length) : fallback;
+}
+const apiBaseUrl = argumentValue('--kla-api-base-url=', 'http://127.0.0.1:8787/api');
+const knowledgeServiceUrl = argumentValue('--kla-knowledge-service-url=', '');
 
 contextBridge.exposeInMainWorld('klaPlatform', Object.freeze({
   runtime: 'electron',
-  apiBaseUrl: process.env.KLA_API_BASE_URL || 'http://127.0.0.1:8787/api',
+  apiBaseUrl,
+  knowledgeServiceUrl,
   agentRuntime: Object.freeze({
     connect: session => ipcRenderer.invoke('kla:runtime-connect', session),
     disconnect: () => ipcRenderer.invoke('kla:runtime-disconnect'),
