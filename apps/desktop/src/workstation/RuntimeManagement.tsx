@@ -8,8 +8,8 @@ import { DEFAULT_AGENT_MODEL_ID, DEFAULT_AGENT_MODEL_NAME, type ComputeKey, type
 
 type Props = { identityId: string; notify: (text: string) => void };
 type AgentKey = Pick<ComputeKey, 'id' | 'name' | 'keyPrefix' | 'status' | 'isDefault'>;
-const isBuiltinAgent = (agent: RuntimeAgent): boolean => agent.type === 'official' || ['统筹智能体', '本地执行智能体', 'PPT助手'].includes(agent.name);
-const agentDescription = (agent: RuntimeAgent): string => agent.name === 'PPT助手' ? '从材料生成可编辑 PPTX，支持大纲确认、对话改稿、质量检查及真实 PDF 预览。通过统一网关在本地执行。' : agent.role || '暂无角色说明';
+const isBuiltinAgent = (agent: RuntimeAgent): boolean => agent.type === 'official' || ['统筹智能体', '本地执行智能体', 'PPT助手', '路线规划助手'].includes(agent.name);
+const agentDescription = (agent: RuntimeAgent): string => agent.name === 'PPT助手' ? '从材料生成可编辑 PPTX，支持大纲确认、对话改稿、质量检查及真实 PDF 预览。通过统一网关在本地执行。' : agent.name === '路线规划助手' ? '调用高德矩阵与固定起终点 TSP 算法，完成里程/时间/成本三策略路线优化与多线路拆分重排。通过统一网关在本地执行。' : agent.role || '暂无角色说明';
 
 const marketAgents = [
   { name: '通用问答助手', category: '办公协作', description: '面向日常问答与信息整合，支持多轮追问、知识引用和来源追踪。', tags: ['通用', '知识检索', '多轮对话'], rating: '4.8', installs: '12.4k', tone: 'cyan' },

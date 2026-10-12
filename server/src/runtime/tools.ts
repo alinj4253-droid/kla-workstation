@@ -14,6 +14,7 @@ import { knowledgeRequest } from './knowledge-transport.js';
 import { accessibleFile } from '../storage/file-access.js';
 
 const string = { type: 'string' }, integer = { type: 'integer' };
+const matrixOfNumbers = { type: 'array', items: { type: 'array', items: { type: 'number' } } };
 const properties: Record<RuntimeSkillCode, Record<string, unknown>> = {
   knowledge_search: { query: string, topK: integer },
   knowledge_read: { knowledgeBaseId: string, docId: string, offset: integer, limit: integer },
@@ -33,6 +34,20 @@ const properties: Record<RuntimeSkillCode, Record<string, unknown>> = {
   local_ppt_build: { specJson: { type: 'string', description: '完整 DeckSpec JSON 字符串；必须有 cover 和语义块，禁止几何字段' }, fileName: string, render: { type: 'boolean', description: '默认 true，调用真实 PPTX 渲染器' } },
   local_ppt_inspect: { path: string, documentId: string },
   local_ppt_render: { path: string, documentId: string },
+  local_route_matrix: {
+    points: { type: 'array', items: { type: 'object', properties: { name: string, lat: { type: 'number' }, lon: { type: 'number' } }, required: ['lat', 'lon'], additionalProperties: false } },
+    coordSystem: string, kind: string,
+  },
+  local_route_optimize: {
+    routeName: string,
+    points: { type: 'array', items: { type: 'object', properties: { name: string, lat: { type: 'number' }, lon: { type: 'number' } }, required: ['lat', 'lon'], additionalProperties: false } },
+    coordSystem: string, strategy: string,
+    distanceMatrix: matrixOfNumbers, timeMatrix: matrixOfNumbers, tollMatrix: matrixOfNumbers,
+  },
+  local_route_replan: {
+    points: { type: 'array', items: { type: 'object', properties: { name: string, lat: { type: 'number' }, lon: { type: 'number' } }, required: ['lat', 'lon'], additionalProperties: false } },
+    numRoutes: integer, algorithm: string, coordSystem: string,
+  },
 };
 const required: Record<RuntimeSkillCode, string[]> = {
   knowledge_search: ['query'], knowledge_read: ['knowledgeBaseId','docId'], knowledge_ocr: ['artifactId'],
@@ -42,6 +57,7 @@ const required: Record<RuntimeSkillCode, string[]> = {
   local_file_publish: ['path'],
   local_write: ['fileName','content'], local_code: ['fileName','content'], local_bat: ['script'], local_cli: ['executable'],
   local_ppt_doctor: [], local_ppt_build: ['specJson'], local_ppt_inspect: [], local_ppt_render: [],
+  local_route_matrix: ['points'], local_route_optimize: ['points'], local_route_replan: ['points', 'numRoutes'],
 };
 export function agentTools(agent: RegisteredAgent) {
   return runtimeSkillCatalog.filter(s => agent.skills.includes(s.code) && (s.location === 'server' || agent.execution_location === 'local'))
