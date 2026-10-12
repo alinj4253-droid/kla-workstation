@@ -1,4 +1,5 @@
 import Fastify, { LogController } from 'fastify';
+import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import cors from '@fastify/cors';
@@ -105,7 +106,18 @@ export async function createServer() {
   return { app, config, database, redis, loopWorker, outboxWorker, usageSyncWorker, quota, objectStore };
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// 入口守卫：比较真实路径，兼容 /opt|/home/kla/current 软链部署模式。
+// process.argv[1] 是命令行传入的路径（可能是软链），而 import.meta.url 已被
+// Node 解析为真实路径，直接用 resolve() 比对会因软链不匹配而静默跳过启动。
+const isDirectRun = (() => {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+  }
+})();
+if (isDirectRun) {
   const { app, config } = await createServer();
   await app.listen({ host: config.host, port: config.port });
 }

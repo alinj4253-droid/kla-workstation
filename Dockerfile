@@ -1,5 +1,8 @@
 # KLA Workstation 服务端生产镜像。
 # 构建上下文必须为仓库根目录：docker build -t kla-server .
+# 仅适用于存储层正常的主机或 CI。目标 CentOS 7 主机的 Docker 存储层对
+# pnpm 安装必报 EPERM write（详见 docs/DEPLOY_CENTOS7_BARE_METAL.md），
+# 该机改用 scripts/build-server-artifact.ps1 产出裸机部署包。
 
 # syntax=docker/dockerfile:1
 FROM node:22-alpine AS build
@@ -20,7 +23,7 @@ ENV npm_config_package_import_method=copy
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
 COPY packages/contracts/package.json packages/contracts/package.json
 COPY server/package.json server/package.json
-# 不使用 BuildKit cache mount：目标主机的缓存卷挂载同样触发 EPERM；
+# 不使用 BuildKit cache mount：缓存卷挂载同样触发 EPERM；
 # 依赖未变时本层直接命中层缓存。--ignore-scripts：镜像内不执行依赖
 # 构建脚本，esbuild 二进制随可选依赖预编译分发，无需 postinstall 校验。
 RUN pnpm install --frozen-lockfile --ignore-scripts

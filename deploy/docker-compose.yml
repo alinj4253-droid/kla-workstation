@@ -1,0 +1,69 @@
+# PostgreSQL 16 + Redis 7 for the KLA server (CentOS 7 host).
+# Data dirs are bind-mounted to real local-disk paths so container data never
+# lands on the suspect Docker storage layer (/var/lib/docker, see runbook).
+#
+# Setup (once):
+#   mkdir -p /home/kla/deploy /home/kla/pgdata /home/kla/redis-data
+#   chown -R 999:999 /home/kla/pgdata /home/kla/redis-data   # postgres/redis uid
+#   cp server.env.example /etc/kla/server.env   # fill POSTGRES_PASSWORD / REDIS_PASSWORD
+#
+# Run:
+#   ln -sfn /etc/kla/server.env /home/kla/deploy/.env
+#   cd /home/kla/deploy && docker compose up -d
+services:
+  postgres:
+    image: postgres:16
+    container_name: kla-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: kla
+      POSTGRES_USER: kla
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in /etc/kla/server.env}
+    volumes:
+      # SELinux on EL7 labels /home dirs as user_home_t; container processes
+      # can't write there and docker's :Z relabel is unreliable on this host,
+      # so disable SELinux labeling for these db containers (uid/gid perms
+      # still apply; data dir is dedicated and 999:999-owned).
+      - /home/kla/pgdata:/var/lib/postgresql/data
+    security_opt:
+      - label=disable
+    ports:
+      # 双绑定：服务端自身走 127.0.0.1（DATABASE_URL 不用改），内网客户端走
+      # 192.168.10.206；不绑 0.0.0.0，避免暴露到 docker 网桥等其他接口。
+      - "127.0.0.1:5432:5432"
+      - "192.168.10.206:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kla -d kla"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  redis:
+    image: redis:7-alpine
+    container_name: kla-redis
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in /etc/kla/server.env}
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD}"]
+    volumes:
+      - /home/kla/redis-data:/data
+    security_opt:
+      - label=disable
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      # $$ so the shell inside the container expands REDIS_PASSWORD.
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
