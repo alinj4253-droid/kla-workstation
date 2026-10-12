@@ -23,25 +23,14 @@ COPY server/package.json server/package.json
 # 不使用 BuildKit cache mount：目标主机的缓存卷挂载同样触发 EPERM；
 # 依赖未变时本层直接命中层缓存。--ignore-scripts：镜像内不执行依赖
 # 构建脚本，esbuild 二进制随可选依赖预编译分发，无需 postinstall 校验。
-# 【临时排障】strace 记录 write/openat，失败时打印末尾 400 行：可看到
-# EPERM 的 write 用的 fd 是为哪个路径 openat 的。定位后还原为
-# RUN pnpm install --frozen-lockfile --ignore-scripts
-RUN apk add --no-cache strace \
-  && strace -f -s 0 -e trace=write,openat,open -o /tmp/strace.log \
-       pnpm install --frozen-lockfile --ignore-scripts > /tmp/install.log 2>&1 \
-  ; rc=$? ; if [ "$rc" -ne 0 ]; then \
-      echo '--- strace 末尾 400 行（EPERM write 的 fd 对应哪个 openat 路径） ---' \
-      && tail -n 400 /tmp/strace.log \
-      && echo '--- pnpm 输出末尾 ---' \
-      && tail -n 5 /tmp/install.log ; \
-    fi ; exit $rc
+RUN pnpm install --frozen-lockfile --ignore-scripts
 COPY packages/contracts packages/contracts
 COPY server server
 RUN pnpm --filter @kla-workstation/contracts build \
   && pnpm --filter @kla-workstation/server build \
-  && pnpm --filter @kla-workstation/server deploy --prod /out \
+  && pnpm --filter @kla-workstation/server deploy --prod --legacy /out \
   && test -f /out/dist/server.js \
-  && test -d /out/migrations
+  && test -d /out/dist/migrations
 
 FROM node:22-alpine
 ENV NODE_ENV=production
