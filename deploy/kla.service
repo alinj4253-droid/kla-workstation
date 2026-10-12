@@ -1,0 +1,31 @@
+[Unit]
+Description=KLA workstation server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kla
+Group=kla
+WorkingDirectory=/home/kla/current
+EnvironmentFile=/etc/kla/server.env
+ExecStart=/home/kla/node/bin/node /home/kla/current/dist/server.js
+Restart=on-failure
+RestartSec=5
+
+# The server registers a SIGTERM/SIGINT handler for graceful shutdown.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kla-server
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/home/kla
+
+[Install]
+WantedBy=multi-user.target
