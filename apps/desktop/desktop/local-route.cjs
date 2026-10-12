@@ -25,7 +25,7 @@ const tollPairCache = new Map(); // 过路费对级缓存（24h，静态道路�
 const tollInflight = new Map();  // 在途请求去重
 
 // ==================== 坐标纠偏（WGS-84 → GCJ-02） ====================
-const PI = Math.PI, A = 6378245, EE = 0.00669342162296594323;
+const PI = Math.PI, A = 6378245, EE = 0.006693421622965943;
 function transformLat(x, y) {
   let ret = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.sqrt(Math.abs(x));
   ret += (20.0 * Math.sin(6.0 * x * PI) + 20.0 * Math.sin(2.0 * x * PI)) * 2.0 / 3.0;
