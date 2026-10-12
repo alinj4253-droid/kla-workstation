@@ -6,7 +6,7 @@ export const KNOWLEDGE_UPLOAD_LIMIT = 50 * 1024 * 1024;
 export const KNOWLEDGE_UPLOAD_EXTENSIONS = ['txt', 'md', 'pdf', 'docx', 'html', 'mp3', 'wav', 'm4a', 'mp4', 'mov', 'mkv', 'avi', 'flv'] as const;
 export const KNOWLEDGE_UPLOAD_NOTICE_VERSION = '2026-10-07-v1' as const;
 export const knowledgeTransportSettingsSchema = z.object({
-  requestTimeoutMs: z.number().int().min(5000).max(300000).default(120000),
+  requestTimeoutMs: z.number().int().min(5000).max(600000).default(600000),
   uploadTimeoutMs: z.number().int().min(30000).max(1800000).default(300000),
   uploadConcurrency: z.number().int().min(1).max(3).default(1),
   pollIntervalMs: z.number().int().min(2000).max(30000).default(4000),

@@ -22,7 +22,7 @@ export function ConnectionDialog({ connection, fixedBaseUrl, fixedCollection, on
       <label>API Key（可选）<input autoComplete="off" type="password" value={apiKey} onChange={e => setApiKey(e.target.value)} disabled={busy} placeholder={connection?.hasCredential ? '已安全保存，留空保留' : '仅在服务启用 KB_API_KEY 时填写'}/><small>凭证在 Workstation 服务端加密保存，读取配置不会返回明文。</small></label>
       {connection?.hasCredential && <label className="kl-checkbox"><input type="checkbox" disabled={busy} checked={clear} onChange={e => setClear(e.target.checked)}/>清除现有凭证</label>}
       <details className="kl-connection-advanced"><summary>传输与任务设置</summary><div className="kl-settings-grid">
-        <label>请求超时（秒）<input type="number" required min={5} max={300} step={1} value={settings.requestTimeoutMs / 1000} disabled={busy} onChange={e => updateSetting('requestTimeoutMs', e.target.value, 1000)}/></label>
+        <label>请求超时（秒）<input type="number" required min={5} max={600} step={5} value={settings.requestTimeoutMs / 1000} disabled={busy} onChange={e => updateSetting('requestTimeoutMs', e.target.value, 1000)}/></label>
         <label>上传超时（秒）<input type="number" required min={30} max={1800} step={1} value={settings.uploadTimeoutMs / 1000} disabled={busy} onChange={e => updateSetting('uploadTimeoutMs', e.target.value, 1000)}/></label>
         <label>同时上传文件数<select value={settings.uploadConcurrency} disabled={busy} onChange={e => updateSetting('uploadConcurrency', e.target.value)}>{[1, 2, 3].map(value => <option key={value} value={value}>{value}</option>)}</select></label>
         <label>断流后轮询间隔（秒）<input type="number" required min={2} max={30} step={1} value={settings.pollIntervalMs / 1000} disabled={busy} onChange={e => updateSetting('pollIntervalMs', e.target.value, 1000)}/></label>
