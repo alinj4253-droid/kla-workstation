@@ -167,6 +167,25 @@ systemctl daemon-reload
 systemctl enable --now kla
 ```
 
+### 5.1 日志与轮转
+
+| 日志 | 去向 | 轮转 |
+| --- | --- | --- |
+| kla 应用（pino JSON） | stdout → journald | journald 自带；CentOS 7 默认单文件约 4GB、总量约文件系统 10%，通常够用 |
+| kla-postgres / kla-redis | Docker json-file | compose 已配置 `max-size: 50m` × `max-file: 3`（每容器约 150m 上限） |
+
+如需收紧 journald 占用（`/var/log/journal` 在根分区时）：
+
+```bash
+vi /etc/systemd/journald.conf
+#   SystemMaxUse=500M
+#   MaxRetentionSec=1month
+systemctl restart systemd-journald
+journalctl --vacuum-size=500M --vacuum-time=1month   # 立即收缩已占空间
+```
+
+排查日志见 `journalctl -u kla`（应用）、`docker logs kla-postgres`（数据库）；日志字段含义与检索方式见 `docs/OBSERVABILITY_SPEC.md`。
+
 ## 6. 验证清单
 
 ```bash
