@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "predev": "pnpm --filter @kla-workstation/contracts build",
     "dev": "tsx watch src/server.ts",

@@ -32,9 +32,8 @@ COPY server server
 RUN pnpm --filter @kla-workstation/contracts build \
   && pnpm --filter @kla-workstation/server build \
   && pnpm --filter @kla-workstation/server deploy --prod --legacy /out \
-  && cp -r server/dist /out/dist \
   && test -f /out/dist/server.js \
-  && test -d /out/migrations
+  && test -d /out/dist/migrations
 
 FROM node:22-alpine
 ENV NODE_ENV=production
