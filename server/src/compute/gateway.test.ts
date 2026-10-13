@@ -166,9 +166,17 @@ describe('§8 ComputeGateway 结算', () => {
     expect(calls.credentials).toHaveLength(0);
   });
 
-  it('模型不在服务端目录：404', async () => {
-    const { gateway } = buildGateway({ repo: { getCatalogModel: async () => null } });
+  it('目录外模型放行：上游分组是可调用性的地面真相', async () => {
+    const { gateway, calls } = buildGateway({ repo: { getCatalogModel: async () => null }, chat: { chatCompletions: async () => new Response('boom', { status: 500 }) } });
+    await expect(gateway.completeChat(identity(), INPUT)).rejects.toMatchObject({ code: 'UNAVAILABLE', httpStatus: 502 });
+    expect(calls.usage[0]).toMatchObject({ model: 'm1' });
+    expect(calls.release).toEqual(['hold-1']);
+  });
+
+  it('目录中显式停用的模型：404', async () => {
+    const { gateway, calls } = buildGateway({ repo: { getCatalogModel: async () => ({ id: 'm1', provider: 'demo', enabled: false }) } });
     await expect(gateway.completeChat(identity(), INPUT)).rejects.toMatchObject({ code: 'NOT_FOUND', httpStatus: 404 });
+    expect(calls.credentials).toHaveLength(0);
   });
 
   it('流式：逐块透传并在结束时释放预扣，实际扣费等待上游明细', async () => {

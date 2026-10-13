@@ -137,7 +137,7 @@ export class AgentLoopWorker {
   }
   private async model(run:Row,identity:Identity,agent:RegisteredAgent,messages:unknown[],tools:unknown[],requestId:string,signal:AbortSignal):Promise<ModelMessage>{
     await this.alive(run,signal);
-    const response=await cancellable(this.tools.completeModel(identity,{model:agent.model_id??process.env.MODEL_ID??'deepseek-v4-flash',keyId:agent.model_key_id,messages,tools:tools.length?tools:undefined,temperature:0.2,requestId,tags:{projectId:run.project_id,conversationId:run.conversation_id,agentId:agent.id}}),signal);
+    const response=await cancellable(this.tools.completeModel(identity,{model:agent.model_id??process.env.MODEL_ID??'deepseek-v4.1-flash',keyId:agent.model_key_id,messages,tools:tools.length?tools:undefined,temperature:0.2,requestId,tags:{projectId:run.project_id,conversationId:run.conversation_id,agentId:agent.id}}),signal);
     await this.alive(run,signal);const message=(response.payload as {choices?:Array<{message?:ModelMessage}>})?.choices?.[0]?.message;
     if(!message||(!message.content?.trim()&&!message.tool_calls?.length))throw new Error('模型未返回有效答复或工具调用');return message;
   }

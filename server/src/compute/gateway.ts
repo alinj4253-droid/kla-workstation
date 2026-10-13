@@ -139,11 +139,11 @@ export class ComputeGateway {
   constructor(private readonly deps: ComputeGatewayDeps) {}
   private get points(): PointsConverter { return this.deps.points ?? createPointsConverter(); }
 
-  /** §8.1–§8.4：模型目录校验、凭据、预扣额度、选 Key。 */
+  /** §8.1–§8.4：模型校验、凭据、预扣额度、选 Key。 */
   private async prepare(identity: Identity, input: GatewayChatInput): Promise<Prepared> {
+    // 上游 /v1/models 是可调用性的地面真相（按 Key 分组生效）；本地目录只用于显式停用拦截与展示元数据。
     const catalogModel = await this.deps.computeRepo.getCatalogModel(input.model);
-    if (!catalogModel) throw new GatewayError('NOT_FOUND', `模型不在服务端目录中：${input.model}`, 404);
-    if (!catalogModel.enabled) throw new GatewayError('NOT_FOUND', `模型已停用：${input.model}`, 404);
+    if (catalogModel && !catalogModel.enabled) throw new GatewayError('NOT_FOUND', `模型已停用：${input.model}`, 404);
 
     const binding = await this.deps.computeRepo.getBinding(identity.id);
     if (!binding) throw new GatewayError('CONFLICT', '算力账号尚未初始化，请先重试初始化', 409);
@@ -168,7 +168,7 @@ export class ComputeGateway {
     try {
       jwt = await this.deps.sub2api.getUserJwt(binding.sub2apiUserId, binding.sub2apiUsername, password);
     } catch (error) {
-      await this.settle({ identity, ledgerId, credential: '', keyId: null, modelId: catalogModel.id, startedAt: Date.now() }, input, EMPTY_USAGE, 'failure');
+      await this.settle({ identity, ledgerId, credential: '', keyId: null, modelId: catalogModel?.id ?? input.model, startedAt: Date.now() }, input, EMPTY_USAGE, 'failure');
       throw new GatewayError('UNAVAILABLE', error instanceof Error ? error.message : 'Sub2API 不可用', 503);
     }
 
@@ -177,7 +177,7 @@ export class ComputeGateway {
       ? await this.deps.computeRepo.getKey(input.keyId, identity.id)
       : await this.deps.computeRepo.getActiveKey(identity.id);
     if (!key?.sub2apiKeyId || (input.keyId && key.status !== 'active')) {
-      await this.settle({ identity, ledgerId, credential: '', keyId: null, modelId: catalogModel.id, startedAt: Date.now() }, input, EMPTY_USAGE, 'failure');
+      await this.settle({ identity, ledgerId, credential: '', keyId: null, modelId: catalogModel?.id ?? input.model, startedAt: Date.now() }, input, EMPTY_USAGE, 'failure');
       throw new GatewayError('CONFLICT', input.keyId ? '智能体挂载的 API Key 已不可用，请重新挂载' : '当前身份没有可用的 API Key，请先在「API 密钥」页创建', 409);
     }
 
@@ -188,10 +188,10 @@ export class ComputeGateway {
       if (!secret) throw new Error('上游未返回该 Key 的明文，请在 Sub2API 侧确认');
       credential = secret;
     } catch (error) {
-      await this.settle({ identity, ledgerId, credential: '', keyId: key.id, modelId: catalogModel.id, startedAt: Date.now() }, input, EMPTY_USAGE, 'failure');
+      await this.settle({ identity, ledgerId, credential: '', keyId: key.id, modelId: catalogModel?.id ?? input.model, startedAt: Date.now() }, input, EMPTY_USAGE, 'failure');
       throw new GatewayError('UNAVAILABLE', error instanceof Error ? error.message : '获取上游 Key 失败', 503);
     }
-    return { identity, ledgerId, credential, keyId: key.id, modelId: catalogModel.id, startedAt: Date.now() };
+    return { identity, ledgerId, credential, keyId: key.id, modelId: catalogModel?.id ?? input.model, startedAt: Date.now() };
   }
 
   /** 失败请求落一条 status=failure 的用量记录，便于排查；实际费用仍以同步到的上游明细为准。 */
