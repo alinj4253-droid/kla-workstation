@@ -92,7 +92,7 @@ export async function createServer() {
   await registerPointsAdminRoutes(app, { computeRepo, quota, username: config.pointsAdmin.username, password: config.pointsAdmin.password });
 
   const outboxWorker = new OutboxWorker(computeRepo, provisioning, config.compute.outboxIntervalMs);
-  const usageSyncWorker = new UsageSyncWorker(computeRepo, sub2api, quota, config.compute.usageSyncIntervalMs);
+  const usageSyncWorker = new UsageSyncWorker(computeRepo, sub2api, quota, config.compute.usageSyncIntervalMs, config.compute.reserveTimeoutMs, config.compute.balanceReconcileIntervalMs);
   loopWorker.start();
   outboxWorker.start();
   usageSyncWorker.start();

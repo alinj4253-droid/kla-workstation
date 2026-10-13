@@ -50,8 +50,8 @@ describe('Sub2API actual usage', () => {
     expect(paths).toHaveLength(2);
     expect(paths.every(path => path.includes('/api/v1/admin/usage?user_id=52'))).toBe(true);
     expect(rows).toEqual([
-      { id: '39', userId: '52', apiKeyId: '65', requestId: 'r-39', model: 'glm-4', amountUsd: 0.00036205, promptTokens: 120, completionTokens: 40, timestamp: '2026-10-09T19:40:10+08:00' },
-      { id: '38', userId: '52', apiKeyId: '65', requestId: 'r-38', model: 'glm-4', amountUsd: 0.0001676, promptTokens: 70, completionTokens: 20, timestamp: '2026-10-09T19:38:56+08:00' },
+      { id: '39', userId: '52', apiKeyId: '65', requestId: 'r-39', model: 'glm-4', amountUsd: 0.00036205, promptTokens: 120, completionTokens: 40, cacheCreationTokens: 0, cacheReadTokens: 0, durationMs: null, firstTokenMs: null, timestamp: '2026-10-09T19:40:10+08:00' },
+      { id: '38', userId: '52', apiKeyId: '65', requestId: 'r-38', model: 'glm-4', amountUsd: 0.0001676, promptTokens: 70, completionTokens: 20, cacheCreationTokens: 0, cacheReadTokens: 0, durationMs: null, firstTokenMs: null, timestamp: '2026-10-09T19:38:56+08:00' },
     ]);
   });
 });

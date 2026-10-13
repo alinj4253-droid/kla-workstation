@@ -62,7 +62,10 @@ describe('群组选择智能体真实数据库链路', () => {
       }
       const legacy = await app.inject({ method: 'POST', url: '/api/v1/conversations', headers, payload: { projectId: project.id, name: '原有调用' } });
       expect(legacy.statusCode, legacy.body).toBe(200);
-      expect((await roomRegistry(pool, legacy.json().data.id)).map(agent => agent.id).sort()).toEqual([coordinator.id, ppt.id].sort());
+      // 旧调用不带 agentIds：房间按「统筹 + 当前身份所有启用的非统筹智能体」惰性补齐。
+      // 期望集合从库中推导，避免以后新增内置智能体（如「路线规划助手」）时再次写死而误红。
+      const enabledPool = (await pool.query(`SELECT id FROM agents WHERE identity_id=$1 AND enabled AND name<>'统筹智能体'`, [account.identity.id])).rows.map(row => row.id as string);
+      expect((await roomRegistry(pool, legacy.json().data.id)).map(agent => agent.id).sort()).toEqual([...enabledPool, coordinator.id].sort());
     } finally {
       await app.close();
       await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);

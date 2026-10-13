@@ -42,7 +42,7 @@ export async function registerPointsAdminRoutes(app: FastifyInstance, deps: Poin
   };
 
   app.post('/api/v1/admin/points/login', async (request, reply) => {
-    const body = request.body as { username?: string; password?: string };
+    const body = (request.body ?? {}) as { username?: string; password?: string };
     if (body.username !== username || body.password !== password) {
       return reply.code(401).send({ ok: false, error: { code: 'ADMIN_INVALID_CREDENTIALS', message: '管理员账号或密码错误' } });
     }
@@ -118,7 +118,7 @@ export async function registerPointsAdminRoutes(app: FastifyInstance, deps: Poin
   app.post('/api/v1/admin/points/companies/:organizationId/grant', async (request, reply) => {
     if (!authenticate(request, reply)) return;
     const { organizationId } = request.params as { organizationId: string };
-    const body = request.body as { identityId?: string; points?: number; requestId?: string };
+    const body = (request.body ?? {}) as { identityId?: string; points?: number; requestId?: string };
     if (!body.identityId || !Number.isFinite(body.points) || Number(body.points) <= 0) {
       return error(reply, 400, 'INVALID_ARGUMENT', 'identityId 和正数 points 为必填项');
     }
@@ -140,7 +140,7 @@ export async function registerPointsAdminRoutes(app: FastifyInstance, deps: Poin
   app.post('/api/v1/admin/points/companies/:organizationId/revoke', async (request, reply) => {
     if (!authenticate(request, reply)) return;
     const { organizationId } = request.params as { organizationId: string };
-    const body = request.body as { identityId?: string; points?: number; requestId?: string };
+    const body = (request.body ?? {}) as { identityId?: string; points?: number; requestId?: string };
     if (!body.identityId || !Number.isFinite(body.points) || Number(body.points) <= 0) {
       return error(reply, 400, 'INVALID_ARGUMENT', 'identityId 和正数 points 为必填项');
     }

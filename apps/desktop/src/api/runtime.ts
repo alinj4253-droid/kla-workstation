@@ -12,6 +12,7 @@ export const runtimeApi={
   devices:()=>klaApi.request<RuntimeDevice[]>('/v1/runtime/devices'),
   skills:()=>klaApi.request<RuntimeSkill[]>('/v1/skills'),
   tools:()=>klaApi.request<RuntimeTool[]>('/v1/runtime/tools'),
+  installHomeAi:()=>klaApi.request<{agentId:string;installed:boolean}>('/v1/runtime/market/home-ai-diagnosis/install',{method:'POST',body:JSON.stringify({}),headers:{'idempotency-key':crypto.randomUUID()}}),
   agentCapabilities:(agentId:string)=>klaApi.request<AgentCapabilities>(`/v1/agents/${agentId}/capabilities`),
   saveAgentCapabilities:(agentId:string,skillCodes:string[],toolCodes:string[])=>klaApi.request<AgentCapabilities>(`/v1/agents/${agentId}/capabilities`,{method:'PUT',body:JSON.stringify({skillCodes,toolCodes})}),
   saveAgent:(id:string|null,input:{name:string;role:string;modelId:string|null;modelKeyId:string|null;executionLocation:ExecutionLocation;deviceId:string|null;enabled:boolean})=>klaApi.request<RuntimeAgent>(id?`/v1/agents/${id}`:'/v1/agents',{method:id?'PATCH':'POST',body:JSON.stringify(input)}),

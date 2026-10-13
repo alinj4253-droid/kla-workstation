@@ -136,23 +136,6 @@ describe('QuotaService 企业额度转账', () => {
 });
 
 describe('QuotaService actual usage billing', () => {
-  it('holds only the available points when the fixed hold is larger', async () => {
-    const entitlement = makeEntitlement('e1', 'i1', 1);
-    const updates: number[] = [];
-    const repo = {
-      getLedgerByIdempotency: async () => null,
-      getOrCreateEntitlement: async () => entitlement,
-      lockEntitlement: async () => entitlement,
-      updateEntitlementAmounts: async (_client: unknown, _id: string, delta: { reserved: number }) => { updates.push(delta.reserved); return entitlement; },
-      createLedger: async (input: { amount: number }) => ({ id: 'hold-1', amount: input.amount }),
-    } as unknown as ComputeRepository;
-    const pool = { connect: async () => ({ query: async () => ({ rows: [] }), release: () => {} }) } as unknown as Pool;
-    const service = new QuotaService(pool, repo, {} as never);
-
-    expect(await service.reserve('i1', 10, 'r1')).toEqual({ ledgerId: 'hold-1' });
-    expect(updates).toEqual([1]);
-  });
-
   it('books one upstream usage row exactly once and never adjusts the upstream balance again', async () => {
     const ledgerKeys = new Set<string>();
     const entitlement = makeEntitlement('e1', 'i1', 100);
@@ -171,12 +154,14 @@ describe('QuotaService actual usage billing', () => {
       updateEntitlementAmounts: async (_client: unknown, _id: string, delta: { used: number }) => { deltas.push(delta.used); return entitlement; },
       createLedger: async (input: { idempotencyKey: string }) => { ledgerKeys.add(input.idempotencyKey); return { id: 'ledger-1' }; },
       upsertUsage: async (input: Parameters<ComputeRepository['upsertUsage']>[0]) => { recorded.push(input); return { id: 'usage-1' }; },
+      refreshUsageMetrics: async () => {},
     } as unknown as ComputeRepository;
     const adjustBalance = vi.fn();
     const service = new QuotaService(pool, repo, { adjustBalance } as never);
     const item = {
       id: '39', userId: '52', apiKeyId: '65', requestId: 'r-39', model: 'glm-4',
       amountUsd: 0.00036205, promptTokens: 120, completionTokens: 40, timestamp: NOW,
+      cacheCreationTokens: 0, cacheReadTokens: 0, durationMs: 1200, firstTokenMs: null,
     };
 
     expect(await service.recordUpstreamUsage('i1', item, 'k1')).toBe(true);
@@ -186,5 +171,173 @@ describe('QuotaService actual usage billing', () => {
     expect(recorded[0]).toMatchObject({ identityId: 'i1', keyId: 'k1', sub2apiUsageId: '39', amountUsd: 0.00036205 });
     expect(sql).toContain("SELECT set_config('kla.upstream_usage', 'on', true)");
     expect(adjustBalance).not.toHaveBeenCalled();
+  });
+});
+
+describe('QuotaService 预扣与释放', () => {
+  it('holds only the available points when the fixed hold is larger', async () => {
+    const entitlement = makeEntitlement('e1', 'i1', 1);
+    const updates: number[] = [];
+    const repo = {
+      getLedgerByIdempotency: async () => null,
+      getOrCreateEntitlement: async () => entitlement,
+      lockEntitlement: async () => entitlement,
+      updateEntitlementAmounts: async (_client: unknown, _id: string, delta: { reserved: number }) => { updates.push(delta.reserved); return entitlement; },
+      createLedger: async (input: { amount: number }) => ({ id: 'hold-1', amount: input.amount }),
+    } as unknown as ComputeRepository;
+    const pool = { connect: async () => ({ query: async () => ({ rows: [] }), release: () => {} }) } as unknown as Pool;
+    const service = new QuotaService(pool, repo, {} as never);
+
+    expect(await service.reserve('i1', 10, 'r1')).toEqual({ ledgerId: 'hold-1' });
+    expect(updates).toEqual([1]);
+  });
+
+  it('reserve：同 requestId 重复预扣命中幂等，不再二次占位', async () => {
+    const entitlement = makeEntitlement('e1', 'i1', 100);
+    const updates: number[] = [];
+    const repo = {
+      getLedgerByIdempotency: async () => ({ id: 'hold-1', entitlementId: 'e1' }),
+      getOrCreateEntitlement: async () => entitlement,
+      lockEntitlement: async () => entitlement,
+      updateEntitlementAmounts: async (_client: unknown, _id: string, delta: { reserved: number }) => { updates.push(delta.reserved); return entitlement; },
+      createLedger: async () => ({ id: 'hold-2' }),
+    } as unknown as ComputeRepository;
+    const pool = { connect: async () => ({ query: async () => ({ rows: [] }), release: () => {} }) } as unknown as Pool;
+    const service = new QuotaService(pool, repo, {} as never);
+
+    expect(await service.reserve('i1', 10, 'r1')).toEqual({ ledgerId: 'hold-1' });
+    expect(updates).toEqual([]);
+  });
+
+  it('release：仅 pending 流水生效一次，重复释放不再扣减 reserved', async () => {
+    const entitlement = makeEntitlement('e1', 'i1', 100);
+    const updates: number[] = [];
+    const states = [{ id: 'hold-1', status: 'pending', amount: 10 }];
+    const repo = {
+      lockLedger: async (_id: string) => states[0],
+      lockEntitlement: async () => entitlement,
+      updateEntitlementAmounts: async (_client: unknown, _id: string, delta: { reserved: number }) => { updates.push(delta.reserved); return entitlement; },
+      updateLedgerStatus: async (_id: string, status: string) => { states[0].status = status; },
+    } as unknown as ComputeRepository;
+    const client = { query: async (statement: string) => (statement.includes('JOIN compute_entitlements') ? { rows: [{ identity_id: 'i1' }] } : { rows: [] }), release: () => {} };
+    const pool = { connect: async () => client } as unknown as Pool;
+    const service = new QuotaService(pool, repo, {} as never);
+
+    await service.release('hold-1');
+    await service.release('hold-1');
+    expect(updates).toEqual([-10]);
+  });
+
+  it('releaseExpiredReserves：逐条释放超龄预扣，失败的记 syncLog 不中断', async () => {
+    const entitlement = makeEntitlement('e1', 'i1', 100);
+    const logs: Array<{ message: string }> = [];
+    const repo = {
+      listExpiredPendingReserves: async () => [{ id: 'l1', status: 'pending', amount: 10 }, { id: 'l2', status: 'pending', amount: 10 }],
+      lockLedger: async (id: string) => (id === 'l2' ? Promise.reject(new Error('db down')) : { id, status: 'pending', amount: 10 }),
+      lockEntitlement: async () => entitlement,
+      updateEntitlementAmounts: async () => entitlement,
+      updateLedgerStatus: async () => {},
+      insertSyncLog: async (input: { message: string }) => { logs.push(input); },
+    } as unknown as ComputeRepository;
+    const client = { query: async (statement: string) => (statement.includes('JOIN compute_entitlements') ? { rows: [{ identity_id: 'i1' }] } : { rows: [] }), release: () => {} };
+    const pool = { connect: async () => client } as unknown as Pool;
+    const service = new QuotaService(pool, repo, {} as never);
+
+    expect(await service.releaseExpiredReserves(600_000)).toBe(1);
+    expect(logs).toHaveLength(1);
+    expect(logs[0].message).toContain('l2');
+  });
+
+  it('releaseExpiredReserves：timeoutMs<=0 时关闭兜底', async () => {
+    const repo = { listExpiredPendingReserves: async () => { throw new Error('不应查询'); } } as unknown as ComputeRepository;
+    const service = new QuotaService({} as Pool, repo, {} as never);
+    expect(await service.releaseExpiredReserves(0)).toBe(0);
+  });
+});
+
+describe('QuotaService 上游余额对账补记（上游 → KLA）', () => {
+  /**
+   * bindings: 上游用户 ID → 余额（USD）；null 表示上游账号不存在，'error' 表示查询抛错。
+   * 所有身份共用一个台账（netUsd 初始值可配），补记后模拟基准自愈（净额 += 补记额）。
+   */
+  function buildReconcileService(bindings: Record<string, number | null | 'error'>, netUsd = 0) {
+    const ent = makeEntitlement('ent-r', 'identity-r', 0);
+    const state = { netUsd, ledgers: [] as Array<{ operation: string; amount: number; synced: boolean; metadata: Record<string, unknown> }>, logs: [] as string[] };
+    const repo = {
+      getOrCreateEntitlement: async () => ent,
+      lockEntitlement: async () => ent,
+      updateEntitlementAmounts: async (_c: unknown, _id: string, delta: { total?: number }) => { ent.quotaTotal += delta.total ?? 0; return ent; },
+      createLedger: async (input: { operation: string; amount: number; sub2apiSynced?: boolean; metadata?: Record<string, unknown> }) => {
+        state.ledgers.push({ operation: input.operation, amount: input.amount, synced: input.sub2apiSynced === true, metadata: input.metadata ?? {} });
+        state.netUsd += input.amount / 1000; // 默认汇率 1000 点/USD
+        return { id: `led-${state.ledgers.length}` };
+      },
+      sumSyncedLedgerNet: async () => state.netUsd,
+      insertSyncLog: async (input: { message: string }) => { state.logs.push(input.message); },
+    } as unknown as ComputeRepository;
+    const sub2api = {
+      getUser: async (userId: string) => {
+        if (bindings[userId] === 'error') throw new Error('upstream down');
+        const balance = bindings[userId];
+        if (balance == null) return null;
+        return { id: userId, username: 'u', balance, status: 'active', allowedGroups: [], restrictPublicGroups: false };
+      },
+    };
+    const rows = Object.keys(bindings).map((userId) => ({ identity_id: 'identity-r', sub2api_user_id: userId }));
+    const pool = {
+      query: async (statement: string) => (statement.includes('FROM compute_bindings') ? { rows } : { rows: [] }),
+      connect: async () => ({ query: async () => ({ rows: [] }), release: () => {} }),
+    } as unknown as Pool;
+    const service = new QuotaService(pool, repo, sub2api as never);
+    return { service, state, ent };
+  }
+
+  it('上游余额高于净额且超过阈值：补记充值流水并累加 total', async () => {
+    const { service, state, ent } = buildReconcileService({ 'u-rich': 100 });
+    const result = await service.reconcileUpstreamBalances();
+
+    expect(result).toEqual({ checked: 1, recorded: 1 });
+    expect(state.ledgers).toHaveLength(1);
+    expect(state.ledgers[0]).toMatchObject({
+      operation: 'recharge', amount: 100_000, synced: true,
+      metadata: { source: 'upstream_reconciliation', upstreamUserId: 'u-rich', upstreamBalanceUsd: 100, klaNetUsd: 0 },
+    });
+    expect(ent.quotaTotal).toBe(100_000);
+  });
+
+  it('正差额但不超过阈值（≤100 积分）：不补记', async () => {
+    const { service, state, ent } = buildReconcileService({ 'u-50': 0.05, 'u-100': 0.1 });
+    const result = await service.reconcileUpstreamBalances();
+
+    expect(result).toEqual({ checked: 2, recorded: 0 });
+    expect(state.ledgers).toHaveLength(0);
+    expect(ent.quotaTotal).toBe(0);
+  });
+
+  it('负差额（上游低于 KLA 已同步净额）：不补记', async () => {
+    const { service, state } = buildReconcileService({ 'u-rich': 100 }, 500);
+    const result = await service.reconcileUpstreamBalances();
+
+    expect(result).toEqual({ checked: 1, recorded: 0 });
+    expect(state.ledgers).toHaveLength(0);
+  });
+
+  it('补记后基准自愈：重跑不重复补记', async () => {
+    const { service, state } = buildReconcileService({ 'u-rich': 100 });
+    await service.reconcileUpstreamBalances();
+    const second = await service.reconcileUpstreamBalances();
+
+    expect(second.recorded).toBe(0);
+    expect(state.ledgers).toHaveLength(1);
+  });
+
+  it('上游账号不存在或查询失败：跳过并记 sync_log，不阻断其他身份', async () => {
+    const { service, state } = buildReconcileService({ 'u-rich': 100, 'u-err': 'error', 'u-gone': null });
+    const result = await service.reconcileUpstreamBalances();
+
+    expect(result).toEqual({ checked: 3, recorded: 1 });
+    expect(state.ledgers).toHaveLength(1);
+    expect(state.logs).toHaveLength(1);
+    expect(state.logs[0]).toContain('u-err');
   });
 });

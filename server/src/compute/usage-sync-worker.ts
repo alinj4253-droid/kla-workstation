@@ -8,12 +8,17 @@ export class UsageSyncWorker {
   private timer: ReturnType<typeof setInterval> | null = null;
   private running: Promise<void> | null = null;
   private cutoverAt: string | null = null;
+  private lastBalanceReconcileAt = 0;
 
   constructor(
     private readonly repo: ComputeRepository,
     private readonly sub2api: Sub2ApiClient,
     private readonly quota: QuotaService,
     private readonly intervalMs: number = 5_000,
+    /** 预扣超时自动释放阈值；0 表示关闭兜底 */
+    private readonly reserveTimeoutMs: number = 0,
+    /** 上游 → KLA 余额对账周期（毫秒）；0 表示关闭。追认直接在上游管理面发生的充值 */
+    private readonly balanceReconcileIntervalMs: number = 0,
   ) {}
 
   start(): void {
@@ -41,10 +46,13 @@ export class UsageSyncWorker {
 
   private tick(): void {
     if (this.running) return;
-    this.running = this.syncUsage().finally(() => { this.running = null; });
+    const dueBalanceReconcile = this.balanceReconcileIntervalMs > 0
+      && Date.now() - this.lastBalanceReconcileAt >= this.balanceReconcileIntervalMs;
+    if (dueBalanceReconcile) this.lastBalanceReconcileAt = Date.now();
+    this.running = this.syncUsage(dueBalanceReconcile).finally(() => { this.running = null; });
   }
 
-  private async syncUsage(): Promise<void> {
+  private async syncUsage(includeBalanceReconcile = false): Promise<void> {
     try {
       const since = await this.getCutoverAt();
       const { rows } = await this.repo.pool.query<BindingRow>(
@@ -71,6 +79,21 @@ export class UsageSyncWorker {
     } catch (error) {
       await this.repo.insertSyncLog({ syncType: 'usage', status: 'error',
         message: `用量同步失败：${error instanceof Error ? error.message : String(error)}` });
+    }
+    // 兜底：释放超龄未结算的预扣，防止余额被异常残留的占位流水永久虚减（进程崩溃/释放失败自愈）
+    if (this.reserveTimeoutMs > 0) {
+      try {
+        await this.quota.releaseExpiredReserves(this.reserveTimeoutMs);
+      } catch { /* 下一轮 tick 重试 */ }
+    }
+    // 上游 → KLA 余额对账：追认直接在 Sub2API 管理面发生的充值，补记为充值流水（周期低于用量同步）
+    if (includeBalanceReconcile) {
+      try {
+        await this.quota.reconcileUpstreamBalances();
+      } catch (error) {
+        await this.repo.insertSyncLog({ syncType: 'balance', identityId: null, status: 'error',
+          message: `余额对账执行失败：${error instanceof Error ? error.message : String(error)}` });
+      }
     }
   }
 }

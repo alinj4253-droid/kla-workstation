@@ -1,0 +1,91 @@
+import { randomUUID } from 'node:crypto';
+import { Pool } from 'pg';
+import Fastify from 'fastify';
+import sensible from '@fastify/sensible';
+import { describe, expect, it } from 'vitest';
+import { loadConfig } from '../../config.js';
+import { runMigrations } from '../../database/migrations.js';
+import { PostgresAccountRepository } from '../../repositories/postgres-account-repository.js';
+import { ShortTermMemoryService } from '../../memories/short-term.js';
+import { HomeAiService } from './service.js';
+import { installHomeAi } from './install.js';
+import { roomRegistry, effectiveToolCodes } from '../registry.js';
+import { ToolGateway } from '../tool-gateway.js';
+import { RuntimeTools } from '../tools.js';
+import { registerRuntimeRoutes } from '../routes.js';
+const config=loadConfig();
+describe('home AI authenticated persistence and installation',()=>{
+  it.skipIf(!config.databaseUrl)('exercises gateway, atomic revisions, isolation, human confirmation and idempotent install',async()=>{
+    const schema=`kla_home_ai_test_${randomUUID().replaceAll('-','')}`;
+    const pool=new Pool({connectionString:config.databaseUrl,options:`-c search_path=${schema},public`,max:6,connectionTimeoutMillis:5000});
+    const app=Fastify();
+    try {
+      await runMigrations(pool,schema);await app.register(sensible);
+      const accounts=new PostgresAccountRepository(pool);
+      const owner=await accounts.register({email:'homeai@example.test',nickname:'诊断',password:'TestPass2026!'});
+      const outsider=await accounts.register({email:'outsider@example.test',nickname:'隔离',password:'TestPass2026!'});
+      const project=await accounts.createProject(owner.identity.id,'诊断测试');
+      const room=await accounts.createConversation(project.id,'访谈');
+      const otherRoom=await accounts.createConversation(project.id,'其他访谈');
+      const installed=await Promise.all([installHomeAi(pool,owner.identity.id),installHomeAi(pool,owner.identity.id)]);
+      expect(installed[0].agentId).toBe(installed[1].agentId);expect(installed.filter(r=>r.installed)).toHaveLength(1);
+      const skillCodes=(await pool.query('SELECT skill_code FROM agent_skill_mounts WHERE agent_id=$1',[installed[0].agentId])).rows.map(r=>r.skill_code);
+      expect(skillCodes).toEqual(expect.arrayContaining(['home_ai_diagnosis','artifact_management']));
+      await pool.query("INSERT INTO conversation_agents(conversation_id,agent_id,role) VALUES($1,$2,'member')",[room.id,installed[0].agentId]);
+      const agent=(await roomRegistry(pool,room.id)).find(a=>a.id===installed[0].agentId)!;
+      expect(agent.execution_location).toBe('server');expect(agent.role).toContain('你没有确认工具');
+      const message=await accounts.createMessage(room.id,owner.user.id,'开始诊断');
+      const run=await accounts.createRun(room.id,message.id,'balanced');
+      const step=(await pool.query('INSERT INTO conversation_run_steps(run_id,step_index,title,assigned_agent_id) VALUES($1,1,$2,$3) RETURNING id',[run.id,'诊断',agent.id])).rows[0];
+      const scope={identityId:owner.identity.id,conversationId:room.id,runId:run.id,stepId:step.id,agent,deviceId:null};
+      const gateway=new ToolGateway(pool,new RuntimeTools(pool,accounts,new ShortTermMemoryService(pool),''));
+      const prepared=await gateway.prepare(scope,{id:'open',function:{name:'home_ai_session_open',arguments:'{}'}});
+      expect(prepared.action).toBe('write');expect(prepared.location).toBe('server');
+      const client=await pool.connect();try{await client.query('BEGIN');await gateway.enqueue(client,scope,prepared);await client.query('COMMIT');}finally{client.release();}
+      await gateway.executeServerCalls(scope,async()=>undefined);
+      const result=(await pool.query('SELECT status,result FROM runtime_tool_calls WHERE step_id=$1',[step.id])).rows[0];
+      expect(result.status).toBe('completed');expect(result.result.nextQuestion.id).toBe('role');
+      const service=new HomeAiService(pool),s={identityId:owner.identity.id,conversationId:room.id};
+      let view=result.result;
+      const update={sessionId:view.sessionId,expectedRevision:0,answerId:'role',answer:'审单主管'};
+      view=await service.execute('home_ai_interview_update',update,{...s,toolCallId:'role'});
+      expect((await service.execute('home_ai_interview_update',update,{...s,toolCallId:'role'})).revision).toBe(1);
+      await expect(service.execute('home_ai_interview_update',{...update,answer:'不同内容'},{...s,toolCallId:'role'})).rejects.toThrow('同一调用编号');
+      const simultaneous=await Promise.allSettled(['职责','另一职责'].map(answer=>service.execute('home_ai_interview_update',
+        {sessionId:view.sessionId,expectedRevision:1,answerId:'mission',answer},{...s,toolCallId:randomUUID()})));
+      expect(simultaneous.filter(r=>r.status==='fulfilled')).toHaveLength(1);
+      view=(await service.list(s))[0];expect(view.revision).toBe(2);
+      await expect(service.execute('home_ai_session_open',{sessionId:view.sessionId},{...s,conversationId:otherRoom.id})).rejects.toThrow('不属于');
+      await expect(service.execute('home_ai_session_open',{sessionId:view.sessionId},{identityId:outsider.identity.id,conversationId:room.id})).rejects.toThrow('仅项目拥有身份');
+      await expect(service.confirm(s,view.sessionId,{expectedRevision:2,kind:'report',stageId:'review'},randomUUID())).rejects.toThrow('先确认岗位画像');
+      view=await service.confirm(s,view.sessionId,{expectedRevision:2,kind:'profile'},randomUUID());
+      view=await service.execute('home_ai_conditions_update',{sessionId:view.sessionId,expectedRevision:view.revision,stageId:'review',
+        checks:{data:'yes',rules:'yes',review:'yes',access:'yes'},notes:{review:'主管复核'}},s);
+      view=await service.execute('home_ai_value_estimate',{sessionId:view.sessionId,expectedRevision:view.revision,stageId:'review',numbers:{volume:200,before:25,after:10,coverage:80}},s);
+      expect(view.scenes[0].canConfirm).toBe(true);expect(view.scenes[0].accepted).toBe(false);
+      const token=await accounts.createSession(owner.user.id);const headers={authorization:`Bearer ${token.accessToken}`,'x-identity-id':owner.identity.id};
+      await registerRuntimeRoutes(app,{pool,accounts,worker:{} as never});
+      const url=`/api/v1/conversations/${room.id}/home-ai/sessions/${view.sessionId}/confirm`;
+      const payload={expectedRevision:view.revision,kind:'report',stageId:'review'};
+      expect((await app.inject({method:'POST',url,headers,payload})).statusCode).toBe(400);
+      const humanKey=randomUUID();const confirmed=await app.inject({method:'POST',url,headers:{...headers,'idempotency-key':humanKey},payload});
+      expect(confirmed.statusCode,confirmed.body).toBe(200);view=confirmed.json().data;expect(view.scenes[0].accepted).toBe(true);
+      expect((await app.inject({method:'POST',url,headers:{...headers,'idempotency-key':humanKey},payload})).json().data.revision).toBe(view.revision);
+      view=await service.execute('home_ai_value_estimate',{sessionId:view.sessionId,expectedRevision:view.revision,stageId:'review',numbers:{after:12}},s);
+      expect(view.scenes[0].accepted).toBe(false);
+      const report=await service.execute('home_ai_report_build',{sessionId:view.sessionId,stageId:'review'},s);
+      expect(report.markdown).toContain('讨论稿');expect(report.markdown).toContain('34.7');
+      const artifact=await new RuntimeTools(pool,accounts,new ShortTermMemoryService(pool),'').execute('artifact_write',
+        {fileName:'诊断讨论稿.md',content:report.markdown,mimeType:'text/markdown'},{...s,agentId:agent.id});
+      expect((artifact as any).artifactId).toBeTruthy();
+      await pool.query("UPDATE runtime_skill_catalog SET enabled=false WHERE identity_id=$1 AND code='home_ai_diagnosis'",[owner.identity.id]);
+      await expect(gateway.prepare(scope,{id:'blocked',function:{name:'home_ai_session_open',arguments:'{}'}})).rejects.toThrow('工具已停用');
+      await pool.query('DELETE FROM agent_skill_mounts WHERE agent_id=$1 AND skill_code=$2',[agent.id,'home_ai_diagnosis']);
+      await pool.query('UPDATE agents SET name=$2 WHERE id=$1',[agent.id,'用户改名']);
+      expect((await installHomeAi(pool,owner.identity.id)).agentId).toBe(agent.id);
+      expect(await effectiveToolCodes(pool,agent.id)).not.toContain('home_ai_session_open');
+      const installResponse=await app.inject({method:'POST',url:'/api/v1/runtime/market/home-ai-diagnosis/install',headers,payload:{}});
+      expect(installResponse.statusCode).toBe(200);expect(installResponse.json().data.agentId).toBe(agent.id);
+    }finally{await app.close();await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);await pool.end();}
+  },60000);
+});

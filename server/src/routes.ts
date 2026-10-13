@@ -18,6 +18,7 @@ import { scopedSearchInputSchema, searchScopedKnowledge } from './auth/knowledge
 import { serviceUrl } from './knowledge-api/config.js';
 import type { ObjectStore } from './storage/object-store.js';
 import { registerFileRoutes } from './storage/routes.js';
+import { registerTaskRoutes } from './tasks/routes.js';
 import { messageFileReferences } from './storage/file-access.js';
 import { createMessageRequestSchema } from '@kla-workstation/contracts';
 
@@ -591,6 +592,13 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
     const identity = await enforce(session, request, 'manage', reply); if (!identity) return;
     const { memoryId } = request.params as { memoryId: string }; const result = await deps.database.rawPool.query('DELETE FROM memories m USING workspaces w WHERE m.id=$1 AND m.workspace_id=w.id AND w.identity_id=$2 RETURNING m.id', [memoryId, identity.id]); if (!result.rows[0]) return reply.code(404).send({ ok: false, error: { code: 'MEMORY_NOT_FOUND', message: '记忆不存在或无权删除' } }); return reply.send({ ok: true, data: null });
   });
+  await registerTaskRoutes(app, { pool: deps.database?.rawPool ?? undefined,
+    authorize: async (request, reply, action) => {
+      const session = await auth(request, reply);
+      if (!session) return null;
+      if (!deps.database?.rawPool) { reply.code(503).send({ ok: false, error: { code: 'UNAVAILABLE', message: '任务存储暂不可用', retryable: true }, meta: { requestId: request.id } }); return null; }
+      return enforce(session, request, action, reply);
+    } });
   await registerFileRoutes(app, { pool: deps.database?.rawPool ?? undefined, objectStore: deps.objectStore, maxBytes: deps.objectStorageMaxFileBytes,
     authorize: async (request, reply, action) => { const session = await auth(request, reply); return session ? enforce(session, request, action, reply) : null; } });
   app.get('/api/v1/me/permissions', async (request, reply) => {

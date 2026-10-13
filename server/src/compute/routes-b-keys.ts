@@ -65,6 +65,14 @@ function optionalIpList(value: unknown): { ok: true; value: string[] | undefined
   return { ok: true, value: value.map((item) => (item as string).trim()) };
 }
 
+/** 上游模型未进入本地目录时，用模型 id 生成稳定可读的名称（否则下拉只显示 gpt-5.6-luna 这类原始 id）。 */
+function fallbackModelName(modelId: string): string {
+  const label = modelId.split('/').at(-1) ?? modelId;
+  return label
+    .replace(/[-_]+/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
 export async function registerComputeKeyRoutes(app: FastifyInstance, deps: ComputeKeyRouteDeps): Promise<void> {
   const pool = deps.computeRepo.pool;
 
@@ -113,9 +121,13 @@ export async function registerComputeKeyRoutes(app: FastifyInstance, deps: Compu
     try {
       const secret = await deps.sub2api.resolveApiKeySecret(resolved.jwt, key.sub2apiKeyId);
       if (!secret) return upstreamFailure(reply, 'UNAVAILABLE', '无法读取该 Key 的上游凭据', request.id);
+      // 与模型广场同一口径：上游 /v1/models 是地面真相，本地 models 目录只补充展示名称，不做交集过滤
       const ids = await deps.sub2api.listModels(secret);
-      const catalog = await pool.query<{id:string;name:string}>('SELECT id,name FROM models WHERE enabled=true AND id=ANY($1::text[]) ORDER BY name', [ids]);
-      return reply.send({ ok: true, data: catalog.rows });
+      const catalog = await pool.query<{id:string;name:string}>('SELECT id,name FROM models WHERE id=ANY($1::text[])', [ids]);
+      const nameById = new Map(catalog.rows.map((row) => [row.id, row.name]));
+      const data = ids.map((id) => ({ id, name: nameById.get(id) ?? fallbackModelName(id) }))
+        .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+      return reply.send({ ok: true, data });
     } catch (error) {
       return upstreamFailure(reply, 'UNAVAILABLE', error instanceof Error ? error.message : '获取 Key 可用模型失败', request.id);
     }

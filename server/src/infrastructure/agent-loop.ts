@@ -6,6 +6,7 @@ import type { ConversationRun } from '../repositories/types.js';
 import type { ComputeGateway } from '../compute/gateway.js';
 import type { ShortTermMemoryService } from '../memories/short-term.js';
 import { requirePermission } from '../auth/permission-service.js';
+import { GatewayError } from '../compute/gateway.js';
 import { effectiveToolCodes, roomRegistry, validatePlan, type RegisteredAgent } from '../runtime/registry.js';
 import { RuntimeTools } from '../runtime/tools.js';
 import { ToolGateway } from '../runtime/tool-gateway.js';
@@ -37,6 +38,18 @@ export function normalizeTaskPlanPayload(input: unknown): unknown {
 function cancellable<T>(pending:Promise<T>,signal:AbortSignal):Promise<T> {
   signal.throwIfAborted();return new Promise((resolve,reject)=>{const abort=()=>reject(new DOMException('执行已取消','AbortError'));signal.addEventListener('abort',abort,{once:true});pending.then(resolve,reject).finally(()=>signal.removeEventListener('abort',abort));});
 }
+
+/**
+ * 上游瞬时故障（超时 504、限流 429、5xx）不应让整轮任务直接失败：
+ * 这里给出是否重试与退避时长。模型协议/权限类错误（404 模型不存在、403、409 等）立即抛出，
+ * 重试没有意义。run 级取消（signal 已中止）永不重试。
+ */
+export function modelRetryDecision(error:unknown,attempt:number,maxAttempts=3,aborted=false):{retry:boolean;delayMs:number} {
+  if (aborted || attempt >= maxAttempts) return {retry:false,delayMs:0};
+  if (!(error instanceof GatewayError)) return {retry:false,delayMs:0};
+  const transient = error.httpStatus === 429 || error.httpStatus >= 500 || error.code === 'UNAVAILABLE' || error.code === 'RATE_LIMITED';
+  return transient ? {retry:true,delayMs:1000*3**(attempt-1)} : {retry:false,delayMs:0};
+}
 type Row = Record<string, any>;
 type ModelMessage = {content?:string|null;tool_calls?:Array<{id:string;type:'function';function:{name:string;arguments:string}}>};
 function completedPptArtifactIds(calls: Row[]): string[] {
@@ -52,6 +65,8 @@ export class AgentLoopWorker {
   private pending:Promise<void>|null=null;
   private readonly owner=randomUUID();
   private readonly controllers=new Map<string,AbortController>();
+  /** 每次运行的模型重试次数，仅用于在失败原因里说明「已重试仍失败」。 */
+  private readonly modelRetries=new Map<string,number>();
   private readonly tools:ToolGateway;
   constructor(private readonly pool:Pool,private readonly accounts:AccountRepository,gateway:Pick<ComputeGateway,'completeChat'>,
     memory:ShortTermMemoryService,encryptionKey='',private readonly onError:(error:unknown)=>void=()=>{}, objectStore?: ObjectStore,private readonly stepMaxTurns=64) {
@@ -74,9 +89,12 @@ export class AgentLoopWorker {
       const active=(await client.query('SELECT 1 FROM conversation_runs WHERE conversation_id=$1 AND id<>$2 AND status=ANY($3::text[]) LIMIT 1',[conversationId,runId,activeStates])).rows[0];
       if(active)throw new Error('同一群聊仍有任务在执行，请等待其完成后再从断点恢复');
       if(source.phase==='execution'){
+        // 只有「结果不确定」的调用才该拦住断点恢复：设备上跑过的调用可能已经产生副作用
+        // （running/cancelled/queued 或回执 unknown）。服务端工具（device_id IS NULL）被失败
+        // 收尾标记为 cancelled 时并没有执行过，继续放行，否则一次上游超时就会让该运行永久无法重试。
         const uncertain=await client.query(`SELECT t.id FROM runtime_tool_calls t JOIN conversation_run_steps s ON s.id=t.step_id
           WHERE s.run_id=$1 AND s.status<>'completed'
-            AND (t.status IN ('running','cancelled','unknown') OR (t.device_id IS NOT NULL AND t.status='queued')) LIMIT 1`,[runId]);
+            AND (t.status='unknown' OR (t.device_id IS NOT NULL AND t.status IN ('running','cancelled','queued'))) LIMIT 1`,[runId]);
         if(uncertain.rows[0])throw new Error('存在未确认的工具调用，不能自动从断点恢复');
         await client.query(`UPDATE conversation_run_steps SET status='pending',
           turns=CASE WHEN jsonb_array_length(transcript)>0 THEN turns+1 ELSE turns END,updated_at=now()
@@ -118,7 +136,10 @@ export class AgentLoopWorker {
       else await this.execute(run,identity,controller.signal);
     }catch(error){
       if(!controller.signal.aborted && !(error instanceof Error && error.name==='AbortError')){
-        const reason=error instanceof Error?error.message:String(error);
+        const retries=this.modelRetries.get(run.id)??0;
+        const rawReason=error instanceof Error?error.message:String(error);
+        // 让用户看到「上游抖动已重试仍失败」并知道可以从断点重试，而不是只看到一句原始异常。
+        const reason=retries>0?`${rawReason}（模型调用已自动重试 ${retries} 次仍失败，可从断点重试）`:rawReason;
         const completedLocal=(await this.pool.query(`SELECT t.tool_name,t.result FROM runtime_tool_calls t
           JOIN conversation_run_steps st ON st.id=t.step_id
           WHERE st.run_id=$1 AND t.status='completed' AND t.tool_name LIKE 'local_%' ORDER BY t.completed_at`,[run.id])).rows;
@@ -129,7 +150,7 @@ export class AgentLoopWorker {
         await this.pool.query("UPDATE runtime_tool_calls SET status='cancelled' WHERE step_id IN(SELECT id FROM conversation_run_steps WHERE run_id=$1) AND status IN('queued','running')",[run.id]);
         if(run.identity_id){await this.publish(run,'统筹智能体',`任务执行失败：${completedNote}${reason}`,`failure:${run.id}`);await this.event(run,'run.failed',{error:reason,completedLocalTools:completedLocal.map(call=>call.tool_name)});}
       }
-    }finally{if(heartbeat)clearInterval(heartbeat);this.controllers.delete(run.id);await this.pool.query(`UPDATE conversation_runs SET
+    }finally{if(heartbeat)clearInterval(heartbeat);this.controllers.delete(run.id);this.modelRetries.delete(run.id);await this.pool.query(`UPDATE conversation_runs SET
       lease_owner=CASE WHEN status=ANY($3::text[]) THEN lease_owner ELSE NULL END,
       lease_until=CASE WHEN status=ANY($3::text[]) THEN now()+interval '60 seconds' ELSE NULL END
       WHERE id=$1 AND lease_owner=$2`,[run.id,this.owner,activeStates]);}
@@ -140,7 +161,22 @@ export class AgentLoopWorker {
   }
   private async model(run:Row,identity:Identity,agent:RegisteredAgent,messages:unknown[],tools:unknown[],requestId:string,signal:AbortSignal):Promise<ModelMessage>{
     await this.alive(run,signal);
-    const response=await cancellable(this.tools.completeModel(identity,{model:agent.model_id??process.env.MODEL_ID??'deepseek-v4-flash',keyId:agent.model_key_id,messages,tools:tools.length?tools:undefined,temperature:0.2,requestId,tags:{projectId:run.project_id,conversationId:run.conversation_id,agentId:agent.id}}),signal);
+    const input={model:agent.model_id??process.env.MODEL_ID??'deepseek-v4.1-flash',keyId:agent.model_key_id,messages,tools:tools.length?tools:undefined,temperature:0.2,requestId,tags:{projectId:run.project_id,conversationId:run.conversation_id,agentId:agent.id}};
+    // 上游超时/限流只重试有限次数：一次抖动不应把已完成的步骤全部作废。
+    const maxAttempts=3;
+    let response:Awaited<ReturnType<ToolGateway['completeModel']>>|undefined;
+    for(let attempt=1;!response;attempt++){
+      try{ response=await cancellable(this.tools.completeModel(identity,input),signal); }
+      catch(error){
+        const decision=modelRetryDecision(error,attempt,maxAttempts,signal.aborted);
+        if(!decision.retry)throw error;
+        const reason=error instanceof Error?error.message:String(error);
+        this.modelRetries.set(run.id,(this.modelRetries.get(run.id)??0)+1);
+        try{ await this.event(run,'model.retry',{requestId,attempt,maxAttempts,reason,delayMs:decision.delayMs}); }catch{ /* 审计写入失败不应掩盖原始错误 */ }
+        await cancellable(new Promise(resolve=>setTimeout(resolve,decision.delayMs)),signal);
+        await this.alive(run,signal);
+      }
+    }
     await this.alive(run,signal);const message=(response.payload as {choices?:Array<{message?:ModelMessage}>})?.choices?.[0]?.message;
     if(!message||(!message.content?.trim()&&!message.tool_calls?.length))throw new Error('模型未返回有效答复或工具调用');return message;
   }
@@ -153,6 +189,7 @@ export class AgentLoopWorker {
   }
   private async coordinate(run:Row,identity:Identity,signal:AbortSignal){
     const registry=await roomRegistry(this.pool,run.conversation_id);const coordinator=registry.find(a=>a.name==='统筹智能体');if(!coordinator)throw new Error('群聊未启用统筹智能体');
+    if (!registry.some(agent => agent.name !== '统筹智能体')) throw new Error('群聊没有可用的执行智能体，请在群聊成员设置中启用至少一个协作智能体');
     const messages=await this.context(run,coordinator);
     messages.push({role:'system',content:`你仅负责服务端编排。闲聊或简单问题直接回答；需要工具或较长成果时用 delegate_tasks。按工作量拆分步骤，同一智能体可以连续负责多个步骤，不要因为只有一名执行者就压成单一步骤。长文档、长代码和多章节作品应先规划结构，再按章节或模块分别创作并保存成果，最后组装、检查和交付；每个步骤的产出应能独立保存为断点。长 HTML 文档可让各章节用 artifact_write 保存 HTML 片段，再由终稿步骤用 artifact_compose 按成果编号合并并补齐页面外壳；如需保存到用户指定本地目录，须通过本地工具完成并依据实际返回路径确认。为避免单次模型生成过长，每个创作步骤只处理一个适中片段。依赖步骤按编号引用，章节需按上下文顺序依赖前章。严格采用注册表内的智能体，尊重用户指定人选。统筹不得代替执行者做具体工作。\nCOORDINATION 注册表（含自己）：${JSON.stringify(registry.map(a=>({id:a.id,name:a.name,role:a.role,executionLocation:a.execution_location,deviceId:a.device_id,skills:a.skills})))}`});
     const result=await this.model(run,identity,coordinator,messages,[planTool],`run:${run.id}:plan`,signal);const call=result.tool_calls?.[0];
@@ -174,9 +211,25 @@ export class AgentLoopWorker {
     const finished=new Set(steps.filter(s=>s.status==='completed').map(s=>s.step_index));
     if(finished.size===steps.length){if(steps.length===1){await this.pool.query("UPDATE conversation_runs SET status='completed',phase='done',result=$2,updated_at=now() WHERE id=$1",[run.id,JSON.stringify(steps[0].result)]);await this.event(run,'run.completed',steps[0].result);}else await this.pool.query("UPDATE conversation_runs SET phase='summary',status='running',updated_at=now() WHERE id=$1",[run.id]);return;}
     const ready=steps.filter(s=>s.status!=='completed'&&s.status!=='cancelled'&&s.depends_on.every((n:number)=>finished.has(n))).slice(0,4);
+    // A malformed or manually edited plan can leave pending steps whose
+    // dependencies can never complete. Previously this branch left the run in
+    // `running` forever because Promise.allSettled([]) returned immediately.
+    // Fail explicitly so the user can see the reason and resume after fixing
+    // the plan instead of waiting on a task that will never make progress.
+    if (!ready.length && !steps.some(s => ['waiting_device', 'waiting_tool', 'waiting_approval'].includes(s.status))) {
+      throw new Error('执行计划无法继续：存在未满足的任务依赖');
+    }
+    if (!ready.length) {
+      const waitingStates = steps.map(s => s.status);
+      const state = waitingStates.includes('waiting_approval') ? 'waiting_approval'
+        : waitingStates.includes('waiting_tool') ? 'waiting_tool'
+          : 'waiting_device';
+      await this.pool.query('UPDATE conversation_runs SET status=$2,updated_at=now() WHERE id=$1 AND lease_owner=$3',[run.id,state,this.owner]);
+      return;
+    }
     const outcomes=await Promise.allSettled(ready.map(step=>this.executeStep(run,step,steps,identity,signal)));const rejected=outcomes.find(o=>o.status==='rejected');if(rejected?.status==='rejected')throw rejected.reason;await this.alive(run,signal);
     const states=(await this.pool.query('SELECT status FROM conversation_run_steps WHERE run_id=$1',[run.id])).rows.map(r=>r.status);
-    const state=states.includes('waiting_tool')?'waiting_tool':states.includes('waiting_device')?'waiting_device':'running';
+    const state=states.includes('waiting_approval')?'waiting_approval':states.includes('waiting_tool')?'waiting_tool':states.includes('waiting_device')?'waiting_device':'running';
     await this.pool.query("UPDATE conversation_runs SET status=$2,next_attempt_at=CASE WHEN $2 IN ('waiting_tool','waiting_device') THEN now()+interval '5 seconds' ELSE NULL END,updated_at=now() WHERE id=$1 AND lease_owner=$3",[run.id,state,this.owner]);
   }
   private async executeStep(run:Row,step:Row,all:Row[],identity:Identity,signal:AbortSignal){
