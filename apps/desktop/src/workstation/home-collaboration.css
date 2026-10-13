@@ -1,0 +1,17 @@
+.ws-home-collaboration{--collaboration-ink:#334155;--collaboration-muted:#94a3b8;--collaboration-border:#eef2f6;--collaboration-hover:#f1f5fb;--collaboration-blue:#2563eb}
+.ws-home-collaboration .ws-panel-head{align-items:flex-start;gap:8px}
+.ws-home-collaboration-list{display:grid;gap:4px}
+.ws-home-collaboration-row{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;min-height:72px;padding:13px 12px;text-align:left;border-radius:7px;border:1px solid transparent;position:relative;transition:background .15s ease,border-color .15s ease}
+.ws-home-collaboration-row:not(:last-child)::after{content:"";position:absolute;height:1px;bottom:-3px;left:12px;right:12px;background:var(--collaboration-border)}
+.ws-home-collaboration-row>span:first-child{flex:1;min-width:0}
+.ws-home-collaboration-row strong{display:block;color:var(--collaboration-ink);font-size:11px;font-weight:600;line-height:1.6}
+.ws-home-collaboration-row small{display:block;margin-top:5px;color:var(--collaboration-muted);font-size:10px;line-height:1.6;overflow-wrap:anywhere}
+.ws-home-collaboration-row:not(:disabled):hover,.ws-home-collaboration-row:not(:disabled):focus-visible{background:var(--collaboration-hover);border-color:var(--collaboration-border)}
+.ws-home-collaboration-row:not(:disabled):hover strong,.ws-home-collaboration-row:not(:disabled):focus-visible strong{color:var(--collaboration-blue)}
+.ws-home-collaboration-arrow{flex:none;color:var(--collaboration-muted)}
+.ws-home-collaboration-view{display:inline-flex;align-items:center;gap:2px;flex:none;color:var(--collaboration-blue);font-size:10px;white-space:nowrap}
+.ws-home-collaboration-row:disabled{opacity:.6;cursor:not-allowed}
+html[data-kla-theme="dark"] .ws-home-collaboration{--collaboration-ink:#eaf3fc;--collaboration-muted:#b7c7d7;--collaboration-border:#45586b;--collaboration-hover:#314458;--collaboration-blue:#8cc9ff;background:#263748;border-color:#45586b}
+html[data-kla-theme="dark"] .ws-home-collaboration .ws-panel-head h3{color:#eaf3fc}
+@media(prefers-color-scheme:dark){html[data-kla-theme="system"] .ws-home-collaboration{--collaboration-ink:#eaf3fc;--collaboration-muted:#b7c7d7;--collaboration-border:#45586b;--collaboration-hover:#314458;--collaboration-blue:#8cc9ff;background:#263748;border-color:#45586b}html[data-kla-theme="system"] .ws-home-collaboration .ws-panel-head h3{color:#eaf3fc}}
+html[data-kla-reduced-motion="true"] .ws-home-collaboration-row{transition:none}

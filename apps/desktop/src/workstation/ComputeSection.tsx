@@ -10,6 +10,7 @@ import type { ComputeKey, ComputeLedgerEntry, ComputeModel, ComputeOrgMember, Co
 import { computeApi } from '../api/compute';
 import { klaApi } from '../api/client';
 import { apiErrorMessage, Badge, formatTime, formatTokens, formatPoints, Panel } from './ui';
+import './compute-keys.css';
 
 export type ComputeView = 'dashboard' | 'keys' | 'usage' | 'market' | 'members';
 
@@ -468,13 +469,14 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
       </Panel>}
     </>}
 
-    {view === 'keys' && <>
+    {view === 'keys' && <div className="ws-keys-page">
       <div className="ws-page-heading">
         <div><h1>API 密钥</h1><p>网关节点运行正常 ｜ 管理用于调用算力平台的访问密钥，控制其所属分组、限额与有效期；用量与费用会实时回写到密钥维度。</p></div>
       </div>
-      <Panel title="密钥清单" subtitle="按分组与状态筛选；完整 Key 只在创建成功时展示一次，列表仅保留前缀。"
-        action={<div className="ws-tool-row">
-          <div className="ws-sub-search"><Search size={15} /><input placeholder="搜索名称或 Key 前缀..." value={query} onChange={(event) => setQuery(event.target.value)} /></div>
+      <Panel className="ws-keys-panel" title="密钥清单" subtitle="按分组与状态筛选；完整 Key 只在创建成功时展示一次，列表仅保留前缀。"
+        >
+        <div className="ws-key-toolbar" role="group" aria-label="API 密钥筛选">
+          <div className="ws-sub-search"><Search size={15} /><input aria-label="搜索 API 密钥" placeholder="搜索名称或 Key 前缀..." value={query} onChange={(event) => setQuery(event.target.value)} /></div>
           <select aria-label="分组筛选" value={groupFilter} onChange={(event) => setGroupFilter(event.target.value)}>
             <option value="">全部分组</option>
             {groupOptions.map((group) => <option key={group} value={group}>{group}</option>)}
@@ -484,35 +486,35 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
             {Object.entries(KEY_STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
           </select>
           <button className="ws-primary" onClick={() => setShowKeyForm(true)}><Plus size={15} /> 创建密钥</button>
-        </div>}>
-        {filteredKeys.length === 0 ? <div className="ws-empty">没有符合筛选条件的 API 密钥</div> : <table className="ws-table"><thead><tr>
+        </div>
+        {filteredKeys.length === 0 ? <div className="ws-empty">没有符合筛选条件的 API 密钥</div> : <div className="ws-keys-table-scroll" role="region" aria-label="API 密钥列表" tabIndex={0}><table className="ws-table ws-keys-table" role="table"><thead><tr role="row">
           <th>名称</th><th>分组</th><th>限额 / 速率</th><th>用量</th><th>过期时间</th><th>状态</th><th>创建时间</th><th>操作</th>
         </tr></thead><tbody>
-          {filteredKeys.map((key) => <tr key={key.id}>
-            <td>
-              <div>{key.isDefault ? '● ' : ''}{key.name}{key.isDefault && <> <Badge>系统默认</Badge></>}</div>
+          {filteredKeys.map((key) => <tr key={key.id} role="row">
+            <td role="cell" data-label="名称">
+              <div className="ws-key-name">{key.isDefault ? '● ' : ''}{key.name}{key.isDefault && <> <Badge>系统默认</Badge></>}</div>
               <code>{key.keyPrefix}…</code>
             </td>
-            <td>
+            <td role="cell" data-label="分组">
               <Badge tone="blue">{key.groupId ?? '默认分组'}</Badge>
               <div className="ws-note" style={{ marginTop: 4 }}>分组由服务端模型目录维护</div>
             </td>
-            <td>
+            <td role="cell" data-label="限额 / 速率">
               <div>{key.quotaPoints != null ? formatPoints(key.quotaPoints) : '不限额'}</div>
               <div className="ws-note">{key.rpm != null ? `${key.rpm} RPM` : '未设速率上限'}</div>
             </td>
-            <td>
+            <td role="cell" data-label="用量">
               <div>今日: {formatPoints(key.todayUsagePoints)}</div>
               <div className="ws-note">30天: ——（服务端暂未提供该口径）</div>
             </td>
-            <td>{key.expiresAt ? <span>{formatTime(key.expiresAt)}</span> : <Badge tone="green">永久有效</Badge>}</td>
-            <td>
+            <td role="cell" data-label="过期时间">{key.expiresAt ? <span>{formatTime(key.expiresAt)}</span> : <Badge tone="green">永久有效</Badge>}</td>
+            <td role="cell" data-label="状态">
               <Badge tone={key.status === 'active' ? 'green' : 'muted'}>{KEY_STATUS_LABELS[key.status] ?? key.status}</Badge>
               <div className="ws-note" style={{ marginTop: 4 }}>{key.lastSyncedAt ? `最近同步 ${formatTime(key.lastSyncedAt)}` : '尚未同步用量'}</div>
             </td>
-            <td>{formatTime(key.createdAt)}</td>
-            <td>
-              <div className="ws-inline" style={{ flexWrap: 'wrap' }}>
+            <td role="cell" data-label="创建时间">{formatTime(key.createdAt)}</td>
+            <td role="cell" data-label="操作">
+              <div className="ws-key-row-actions">
                 <button className="ws-ghost" onClick={() => void copyExample(key)}><Copy size={13} /> 使用</button>
                 <button className="ws-ghost" onClick={() => openEdit(key)}><Pencil size={13} /> 编辑</button>
                 {key.status === 'active' && <button className="ws-ghost" onClick={() => void disableKey(key)}>停用</button>}
@@ -522,10 +524,10 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
               </div>
             </td>
           </tr>)}
-        </tbody></table>}
+        </tbody></table></div>}
         <p className="ws-table-footer" style={{ marginTop: 10 }}>共 {filteredKeys.length} 条记录 ｜ ● 用量随网关调用实时回写</p>
       </Panel>
-    </>}
+    </div>}
 
     {view === 'usage' && <>
       <div className="ws-page-heading">
@@ -807,7 +809,7 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
     </div>}
 
     {showKeyForm && <div className="ws-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowKeyForm(false); }}>
-      <div className="ws-modal">
+      <div className="ws-modal ws-key-dialog">
         <header><h2>创建 API 密钥</h2><button className="ws-icon-button" aria-label="关闭" onClick={() => setShowKeyForm(false)}>×</button></header>
         <form onSubmit={(event) => void createKey(event)}>
           <label>名称<input required value={keyForm.name} onChange={(event) => setKeyForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="请输入密钥名称" /></label>
@@ -822,7 +824,7 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
     </div>}
 
     {editKey && <div className="ws-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setEditKey(null); }}>
-      <div className="ws-modal">
+      <div className="ws-modal ws-key-dialog">
         <header><h2>编辑密钥 · {editKey.name}</h2><button className="ws-icon-button" aria-label="关闭" onClick={() => setEditKey(null)}>×</button></header>
         <form onSubmit={(event) => void submitEdit(event)}>
           <label>名称<input required value={editForm.name} onChange={(event) => setEditForm((prev) => ({ ...prev, name: event.target.value }))} /></label>
@@ -836,11 +838,11 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
     </div>}
 
     {createdSecret && <div className="ws-modal-backdrop">
-      <div className="ws-modal ws-auth-modal">
+      <div className="ws-modal ws-auth-modal ws-key-dialog">
         <header><h2>请立即保存密钥</h2></header>
         {createdSecret.secret ? <>
           <p className="ws-detail-copy">密钥 <b>{createdSecret.name}</b> 的完整内容只显示这一次，关闭后无法再次查看。</p>
-          <div className="ws-inline"><code style={{ wordBreak: 'break-all' }}>{createdSecret.secret}</code><button className="ws-text-button" onClick={() => { void navigator.clipboard?.writeText(createdSecret.secret ?? ''); onNotify('已复制密钥'); }}><Copy size={13} /> 复制</button></div>
+          <div className="ws-key-secret-row"><code style={{ wordBreak: 'break-all' }}>{createdSecret.secret}</code><button className="ws-text-button" onClick={() => { void navigator.clipboard?.writeText(createdSecret.secret ?? ''); onNotify('已复制密钥'); }}><Copy size={13} /> 复制</button></div>
         </> : <p className="ws-detail-copy">密钥 <b>{createdSecret.name}</b> 已创建，但上游未返回完整密钥内容，请在 Sub2API 侧确认。</p>}
         <footer><button className="ws-primary" onClick={() => setCreatedSecret(null)}><Check size={14} /> 我已保存</button></footer>
       </div>
