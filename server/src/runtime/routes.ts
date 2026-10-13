@@ -14,6 +14,10 @@ import type { Sub2ApiClient } from '../compute/sub2api-client.js';
 import { resolveManagedPassword } from '../compute/encryption.js';
 import type { ObjectStore } from '../storage/object-store.js';
 import { accessibleFile } from '../storage/file-access.js';
+import { HomeAiService, HomeAiError } from './home-ai/service.js';
+import { homeAiSessionViewSchema, homeAiConfirmationSchema } from '@kla-workstation/contracts';
+import { homeAiInstallResponseSchema } from '@kla-workstation/contracts';
+import { installHomeAi } from './home-ai/install.js';
 
 export async function registerRuntimeRoutes(app: FastifyInstance, deps: {pool:Pool;accounts:AccountRepository;worker:AgentLoopWorker;computeRepo?:ComputeRepository;sub2api?:Sub2ApiClient;encryptionKey?:string;objectStore?:ObjectStore}) {
   const {pool,accounts,worker}=deps;
@@ -25,6 +29,32 @@ export async function registerRuntimeRoutes(app: FastifyInstance, deps: {pool:Po
     await requirePermission(pool,identity.id,action);return{identity,session};
   }
   const id=(value:unknown)=>z.string().uuid().parse(value);
+  const diagnostics=new HomeAiService(pool,deps.objectStore);
+  const homeAiFailure=(error:unknown,reply:FastifyReply)=>{
+    if(error instanceof HomeAiError) return reply.code(error.code==='FORBIDDEN'?403:error.code==='NOT_FOUND'?404:error.code==='CONFLICT'?409:400)
+      .send({ok:false,error:{code:error.code,message:error.message,retryable:false}});
+    throw error;
+  };
+  app.post('/api/v1/runtime/market/home-ai-diagnosis/install',async(request,reply)=>{
+    const s=await scope(request,reply,'write');if(!s)return;
+    if(!z.object({}).strict().safeParse(request.body??{}).success) return reply.code(400).send({ok:false,error:{code:'INVALID_ARGUMENT',message:'安装只接受空参数；角色和挂载由服务端预设决定。',retryable:false}});
+    try {return {ok:true,data:homeAiInstallResponseSchema.parse(await installHomeAi(pool,s.identity.id))};}
+    catch(error){return homeAiFailure(error,reply);}
+  });
+  app.get('/api/v1/conversations/:conversationId/home-ai/sessions',async(request,reply)=>{
+    const s=await scope(request,reply);if(!s)return;
+    try{return {ok:true,data:z.array(homeAiSessionViewSchema).parse(await diagnostics.list({identityId:s.identity.id,conversationId:id((request.params as any).conversationId)}))};}
+    catch(error){return homeAiFailure(error,reply);}
+  });
+  app.post('/api/v1/conversations/:conversationId/home-ai/sessions/:sessionId/confirm',async(request,reply)=>{
+    const s=await scope(request,reply,'write');if(!s)return;
+    const params=request.params as {conversationId:string;sessionId:string};
+    const key=z.string().uuid().safeParse(request.headers['idempotency-key']);
+    const input=homeAiConfirmationSchema.safeParse(request.body);
+    if(!key.success||!input.success) return reply.code(400).send({ok:false,error:{code:'INVALID_ARGUMENT',message:'请使用有效请求编号，并提交 expectedRevision、kind 和报告场景 stageId；刷新界面后重试。',retryable:false}});
+    try{return {ok:true,data:homeAiSessionViewSchema.parse(await diagnostics.confirm({identityId:s.identity.id,conversationId:id(params.conversationId)},id(params.sessionId),input.data,key.data))};}
+    catch(error){return homeAiFailure(error,reply);}
+  });
   async function device(request:FastifyRequest,reply:FastifyReply) {
     const s=await scope(request,reply,'execute');if(!s)return null;
     const deviceId=id((request.params as {deviceId:string}).deviceId);

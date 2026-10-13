@@ -12,6 +12,7 @@ const isBuiltinAgent = (agent: RuntimeAgent): boolean => agent.type === 'officia
 const agentDescription = (agent: RuntimeAgent): string => agent.name === 'PPT助手' ? '从材料生成可编辑 PPTX，支持大纲确认、对话改稿、质量检查及真实 PDF 预览。通过统一网关在本地执行。' : agent.name === '路线规划助手' ? '调用高德矩阵与固定起终点 TSP 算法，完成里程/时间/成本三策略路线优化与多线路拆分重排。通过统一网关在本地执行。' : agent.role || '暂无角色说明';
 
 const marketAgents = [
+  { name: '家居 AI 机会诊断', category: '行业专业', description: '从真实岗位出发，核对材料和试点条件，确定性测算价值，形成由用户确认的诊断报告。', tags: ['家居', '岗位访谈', '价值测算'], rating: '待评价', installs: '—', tone: 'cyan' },
   { name: '通用问答助手', category: '办公协作', description: '面向日常问答与信息整合，支持多轮追问、知识引用和来源追踪。', tags: ['通用', '知识检索', '多轮对话'], rating: '4.8', installs: '12.4k', tone: 'cyan' },
   { name: '长文档写作', category: '办公协作', description: '按模板产出报告、方案与白皮书，支持结构化生成与全文一致性检查。', tags: ['通用', '模板套用', '长文本'], rating: '4.7', installs: '9.8k', tone: 'purple' },
   { name: '代码审查', category: '研发工具', description: '对代码做静态检查、依赖风险与敏感信息扫描，给出行级修改建议。', tags: ['研发', '安全检查', '行级建议'], rating: '4.9', installs: '8.1k', tone: 'green' },
@@ -126,7 +127,8 @@ function AgentMarket({ notify, installedNames, onInstalled }: { notify: (text: s
   const install = async (agent: typeof marketAgents[number]): Promise<void> => {
     setInstalling(agent.name);
     try {
-      const result = await runtimeApi.saveAgent(null, { name: agent.name, role: agent.description, modelId: null, modelKeyId: null, executionLocation: 'server', deviceId: null, enabled: true });
+      const result = agent.name === '家居 AI 机会诊断' ? await runtimeApi.installHomeAi()
+        : await runtimeApi.saveAgent(null, { name: agent.name, role: agent.description, modelId: null, modelKeyId: null, executionLocation: 'server', deviceId: null, enabled: true });
       if (!result.ok) { notify(result.message); return; }
       await onInstalled(); notify(`${agent.name}已安装到我的智能体`);
     } catch { notify('安装失败，请检查后端连接'); } finally { setInstalling(null); }

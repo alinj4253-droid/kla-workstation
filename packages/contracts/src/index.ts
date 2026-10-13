@@ -13,3 +13,4 @@ export * from './memories.js';
 export * from './memory-policy.js';
 export * from './runtime.js';
 export * from './files.js';
+export * from './home-ai.js';
