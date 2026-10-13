@@ -1,0 +1,44 @@
+.ws-proto-two.ws-home-entry-grid{grid-template-columns:repeat(2,minmax(0,1fr));align-items:stretch}
+.ws-home-ai-card.ws-panel,.ws-home-shortcuts-panel.ws-panel{padding:20px;border:1px solid #e4ebf3;border-radius:12px;background:#fff;display:flex;flex-direction:column;min-width:0}
+.ws-home-ai-card{container-name:home-ai;container-type:inline-size;box-shadow:0 3px 16px #315da108}
+.ws-home-ai-card>.ws-panel-head,.ws-home-shortcuts-panel>.ws-panel-head{align-items:flex-start;flex-wrap:wrap;gap:10px 14px;margin-bottom:18px}
+.ws-home-ai-card>.ws-panel-head>div,.ws-home-shortcuts-panel>.ws-panel-head>div{min-width:0;flex:1 1 280px}
+.ws-home-ai-card>.ws-panel-head h3{font-size:17px;line-height:1.5;font-weight:650;color:#24384d}
+.ws-home-shortcuts-panel>.ws-panel-head h3{font-size:16px;line-height:1.5;font-weight:650;color:#24384d}
+.ws-home-ai-card .ws-panel-sub,.ws-home-shortcuts-panel .ws-panel-sub{display:block;margin-top:4px;color:#8293a8;font-size:11px;line-height:1.6}
+.ws-home-ai-card>.ws-panel-head>.ws-badge,.ws-home-shortcuts-panel>.ws-panel-head>.ws-badge{align-self:center;max-width:100%;white-space:normal;line-height:1.5;margin-left:auto}
+.ws-home-ai-card .ws-home-composer{display:grid;gap:10px;padding:14px;border:1px solid #dfe7f2;border-radius:16px;background:#f5f8fc;transition:border-color .15s ease,box-shadow .15s ease,background .15s ease;min-width:0}
+.ws-home-ai-card .ws-home-composer:focus-within{border-color:#87aceb;background:#fff;box-shadow:0 0 0 3px #eaf2ff;outline:0}
+.ws-home-composer-top{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px 12px;min-width:0}
+.ws-home-ai-card .ws-proto-chatbar{display:flex;align-items:center;flex-wrap:wrap;gap:7px;padding:0;min-width:0}
+.ws-home-ai-card .ws-proto-chatbar button{display:inline-flex;align-items:center;gap:5px;padding:5px 9px;border:1px solid #e5ebf4;border-radius:999px;background:#fff;color:#71839a;font-size:10px;line-height:1.4}
+.ws-home-ai-card .ws-proto-chatbar button:hover{border-color:#b9cff0;color:#2563eb;background:#f7fbff}
+.ws-home-ai-card .ws-home-keyboard-hint{color:#94a3b8;font-size:10px;line-height:1.5;white-space:normal;margin-left:auto;max-width:100%}
+.ws-home-ai-card textarea.ws-home-prompt{display:block;min-width:0;width:100%;height:110px;min-height:110px;max-height:320px;resize:vertical;padding:4px 3px;border:0;border-radius:0;background:transparent;color:#334155;font-size:13px;line-height:1.75;outline:0;box-shadow:none}
+.ws-home-ai-card .ws-home-prompt:focus,.ws-home-ai-card .ws-home-prompt:focus-visible{outline:0;outline-offset:0;box-shadow:none}
+.ws-home-ai-card .ws-home-prompt::placeholder{color:#97a6b8;opacity:1}
+.ws-home-ai-card .ws-proto-chatfoot{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;border-top:1px solid #e7edf4;padding-top:12px}
+.ws-home-ai-card .ws-chip-row{display:flex;flex-wrap:wrap;gap:7px;min-width:0;flex:1 1 300px}
+.ws-home-ai-card .ws-chip-row button{padding:6px 10px;border:1px solid transparent;border-radius:999px;background:#f0f4fa;color:#64748b;font-size:11px;line-height:1.5}
+.ws-home-ai-card .ws-chip-row button:hover{border-color:#c2d6f3;background:#eaf2ff;color:#2563eb}
+.ws-home-ai-card .ws-home-send{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-width:88px;min-height:40px;padding:9px 15px;margin-left:auto;border-radius:8px;background:linear-gradient(135deg,#5147e8,#6358ee);color:#fff;font-size:12px;font-weight:600;box-shadow:0 3px 8px #5147e81a}
+.ws-home-ai-card .ws-home-send:hover{background:linear-gradient(135deg,#4338ca,#5147e8)}
+.ws-home-ai-card .ws-proto-note{margin-top:13px;color:#94a3b8;font-size:10px;line-height:1.8;overflow-wrap:anywhere}
+.ws-home-ai-card .ws-proto-note button{color:#2563eb;font-weight:500;white-space:nowrap}
+.ws-home-shortcuts-panel .ws-proto-functions{flex:1;grid-auto-rows:minmax(108px,1fr);gap:10px}
+.ws-home-shortcuts-panel .ws-proto-functions button{padding:12px;border-radius:9px;align-content:start;gap:8px}
+.ws-home-shortcuts-panel .ws-proto-functions button>span{width:32px;height:32px;border-radius:8px}
+.ws-home-shortcuts-panel .ws-proto-functions strong{font-size:12px;line-height:1.5}
+.ws-home-shortcuts-panel .ws-proto-functions small{font-size:10px;line-height:1.65}
+@container home-ai (max-width:520px){.ws-home-ai-card .ws-home-keyboard-hint{flex-basis:100%;margin-left:0}.ws-home-ai-card .ws-chip-row{flex-basis:100%}.ws-home-ai-card .ws-home-send{min-height:38px}.ws-home-ai-card textarea.ws-home-prompt{height:100px;min-height:100px}}
+@media(max-width:1100px){.ws-proto-two.ws-home-entry-grid{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:600px){.ws-home-ai-card.ws-panel,.ws-home-shortcuts-panel.ws-panel{padding:16px}.ws-home-ai-card>.ws-panel-head h3{font-size:16px}.ws-home-ai-card .ws-home-composer{padding:12px;border-radius:12px}.ws-home-shortcuts-panel .ws-proto-functions{grid-template-columns:repeat(2,minmax(0,1fr))}}
+html[data-kla-reduced-motion="true"] .ws-home-ai-card .ws-home-composer{transition:none}
+html[data-kla-theme="dark"] .ws-home-ai-card,html[data-kla-theme="dark"] .ws-home-shortcuts-panel{background:#263748;border-color:#45586b}
+html[data-kla-theme="dark"] .ws-home-ai-card .ws-panel-head h3,html[data-kla-theme="dark"] .ws-home-shortcuts-panel .ws-panel-head h3{color:#eaf3fc}
+html[data-kla-theme="dark"] .ws-home-ai-card .ws-home-composer{background:#293f56;border-color:#45586b}
+html[data-kla-theme="dark"] .ws-home-ai-card .ws-home-composer:focus-within{background:#263748;border-color:#87aceb;box-shadow:0 0 0 3px #244c74}
+html[data-kla-theme="dark"] .ws-home-ai-card textarea.ws-home-prompt{color:#eaf3fc}
+html[data-kla-theme="dark"] .ws-home-ai-card .ws-proto-chatbar button,html[data-kla-theme="dark"] .ws-home-ai-card .ws-chip-row button,html[data-kla-theme="dark"] .ws-home-shortcuts-panel .ws-proto-functions button{background:#314458;border-color:#45586b;color:#c4d1df}
+html[data-kla-theme="dark"] .ws-home-ai-card .ws-proto-chatfoot{border-color:#45586b}
+html[data-kla-theme="dark"] .ws-home-shortcuts-panel .ws-proto-functions strong{color:#eaf3fc}
