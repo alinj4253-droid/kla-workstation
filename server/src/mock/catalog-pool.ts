@@ -28,6 +28,7 @@ export class CatalogPool {
     { id: 'claude-3-5-sonnet', name: 'Claude 3.5 Sonnet', provider: 'anthropic', base_url: 'https://api.anthropic.com/v1', capabilities: { vision: true, thinking: true, streaming: true, context: 200000 }, enabled: true, is_official: true },
   ];
   private readonly conversationAgents = new Map<string, Map<string, string>>();
+  private readonly tasks = new Map<string, Record<string, unknown>>();
 
   constructor(private readonly accounts: MemoryAccountRepository) {}
 
@@ -152,7 +153,32 @@ export class CatalogPool {
       return result(this.models.filter((model) => model.id === modelId && model.enabled).map(({ id, provider, base_url }) => ({ id, provider, base_url })));
     }
     if (normalized.includes('from models')) return result(this.models.filter((model) => model.enabled));
-    if (normalized.includes('from tasks')) return empty();
+    if (normalized.includes('insert into tasks')) {
+      const id = String(params[0]);
+      if (this.tasks.has(id)) return empty();
+      const row = { id, identity_id: String(params[1]), title: String(params[2]), status: 'pending', result: null, created_at: new Date().toISOString() };
+      this.tasks.set(id, row);
+      return result([row]);
+    }
+    if (normalized.includes('update tasks set status=')) {
+      const row = this.tasks.get(String(params[0]));
+      if (!row || row.identity_id !== params[1] || !['pending', 'completed'].includes(String(row.status))) return empty();
+      row.status = String(params[2]);
+      return result([row]);
+    }
+    if (normalized.includes('delete from tasks')) {
+      const row = this.tasks.get(String(params[0]));
+      if (row?.identity_id === params[1]) this.tasks.delete(String(params[0]));
+      return empty();
+    }
+    if (normalized.includes('from tasks')) {
+      if (normalized.includes('where id=$1')) {
+        const row = this.tasks.get(String(params[0]));
+        return result(row && row.identity_id === params[1] ? [row] : []);
+      }
+      const rows = [...this.tasks.values()].filter(row => row.identity_id === params[0]);
+      return result(rows.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))).slice(0, 50));
+    }
     return empty();
   }
 

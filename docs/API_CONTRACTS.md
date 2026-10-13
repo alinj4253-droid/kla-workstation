@@ -65,3 +65,15 @@ KLA 身份权限侧以 `knowledge_library_scopes` 登记稳定库 ID、企业 ID
 浏览条目补充 `reinforcedAt`、`retainedUntil`、`timeWeight`。长期记忆无权重（`null`）；短期采用 72 小时半衰期、30 天归零，服务器保留 365 天，客户端缓存最近七天。共享规则由 `packages/contracts/src/memory-policy.ts` 定义。
 
 `POST /api/v1/memories/search` 当前只检索未过期且未归零的短期记录；长期记录只允许写入和浏览，不进入检索或对话上下文。对话使用身份 / 群组 / 智能体隔离的短期上下文和旧版有界评分召回。数据口径、身份隔离及只读边界详见 [MEMORY_BROWSER.md](./MEMORY_BROWSER.md)，实际缓存、清理与接入边界见 [MEMORY_LIFECYCLE.md](./MEMORY_LIFECYCLE.md)。
+
+## 7. 首页手动任务创建
+
+`POST /api/v1/tasks` 使用 `createTaskRequestSchema`，请求体仅接受 `{ title }`：去除首尾空白后 1–200 字，不允许传入归属或状态字段。请求携带当前登录会话、`x-identity-id` 和 UUID 格式的 `idempotency-key`，服务端校验当前身份的 `write` 权限，以该身份写入现有 `tasks` 表，初始状态为 `pending`。
+
+成功返回 `taskDtoSchema`（`id/title/status/result/created_at`）；首次创建 HTTP 201，同一身份、同一请求编号及同一标题重试返回已有记录 HTTP 200，编号冲突返回 HTTP 409 `IDEMPOTENCY_CONFLICT`。客户端在成功后插入首页列表并更新待办数量；刷新后由 `/api/v1/bootstrap` 的 `tasks` 读取持久化记录。此接口创建手动待办，自动智能体执行及 OA 同步另行对接。
+
+### 任务状态与删除
+
+`PATCH /api/v1/tasks/:taskId` 使用 `updateTaskRequestSchema`，请求体 `{ status: "completed" | "pending" }`。只修改当前身份且原状态为 `pending/completed` 的手动待办；运行中及其他状态返回 HTTP 409，不存在或属于其他身份返回 HTTP 404。响应为更新后的 `TaskDto`。重复设置相同状态不会创建记录。
+
+`DELETE /api/v1/tasks/:taskId` 按任务 ID 和当前身份删除，返回 `{ id }`；重复删除仍成功且不泄露其他身份记录。两个接口均校验登录、当前身份与 `write` 权限，客户端携带身份头和请求编号。页面删除前要求确认，失败时保留记录和错误提示。

@@ -1,5 +1,7 @@
 /// <reference types="vite/client" />
 
+import type { LocalApprovalBridge } from './platform/local-approval';
+
 declare global {
   interface Window {
     /**
@@ -9,6 +11,7 @@ declare global {
     kunqing?: Record<string, any>;
     klaPlatform?: {
       runtime: 'electron';
+      localApproval?: LocalApprovalBridge;
       apiBaseUrl: string;
       knowledgeServiceUrl: string;
       agentRuntime: {

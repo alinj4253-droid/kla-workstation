@@ -31,7 +31,7 @@ function avatarTone(name: string): string {
   return tones[Math.max(0, name.charCodeAt(0)) % tones.length];
 }
 
-export function RuntimeAgentManagement({ identityId, notify }: Props): React.JSX.Element {
+export function RuntimeAgentManagement({ identityId, notify, searchRequest }: Props & { searchRequest?: { query: string; nonce: number } | null }): React.JSX.Element {
   const [agents, setAgents] = useState<RuntimeAgent[]>([]);
   const [devices, setDevices] = useState<RuntimeDevice[]>([]);
   const [draft, setDraft] = useState<{ id: string | null; name: string; role: string; modelId: string | null; modelKeyId: string | null; executionLocation: ExecutionLocation; deviceId: string | null; enabled: boolean } | null>(null);
@@ -41,6 +41,7 @@ export function RuntimeAgentManagement({ identityId, notify }: Props): React.JSX
   const [modelLoading, setModelLoading] = useState(false);
   const [modelError, setModelError] = useState('');
   const [query, setQuery] = useState('');
+  useEffect(() => { setQuery(searchRequest?.query ?? ''); if (searchRequest) { setView('mine'); setFilter('all'); } }, [identityId, searchRequest]);
   const [filter, setFilter] = useState<'all' | 'builtin' | 'external' | 'custom'>('all');
   const [view, setView] = useState<'mine' | 'market'>('mine');
   const [busy, setBusy] = useState(false);

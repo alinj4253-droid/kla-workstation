@@ -15,6 +15,15 @@ contextBridge.exposeInMainWorld('klaPlatform', Object.freeze({
     disconnect: () => ipcRenderer.invoke('kla:runtime-disconnect'),
     status: () => ipcRenderer.invoke('kla:runtime-status'),
   }),
+  localApproval: Object.freeze({
+    pending: () => ipcRenderer.invoke('kla:approval-pending'),
+    decide: decision => ipcRenderer.invoke('kla:approval-decide', decision),
+    onChange: listener => {
+      const handler = (_event, request) => listener(request);
+      ipcRenderer.on('kla:approval-changed', handler);
+      return () => ipcRenderer.removeListener('kla:approval-changed', handler);
+    },
+  }),
   operations: Object.freeze({
     openExternal: (url) => ipcRenderer.invoke('kla:operation-open-external', { url }),
     health: () => ipcRenderer.invoke('kla:operation-health'),

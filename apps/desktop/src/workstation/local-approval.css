@@ -1,0 +1,48 @@
+.ws-approval-dialog{--approval-bg:#fff;--approval-panel:#f8fbff;--approval-ink:#263b55;--approval-muted:#71839a;--approval-border:#e1eaf4;--approval-blue:#2563eb;--approval-soft:#edf5ff;--approval-note:#f4f8ff;position:fixed;z-index:301;top:50%;left:50%;transform:translate(-50%,-50%);display:flex;flex-direction:column;width:min(580px,calc(100vw - 32px));max-height:calc(100dvh - 48px);background:var(--approval-bg);color:var(--approval-ink);border:1px solid var(--approval-border);border-radius:14px;box-shadow:0 24px 80px #173b6340;outline:none;overflow:hidden;font-family:Inter,"Microsoft YaHei",system-ui,sans-serif}
+.ws-approval-overlay{position:fixed;inset:0;z-index:300;background:#16354c66;backdrop-filter:blur(3px)}
+.ws-approval-header{display:flex;align-items:center;gap:12px;padding:24px 24px 0}
+.ws-approval-icon{display:grid;place-items:center;flex:none;width:48px;height:48px;border-radius:12px;background:var(--approval-soft);color:var(--approval-blue);border:1px solid var(--approval-border)}
+.ws-approval-header>div{flex:1;min-width:0}
+.ws-approval-eyebrow{display:block;font-size:11px;color:var(--approval-muted);margin-bottom:5px}
+.ws-approval-header h2{margin:0;font-size:20px;font-weight:650;line-height:1.4;color:var(--approval-ink)}
+.ws-approval-close{display:grid;place-items:center;padding:6px;border-radius:6px;color:var(--approval-muted);align-self:flex-start}
+.ws-approval-close:hover{background:var(--approval-soft)}
+.ws-approval-description{margin:16px 24px 18px;font-size:12px;line-height:1.8;color:var(--approval-muted)}
+.ws-approval-body{padding:0 24px 20px;overflow:auto;min-height:0}
+.ws-approval-operation{border:1px solid var(--approval-border);border-radius:10px;background:var(--approval-panel);overflow:hidden}
+.ws-approval-operation-title{display:flex;align-items:center;gap:8px;padding:14px 16px;border-bottom:1px solid var(--approval-border);font-size:13px;color:var(--approval-ink)}
+.ws-approval-operation-title>svg{flex:none;color:var(--approval-blue)}
+.ws-approval-operation-title>strong{flex:1;line-height:1.5}
+.ws-approval-operation-title>span{color:var(--approval-blue);background:var(--approval-soft);padding:3px 7px;border-radius:5px;font-size:10px;white-space:nowrap}
+.ws-approval-dialog dl{margin:0}
+.ws-approval-operation dl{padding:2px 16px}
+.ws-approval-operation dl>div{display:grid;grid-template-columns:72px minmax(0,1fr);gap:12px;padding:12px 0;border-bottom:1px solid var(--approval-border);font-size:12px;line-height:1.7}
+.ws-approval-operation dl>div:last-child{border-bottom:0}
+.ws-approval-dialog dt{color:var(--approval-muted);display:flex;align-items:baseline;gap:4px}
+.ws-approval-dialog dd{margin:0;overflow-wrap:anywhere;min-width:0;white-space:pre-wrap;color:var(--approval-ink)}
+.ws-approval-code{font-family:Consolas,"Microsoft YaHei",monospace;font-size:11px;max-height:180px;overflow:auto;tab-size:2;direction:ltr;unicode-bidi:plaintext}
+.ws-approval-notice{display:flex;align-items:flex-start;gap:8px;padding:12px;margin-top:14px;background:var(--approval-note);border-radius:8px;font-size:11px;line-height:1.8;color:var(--approval-muted)}
+.ws-approval-notice>svg{flex:none;margin-top:3px;color:var(--approval-blue)}
+.ws-approval-notice p{margin:0}.ws-approval-notice strong{display:block;color:var(--approval-ink);font-weight:500;margin-top:3px}
+.ws-approval-details{margin-top:14px;font-size:11px;color:var(--approval-muted)}
+.ws-approval-details summary{cursor:pointer;display:flex;align-items:center;gap:6px;list-style:none;padding:3px 0}
+.ws-approval-details summary::-webkit-details-marker{display:none}
+.ws-approval-details[open] summary>svg{transform:rotate(180deg)}
+.ws-approval-details dl{padding-top:10px;display:grid;gap:7px}
+.ws-approval-details dl>div{display:grid;grid-template-columns:72px minmax(0,1fr);gap:12px;font-size:10px;line-height:1.6}
+.ws-approval-details dd{font-family:Consolas,monospace;color:var(--approval-muted)}
+.ws-approval-error{padding:10px 12px;border-radius:6px;background:#fff1f2;color:#be123c;font-size:12px;line-height:1.6;margin:12px 0 0}
+.ws-approval-dialog footer{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 24px;border-top:1px solid var(--approval-border);background:var(--approval-bg);flex:none}
+.ws-approval-dialog footer>span{display:flex;align-items:center;gap:5px;color:var(--approval-muted);font-size:10px}
+.ws-approval-dialog footer>div{display:flex;gap:8px}
+.ws-approval-dialog footer button{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:36px;border-radius:7px;font-size:12px;padding:8px 14px}
+.ws-approval-reject{border:1px solid var(--approval-border);background:var(--approval-bg);color:var(--approval-ink)}
+.ws-approval-reject:hover{background:var(--approval-panel)}
+.ws-approval-dialog .ws-approval-allow{background:#2563eb;color:#fff;border:1px solid #2563eb;box-shadow:0 3px 8px #2563eb1a}
+.ws-approval-dialog .ws-approval-allow:hover{background:#1d4ed8}
+.ws-approval-dialog button:disabled{opacity:.55;cursor:not-allowed}
+.ws-approval-spinner{animation:ws-approval-spin 1s linear infinite}@keyframes ws-approval-spin{to{transform:rotate(360deg)}}
+html[data-kla-theme="dark"] .ws-approval-dialog{--approval-bg:#263748;--approval-panel:#314458;--approval-ink:#eaf3fc;--approval-muted:#b7c7d7;--approval-border:#45586b;--approval-blue:#8cc9ff;--approval-soft:#244c74;--approval-note:#293f56}
+@media(prefers-color-scheme:dark){html[data-kla-theme="system"] .ws-approval-dialog{--approval-bg:#263748;--approval-panel:#314458;--approval-ink:#eaf3fc;--approval-muted:#b7c7d7;--approval-border:#45586b;--approval-blue:#8cc9ff;--approval-soft:#244c74;--approval-note:#293f56}}
+html[data-kla-reduced-motion="true"] .ws-approval-spinner{animation:none}
+@media(max-width:540px){.ws-approval-dialog{max-height:calc(100dvh - 24px)}.ws-approval-header{padding:18px 18px 0}.ws-approval-header h2{font-size:18px}.ws-approval-description{margin:14px 18px}.ws-approval-body{padding:0 18px 16px}.ws-approval-dialog footer{padding:14px 18px;flex-wrap:wrap}.ws-approval-dialog footer>div{margin-left:auto}.ws-approval-operation dl>div{grid-template-columns:1fr;gap:5px}.ws-approval-icon{width:42px;height:42px}}
