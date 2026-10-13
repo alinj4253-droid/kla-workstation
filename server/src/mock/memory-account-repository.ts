@@ -169,9 +169,9 @@ export class MemoryAccountRepository implements AccountRepository {
     return this.messages.filter((message) => message.conversationId === conversationId).sort((a, b) => a.seq - b.seq);
   }
 
-  async createMessage(conversationId: string, senderId: string, text: string): Promise<Message> {
+  async createMessage(conversationId: string, senderId: string, text: string, metadata: Record<string, unknown> = {}): Promise<Message> {
     this.seq += 1;
-    const message: StoredMessage = { id: this.nextId('msg'), conversationId, senderId, senderType: 'user', senderName: null, kind: 'text', text, metadata: {}, createdAt: new Date().toISOString(), seq: this.seq };
+    const message: StoredMessage = { id: this.nextId('msg'), conversationId, senderId, senderType: 'user', senderName: null, kind: 'text', text, metadata, createdAt: new Date().toISOString(), seq: this.seq };
     this.messages.push(message);
     return message;
   }

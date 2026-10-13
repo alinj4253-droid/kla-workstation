@@ -47,6 +47,8 @@ export type MessageDto = z.infer<typeof messageDtoSchema>;
 export const createMessageRequestSchema = z.object({
   text: z.string().max(100000).default(''),
   mode: z.string().max(50).optional(),
+  /** Stable client-generated key for retry-safe message + run creation. */
+  idempotencyKey: z.string().uuid().optional(),
   /** 本次运行的本地执行授权策略；不会提升操作系统权限。 */
   executionAccess: z.enum(['approval', 'full']).default('approval'),
   fileIds: z.array(z.string().uuid()).max(20).default([]).transform(ids => [...new Set(ids)]),

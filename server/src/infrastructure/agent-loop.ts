@@ -94,8 +94,11 @@ export class AgentLoopWorker {
   async event(run:Row,kind:string,payload:unknown):Promise<void>{await this.pool.query('INSERT INTO runtime_events(identity_id,conversation_id,run_id,kind,payload) VALUES($1,$2,$3,$4,$5)',[run.identity_id,run.conversation_id,run.id,kind,JSON.stringify(payload)]);}
   private async tick():Promise<void>{
     const runs=await this.pool.query(`WITH candidates AS (SELECT r.id FROM conversation_runs r WHERE r.status=ANY($1::text[])
+      AND (r.next_attempt_at IS NULL OR r.next_attempt_at<=now())
       AND (r.lease_owner=$2 OR r.lease_until IS NULL OR r.lease_until<now()) AND NOT EXISTS(SELECT 1 FROM conversation_runs earlier
-      WHERE earlier.conversation_id=r.conversation_id AND earlier.status=ANY($1::text[]) AND (earlier.created_at,earlier.id)<(r.created_at,r.id))
+      WHERE earlier.conversation_id=r.conversation_id AND earlier.status=ANY($1::text[])
+        AND (earlier.next_attempt_at IS NULL OR earlier.next_attempt_at<=now())
+        AND (earlier.created_at,earlier.id)<(r.created_at,r.id))
       ORDER BY r.created_at FOR UPDATE SKIP LOCKED LIMIT 3)
       UPDATE conversation_runs r SET lease_owner=$2,lease_until=now()+interval '60 seconds' FROM candidates c WHERE r.id=c.id RETURNING r.*`,[activeStates,this.owner]);
     await Promise.all(runs.rows.map(run=>this.process(run)));
@@ -121,8 +124,8 @@ export class AgentLoopWorker {
           WHERE st.run_id=$1 AND t.status='completed' AND t.tool_name LIKE 'local_%' ORDER BY t.completed_at`,[run.id])).rows;
         const listed=completedLocal.find(call=>call.tool_name==='local_list'&&Array.isArray(call.result?.entries));
         const completedNote=listed?`本地目录读取已成功（返回 ${listed.result.entries.length} 项），但模型续跑失败：`:completedLocal.length?'本地工具已执行成功，但模型续跑失败：':'';
-        await this.pool.query("UPDATE conversation_runs SET status='failed',result=$2,updated_at=now() WHERE id=$1 AND lease_owner=$3 AND status=ANY($4::text[])",[run.id,JSON.stringify({error:reason,completedLocalTools:completedLocal.map(call=>call.tool_name)}),this.owner,activeStates]);
-        await this.pool.query("UPDATE conversation_run_steps SET status='cancelled' WHERE run_id=$1 AND status NOT IN ('completed','failed')",[run.id]);
+        await this.pool.query("UPDATE conversation_runs SET status='failed',next_attempt_at=NULL,result=$2,updated_at=now() WHERE id=$1 AND lease_owner=$3 AND status=ANY($4::text[])",[run.id,JSON.stringify({error:reason,completedLocalTools:completedLocal.map(call=>call.tool_name)}),this.owner,activeStates]);
+        await this.pool.query("UPDATE conversation_run_steps SET status='cancelled',lease_owner=NULL,lease_until=NULL,next_attempt_at=NULL WHERE run_id=$1 AND status NOT IN ('completed','failed')",[run.id]);
         await this.pool.query("UPDATE runtime_tool_calls SET status='cancelled' WHERE step_id IN(SELECT id FROM conversation_run_steps WHERE run_id=$1) AND status IN('queued','running')",[run.id]);
         if(run.identity_id){await this.publish(run,'统筹智能体',`任务执行失败：${completedNote}${reason}`,`failure:${run.id}`);await this.event(run,'run.failed',{error:reason,completedLocalTools:completedLocal.map(call=>call.tool_name)});}
       }
@@ -173,9 +176,14 @@ export class AgentLoopWorker {
     const ready=steps.filter(s=>s.status!=='completed'&&s.status!=='cancelled'&&s.depends_on.every((n:number)=>finished.has(n))).slice(0,4);
     const outcomes=await Promise.allSettled(ready.map(step=>this.executeStep(run,step,steps,identity,signal)));const rejected=outcomes.find(o=>o.status==='rejected');if(rejected?.status==='rejected')throw rejected.reason;await this.alive(run,signal);
     const states=(await this.pool.query('SELECT status FROM conversation_run_steps WHERE run_id=$1',[run.id])).rows.map(r=>r.status);
-    const state=states.includes('waiting_tool')?'waiting_tool':states.includes('waiting_device')?'waiting_device':'running';await this.pool.query('UPDATE conversation_runs SET status=$2,updated_at=now() WHERE id=$1 AND lease_owner=$3',[run.id,state,this.owner]);
+    const state=states.includes('waiting_tool')?'waiting_tool':states.includes('waiting_device')?'waiting_device':'running';
+    await this.pool.query("UPDATE conversation_runs SET status=$2,next_attempt_at=CASE WHEN $2 IN ('waiting_tool','waiting_device') THEN now()+interval '5 seconds' ELSE NULL END,updated_at=now() WHERE id=$1 AND lease_owner=$3",[run.id,state,this.owner]);
   }
   private async executeStep(run:Row,step:Row,all:Row[],identity:Identity,signal:AbortSignal){
+    const claimed=(await this.pool.query(`UPDATE conversation_run_steps SET lease_owner=$2,lease_until=now()+interval '60 seconds'
+      WHERE id=$1 AND status IN ('pending','running','waiting_device','waiting_tool','waiting_approval')
+        AND (lease_owner=$2 OR lease_until IS NULL OR lease_until<now()) RETURNING id`,[step.id,this.owner])).rows[0];
+    if(!claimed)return;
     const agent=step.agent_snapshot as RegisteredAgent;if(!agent)throw new Error('子任务缺少角色快照');
     const current=(await this.pool.query('SELECT enabled FROM agents WHERE id=$1 AND identity_id=$2',[agent.id,identity.id])).rows[0];if(!current?.enabled)throw new Error(`智能体已停用：${agent.name}`);
     const enabled=await effectiveToolCodes(this.pool,agent.id);agent.skills=agent.skills.filter(code=>enabled.includes(code));
@@ -189,7 +197,7 @@ export class AgentLoopWorker {
     // Persisted cloud calls are resumed before another model turn.
     await this.cloudCalls(run,step,agent,identity,deviceId,signal);
     const calls=(await this.pool.query('SELECT * FROM runtime_tool_calls WHERE step_id=$1 ORDER BY created_at,id',[step.id])).rows;
-    if(calls.some(c=>['queued','running'].includes(c.status))){if(calls.some(c=>c.status==='running'&&Date.now()-new Date(c.dispatched_at).getTime()>(c.tool_name?.startsWith('local_ppt_')?720000:360000)))throw new Error('设备执行回执超时，结果不确定；为避免重复操作已停止任务');await this.pool.query("UPDATE conversation_run_steps SET status='waiting_tool',updated_at=now() WHERE id=$1",[step.id]);return;}
+    if(calls.some(c=>['queued','running'].includes(c.status))){if(calls.some(c=>c.status==='running'&&Date.now()-new Date(c.dispatched_at).getTime()>(c.tool_name?.startsWith('local_ppt_')?720000:360000)))throw new Error('设备执行回执超时，结果不确定；为避免重复操作已停止任务');await this.pool.query("UPDATE conversation_run_steps SET status='waiting_tool',next_attempt_at=NULL,lease_owner=NULL,lease_until=NULL,updated_at=now() WHERE id=$1",[step.id]);return;}
     if(calls.some(c=>c.status==='unknown'))throw new Error('本地执行结果未知，请确认后重新发起任务');
     const pptBuildAttempts=calls.filter(c=>c.tool_name==='local_ppt_build').length;
     if(pptBuildAttempts>=6&&!completedPptArtifactIds(calls).length)throw new Error('PPT 已达到 6 次生成尝试仍未通过质量检查，请调整内容后重新发起任务');
@@ -210,7 +218,7 @@ export class AgentLoopWorker {
       const text=`PPT 已生成并通过质量检查，成果编号：${artifactIds.join('、')}`;
       await this.alive(run,signal);
       const messageId=await this.publish(run,agent.name,`${all.length===1?'@用户':'@统筹智能体'} ${text}`,`step:${step.id}:ppt-fallback`,agent,{runStepId:step.id,artifactIds,artifactId:artifactIds[0],recipient:all.length===1?'user':'coordinator'});
-      await this.pool.query("UPDATE conversation_run_steps SET status='completed',transcript=$2,turns=turns+1,result=$3,updated_at=now() WHERE id=$1",[step.id,JSON.stringify(transcript),JSON.stringify({text,artifactIds,messageId,agentName:agent.name})]);
+      await this.pool.query("UPDATE conversation_run_steps SET status='completed',lease_owner=NULL,lease_until=NULL,next_attempt_at=NULL,transcript=$2,turns=turns+1,result=$3,updated_at=now() WHERE id=$1",[step.id,JSON.stringify(transcript),JSON.stringify({text,artifactIds,messageId,agentName:agent.name})]);
       await this.event(run,'step.completed',{stepId:step.id,agentName:agent.name,artifactIds,recovered:true});
       return;
     }
@@ -221,19 +229,19 @@ export class AgentLoopWorker {
       const prepared=await Promise.all(message.tool_calls.map(call=>this.tools.prepare(toolScope,call)));
       const client=await this.pool.connect();try{
         await client.query('BEGIN');for(const call of prepared)await this.tools.enqueue(client,toolScope,call);
-        await client.query("UPDATE conversation_run_steps SET transcript=$2,turns=turns+1,status='waiting_tool',updated_at=now() WHERE id=$1",[step.id,JSON.stringify(transcript)]);await client.query('COMMIT');
+        await client.query("UPDATE conversation_run_steps SET transcript=$2,turns=turns+1,status='waiting_tool',next_attempt_at=NULL,lease_owner=NULL,lease_until=NULL,updated_at=now() WHERE id=$1",[step.id,JSON.stringify(transcript)]);await client.query('COMMIT');
       }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
     }else{
       const artifactIds=[...new Set(calls.flatMap(c=>c.result?.artifactIds??(c.result?.artifactId?[c.result.artifactId]:[])))];const text=message.content!.trim();
       await this.alive(run,signal);const messageId=await this.publish(run,agent.name,`${all.length===1?'@用户':'@统筹智能体'} ${text.replace(/^@(用户|统筹智能体)\s*/, '')}`,`step:${step.id}`,agent,{runStepId:step.id,artifactIds,...(artifactIds.length?{artifactId:artifactIds[0]}:{}),recipient:all.length===1?'user':'coordinator'});
-      await this.pool.query("UPDATE conversation_run_steps SET status='completed',transcript=$2,turns=turns+1,result=$3,updated_at=now() WHERE id=$1",[step.id,JSON.stringify(transcript),JSON.stringify({text,artifactIds,messageId,agentName:agent.name})]);await this.event(run,'step.completed',{stepId:step.id,agentName:agent.name,artifactIds});
+      await this.pool.query("UPDATE conversation_run_steps SET status='completed',lease_owner=NULL,lease_until=NULL,next_attempt_at=NULL,transcript=$2,turns=turns+1,result=$3,updated_at=now() WHERE id=$1",[step.id,JSON.stringify(transcript),JSON.stringify({text,artifactIds,messageId,agentName:agent.name})]);await this.event(run,'step.completed',{stepId:step.id,agentName:agent.name,artifactIds});
     }
     await this.cloudCalls(run,step,agent,identity,deviceId,signal);
   }
   private async cloudCalls(run:Row,step:Row,agent:RegisteredAgent,identity:Identity,deviceId:string|null,signal:AbortSignal){
     await this.tools.executeServerCalls({identityId:identity.id,conversationId:run.conversation_id,runId:run.id,stepId:step.id,agent,deviceId},()=>this.alive(run,signal));
   }
-  private async waitDevice(run:Row,step:Row,reason:string){if(step.status!=='waiting_device')await this.event(run,'step.waiting_device',{stepId:step.id,reason});await this.pool.query("UPDATE conversation_run_steps SET status='waiting_device',updated_at=now() WHERE id=$1",[step.id]);await this.pool.query('UPDATE conversation_runs SET result=$2 WHERE id=$1',[run.id,JSON.stringify({waitingReason:reason})]);}
+  private async waitDevice(run:Row,step:Row,reason:string){if(step.status!=='waiting_device')await this.event(run,'step.waiting_device',{stepId:step.id,reason});await this.pool.query("UPDATE conversation_run_steps SET status='waiting_device',next_attempt_at=now()+interval '5 seconds',lease_owner=NULL,lease_until=NULL,updated_at=now() WHERE id=$1",[step.id]);await this.pool.query("UPDATE conversation_runs SET status='waiting_device',next_attempt_at=now()+interval '5 seconds',result=$2,updated_at=now() WHERE id=$1",[run.id,JSON.stringify({waitingReason:reason})]);}
   private async summarize(run:Row,identity:Identity,signal:AbortSignal){
     const coordinator=run.coordinator_snapshot as RegisteredAgent;const steps=(await this.pool.query('SELECT title,result FROM conversation_run_steps WHERE run_id=$1 ORDER BY step_index',[run.id])).rows;
     const artifactIds=steps.flatMap(s=>Array.isArray(s.result?.artifactIds)?s.result.artifactIds:[]);

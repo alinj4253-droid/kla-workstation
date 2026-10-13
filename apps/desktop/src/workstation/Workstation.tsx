@@ -16,6 +16,7 @@ import { ArtifactPane, MarkdownMessage, ProjectWorkspace, RunActivity, type Room
 import './collaboration.css';
 import { CreateGroupDialog } from './CreateGroupDialog';
 import { runtimeApi } from '../api/runtime';
+import { v4 as randomUUID } from 'uuid';
 
 type Section = 'home' | 'projects' | 'knowledge' | 'agents' | 'memory' | 'compute' | 'chats' | 'settings';
 type LoginIdentity = IdentityDto & { role?: 'personal' | 'admin' | 'member' };
@@ -23,9 +24,14 @@ type Modal = 'project' | 'chat' | 'knowledge' | 'knowledge-create' | 'register' 
 type Project = { id: string; name: string; description: string; progress: number; members: number; color: string; open?: boolean; groupIds?: string[] };
 type FileReference = { id: string; name: string; contentType?: string; sizeBytes: number };
 type Chat = { id: string; name: string; project: string; projectId?: string; messages: { id?: string; author: string; text: string; time: string; senderType?: string; artifactIds?: string[]; files?: FileReference[] }[] };
-type ChatMessage = { id: string; senderType: string; senderName?: string; text: string; createdAt: string; metadata?: { artifactId?: string; artifactIds?: string[]; files?: FileReference[] } };
+type ChatMessage = { id: string; senderType: string; senderName?: string; text: string; createdAt: string; metadata?: { artifactId?: string; artifactIds?: string[]; files?: FileReference[]; kind?: string; recipient?: string } };
 type ChatRun = { id: string; status: string; phase?: string; executionAccess?: 'approval' | 'full'; result?: { waitingReason?: string } };
-const mapChatMessages = (messages: ChatMessage[]): Chat['messages'] => messages.map(m => ({ id: m.id, author: m.senderType === 'agent' ? (m.senderName ?? '智能体') : '我', text: m.text, time: new Date(m.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }), senderType: m.senderType, files: m.metadata?.files, artifactIds: [...new Set([...(m.metadata?.artifactIds ?? []), ...(m.metadata?.artifactId ? [m.metadata.artifactId] : [])])] }));
+const mapChatMessages = (messages: ChatMessage[]): Chat['messages'] => messages
+  // Delegation plans and sub-agent hand-offs remain in the run event log. Keep the
+  // main chat focused on user messages and user-facing results to prevent an
+  // implementation detail from looking like multiple answers.
+  .filter(m => !(m.senderType === 'agent' && (m.metadata?.recipient === 'coordinator' || m.metadata?.kind === 'delegation')))
+  .map(m => ({ id: m.id, author: m.senderType === 'agent' ? (m.senderName ?? '智能体') : '我', text: m.text, time: new Date(m.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }), senderType: m.senderType, files: m.metadata?.files, artifactIds: [...new Set([...(m.metadata?.artifactIds ?? []), ...(m.metadata?.artifactId ? [m.metadata.artifactId] : [])])] }));
 type Document = { name: string; group: string; size: string; status: string; date: string };
 type KnowledgeScope = 'enterprise' | 'project' | 'personal';
 type KnowledgeTab = 'sources' | 'chunks';
@@ -200,6 +206,7 @@ export function Workstation(): React.JSX.Element {
     document.documentElement.dataset.klaReducedMotion = localStorage.getItem('kla.appearance.reducedMotion') ?? 'false';
   }, []);
   const sendingChats = useRef(new Set<string>());
+  const messageRequestKeys = useRef(new Map<string, { signature: string; key: string }>());
   const createLock = useRef(false);
   const [creating, setCreating] = useState(false);
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
@@ -472,13 +479,18 @@ export function Workstation(): React.JSX.Element {
     if ((!draft.trim() && !files.length) || attachmentsUploading || pendingRuns[conversationId] || sendingChats.current.has(conversationId) || chatLoading) return;
     if (!signedIn || !conversationId) { notify('请先创建或选择一个真实群组'); return; }
     const text = draft.trim();
+    const signature = `${text}\n${files.map(file => file.id).sort().join(',')}`;
+    const previousRequest = messageRequestKeys.current.get(conversationId);
+    const idempotencyKey = previousRequest?.signature === signature ? previousRequest.key : randomUUID();
+    messageRequestKeys.current.set(conversationId, { signature, key: idempotencyKey });
     const identityId = activeIdentityId;
     sendingChats.current.add(conversationId);
     setPendingRuns(items => ({ ...items, [conversationId]: 'submitting' }));
     try {
-      const submitted = await klaApi.request<{ message: ChatMessage; run: ChatRun | null }>(`/v1/conversations/${conversationId}/messages`, { method: 'POST', body: JSON.stringify({ text, mode: chatMode, executionAccess, fileIds: files.map(file => file.id) }), headers: { 'x-identity-id': identityId } });
+      const submitted = await klaApi.request<{ message: ChatMessage; run: ChatRun | null }>(`/v1/conversations/${conversationId}/messages`, { method: 'POST', body: JSON.stringify({ text, mode: chatMode, executionAccess, idempotencyKey, fileIds: files.map(file => file.id) }), headers: { 'x-identity-id': identityId } });
       if (klaApi.getIdentity() !== identityId) return;
       if (!submitted.ok) { notify(apiError(submitted)); setPendingRuns(items => { const next = { ...items }; delete next[conversationId]; return next; }); return; }
+      messageRequestKeys.current.delete(conversationId);
       setChats(items => items.map(chat => chat.id === conversationId ? { ...chat, messages: [...chat.messages.filter(message => message.id !== submitted.data.message.id), ...mapChatMessages([submitted.data.message])] } : chat));
       setDraft(current => current.trim() === text ? '' : current);
       setPendingAttachments(items => ({ ...items, [conversationId]: (items[conversationId] ?? []).filter(file => !files.some(sent => sent.id === file.id)) }));

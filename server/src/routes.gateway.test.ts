@@ -27,4 +27,28 @@ describe('durable conversation entry point', () => {
       expect((await accounts.listMessages(conversation.id)).map(message => message.senderType)).toEqual(['user']);
     } finally { await app.close(); }
   });
+
+  it('returns the original message and run for a retried idempotent send', async () => {
+    const accounts = new MemoryAccountRepository();
+    const { user } = await accounts.register({ email: 'idempotency@example.test', password: 'TestPass2026!', nickname: '幂等测试' });
+    const identity = await accounts.createOrganization(user.id, '幂等企业', 'idempotency-license');
+    const session = await accounts.createSession(user.id);
+    const project = await accounts.createProject(identity.id, '幂等项目');
+    const conversation = await accounts.createConversation(project.id, '幂等群聊');
+    const app = Fastify({ logger: false });
+    const database = { rawPool: new CatalogPool(accounts) } as unknown as PostgresDatabase;
+    await registerRoutes(app, { accounts, database, mode: 'mock' });
+    try {
+      const payload = { text: '只执行一次', idempotencyKey: '4f3c7b1b-53f4-4c07-a1e8-1c2c3a8a5e21' };
+      const headers = { authorization: `Bearer ${session.accessToken}`, 'x-identity-id': identity.id };
+      const first = await app.inject({ method: 'POST', url: `/api/v1/conversations/${conversation.id}/messages`, headers, payload });
+      const second = await app.inject({ method: 'POST', url: `/api/v1/conversations/${conversation.id}/messages`, headers, payload });
+      expect(first.statusCode).toBe(200);
+      expect(second.statusCode).toBe(200);
+      expect(second.json().data.message.id).toBe(first.json().data.message.id);
+      expect(second.json().data.run.id).toBe(first.json().data.run.id);
+      expect(await accounts.listMessages(conversation.id)).toHaveLength(1);
+      expect(await accounts.listConversationRuns(conversation.id)).toHaveLength(1);
+    } finally { await app.close(); }
+  });
 });

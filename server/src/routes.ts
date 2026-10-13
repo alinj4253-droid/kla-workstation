@@ -27,6 +27,24 @@ function bindRequestLog(request: FastifyRequest, bindings: Record<string, unknow
   log.setBindings?.(bindings);
 }
 
+function messageFromDatabaseRow(row: Record<string, any>) {
+  return {
+    id: row.id,
+    conversationId: row.conversation_id,
+    senderId: row.sender_id,
+    senderType: row.sender_type ?? 'user',
+    senderName: row.sender_name ?? null,
+    kind: row.kind ?? 'text',
+    text: row.text,
+    metadata: row.metadata ?? {},
+    createdAt: new Date(row.created_at).toISOString(),
+  };
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  return Boolean(error && typeof error === 'object' && 'code' in error && (error as { code?: string }).code === '23505');
+}
+
 export async function registerRoutes(app: FastifyInstance, deps: { accounts: AccountRepository; database?: PostgresDatabase; redis?: RedisDatabase; gateway?: Pick<ComputeGateway, 'completeChat'>; shortTermMemory?: ShortTermMemoryService; loopWorker?: Pick<AgentLoopWorker, 'kick' | 'cancel'> & Partial<Pick<AgentLoopWorker, 'reserveRun' | 'resumeRun'>>; mode?: 'postgres' | 'mock'; objectStore?: ObjectStore; objectStorageMaxFileBytes?: number }): Promise<void> {
   const auth = async (request: FastifyRequest, reply: FastifyReply) => {
     const raw = request.headers.authorization;
@@ -439,19 +457,54 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
     const identity = await enforce(session, request, 'write', reply); if (!identity) return;
     const params = request.params as { conversationId: string }; const parsed = createMessageRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: '消息内容或附件参数无效', retryable: false } });
-    const body = parsed.data;
+    const parsedBody = parsed.data;
+    const headerIdempotencyKey = request.headers['x-idempotency-key'];
+    const idempotencyKey = parsedBody.idempotencyKey ?? (typeof headerIdempotencyKey === 'string' ? headerIdempotencyKey : undefined);
+    const body = { ...parsedBody, idempotencyKey };
     if (!identity || !(await deps.accounts.listAllConversations(identity.id)).some((item) => item.id === params.conversationId)) return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: '群聊不存在或无权访问', retryable: false } });
     let files;
     try { files = body.fileIds.length && deps.database?.rawPool ? await messageFileReferences(deps.database.rawPool, identity.id, params.conversationId, body.fileIds) : []; }
     catch { return reply.code(403).send({ ok: false, error: { code: 'FILE_SCOPE_DENIED', message: '附件未上传完成或不属于当前群聊' } }); }
-    const userMessage = await deps.accounts.createMessage(params.conversationId, session.userId, body.text.trim() || '请处理附件中的内容', { files, fileIds: files.map(file => file.id) });
+    // A client retry must return the original message/run rather than creating a
+    // second model execution. The database unique index closes the race between
+    // two concurrent requests; this read handles ordinary retries cheaply.
+    let userMessage;
+    let existingRunForMessage = null;
+    if (idempotencyKey) {
+      const existingMessage = (await deps.accounts.listMessages(params.conversationId)).find(message =>
+        message.senderType === 'user' && message.senderId === session.userId && message.metadata?.clientRequestId === idempotencyKey);
+      if (existingMessage) {
+        userMessage = existingMessage;
+        existingRunForMessage = (await deps.accounts.listConversationRuns(params.conversationId)).find(run => run.triggerMessageId === existingMessage.id) ?? null;
+      }
+    }
+    if (!userMessage) {
+      try {
+        userMessage = await deps.accounts.createMessage(params.conversationId, session.userId, body.text.trim() || '请处理附件中的内容', {
+          files, fileIds: files.map(file => file.id), ...(idempotencyKey ? { clientRequestId: idempotencyKey } : {}),
+        });
+      } catch (error) {
+        if (!idempotencyKey || !isUniqueViolation(error)) throw error;
+        const existingMessage = (await deps.accounts.listMessages(params.conversationId)).find(message => message.senderType === 'user' && message.senderId === session.userId && message.metadata?.clientRequestId === idempotencyKey);
+        if (!existingMessage) throw error;
+        userMessage = existingMessage;
+      }
+    }
     if (deps.mode !== 'mock' && deps.database?.rawPool) {
       const owner = await deps.database.rawPool.query(`SELECT p.owner_identity_id FROM conversations c JOIN projects p ON p.id=c.project_id WHERE c.id=$1`, [params.conversationId]);
       if (owner.rows[0]?.owner_identity_id !== identity.id) return reply.send({ ok: true, data: { message: userMessage, run: null } });
     }
-    const run = deps.loopWorker?.reserveRun
-      ? await deps.loopWorker.reserveRun(params.conversationId, userMessage.id, body.mode ?? 'balanced', body.executionAccess)
-      : await deps.accounts.createRun(params.conversationId, userMessage.id, body.mode ?? 'balanced', undefined, body.executionAccess);
+    if (existingRunForMessage) return reply.send({ ok: true, data: { message: userMessage, run: existingRunForMessage } });
+    let run;
+    try {
+      run = deps.loopWorker?.reserveRun
+        ? await deps.loopWorker.reserveRun(params.conversationId, userMessage.id, body.mode ?? 'balanced', body.executionAccess)
+        : await deps.accounts.createRun(params.conversationId, userMessage.id, body.mode ?? 'balanced', undefined, body.executionAccess);
+    } catch (error) {
+      if (!isUniqueViolation(error)) throw error;
+      run = (await deps.accounts.listConversationRuns(params.conversationId)).find(item => item.triggerMessageId === userMessage.id) ?? null;
+      if (!run) throw error;
+    }
     if (!deps.loopWorker) { await deps.accounts.completeRun(run.id, 'failed', '统筹智能体', {error:'执行器未启动'}); }
     else deps.loopWorker.kick();
     return reply.send({ ok: true, data: { message: userMessage, run } });
