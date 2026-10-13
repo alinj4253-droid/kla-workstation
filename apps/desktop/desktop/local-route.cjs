@@ -18,7 +18,9 @@ const TOLL_SKIP_LOCAL_KM = 8;          // ≤8km 段大概率无高速费，直�
 const TOLL_QUERY_MIN_KM = 20;          // <20km 段按 0，控制 O(n²) 调用量
 const MAX_TOLL_MATRIX_N = 200;
 const TOLL_PAIR_TTL = 24 * 60 * 60 * 1000;
-const TOLL_CONCURRENCY = 16;
+const TOLL_CONCURRENCY = 5; // 个人认证 key 的 direction QPS 上限为 3，留余量；企业 key 可用 env KLA_AMAP_CONCURRENCY 调高
+const AMAP_CONCURRENCY = Math.max(1, parseInt(process.env.KLA_AMAP_CONCURRENCY || '3', 10) || 3);
+const AMAP_RETRY_DELAY_MS = 600; // QPS 超限(CUQPS_HAS_EXCEEDED_THE_LIMIT)时的退避重试间隔
 
 const matrixCache = new Map();   // 矩阵缓存（30 分钟）
 const tollPairCache = new Map(); // 过路费对级缓存（24h，静态道路属性）
@@ -515,6 +517,7 @@ async function fetchDistanceTimeMatrix(points) {
   const zero = () => Array.from({ length: n }, () => Array(n).fill(0));
   const distance = zero(), time = zero();
   let estimatedPairs = 0;
+  let amapError = null;
   const totalPairs = (n * (n - 1)) / 2;
   if (!AMAP_KEY) {
     for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
@@ -524,7 +527,7 @@ async function fetchDistanceTimeMatrix(points) {
     }
     return { distance, time, estimatedPairs: totalPairs, totalPairs, source: 'estimated' };
   }
-  const ORIGIN_CHUNK = 100, DEST_CONCURRENCY = 8;
+  const ORIGIN_CHUNK = 100, DEST_CONCURRENCY = AMAP_CONCURRENCY;
   const tasks = [];
   for (let d = 0; d < n; d++) {
     const destStr = `${points[d].lon.toFixed(6)},${points[d].lat.toFixed(6)}`;
@@ -544,10 +547,18 @@ async function fetchDistanceTimeMatrix(points) {
     const { destIdx, destStr, originIndices, origins } = task;
     try {
       const url = `https://restapi.amap.com/v3/distance?key=${AMAP_KEY}&origins=${origins}&destination=${destStr}&type=1&output=JSON`;
-      const resp = await fetch(url, { signal: AbortSignal.timeout(15000) });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const data = await resp.json();
-      if (data.status !== '1' || !Array.isArray(data.results)) throw new Error(data.info || '高德返回异常');
+      let data = null, lastErr = null;
+      for (let attempt = 0; attempt < 2; attempt++) { // QPS 超限退避重试一次
+        if (attempt > 0) await new Promise(r => setTimeout(r, AMAP_RETRY_DELAY_MS));
+        try {
+          const resp = await fetch(url, { signal: AbortSignal.timeout(15000) });
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          const parsed = await resp.json();
+          if (parsed.status !== '1' || !Array.isArray(parsed.results)) throw new Error(parsed.info || '高德返回异常');
+          data = parsed; break;
+        } catch (e) { lastErr = e; }
+      }
+      if (!data) throw lastErr;
       for (let r = 0; r < data.results.length && r < originIndices.length; r++) {
         const row = data.results[r];
         const oIdx = originIndices[r];
@@ -561,7 +572,8 @@ async function fetchDistanceTimeMatrix(points) {
           estimatedPairs++;
         }
       }
-    } catch {
+    } catch (err) {
+      if (!amapError) amapError = err.message; // 透出首个失败原因（限流/配额/网络），便于定位
       for (const oIdx of originIndices) {
         const seg = estimateSegment(points[oIdx], points[destIdx]);
         distance[oIdx][destIdx] = seg.distance; time[oIdx][destIdx] = seg.time;
@@ -573,7 +585,7 @@ async function fetchDistanceTimeMatrix(points) {
     if (distance[i][j] === 0) { const seg = estimateSegment(points[i], points[j]); distance[i][j] = seg.distance; time[i][j] = seg.time; estimatedPairs++; }
     if (distance[j][i] === 0) { const seg = estimateSegment(points[j], points[i]); distance[j][i] = seg.distance; time[j][i] = seg.time; estimatedPairs++; }
   }
-  return { distance, time, estimatedPairs: Math.min(estimatedPairs, totalPairs), totalPairs, source: estimatedPairs === 0 ? 'amap' : 'amap+estimated' };
+  return { distance, time, estimatedPairs: Math.min(estimatedPairs, totalPairs), totalPairs, source: estimatedPairs === 0 ? 'amap' : 'amap+estimated', ...(amapError ? { amapError } : {}) };
 }
 function tollFetchPair(key, url) {
   const hit = tollPairCache.get(key);
@@ -582,14 +594,20 @@ function tollFetchPair(key, url) {
   if (pending) return pending;
   const p = (async () => {
     try {
-      const resp = await fetch(url, { signal: AbortSignal.timeout(15000) });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const data = await resp.json();
-      if (data.status === '1' && data.route && Array.isArray(data.route.paths) && data.route.paths.length > 0) {
-        const t = parseFloat(data.route.paths[0].tolls);
-        const v = isFinite(t) && t >= 0 ? t : 0;
-        tollPairCache.set(key, { t: v, at: Date.now() });
-        return v;
+      for (let attempt = 0; attempt < 3; attempt++) { // QPS 超限退避重试（个人 key QPS=3）
+        if (attempt > 0) await new Promise(r => setTimeout(r, AMAP_RETRY_DELAY_MS));
+        try {
+          const resp = await fetch(url, { signal: AbortSignal.timeout(15000) });
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          const data = await resp.json();
+          if (data.status === '1' && data.route && Array.isArray(data.route.paths) && data.route.paths.length > 0) {
+            const t = parseFloat(data.route.paths[0].tolls);
+            const v = isFinite(t) && t >= 0 ? t : 0;
+            tollPairCache.set(key, { t: v, at: Date.now() });
+            return v;
+          }
+          if (!/LIMIT|QUOTA/i.test(String(data.info || ''))) break; // 非限流错误不重试
+        } catch { /* 网络错误继续重试 */ }
       }
       return null;
     } catch { return null; }
@@ -667,7 +685,7 @@ async function executeRoute(call, root, signal) {
     let matrixNote = [];
     if (!distM || !timeM) {
       const fetched = await fetchDistanceTimeMatrix(points);
-      if (!distM) { distM = fetched.distance; matrixNote.push(`距离矩阵来源=${fetched.source}（估算段 ${fetched.estimatedPairs}/${fetched.totalPairs}）`); }
+      if (!distM) { distM = fetched.distance; matrixNote.push(`距离矩阵来源=${fetched.source}（估算段 ${fetched.estimatedPairs}/${fetched.totalPairs}）${fetched.amapError ? `，高德失败原因：${fetched.amapError}` : ''}`); }
       if (!timeM) timeM = fetched.time;
     }
     if (strategy === 'cost' && !tollM) {
