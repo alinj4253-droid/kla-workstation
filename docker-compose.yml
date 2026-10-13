@@ -73,9 +73,11 @@ services:
       NODE_ENV: production
       HOST: 0.0.0.0
       PORT: 8787
-      DATABASE_URL: postgresql://${POSTGRES_USER:-kla}:${POSTGRES_PASSWORD:-kla}@postgres:5432/${POSTGRES_DB:-kla}
+      # 默认使用 Compose 内置 PostgreSQL；使用现有数据库时在根目录 .env 设置 KLA_DATABASE_URL。
+      DATABASE_URL: ${KLA_DATABASE_URL:-postgresql://${POSTGRES_USER:-kla}:${POSTGRES_PASSWORD:-kla}@postgres:5432/${POSTGRES_DB:-kla}}
       DATABASE_SCHEMA: ${DATABASE_SCHEMA:-kla}
-      REDIS_URL: redis://redis:6379/4
+      # 默认使用 Compose 内置 Redis；使用现有 Redis 时在根目录 .env 设置 KLA_REDIS_URL。
+      REDIS_URL: ${KLA_REDIS_URL:-redis://redis:6379/4}
       OBJECT_STORAGE_PATH: /data/object-storage
       OBJECT_STORAGE_MAX_FILE_BYTES: ${OBJECT_STORAGE_MAX_FILE_BYTES:-104857600}
       LOG_LEVEL: ${LOG_LEVEL:-info}

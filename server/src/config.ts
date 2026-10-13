@@ -68,6 +68,10 @@ export type ServerConfig = {
   objectStoragePath: string;
   objectStorageMaxFileBytes: number;
   agentStepMaxTurns: number;
+  pointsAdmin: {
+    username: string;
+    password: string;
+  };
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
@@ -110,5 +114,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     objectStoragePath: resolve(env.OBJECT_STORAGE_PATH ?? resolve(process.cwd(), '.runtime/object-storage')),
     objectStorageMaxFileBytes: Math.max(1, Number(env.OBJECT_STORAGE_MAX_FILE_BYTES ?? 100 * 1024 * 1024)),
     agentStepMaxTurns: Math.max(1, Math.min(1000, Math.floor(Number(env.AGENT_STEP_MAX_TURNS ?? 64) || 64))),
+    pointsAdmin: {
+      username: env.POINTS_ADMIN_USERNAME ?? 'admin',
+      password: env.POINTS_ADMIN_PASSWORD ?? 'admin123456',
+    },
   };
 }

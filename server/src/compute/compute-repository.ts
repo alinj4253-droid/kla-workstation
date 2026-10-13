@@ -192,6 +192,7 @@ export class ComputeRepository {
    *
    * 规则：
    * - grant：+amount（平台发放，已推上游）
+   * - revoke：-amount（平台收回，已推上游）
    * - allocate/reclaim：metadata.direction='in' → +amount，'out' → -amount
    * - commit：-amount（用量扣费，已推上游）
    * - recharge：不参与（来自上游，sub2api_synced=false）
@@ -214,6 +215,9 @@ export class ComputeRepository {
       switch (row.operation) {
         case 'grant':
           total += amt;
+          break;
+        case 'revoke':
+          total -= amt;
           break;
         case 'allocate':
         case 'reclaim':
