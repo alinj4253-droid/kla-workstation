@@ -128,7 +128,7 @@ export function ArtifactPane({ artifacts, selected, loading, collapsed, onSelect
       : /\.pptx$/i.test(selected.name) ? <BinaryArtifactPreview artifact={selected} artifacts={artifacts} onSelect={onSelect} />
       : (selected.storageKey || selected.sourceKind === 'file') ? <StoredFilePreview artifact={selected} />
       : selected.contentEncoding === 'base64' ? <BinaryArtifactPreview artifact={selected} artifacts={artifacts} onSelect={onSelect} />
-      : mime.includes('html') || /\.html?$/i.test(selected.name) ? <iframe title={selected.name} srcDoc={selected.content} sandbox="" />
+      : mime.includes('html') || /\.html?$/i.test(selected.name) ? <iframe title={selected.name} srcDoc={selected.content} sandbox="allow-scripts" />
       : /\.md$/i.test(selected.name) || mime.includes('markdown') ? <article><MarkdownMessage text={selected.content} /></article> : <pre>{selected.content}</pre>}</div>
     <footer>{selected && <button onClick={() => onDownload(selected)}><Download size={14} />下载</button>}<small>服务端成果 · 当前身份可见</small></footer>
   </aside>;
@@ -155,7 +155,7 @@ function StoredFilePreview({ artifact }: { artifact: RoomArtifact }) {
   if (loading) return <div className="ws-artifact-loading"><LoaderCircle size={20} />正在加载文件…</div>;
   if (image) return <img src={url} alt={artifact.name} style={{ width: '100%', height: 'auto' }} />;
   if (pdf) return <iframe title={artifact.name} src={url} />;
-  if (/html/i.test(artifact.mimeType)) return <iframe title={artifact.name} srcDoc={content} sandbox="" />;
+  if (/html/i.test(artifact.mimeType)) return <iframe title={artifact.name} srcDoc={content} sandbox="allow-scripts" />;
   if (/markdown/i.test(artifact.mimeType) || /\.md$/i.test(artifact.name)) return <article><MarkdownMessage text={content} /></article>;
   return <pre>{content}</pre>;
 }

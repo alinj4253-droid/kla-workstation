@@ -691,7 +691,7 @@ function routeSvg(route, color) {
     `<g><rect x="${W - 30 - barPx}" y="${H - 34}" width="${barPx}" height="4" fill="#374151"/>` +
     `<text x="${W - 30 - barPx / 2}" y="${H - 40}" text-anchor="middle" font-size="12" fill="#374151">≈${barKm} km</text></g></svg>`;
 }
-function buildRouteMapHtml({ routeName, points, originalOrder, optimizedOrder, strategy, distanceKm, savedPercent }) {
+function buildRouteMapHtml({ routeName, points, originalOrder, optimizedOrder, strategy, distanceKm, savedPercent, imgA, imgB }) {
   const payload = {
     routeName, strategy: strategy || 'mileage',
     points: points.map(p => ({ name: p.name, lat: +p.lat.toFixed(6), lon: +p.lon.toFixed(6) })),
@@ -729,7 +729,8 @@ function buildRouteMapHtml({ routeName, points, originalOrder, optimizedOrder, s
   .pane h2{font-size:13px;margin:0;padding:6px 12px;background:#fff;border-bottom:1px solid #e5e7eb;color:#111;font-weight:600;flex:0 0 auto}
   .pane h2 i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
   .map{flex:1;min-height:0;position:relative}
-  .fallback{position:absolute;inset:0;display:none;overflow:hidden}
+  .fallback{position:absolute;inset:0;display:block;overflow:hidden;background:#fff}
+  .snap{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
   footer{flex:0 0 auto;padding:4px 14px;font-size:12px;color:#6b7280;background:#fff;border-top:1px solid #e5e7eb}
 </style>
 </head>
@@ -741,8 +742,8 @@ function buildRouteMapHtml({ routeName, points, originalOrder, optimizedOrder, s
   ${stats}
 </header>
 <main>
-  <section class="pane" id="paneA"><h2><i style="background:#1677ff"></i>A · 原始线路</h2><div class="map" id="mapA"><div class="fallback" id="fbA">${svgA}</div></div></section>
-  <section class="pane" id="paneB"><h2><i style="background:#e60012"></i>B · 优化后</h2><div class="map" id="mapB"><div class="fallback" id="fbB">${svgB}</div></div></section>
+  <section class="pane" id="paneA"><h2><i style="background:#1677ff"></i>A · 原始线路</h2><div class="map" id="mapA"><div class="fallback" id="fbA">${imgA ? `<img class="snap" src="${imgA}" alt="原始路线底图快照">` : svgA}</div></div></section>
+  <section class="pane" id="paneB"><h2><i style="background:#e60012"></i>B · 优化后</h2><div class="map" id="mapB"><div class="fallback" id="fbB">${imgB ? `<img class="snap" src="${imgB}" alt="优化后路线底图快照">` : svgB}</div></div></section>
 </main>
 <footer id="foot"></footer>
 <script>window._AMapSecurityConfig={securityJsCode:'${AMAP_JS_SECURITY_CODE}'};</script>
@@ -778,6 +779,7 @@ function buildPane(key, elId) {
     map.add(marker);
   });
   map.setFitView([line], false, [40, 40, 40, 40]);
+  const fb = document.getElementById('fb' + key); if (fb) fb.style.display = 'none'; // 高德就绪，隐藏快照/SVG 兜底
   maps[key] = map; lines[key] = line;
   // 仿参考项目：仅在 moveend/zoomend 广播（拖动过程中不联动，保证流畅），全局标志防回弹
   map.on('moveend', () => broadcast(key));
@@ -865,13 +867,60 @@ function updateFoot() {
   document.getElementById('foot').innerHTML =
     '里程：原始 ' + fmt('A') + ' · 优化后 ' + fmt('B') +
     ' · 点位 ' + N + ' 个' + (D.strategy ? ' · 策略 ' + D.strategy : '') +
-    ' · 地图数据：高德 JS API（驾车规划路径）' +
-    '<br>提示：工作台内嵌预览不执行脚本、地图会空白——请点右上角「在浏览器打开」或下载后双击打开本文件。';
+    ' · 地图数据：高德 JS API（驾车规划路径）';
 }
 updateFoot();
 </script>
 </body>
 </html>`;
+}
+
+// 取真实道路路径（与浏览器交互地图同口径：驾车规划、最短距离策略），失败返回 null（快照退回直线连点）
+async function fetchRoadPath(route, signal) {
+  try {
+    if (!AMAP_KEY || route.length < 2) return null;
+    const legs = Math.ceil((route.length - 1) / 17);
+    if (legs > 4) return null; // 控制配额消耗
+    let i = 0; const coords = [];
+    while (i < route.length - 1) {
+      const j = Math.min(i + 17, route.length - 1);
+      const o = route[i].p, d = route[j].p;
+      const wps = route.slice(i + 1, j).map(s => `${s.p.lon.toFixed(6)},${s.p.lat.toFixed(6)}`).join(';');
+      const url = `https://restapi.amap.com/v3/direction/driving?key=${AMAP_KEY}&origin=${o.lon.toFixed(6)},${o.lat.toFixed(6)}&destination=${d.lon.toFixed(6)},${d.lat.toFixed(6)}&strategy=2&output=JSON` + (wps ? `&waypoints=${encodeURIComponent(wps)}` : '');
+      const resp = await fetch(url, { signal: AbortSignal.any([signal, AbortSignal.timeout(12000)]) });
+      const data = await resp.json();
+      if (data.status !== '1' || !data.route || !Array.isArray(data.route.paths) || !data.route.paths.length) return null;
+      for (const st of data.route.paths[0].steps || []) {
+        for (const poly of String(st.polyline || '').split(';')) {
+          const [lon, lat] = poly.split(',').map(Number);
+          if (isFinite(lon) && isFinite(lat)) coords.push([lon, lat]);
+        }
+      }
+      i = j;
+    }
+    const step = Math.max(1, Math.ceil(coords.length / 90)); // 抽稀，控制静态地图 URL 长度
+    const out = coords.filter((_, idx) => idx % step === 0 || idx === coords.length - 1);
+    return out.length >= 2 ? out : null;
+  } catch { return null; }
+}
+
+// 静态地图快照：生成时调用高德静态地图 API（Web 服务 key），把带真实底图的路线图以 base64 内嵌——
+// 预览面板/无脚本环境也能显示真实底图；失败时返回 null（降级为 SVG 示意图）
+async function fetchStaticMap(coords, colorHex, signal, zoomOffset = 0) {
+  try {
+    if (!AMAP_KEY || !coords || coords.length < 2) return null;
+    const lons = coords.map(c => c[0]), lats = coords.map(c => c[1]);
+    const center = `${((Math.min(...lons) + Math.max(...lons)) / 2).toFixed(6)},${((Math.min(...lats) + Math.max(...lats)) / 2).toFixed(6)}`;
+    const span = Math.max(Math.max(...lons) - Math.min(...lons), (Math.max(...lats) - Math.min(...lats)) * 1.3) || 1e-6;
+    const zoom = Math.min(17, Math.max(3, Math.floor(Math.log2(360 / span)) + zoomOffset));
+    const pathSeg = `5,${colorHex},1,,:` + coords.map(c => `${c[0].toFixed(6)},${c[1].toFixed(6)}`).join(';'); // 官方格式：weight,color,transparency,fillcolor,fillTransparency:coords
+    const url = `https://restapi.amap.com/v3/staticmap?key=${AMAP_KEY}&location=${center}&zoom=${zoom}&size=500*375&scale=2&paths=${encodeURIComponent(pathSeg)}`;
+    const resp = await fetch(url, { signal: AbortSignal.any([signal, AbortSignal.timeout(12000)]) });
+    if (!resp.ok) return null;
+    const buf = Buffer.from(await resp.arrayBuffer());
+    if (buf.length < 1000 || !(buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47)) return null; // 非 PNG（多为 JSON 报错）
+    return 'data:image/png;base64,' + buf.toString('base64');
+  } catch { return null; }
 }
 
 async function executeRouteMap(call, root, signal) {
@@ -885,9 +934,20 @@ async function executeRouteMap(call, root, signal) {
   signal.throwIfAborted();
   const points = normalizePoints(a.points, a.coordSystem === 'wgs84' ? 'wgs84' : 'gcj02');
   const routeName = a.routeName ? String(a.routeName).slice(0, 200) : '路线对比';
+  signal.throwIfAborted();
+  const seq = o => o.map((idx, pos) => ({ pos: pos + 1, p: points[idx] }));
+  const seqA = seq(originalOrder), seqB = seq(optimizedOrder);
+  // 快照路线与浏览器交互地图同口径：优先驾车规划的真实道路路径，失败退回直线连点
+  const [roadA, roadB] = await Promise.all([fetchRoadPath(seqA, signal), fetchRoadPath(seqB, signal)]);
+  const straight = s => s.map(x => [x.p.lon, x.p.lat]);
+  const [imgA, imgB] = await Promise.all([
+    fetchStaticMap(roadA || straight(seqA), '0x1677FF', signal),
+    fetchStaticMap(roadB || straight(seqB), '0xE60012', signal),
+  ]);
   const html = buildRouteMapHtml({
     routeName, points, originalOrder, optimizedOrder,
     strategy: a.strategy, distanceKm: a.distanceKm, savedPercent: a.savedPercent,
+    imgA, imgB,
   });
   const workspace = await ensureWorkspace(root, call);
   const fileName = AMAP_FILENAME_SAFE(`${routeName}-优化前后对比`) + '.html';
