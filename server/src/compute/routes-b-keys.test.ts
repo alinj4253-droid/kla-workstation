@@ -124,7 +124,7 @@ describe('Key 模型发现', () => {
     expect(found.statusCode).toBe(200);
     const items = found.json().data;
     expect(items).toHaveLength(2);
-    expect(items).toEqual(expect.arrayContaining([{ id: 'm1', name: '模型一' }, { id: 'm2', name: 'm2' }]));
+    expect(items).toEqual(expect.arrayContaining([{ id: 'm1', name: '模型一' }, { id: 'm2', name: 'M2' }]));
     expect(found.body).not.toContain('secret');
     expect((await app.inject({ method: 'GET', url: '/api/v1/compute/keys/foreign/models', headers: AUTH })).statusCode).toBe(404);
     await app.close();

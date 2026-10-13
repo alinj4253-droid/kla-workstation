@@ -65,6 +65,14 @@ function optionalIpList(value: unknown): { ok: true; value: string[] | undefined
   return { ok: true, value: value.map((item) => (item as string).trim()) };
 }
 
+/** 上游模型未进入本地目录时，用模型 id 生成稳定可读的名称（否则下拉只显示 gpt-5.6-luna 这类原始 id）。 */
+function fallbackModelName(modelId: string): string {
+  const label = modelId.split('/').at(-1) ?? modelId;
+  return label
+    .replace(/[-_]+/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
 export async function registerComputeKeyRoutes(app: FastifyInstance, deps: ComputeKeyRouteDeps): Promise<void> {
   const pool = deps.computeRepo.pool;
 
@@ -117,7 +125,7 @@ export async function registerComputeKeyRoutes(app: FastifyInstance, deps: Compu
       const ids = await deps.sub2api.listModels(secret);
       const catalog = await pool.query<{id:string;name:string}>('SELECT id,name FROM models WHERE id=ANY($1::text[])', [ids]);
       const nameById = new Map(catalog.rows.map((row) => [row.id, row.name]));
-      const data = ids.map((id) => ({ id, name: nameById.get(id) ?? id }))
+      const data = ids.map((id) => ({ id, name: nameById.get(id) ?? fallbackModelName(id) }))
         .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
       return reply.send({ ok: true, data });
     } catch (error) {
