@@ -4,8 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_AGENT_MODEL_ID } from '@kla-workstation/contracts';
 import { RuntimeAgentManagement } from './RuntimeManagement';
 
-const { agents, keys, keyModels, saveAgent } = vi.hoisted(() => ({ agents: vi.fn(), keys: vi.fn(), keyModels: vi.fn(), saveAgent: vi.fn() }));
-vi.mock('../api/runtime', () => ({ runtimeApi: { agents, devices: async () => ({ ok: true, data: [] }), keyModels, saveAgent } }));
+const { agents, keys, keyModels, saveAgent, installHomeAi } = vi.hoisted(() => ({ agents: vi.fn(), keys: vi.fn(), keyModels: vi.fn(), saveAgent: vi.fn(), installHomeAi:vi.fn() }));
+vi.mock('../api/runtime', () => ({ runtimeApi: { agents, devices: async () => ({ ok: true, data: [] }), keyModels, saveAgent, installHomeAi } }));
 vi.mock('../api/compute', () => ({ computeApi: { keys } }));
 const defaultKey = { id: 'default-key', name: '默认工作站 Key', keyPrefix: 'sk-default', status: 'active', isDefault: true };
 const alternateKey = { id: 'alternate-key', name: '自选 Key', keyPrefix: 'sk-alt', status: 'active', isDefault: false };
@@ -15,9 +15,18 @@ beforeEach(() => {
   keys.mockResolvedValue({ ok: true, data: { items: [alternateKey, defaultKey] } });
   keyModels.mockResolvedValue({ ok: true, data: [{ id: DEFAULT_AGENT_MODEL_ID, name: 'GLM 5.3 Flash' }, { id: 'deepseek-chat', name: 'DeepSeek Chat' }] });
   saveAgent.mockResolvedValue({ ok: true, data: {} });
+  installHomeAi.mockResolvedValue({ok:true,data:{agentId:'home-agent',installed:true}});
 });
 
 describe('智能体默认模型与 Key', () => {
+  it('uses the atomic server preset when installing home diagnosis from the market',async()=>{
+    const user=userEvent.setup();const notify=vi.fn();render(<RuntimeAgentManagement identityId="identity-1" notify={notify}/>);
+    await screen.findByText('本地执行智能体');await user.click(screen.getByRole('button',{name:/智能体市场/}));
+    const card=screen.getByText('家居 AI 机会诊断').closest('article')!;
+    const button=Array.from(card.querySelectorAll('button')).find(button=>button.textContent?.includes('安装'))!;
+    await user.click(button);await waitFor(()=>expect(installHomeAi).toHaveBeenCalledOnce());
+    expect(saveAgent).not.toHaveBeenCalled();await waitFor(()=>expect(notify).toHaveBeenCalledWith('家居 AI 机会诊断已安装到我的智能体'));
+  });
   it('Key 列表暂时不可用时仍展示已经挂载的智能体', async () => {
     keys.mockRejectedValue(new Error('temporary network failure'));
     render(<RuntimeAgentManagement identityId="identity-1" notify={vi.fn()} />);

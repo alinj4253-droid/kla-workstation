@@ -33,7 +33,7 @@ export async function ensureRuntimeRegistry(pool: Pool | PoolClient, identityId:
   }
   const uninitialized = await pool.query(`SELECT id FROM agents WHERE identity_id=$1 AND name='本地执行智能体' AND NOT capabilities_initialized`, [identityId]);
   for (const agent of uninitialized.rows) {
-    for (const tool of runtimeSkillCatalog.filter(tool => !tool.code.startsWith('local_ppt_'))) {
+    for (const tool of runtimeSkillCatalog.filter(tool => !tool.code.startsWith('local_ppt_') && !tool.code.startsWith('home_ai_'))) {
       await pool.query('INSERT INTO agent_tool_mounts(agent_id,tool_code) VALUES($1,$2) ON CONFLICT DO NOTHING', [agent.id, tool.code]);
     }
     await pool.query('UPDATE agents SET capabilities_initialized=true WHERE id=$1', [agent.id]);

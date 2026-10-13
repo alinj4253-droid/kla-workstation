@@ -151,3 +151,9 @@
 .ws-md-code .ws-md-copy{position:absolute;top:7px;right:7px;background:#1d3a5f;color:#cfe3ff;border:none;border-radius:5px;padding:4px 8px;font-size:10px;cursor:pointer;display:inline-flex;align-items:center;gap:4px}
 .ws-md-code .ws-md-copy:hover{background:#27496f}
 @media(max-width:760px){.ws-md-kpis{grid-template-columns:1fr 1fr}.ws-md-meta{grid-template-columns:1fr}}
+.ws-home-ai-review{margin:12px 0;font-size:13px;line-height:1.6}
+.ws-home-ai-review section{max-height:55vh;overflow:auto;background:#fff;border:1px solid #dce7f3;border-radius:10px;padding:16px}
+.ws-home-ai-review article{border-top:1px solid #dce7f3;margin-top:16px;padding-top:12px}
+.ws-home-ai-review dl{margin:10px 0}.ws-home-ai-review dt{font-weight:600;color:#304d6d}.ws-home-ai-review dd{margin:0 0 8px;white-space:pre-wrap;overflow-wrap:anywhere}
+.ws-home-ai-review label{display:block;margin:10px 0}.ws-home-ai-review select{max-width:100%;margin-left:8px;padding:4px}
+.ws-home-ai-review button{cursor:pointer;padding:5px 9px;margin-right:8px}.ws-home-ai-review button:disabled{cursor:default;opacity:.55}

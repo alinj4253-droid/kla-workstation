@@ -12,9 +12,23 @@ import type { RegisteredAgent } from './registry.js';
 import type { ObjectStore } from '../storage/object-store.js';
 import { knowledgeRequest } from './knowledge-transport.js';
 import { accessibleFile } from '../storage/file-access.js';
+import { HomeAiService, homeAiWriteTools } from './home-ai/service.js';
+import type { HomeAiToolCode } from '@kla-workstation/contracts';
 
 const string = { type: 'string' }, integer = { type: 'integer' };
 const properties: Record<RuntimeSkillCode, Record<string, unknown>> = {
+  home_ai_session_open: { sessionId: string },
+  home_ai_interview_update: { sessionId:string, expectedRevision:integer, answerId:{type:'string',enum:['role','mission','handoff','workflow','capability','kpi','idea','success','constraints','materials']}, answer:string },
+  home_ai_opportunity_discover: {sessionId:string},
+  home_ai_conditions_update: {sessionId:string,expectedRevision:integer,stageId:string,
+    checks:{type:'object',properties:Object.fromEntries(['data','rules','review','access','evidence'].map(k=>[k,{type:'string',enum:['yes','no','unknown']}])),additionalProperties:false},
+    notes:{type:'object',properties:Object.fromEntries(['data','rules','review','access','evidence'].map(k=>[k,string])),additionalProperties:false},
+    reportEdits:{type:'object',properties:Object.fromEntries(['customTitle','action','goal','conditions','form','route','metric','trial'].map(k=>[k,string])),additionalProperties:false}},
+  home_ai_value_estimate: {sessionId:string,expectedRevision:integer,stageId:string,
+    numbers:{type:'object',properties:Object.fromEntries(['volume','before','after','coverage','hourly','cash','cost','setup'].map(k=>[k,{anyOf:[{type:'number',minimum:0,maximum:['coverage','cash'].includes(k)?100:1e9},{type:'string',enum:['']}]}])),additionalProperties:false},
+    source:{type:'string',enum:['estimate','measured']},targetHours:{anyOf:[{type:'number',minimum:0,maximum:1e9},{type:'string',enum:['']}]}},
+  home_ai_report_build:{sessionId:string,stageId:string},
+  home_ai_materials_add:{sessionId:string,expectedRevision:integer,fileId:string},
   knowledge_search: { query: string, topK: integer },
   knowledge_read: { knowledgeBaseId: string, docId: string, offset: integer, limit: integer },
   knowledge_ocr: { artifactId: string, maxPages: integer },
@@ -35,6 +49,10 @@ const properties: Record<RuntimeSkillCode, Record<string, unknown>> = {
   local_ppt_render: { path: string, documentId: string },
 };
 const required: Record<RuntimeSkillCode, string[]> = {
+  home_ai_session_open:[],home_ai_interview_update:['sessionId','expectedRevision','answerId','answer'],
+  home_ai_opportunity_discover:['sessionId'],home_ai_conditions_update:['sessionId','expectedRevision','stageId'],
+  home_ai_value_estimate:['sessionId','expectedRevision','stageId','numbers'],home_ai_report_build:['sessionId','stageId'],
+  home_ai_materials_add:['sessionId','expectedRevision','fileId'],
   knowledge_search: ['query'], knowledge_read: ['knowledgeBaseId','docId'], knowledge_ocr: ['artifactId'],
   web_search: ['query'], memory_recall: ['query'],
   artifact_write: ['fileName','content'], artifact_compose: ['fileName','artifactIds'], artifact_read: ['artifactId'], local_read: ['path'], local_list: ['path'],
@@ -49,7 +67,11 @@ export function agentTools(agent: RegisteredAgent) {
 }
 export function parseToolArguments(name: string, raw: unknown): Record<string, unknown> {
   if (!(name in toolArguments)) throw new Error(`未知技能：${name}`);
-  return toolArguments[name as RuntimeSkillCode].parse(raw);
+  try { return toolArguments[name as RuntimeSkillCode].parse(raw); }
+  catch(error) {
+    if(name.startsWith('home_ai_')&&error instanceof z.ZodError) throw new Error(`诊断参数无效：${error.issues.map(issue=>`${issue.path.join('.')||'参数'}：${issue.message}`).join('；')}。请按工具参数格式修正；revision请重新读取会话获取。`,{cause:error});
+    throw error;
+  }
 }
 export class RuntimeTools {
   constructor(private readonly pool: Pool, private readonly accounts: AccountRepository, private readonly memory: ShortTermMemoryService, private readonly encryptionKey: string, private readonly objectStore?: ObjectStore) {}
@@ -60,8 +82,9 @@ export class RuntimeTools {
   }
   async execute(name: string, raw: unknown, scope: { identityId: string; conversationId: string; agentId: string; toolCallId?: string }): Promise<unknown> {
     const args = parseToolArguments(name, raw);
-    await requirePermission(this.pool, scope.identityId, name === 'artifact_write' || name === 'artifact_compose' ? 'write'
+    await requirePermission(this.pool, scope.identityId, homeAiWriteTools.has(name) || name === 'artifact_write' || name === 'artifact_compose' ? 'write'
       : name === 'knowledge_ocr' || name === 'web_search' ? 'execute' : 'read');
+    if(name.startsWith('home_ai_')) return new HomeAiService(this.pool,this.objectStore).execute(name as HomeAiToolCode,args,scope);
     if (name === 'web_search') {
       const results = await createBochaClient({ apiKey: process.env.BOCHA_API_KEY ?? '' }).searchWeb({
         query: String(args.query), count: Number(args.count), freshness: String(args.freshness),

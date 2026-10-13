@@ -8,6 +8,7 @@ import type { ComputeGateway, GatewayChatInput } from '../compute/gateway.js';
 import type { Identity } from '../repositories/types.js';
 import type { AgentMemoryScope, ShortTermMemoryService } from '../memories/short-term.js';
 import { effectiveToolCodes } from './registry.js';
+import { homeAiWriteTools } from './home-ai/service.js';
 
 export type ToolScope = {
   identityId: string;
@@ -97,7 +98,7 @@ export class ToolGateway {
     if (skill.location === 'local' && (scope.agent.execution_location !== 'local' || !scope.deviceId)) {
       throw new Error('本地工具需要已认证的本地执行设备');
     }
-    const action: PermissionAction = skill.location === 'local' || name === 'knowledge_ocr' || name === 'web_search' ? 'execute' : name === 'artifact_write' || name === 'artifact_compose' ? 'write' : 'read';
+    const action: PermissionAction = skill.location === 'local' || name === 'knowledge_ocr' || name === 'web_search' ? 'execute' : homeAiWriteTools.has(name) || name === 'artifact_write' || name === 'artifact_compose' ? 'write' : 'read';
     await requirePermission(this.pool, scope.identityId, action);
     return { location: skill.location, action };
   }
