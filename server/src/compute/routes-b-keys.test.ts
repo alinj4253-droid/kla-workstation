@@ -52,6 +52,8 @@ async function buildApp(repo: ComputeRepository, sub2api: Partial<Sub2ApiClient>
 }
 
 const AUTH = { authorization: 'Bearer t', 'content-type': 'application/json' };
+/** 无请求体的 POST 不能带 application/json（Fastify 会以空 body 直接 400），与前端适配器行为一致。 */
+const AUTH_NO_BODY = { authorization: 'Bearer t' };
 
 describe('resolveManagedPassword', () => {
   it('加密托管密码可解密', () => {
@@ -112,9 +114,9 @@ describe('§7.2 GET /compute/keys', () => {
 });
 
 describe('Key 模型发现', () => {
-  it('按当前身份和 Key 限定模型，且不返回密钥', async () => {
-    const repo = repoWith((sql) => sql.includes('SELECT id,name FROM models')
-      ? { rows: [{ id: 'm1', name: '模型一' }], rowCount: 1 }
+  it('按当前身份和 Key 限定模型，标出平台目录未收录的项，且不返回密钥', async () => {
+    const repo = repoWith((sql) => sql.includes('FROM models')
+      ? { rows: [{ id: 'm1', name: '模型一', enabled: true }], rowCount: 1 }
       : grantPermissions()(sql), {
       getKey: async (keyId, identityId) => identityId === 'i1' && keyId === 'k1' ? keyFixture() : null,
       getBinding: async () => ({ identityId: 'i1', sub2apiUserId: 'u1', sub2apiUsername: 'u', managedPassword: 'pass', status: 'ready', provisionJobId: null, lastError: null, createdAt: NOW, updatedAt: NOW }),
@@ -122,9 +124,28 @@ describe('Key 模型发现', () => {
     const app = await buildApp(repo, { getUserJwt: async () => 'jwt', resolveApiKeySecret: async () => 'secret', listModels: async () => ['m1', 'm2'] });
     const found = await app.inject({ method: 'GET', url: '/api/v1/compute/keys/k1/models', headers: AUTH });
     expect(found.statusCode).toBe(200);
-    expect(found.json().data).toEqual([{ id: 'm1', name: '模型一' }]);
+    expect(found.json().data).toEqual([{ id: 'm1', name: '模型一', supported: true }, { id: 'm2', name: 'M2', supported: false }]);
     expect(found.body).not.toContain('secret');
     expect((await app.inject({ method: 'GET', url: '/api/v1/compute/keys/foreign/models', headers: AUTH })).statusCode).toBe(404);
+    await app.close();
+  });
+
+  it('同步上游模型：只登记目录未启用项，随后全部可挂载', async () => {
+    const inserted: string[] = [];
+    const repo = repoWith((sql, params) => {
+      if (sql.includes('INSERT INTO models')) { inserted.push(String(params?.[0])); return { rows: [], rowCount: 1 }; }
+      if (sql.includes('FROM models')) return { rows: [{ id: 'm1', name: '模型一', enabled: true }], rowCount: 1 };
+      return grantPermissions()(sql);
+    }, {
+      getKey: async (keyId, identityId) => identityId === 'i1' && keyId === 'k1' ? keyFixture() : null,
+      getBinding: async () => ({ identityId: 'i1', sub2apiUserId: 'u1', sub2apiUsername: 'u', managedPassword: 'pass', status: 'ready', provisionJobId: null, lastError: null, createdAt: NOW, updatedAt: NOW }),
+    });
+    const app = await buildApp(repo, { getUserJwt: async () => 'jwt', resolveApiKeySecret: async () => 'secret', listModels: async () => ['m1', 'm2'] });
+    const synced = await app.inject({ method: 'POST', url: '/api/v1/compute/keys/k1/models/sync', headers: AUTH_NO_BODY });
+    expect(synced.statusCode).toBe(200);
+    expect(inserted).toEqual(['m2']);
+    expect(synced.json().data).toMatchObject({ imported: 1, total: 2 });
+    expect((await app.inject({ method: 'POST', url: '/api/v1/compute/keys/foreign/models/sync', headers: AUTH_NO_BODY })).statusCode).toBe(404);
     await app.close();
   });
 });

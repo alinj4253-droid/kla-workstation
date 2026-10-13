@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Check, ChevronDown, Cpu, KeyRound, Link2, Plus, Search, Settings, Sparkles, Wrench, X, Cable, Gauge, ShieldCheck, Sun, UserCircle, Users } from 'lucide-react';
-import { runtimeApi, type RuntimeAgent, type RuntimeDevice, type RuntimeSkill, type RuntimeTool } from '../api/runtime';
+import { runtimeApi, type RuntimeAgent, type RuntimeDevice, type RuntimeKeyModel, type RuntimeSkill, type RuntimeTool } from '../api/runtime';
 import { computeApi } from '../api/compute';
 import { klaApi } from '../api/client';
 import { Badge, IconButton } from './ui';
@@ -37,9 +37,10 @@ export function RuntimeAgentManagement({ identityId, notify }: Props): React.JSX
   const [draft, setDraft] = useState<{ id: string | null; name: string; role: string; modelId: string | null; modelKeyId: string | null; executionLocation: ExecutionLocation; deviceId: string | null; enabled: boolean } | null>(null);
   const [capabilityAgent, setCapabilityAgent] = useState<RuntimeAgent | null>(null);
   const [keys, setKeys] = useState<AgentKey[]>([]);
-  const [keyModels, setKeyModels] = useState<Array<{id:string;name:string}>>([]);
+  const [keyModels, setKeyModels] = useState<RuntimeKeyModel[]>([]);
   const [modelLoading, setModelLoading] = useState(false);
   const [modelError, setModelError] = useState('');
+  const [modelSyncBusy, setModelSyncBusy] = useState(false);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<'all' | 'builtin' | 'external' | 'custom'>('all');
   const [view, setView] = useState<'mine' | 'market'>('mine');
@@ -88,13 +89,33 @@ export function RuntimeAgentManagement({ identityId, notify }: Props): React.JSX
 
   const save = async (): Promise<void> => {
     if (!draft) return;
-    if (draft.modelKeyId && (!draft.modelId || !keyModels.some(model => model.id === draft.modelId))) { notify('请先选择该 Key 下可用的模型'); return; }
+    const agent = draft.id ? agents.find(item => item.id === draft.id) : undefined;
+    const mounted = draft.id ? (agent?.modelId ?? agent?.model_id ?? null) : null;
+    const selected = keyModels.find(model => model.id === draft.modelId);
+    if (draft.modelKeyId && !draft.modelId) { notify('请先选择该 Key 下可用的模型'); return; }
+    // 未变更的挂载模型即便已不在 Key 的当前清单里，也允许保存其它字段（例如只改名称或设备）。
+    if (draft.modelKeyId && draft.modelId !== mounted && !selected) { notify('该模型不在当前 Key 的可用列表中，请重新选择'); return; }
+    if (draft.modelKeyId && draft.modelId !== mounted && selected?.supported === false) { notify('该模型未进入平台模型目录，可先「同步到平台模型目录」再挂载'); return; }
     setBusy(true);
     try {
       const result = await runtimeApi.saveAgent(draft.id, draft);
       if (!result.ok) { notify(result.message); return; }
       setDraft(null); await load(); notify('智能体定义已保存至服务端');
     } catch { notify('保存失败，请检查后端连接'); } finally { setBusy(false); }
+  };
+
+  /** 把当前 Key 在 Sub2API 可用、但平台目录未收录的模型登记进平台目录，使其可被挂载。 */
+  const syncModels = async (): Promise<void> => {
+    const keyId = draft?.modelKeyId;
+    if (!keyId || modelSyncBusy) return;
+    setModelSyncBusy(true); setModelError('');
+    try {
+      const result = await runtimeApi.syncKeyModels(keyId);
+      if (!result.ok) { setModelError(result.message); return; }
+      setKeyModels(result.data.items);
+      notify(result.data.imported > 0 ? `已把 ${result.data.imported} 个模型同步到平台目录，现在可以挂载` : '该 Key 的模型都已在平台目录中');
+    } catch { setModelError('同步平台模型目录失败，请检查后端连接'); }
+    finally { setModelSyncBusy(false); }
   };
 
   return <div className="ws-agent-module">
@@ -113,7 +134,7 @@ export function RuntimeAgentManagement({ identityId, notify }: Props): React.JSX
         <footer><button onClick={() => setDraft({ id: agent.id, name: agent.name, role: agent.role, modelId: agent.modelId ?? agent.model_id ?? null, modelKeyId: agent.modelKeyId ?? agent.model_key_id ?? null, executionLocation: agent.executionLocation ?? agent.execution_location ?? 'server', deviceId: agent.deviceId ?? agent.device_id ?? null, enabled: agent.enabled })}><Cpu size={14} /> 挂载模型</button><button onClick={() => setCapabilityAgent(agent)}><Sparkles size={14} /> 技能管理</button><button onClick={() => notify(`权限管理：${agent.name}`)}><KeyRound size={14} /> 权限</button></footer>
       </article>)}</div>
     </> : <AgentMarket notify={notify} installedNames={agents.map(agent => agent.name)} onInstalled={load} />}
-    {draft && <AgentEditor draft={draft} setDraft={setDraft} keys={keys} keyModels={keyModels} modelLoading={modelLoading} modelError={modelError} devices={devices} busy={busy} save={save} />}
+    {draft && <AgentEditor draft={draft} setDraft={setDraft} keys={keys} keyModels={keyModels} modelLoading={modelLoading} modelError={modelError} devices={devices} busy={busy} save={save} syncModels={syncModels} modelSyncBusy={modelSyncBusy} mountedModelId={draft.id ? (agents.find(item => item.id === draft.id)?.modelId ?? agents.find(item => item.id === draft.id)?.model_id ?? null) : null} />}
     {capabilityAgent && <AgentCapabilityEditor agent={capabilityAgent} notify={notify} onClose={() => setCapabilityAgent(null)} />}
   </div>;
 }
@@ -135,9 +156,16 @@ function AgentMarket({ notify, installedNames, onInstalled }: { notify: (text: s
 }
 
 type AgentDraft = { id: string | null; name: string; role: string; modelId: string | null; modelKeyId: string | null; executionLocation: ExecutionLocation; deviceId: string | null; enabled: boolean };
-function AgentEditor({ draft, setDraft, keys, keyModels, modelLoading, modelError, devices, busy, save }: { draft: AgentDraft; setDraft: (value: AgentDraft | null) => void; keys: AgentKey[]; keyModels: Array<{id:string;name:string}>; modelLoading:boolean; modelError:string; devices: RuntimeDevice[]; busy: boolean; save: () => Promise<void> }): React.JSX.Element {
+function AgentEditor({ draft, setDraft, keys, keyModels, modelLoading, modelError, devices, busy, save, syncModels, modelSyncBusy, mountedModelId }: { draft: AgentDraft; setDraft: (value: AgentDraft | null) => void; keys: AgentKey[]; keyModels: RuntimeKeyModel[]; modelLoading:boolean; modelError:string; devices: RuntimeDevice[]; busy: boolean; save: () => Promise<void>; syncModels: () => Promise<void>; modelSyncBusy: boolean; mountedModelId: string | null }): React.JSX.Element {
   const coordinator = draft.name === '统筹智能体';
   const deviceOnline = devices.some(device => device.online && (!draft.deviceId || device.id === draft.deviceId));
+  // 已挂载但不在 Key 当前清单里的模型仍需出现在下拉中，否则弹窗看起来像「没挂模型」。
+  const modelOptions = useMemo(() => {
+    const list = keyModels.map(model => ({ ...model }));
+    if (draft.modelId && !list.some(model => model.id === draft.modelId)) list.unshift({ id: draft.modelId, name: draft.modelId, supported: draft.modelId === mountedModelId });
+    return list;
+  }, [keyModels, draft.modelId, mountedModelId]);
+  const unsupportedCount = keyModels.filter(model => !model.supported).length;
   return <div className="ws-modal-backdrop"><div className="ws-modal ws-agent-editor"><header><h2>{draft.id ? '配置智能体 · ' + draft.name : '新建智能体'}</h2><IconButton title="关闭" onClick={() => setDraft(null)}><X size={18} /></IconButton></header>
     <form onSubmit={event => { event.preventDefault(); void save(); }}>
       {!draft.id && <><label>名称<input required value={draft.name} onChange={event => setDraft({ ...draft, name: event.target.value })} /></label><label>身份与职责<textarea required value={draft.role} onChange={event => setDraft({ ...draft, role: event.target.value })} /></label></>}
@@ -147,9 +175,10 @@ function AgentEditor({ draft, setDraft, keys, keyModels, modelLoading, modelErro
       {!draft.id && <small className="ws-agent-model-note">默认使用当前身份的默认 Key 和 GLM 5.3 Flash，可在此切换。Key 初始化完成后会自动挂载。</small>}
       <label>当前身份的 API Key<select value={draft.modelKeyId ?? ''} onChange={event => setDraft({ ...draft, modelKeyId: event.target.value || null, modelId: null })}><option value="">选择 API Key</option>{keys.map(key => <option key={key.id} value={key.id}>{key.name}{key.isDefault ? '（默认）' : ''} · {key.keyPrefix}</option>)}</select></label>
       {!keys.length && <small className="ws-agent-model-note">当前身份的默认 Key 尚未就绪，可在「算力 / API 密钥」查看初始化状态。新建智能体后会自动补齐挂载。</small>}
-      <label>该 Key 下可用模型<select value={draft.modelId ?? ''} disabled={!draft.modelKeyId || modelLoading || Boolean(modelError)} onChange={event => setDraft({ ...draft, modelId: event.target.value || null })}><option value="">{modelLoading ? '正在读取模型…' : '选择模型'}</option>{keyModels.map(model => <option key={model.id} value={model.id}>{model.name}</option>)}</select></label>
+      <label>该 Key 下可用模型<select value={draft.modelId ?? ''} disabled={!draft.modelKeyId || modelLoading || Boolean(modelError)} onChange={event => setDraft({ ...draft, modelId: event.target.value || null })}><option value="">{modelLoading ? '正在读取模型…' : '选择模型'}</option>{modelOptions.map(model => <option key={model.id} value={model.id} disabled={model.supported === false}>{model.supported === false ? `${model.name}（未进入平台目录，暂不可挂载）` : model.name}</option>)}</select></label>
       {modelError && <small role="alert" className="ws-agent-model-error">{modelError}</small>}
-      {draft.modelKeyId && !modelLoading && !modelError && !keyModels.length && <small className="ws-agent-model-note">此 Key 下没有平台已启用的可用模型。</small>}
+      {draft.modelKeyId && !modelLoading && !modelError && !keyModels.length && <small className="ws-agent-model-note">该 Key 未返回任何可用模型，请先在「算力 / API 密钥」确认 Key 的上游模型权限。</small>}
+      {draft.modelKeyId && !modelLoading && !modelError && unsupportedCount > 0 && <small className="ws-agent-model-note">其中 {unsupportedCount} 个模型只有上游可用、平台目录未收录，选不了。<button type="button" className="ws-agent-model-sync" disabled={modelSyncBusy} onClick={() => void syncModels()}>{modelSyncBusy ? '同步中…' : '同步到平台模型目录'}</button></small>}
       <footer><button type="button" onClick={() => setDraft({ ...draft, modelKeyId: null, modelId: null })}>取消挂载</button><button type="button" onClick={() => setDraft(null)}>取消</button><button className="ws-primary" disabled={busy || modelLoading || Boolean(draft.modelKeyId && !draft.modelId)}>{busy ? '保存中…' : '保存挂载'}</button></footer>
     </form></div></div>;
 }

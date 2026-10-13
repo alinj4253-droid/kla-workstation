@@ -65,6 +65,39 @@ function optionalIpList(value: unknown): { ok: true; value: string[] | undefined
   return { ok: true, value: value.map((item) => (item as string).trim()) };
 }
 
+/** 上游模型未同步进本地目录时，仍提供稳定、可读的名称供挂载模型选择。 */
+function fallbackModelName(modelId: string): string {
+  const label = modelId.split('/').at(-1) ?? modelId;
+  return label
+    .replace(/[-_]+/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+/** 目录条目只做展示与归属标记，缺省归到 sub2api（真正的路由仍由 Key 与上游决定）。 */
+function providerForModelId(modelId: string): string {
+  const separator = modelId.indexOf('/');
+  const prefix = separator > 0 ? modelId.slice(0, separator) : '';
+  return /^[a-z0-9][a-z0-9._-]{1,31}$/i.test(prefix) ? prefix.toLowerCase() : 'sub2api';
+}
+
+export type KeyModelOption = { id: string; name: string; supported: boolean };
+
+/**
+ * 该 Key 在上游可用的模型清单，并标出哪些已进入平台模型目录。
+ * `supported=false` 表示上游给得出、但平台目录未收录或已停用——这类模型无法通过挂载校验
+ * （Gateway 只按平台目录路由），因此前端必须把它们显示为不可选，而不是让用户选完再吃 400。
+ */
+export async function keyModelOptions(pool: { query: (sql: string) => Promise<{ rows: Array<{ id: string; name: string; enabled: boolean }> }> }, ids: string[]): Promise<KeyModelOption[]> {
+  const catalog = await pool.query('SELECT id,name,enabled FROM models');
+  const known = new Map(catalog.rows.map((row) => [row.id, row]));
+  return ids
+    .map((id) => {
+      const row = known.get(id);
+      return { id, name: row?.name ?? fallbackModelName(id), supported: Boolean(row?.enabled) };
+    })
+    .sort((left, right) => Number(right.supported) - Number(left.supported) || left.name.localeCompare(right.name));
+}
+
 export async function registerComputeKeyRoutes(app: FastifyInstance, deps: ComputeKeyRouteDeps): Promise<void> {
   const pool = deps.computeRepo.pool;
 
@@ -114,10 +147,47 @@ export async function registerComputeKeyRoutes(app: FastifyInstance, deps: Compu
       const secret = await deps.sub2api.resolveApiKeySecret(resolved.jwt, key.sub2apiKeyId);
       if (!secret) return upstreamFailure(reply, 'UNAVAILABLE', '无法读取该 Key 的上游凭据', request.id);
       const ids = await deps.sub2api.listModels(secret);
-      const catalog = await pool.query<{id:string;name:string}>('SELECT id,name FROM models WHERE enabled=true AND id=ANY($1::text[]) ORDER BY name', [ids]);
-      return reply.send({ ok: true, data: catalog.rows });
+      return reply.send({ ok: true, data: await keyModelOptions(pool, ids) });
     } catch (error) {
       return upstreamFailure(reply, 'UNAVAILABLE', error instanceof Error ? error.message : '获取 Key 可用模型失败', request.id);
+    }
+  });
+
+  /**
+   * 把该 Key 在上游可用、但平台目录未收录（或已停用）的模型登记为平台模型，使其可被智能体挂载。
+   *
+   * 背景：Gateway 只按 `models` 目录路由与校验，而上游 Key 的模型清单来自 Sub2API；
+   * 两者不一致时用户会在挂载弹窗里看到「Key 下可用但选不了」的模型（本函数就是补这一步）。
+   * 登记为非官方（is_official=false）且启用；不写价格，实际费用仍以 Sub2API 用量明细为准（§11.2）。
+   */
+  app.post('/api/v1/compute/keys/:keyId/models/sync', async (request: FastifyRequest, reply: FastifyReply) => {
+    const ctx = await requireIdentity(deps.accounts, request, reply);
+    if (!ctx) return;
+    if (!(await requirePermission(pool, ctx.identity, COMPUTE_PERMISSION.keyUpdate, request, reply, '无权同步平台模型目录'))) return;
+    const { keyId } = request.params as { keyId: string };
+    const key = await deps.computeRepo.getKey(keyId, ctx.identity.id);
+    if (!key || key.status !== 'active') return reply.code(404).send(errorBody('NOT_FOUND', '当前身份没有此可用 Key', request.id));
+    const resolved = await resolveUserJwt(ctx.identity.id);
+    if (!resolved.ok) return upstreamFailure(reply, resolved.code, resolved.message, request.id);
+    try {
+      const secret = await deps.sub2api.resolveApiKeySecret(resolved.jwt, key.sub2apiKeyId);
+      if (!secret) return upstreamFailure(reply, 'UNAVAILABLE', '无法读取该 Key 的上游凭据', request.id);
+      const ids = await deps.sub2api.listModels(secret);
+      const existing = new Map((await pool.query<{ id: string; name: string; enabled: boolean }>('SELECT id,name,enabled FROM models')).rows.map((row) => [row.id, row]));
+      let imported = 0;
+      for (const id of ids) {
+        const row = existing.get(id);
+        if (row?.enabled) continue;
+        await pool.query(
+          `INSERT INTO models (id,name,provider,capabilities,enabled,is_official) VALUES ($1,$2,$3,'{}'::jsonb,true,false)
+           ON CONFLICT (id) DO UPDATE SET enabled=true`,
+          [id, row?.name ?? fallbackModelName(id), providerForModelId(id)],
+        );
+        imported += 1;
+      }
+      return reply.send({ ok: true, data: { items: await keyModelOptions(pool, ids), imported, total: ids.length } });
+    } catch (error) {
+      return upstreamFailure(reply, 'UNAVAILABLE', error instanceof Error ? error.message : '同步平台模型目录失败', request.id);
     }
   });
 

@@ -274,7 +274,7 @@ export function HomePage(): React.JSX.Element {
               <Paperclip size={18} />
             </button>
             {stagedUploadIds.length > 0 && <span className="composer-attachment-count">{stagedUploadIds.length}个附件</span>}
-            <span className="composer-hint">支持文件、图片和 @智能体</span>
+            <span className="composer-hint">Enter 发送 · Shift + Enter 换行 · 支持文件、图片和 @智能体</span>
             <button className="send-button" type="submit" disabled={(!prompt.trim() && stagedUploadIds.length === 0) || submitting}>
               {submitting ? <span>创建中...</span> : <><span>发送</span><Send size={15} /></>}
             </button>

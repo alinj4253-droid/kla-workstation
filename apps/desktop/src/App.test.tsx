@@ -471,6 +471,7 @@ describe('M2 AC-HOME', () => {
   it('AC-HOME-01 homepage renders draft textarea', async () => {
     renderAt('/');
     expect(await screen.findByPlaceholderText('输入您的问题或需求，按 Enter 发送...')).toBeInTheDocument();
+    expect(screen.getByText('Enter 发送 · Shift + Enter 换行 · 支持文件、图片和 @智能体')).toBeInTheDocument();
   });
 
   it('AC-HOME-03 creation failure shows error', async () => {

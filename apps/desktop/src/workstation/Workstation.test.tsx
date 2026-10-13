@@ -278,3 +278,17 @@ describe('新版项目和群聊的真实接口交互', () => {
     await waitFor(() => expect(invalidate).toHaveBeenCalledWith('identity-a'));
   });
 });
+
+describe('首页 AI 工作入口', () => {
+  it('展示 Enter/Shift + Enter 提示，并按 Enter 直接发送到首个群组', async () => {
+    const message = { id: 'home-user', senderType: 'user', text: '总结本周工作', createdAt: '2026-10-13T02:00:00Z' };
+    overrides['POST /v1/conversations/chat-a/messages'] = () => ({ ok: true, data: { message, run: null } });
+    const user = userEvent.setup();
+    render(<Workstation />);
+    expect(await screen.findByText('Enter 发送 · Shift + Enter 换行')).toBeVisible();
+    await waitFor(() => expect(request.mock.calls.some(([path]) => path === '/v1/conversations/chat-a/messages')).toBe(true));
+    await user.type(screen.getByPlaceholderText(/试试：帮我把上周的投资可行性评估整理成一页汇报/), '总结本周工作');
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(request.mock.calls.some(([path, init]) => path === '/v1/conversations/chat-a/messages' && (init as RequestInit | undefined)?.method === 'POST')).toBe(true));
+  });
+});
