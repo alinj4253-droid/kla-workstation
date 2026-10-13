@@ -15,6 +15,8 @@ import { accessibleFile } from '../storage/file-access.js';
 
 const string = { type: 'string' }, integer = { type: 'integer' };
 const matrixOfNumbers = { type: 'array', items: { type: 'array', items: { type: 'number' } } };
+const arrayOfIntegers = { type: 'array', items: integer };
+const pointList = { type: 'array', items: { type: 'object', properties: { name: string, lat: { type: 'number' }, lon: { type: 'number' } }, required: ['lat', 'lon'], additionalProperties: false } };
 const properties: Record<RuntimeSkillCode, Record<string, unknown>> = {
   knowledge_search: { query: string, topK: integer },
   knowledge_read: { knowledgeBaseId: string, docId: string, offset: integer, limit: integer },
@@ -35,18 +37,25 @@ const properties: Record<RuntimeSkillCode, Record<string, unknown>> = {
   local_ppt_inspect: { path: string, documentId: string },
   local_ppt_render: { path: string, documentId: string },
   local_route_matrix: {
-    points: { type: 'array', items: { type: 'object', properties: { name: string, lat: { type: 'number' }, lon: { type: 'number' } }, required: ['lat', 'lon'], additionalProperties: false } },
+    points: pointList,
     coordSystem: string, kind: string,
   },
   local_route_optimize: {
     routeName: string,
-    points: { type: 'array', items: { type: 'object', properties: { name: string, lat: { type: 'number' }, lon: { type: 'number' } }, required: ['lat', 'lon'], additionalProperties: false } },
+    points: pointList,
     coordSystem: string, strategy: string,
     distanceMatrix: matrixOfNumbers, timeMatrix: matrixOfNumbers, tollMatrix: matrixOfNumbers,
   },
   local_route_replan: {
-    points: { type: 'array', items: { type: 'object', properties: { name: string, lat: { type: 'number' }, lon: { type: 'number' } }, required: ['lat', 'lon'], additionalProperties: false } },
+    points: pointList,
     numRoutes: integer, algorithm: string, coordSystem: string,
+  },
+  local_route_map: {
+    routeName: string,
+    points: pointList,
+    coordSystem: string,
+    optimizedOrder: arrayOfIntegers, originalOrder: arrayOfIntegers,
+    strategy: string, distanceKm: { type: 'number' }, savedPercent: { type: 'number' },
   },
 };
 const required: Record<RuntimeSkillCode, string[]> = {
@@ -58,6 +67,7 @@ const required: Record<RuntimeSkillCode, string[]> = {
   local_write: ['fileName','content'], local_code: ['fileName','content'], local_bat: ['script'], local_cli: ['executable'],
   local_ppt_doctor: [], local_ppt_build: ['specJson'], local_ppt_inspect: [], local_ppt_render: [],
   local_route_matrix: ['points'], local_route_optimize: ['points'], local_route_replan: ['points', 'numRoutes'],
+  local_route_map: ['points', 'optimizedOrder'],
 };
 export function agentTools(agent: RegisteredAgent) {
   return runtimeSkillCatalog.filter(s => agent.skills.includes(s.code) && (s.location === 'server' || agent.execution_location === 'local'))

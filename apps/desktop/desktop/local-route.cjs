@@ -8,7 +8,15 @@
 //   - 线路拆分：K-means(Haversine) + 边界交换 / 均衡分配启发式（server.js:769-989），逐线 NN+2-opt 排序
 //   - 坐标纠偏：WGS-84 → GCJ-02（server.js:200-228）
 // 纯算法 + 高德 REST，零数据库依赖；仅在用户本地设备执行。
-const capabilities = ['local_route_matrix', 'local_route_optimize', 'local_route_replan'];
+const fs = require('node:fs/promises');
+const path = require('node:path');
+const { createHash } = require('node:crypto');
+const { ensureWorkspace } = require('./local-workspace.cjs');
+const capabilities = ['local_route_matrix', 'local_route_optimize', 'local_route_replan', 'local_route_map'];
+
+// 高德 JS API（Web端）key 与安全密钥（用于成果地图 HTML；可用环境变量覆盖）
+const AMAP_JS_KEY = process.env.KLA_AMAP_JS_KEY || '93d6b567f9353b0f1578a4044a9bae80';
+const AMAP_JS_SECURITY_CODE = process.env.KLA_AMAP_JS_SECURITY_CODE || 'd6983574c14ff6abc06ce604cd46f649';
 
 // 指定的高德 Web 服务 apikey（可用环境变量 KLA_AMAP_KEY 覆盖）
 const AMAP_KEY = process.env.KLA_AMAP_KEY || 'a81ff14db11a13443648dd92cb22f723';
@@ -651,10 +659,210 @@ async function fetchTollMatrix(points) {
   return { toll, failedPairs, skippedPairs, totalPairs, strategy: TOLL_DIRECTION_STRATEGY, source: 'amap' };
 }
 
+// ==================== 优化前后地图对比 HTML（成果文件） ====================
+// 仿参考项目 route-optimizer 前端：单窗/双窗对比切换 + 双窗联动；复用本地 route-agent 算法的输入输出。
+const AMAP_FILENAME_SAFE = (s) => s.replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').slice(0, 80);
+function buildRouteMapHtml({ routeName, points, originalOrder, optimizedOrder, strategy, distanceKm, savedPercent }) {
+  const payload = {
+    routeName, strategy: strategy || 'mileage',
+    points: points.map(p => ({ name: p.name, lat: +p.lat.toFixed(6), lon: +p.lon.toFixed(6) })),
+    originalOrder, optimizedOrder,
+    distanceKm: distanceKm == null ? null : +Number(distanceKm).toFixed(3),
+    savedPercent: savedPercent == null ? null : +Number(savedPercent).toFixed(2),
+  };
+  const stats = payload.distanceKm != null
+    ? `<span class="stat">优化后总里程 <b>${payload.distanceKm} km</b></span>` +
+      (payload.savedPercent != null ? `<span class="stat">节省 <b>${payload.savedPercent}%</b></span>` : '')
+    : '';
+  const body = JSON.stringify(payload);
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${routeName} · 优化前后路线对比</title>
+<style>
+  html,body{margin:0;height:100%;font-family:"Microsoft YaHei",system-ui,sans-serif;background:#f5f6f8;display:flex;flex-direction:column}
+  header{display:flex;align-items:center;gap:10px;padding:8px 14px;background:#fff;border-bottom:1px solid #e5e7eb;flex:0 0 auto}
+  header h1{font-size:15px;margin:0;color:#111;font-weight:600}
+  .seg{display:flex;border:1px solid #d1d5db;border-radius:8px;overflow:hidden}
+  .seg button{border:0;background:#fff;padding:5px 14px;font-size:13px;cursor:pointer;color:#374151}
+  .seg button.on{background:#059669;color:#fff}
+  #linkBtn{margin-left:auto;border:1px solid #059669;color:#059669;background:#fff;border-radius:8px;padding:5px 14px;font-size:13px;cursor:pointer}
+  #linkBtn.on{background:#059669;color:#fff}
+  .stat{font-size:13px;color:#374151;background:#ecfdf5;border-radius:6px;padding:3px 10px}
+  main{flex:1;display:flex;min-height:0}
+  .pane{flex:1;display:flex;flex-direction:column;min-width:0;border-right:1px solid #e5e7eb}
+  .pane.hide{display:none}
+  .pane h2{font-size:13px;margin:0;padding:6px 12px;background:#fff;border-bottom:1px solid #e5e7eb;color:#111;font-weight:600;flex:0 0 auto}
+  .pane h2 i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+  .map{flex:1;min-height:0}
+  footer{flex:0 0 auto;padding:4px 14px;font-size:12px;color:#6b7280;background:#fff;border-top:1px solid #e5e7eb}
+</style>
+</head>
+<body>
+<header>
+  <h1>${routeName}</h1>
+  <div class="seg" id="viewSeg"><button data-v="dual" class="on">双窗对比</button><button data-v="A">仅原始</button><button data-v="B">仅优化后</button></div>
+  <button id="linkBtn" class="on">联动已开</button>
+  ${stats}
+</header>
+<main>
+  <section class="pane" id="paneA"><h2><i style="background:#1677ff"></i>A · 原始线路</h2><div class="map" id="mapA"></div></section>
+  <section class="pane" id="paneB"><h2><i style="background:#e60012"></i>B · 优化后</h2><div class="map" id="mapB"></div></section>
+</main>
+<footer id="foot"></footer>
+<script>window._AMapSecurityConfig={securityJsCode:'${AMAP_JS_SECURITY_CODE}'};</script>
+<script src="https://webapi.amap.com/maps?v=2.0&key=${AMAP_JS_KEY}"></script>
+<script>
+const D = ${body};
+const COLORS = {A:'#1677ff', B:'#e60012'};
+const N = D.points.length;
+const seq = o => o.map((idx, pos) => ({ pos: pos + 1, p: D.points[idx] }));
+const data = { A: seq(D.originalOrder), B: seq(D.optimizedOrder) };
+const maps = {}, lines = {}, realDist = {};
+const syncing = { v: false }; // 全局同步标志（仿参考项目 RouteMapWorkspace：下一帧解锁防反弹）
+let linkOn = true;
+
+function buildPane(key, elId) {
+  const map = new AMap.Map(elId, { zoom: 12, mapStyle: 'amap://styles/normal', viewMode: '2D' });
+  const route = data[key];
+  const path = route.map(s => [s.p.lon, s.p.lat]);
+  const line = new AMap.Polyline({ path, strokeColor: COLORS[key], strokeWeight: 6, strokeOpacity: 0.9, showDir: true, lineJoin: 'round' });
+  map.add(line);
+  route.forEach(s => {
+    const isStart = s.pos === 1, isEnd = s.pos === N;
+    const marker = new AMap.Marker({
+      position: [s.p.lon, s.p.lat],
+      anchor: 'center',
+      zIndex: 120,
+      content: '<div style="width:22px;height:22px;border-radius:50%;background:' + (isStart ? '#059669' : isEnd ? '#111827' : '#fff') +
+        ';border:2px solid ' + COLORS[key] + ';color:' + (isStart || isEnd ? '#fff' : COLORS[key]) +
+        ';font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;box-shadow:0 1px 4px rgba(0,0,0,.3)">' + s.pos + '</div>',
+    });
+    marker.setLabel({ direction: 'top', offset: new AMap.Pixel(0, -6),
+      content: '<div style="white-space:nowrap;font-size:12px;color:#111;background:#fff;border:1px solid #e5e7eb;border-radius:4px;padding:1px 6px">' + s.p.name + '</div>' });
+    map.add(marker);
+  });
+  map.setFitView([line], false, [40, 40, 40, 40]);
+  maps[key] = map; lines[key] = line;
+  // 仿参考项目：仅在 moveend/zoomend 广播（拖动过程中不联动，保证流畅），全局标志防回弹
+  map.on('moveend', () => broadcast(key));
+  map.on('zoomend', () => broadcast(key));
+  realDist[key] = null;
+  // 仿参考项目：用 AMap.Driving 驾车规划取真实道路路径（途经点分段，≤16 途经点/次，顺序请求规避 QPS），直线仅作兜底
+  AMap.plugin('AMap.Driving', () => {
+    const driving = new AMap.Driving({ policy: AMap.DrivingPolicy.LEAST_DISTANCE });
+    const LngLat = AMap.LngLat;
+    let i = 0; const path = []; let dist = 0;
+    const next = () => {
+      if (i >= route.length - 1) {
+        if (path.length) {
+          line.setPath(path);
+          realDist[key] = Math.round(dist) / 1000;
+          updateFoot();
+        }
+        return;
+      }
+      const j = Math.min(i + 17, route.length - 1);
+      const o = route[i].p, d = route[j].p;
+      const wps = route.slice(i + 1, j).map(s => new LngLat(s.p.lon, s.p.lat));
+      driving.search(new LngLat(o.lon, o.lat), new LngLat(d.lon, d.lat), { waypoints: wps }, (status, result) => {
+        if (status === 'complete' && result.routes && result.routes.length) {
+          const r = result.routes[0];
+          dist += r.distance || 0;
+          (r.steps || []).forEach(st => { if (st.path) path.push(...st.path); });
+        }
+        i = j;
+        setTimeout(next, 150); // 个人 key QPS=3，请求间留间隔
+      });
+    };
+    next();
+  });
+}
+function broadcast(from) {
+  if (!linkOn || syncing.v) return;
+  const src = maps[from];
+  if (!src) return;
+  syncing.v = true;
+  try {
+    const center = src.getCenter(), zoom = src.getZoom();
+    for (const key of Object.keys(maps)) {
+      if (key === from || !maps[key]) continue;
+      try {
+        if (center) maps[key].setCenter(center, true);   // 第二参立即生效，无动画
+        if (typeof zoom === 'number') maps[key].setZoom(zoom, true);
+      } catch (e) {}
+    }
+  } finally { setTimeout(() => { syncing.v = false; }, 60); }
+}
+buildPane('A', 'mapA');
+buildPane('B', 'mapB');
+
+document.getElementById('viewSeg').addEventListener('click', e => {
+  const v = e.target && e.target.dataset && e.target.dataset.v;
+  if (!v) return;
+  document.querySelectorAll('#viewSeg button').forEach(b => b.classList.toggle('on', b === e.target));
+  document.getElementById('paneA').classList.toggle('hide', v === 'B');
+  document.getElementById('paneB').classList.toggle('hide', v === 'A');
+  setTimeout(() => { Object.values(maps).forEach(m => { try { m.resize(); } catch (x) {} }); }, 30);
+});
+const linkBtn = document.getElementById('linkBtn');
+linkBtn.addEventListener('click', () => { linkOn = !linkOn; linkBtn.classList.toggle('on', linkOn); linkBtn.textContent = linkOn ? '联动已开' : '联动已关'; });
+
+function haversineKm(p1, p2) {
+  const R = 6371, dLat = (p2.lat - p1.lat) * Math.PI / 180, dLon = (p2.lon - p1.lon) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(p1.lat * Math.PI / 180) * Math.cos(p2.lat * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+const straight = key => data[key].slice(0, -1).reduce((s, seg, i) => s + haversineKm(seg.p, data[key][i + 1].p), 0);
+function updateFoot() {
+  const fmt = key => realDist[key] != null
+    ? '<b>' + realDist[key].toFixed(1) + ' km</b>（实际道路）'
+    : straight(key).toFixed(1) + ' km（直线参考）';
+  document.getElementById('foot').innerHTML =
+    '里程：原始 ' + fmt('A') + ' · 优化后 ' + fmt('B') +
+    ' · 点位 ' + N + ' 个' + (D.strategy ? ' · 策略 ' + D.strategy : '') +
+    ' · 地图数据：高德 JS API（驾车规划路径）' +
+    '<br>提示：工作台内嵌预览不执行脚本、地图会空白——请点右上角「在浏览器打开」或下载后双击打开本文件。';
+}
+updateFoot();
+</script>
+</body>
+</html>`;
+}
+
+async function executeRouteMap(call, root, signal) {
+  const a = call.arguments || {};
+  const n = a.points.length;
+  const originalOrder = a.originalOrder && a.originalOrder.length ? a.originalOrder : Array.from({ length: n }, (_, i) => i);
+  const optimizedOrder = a.optimizedOrder;
+  const isPerm = (arr) => Array.isArray(arr) && arr.length === n && new Set(arr).size === n && arr.every(i => Number.isInteger(i) && i >= 0 && i < n);
+  if (!isPerm(originalOrder)) throw new Error('originalOrder 必须是 0..' + (n - 1) + ' 的完整排列');
+  if (!isPerm(optimizedOrder)) throw new Error('optimizedOrder 必须是 0..' + (n - 1) + ' 的完整排列');
+  signal.throwIfAborted();
+  const points = normalizePoints(a.points, a.coordSystem === 'wgs84' ? 'wgs84' : 'gcj02');
+  const routeName = a.routeName ? String(a.routeName).slice(0, 200) : '路线对比';
+  const html = buildRouteMapHtml({
+    routeName, points, originalOrder, optimizedOrder,
+    strategy: a.strategy, distanceKm: a.distanceKm, savedPercent: a.savedPercent,
+  });
+  const workspace = await ensureWorkspace(root, call);
+  const fileName = AMAP_FILENAME_SAFE(`${routeName}-优化前后对比`) + '.html';
+  const target = path.join(workspace.output, fileName);
+  await fs.writeFile(target, html, 'utf8');
+  const checksum = createHash('sha256').update(html).digest('hex');
+  const reference = 'workspace://' + path.relative(root, target).split(path.sep).join('/');
+  const artifact = process.env.KLA_LOCAL_ARTIFACT_UPLOAD === 'false' ? undefined
+    : { fileName, content: html, mimeType: 'text/html', checksum };
+  return { result: { fileName, sizeBytes: Buffer.byteLength(html), checksum, stored: true, uploaded: Boolean(artifact), pointsCount: n, ...(reference ? { path: reference, deviceLocal: true } : {}) }, ...(artifact ? { artifact } : {}) };
+}
+
 // ==================== 工具入口 ====================
 async function executeRoute(call, root, signal) {
   if (!capabilities.includes(call.tool)) throw new Error('不支持的路线规划技能');
   signal.throwIfAborted();
+  if (call.tool === 'local_route_map') return executeRouteMap(call, root, signal);
   const a = call.arguments || {};
   const coordSystem = a.coordSystem === 'wgs84' ? 'wgs84' : 'gcj02';
   if (call.tool === 'local_route_matrix') {
