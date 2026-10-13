@@ -1,6 +1,7 @@
 import type { Pool, PoolClient } from 'pg';
 import { runtimeSkillBundles, runtimeSkillCatalog, type TaskPlan } from '@kla-workstation/contracts';
 import { pptAssistantRole } from './ppt-assistant.js';
+import { routeAssistantRole } from './route-assistant.js';
 import { initializeDefaultAgentModels } from './default-model.js';
 
 export type RegisteredAgent = { id: string; name: string; role: string; model_id: string | null; model_key_id: string | null; execution_location: 'server'|'local'; device_id: string|null; enabled: boolean; version: number; skills: string[] };
@@ -25,6 +26,9 @@ export async function ensureRuntimeRegistry(pool: Pool | PoolClient, identityId:
   await pool.query(`INSERT INTO agents(identity_id,name,role,type,execution_location)
     SELECT $1,'PPT助手',$2,'official','local'
     WHERE NOT EXISTS(SELECT 1 FROM agents WHERE identity_id=$1 AND name='PPT助手') ON CONFLICT DO NOTHING`, [identityId, pptAssistantRole]);
+  await pool.query(`INSERT INTO agents(identity_id,name,role,type,execution_location)
+    SELECT $1,'路线规划助手',$2,'official','local'
+    WHERE NOT EXISTS(SELECT 1 FROM agents WHERE identity_id=$1 AND name='路线规划助手') ON CONFLICT DO NOTHING`, [identityId, routeAssistantRole]);
   for (const bundle of runtimeSkillBundles) {
     await pool.query(`INSERT INTO runtime_skill_catalog(identity_id,code,name,description,tool_codes)
       VALUES($1,$2,$3,$4,$5::text[]) ON CONFLICT(identity_id,code) DO UPDATE SET
@@ -41,6 +45,13 @@ export async function ensureRuntimeRegistry(pool: Pool | PoolClient, identityId:
   const pptAgents = await pool.query(`SELECT id FROM agents WHERE identity_id=$1 AND name='PPT助手' AND type='official' AND NOT capabilities_initialized`, [identityId]);
   for (const agent of pptAgents.rows) {
     for (const code of ['ppt_assistant', 'local_files', 'artifact_management', 'memory_context', 'knowledge_research', 'web_research']) {
+      await pool.query('INSERT INTO agent_skill_mounts(agent_id,skill_code) VALUES($1,$2) ON CONFLICT DO NOTHING', [agent.id, code]);
+    }
+    await pool.query('UPDATE agents SET capabilities_initialized=true WHERE id=$1', [agent.id]);
+  }
+  const routeAgents = await pool.query(`SELECT id FROM agents WHERE identity_id=$1 AND name='路线规划助手' AND type='official' AND NOT capabilities_initialized`, [identityId]);
+  for (const agent of routeAgents.rows) {
+    for (const code of ['route_planning', 'local_files', 'artifact_management', 'memory_context', 'knowledge_research', 'web_research']) {
       await pool.query('INSERT INTO agent_skill_mounts(agent_id,skill_code) VALUES($1,$2) ON CONFLICT DO NOTHING', [agent.id, code]);
     }
     await pool.query('UPDATE agents SET capabilities_initialized=true WHERE id=$1', [agent.id]);

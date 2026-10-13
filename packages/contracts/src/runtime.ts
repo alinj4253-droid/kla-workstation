@@ -39,6 +39,9 @@ export const runtimeSkillCatalog = [
   { code: 'local_ppt_build', name: 'PPT 生成与质检', description: '将语义页面 JSON 编译成可编辑 PPTX，强制校验和质检，默认真实渲染 PDF 和缩略图并回传成果。仅在用户确认大纲后调用', location: 'local' },
   { code: 'local_ppt_inspect', name: 'PPT 内容读取', description: '读取本地 PPTX 的页数、文本、表格和备注，用于材料分析和改稿', location: 'local' },
   { code: 'local_ppt_render', name: 'PPT 真实渲染', description: '将本地 PPTX 经过结构质检后真实渲染成 PDF 和缩略图，不覆盖原文件', location: 'local' },
+  { code: 'local_route_matrix', name: '路线距离矩阵', description: '调用高德 Web 服务批量计算点位间行车距离/时间矩阵（缺失段按 Haversine 估算），或逐段拉取过路费矩阵', location: 'local' },
+  { code: 'local_route_optimize', name: '路线顺序优化', description: '固定起终点 TSP 优化：多初始解+2-opt+Or-opt+节点交换+ILS，支持里程/时间/成本三种策略；矩阵缺省时自动调用高德获取；优化不劣于原始顺序', location: 'local' },
+  { code: 'local_route_replan', name: '线路拆分重排', description: '把一组点位重新拆分为多条线路：均衡分配或 K-means 聚类+边界交换，再逐线最近邻+2-opt 排序并汇总里程', location: 'local' },
 ] as const;
 export type RuntimeSkillCode = typeof runtimeSkillCatalog[number]['code'];
 export const runtimeSkillBundles = [
@@ -49,6 +52,7 @@ export const runtimeSkillBundles = [
   { code: 'local_files', name: '本地文件处理', description: '查看、读取、下载共享文件、写入文件并发布群聊成果', tools: ['local_list', 'local_read', 'local_write', 'local_file_fetch', 'local_file_publish'] },
   { code: 'local_development', name: '本地代码开发', description: '编写代码并执行本地命令', tools: ['local_code', 'local_cli', 'local_bat'] },
   { code: 'ppt_assistant', name: 'PPT 制作与改稿', description: 'deck-agent-kit 1.0：环境检查 → 材料读取 → 大纲确认 → 语义编译 → 质量门禁 → 真实渲染 → 成果交付；本地执行', tools: ['local_ppt_doctor', 'local_ppt_build', 'local_ppt_inspect', 'local_ppt_render'] },
+  { code: 'route_planning', name: '路线规划', description: 'route-agent-kit 1.0：高德距离/时间/过路费矩阵 → 固定起终点 TSP 优化（里程/时间/成本三策略）→ 多线路拆分重排；本地执行', tools: ['local_route_matrix', 'local_route_optimize', 'local_route_replan'] },
 ] as const satisfies ReadonlyArray<{ code: string; name: string; description: string; tools: readonly RuntimeSkillCode[] }>;
 export type RuntimeSkillBundleCode = typeof runtimeSkillBundles[number]['code'];
 export const toolArguments = {
@@ -73,6 +77,26 @@ export const toolArguments = {
   local_ppt_build: z.object({ specJson: z.string().min(2).max(1_000_000), fileName: z.string().min(1).max(200).regex(/^[^\\/:*?"<>|\x00-\x1f]+\.pptx$/i).default('演示文稿.pptx'), render: z.boolean().default(true) }),
   local_ppt_inspect: z.object({ path: z.string().min(1).optional(), documentId: z.string().min(1).max(500).optional() }).refine(a => Boolean(a.path) !== Boolean(a.documentId), '选择 path 或 documentId 之一'),
   local_ppt_render: z.object({ path: z.string().min(1).optional(), documentId: z.string().min(1).max(500).optional() }).refine(a => Boolean(a.path) !== Boolean(a.documentId), '选择 path 或 documentId 之一'),
+  local_route_matrix: z.object({
+    points: z.array(z.object({ name: z.string().max(100).optional(), lat: z.number().min(-90).max(90), lon: z.number().min(-180).max(180) })).min(2).max(200),
+    coordSystem: z.enum(['gcj02', 'wgs84']).default('gcj02'),
+    kind: z.enum(['distance', 'toll']).default('distance'),
+  }),
+  local_route_optimize: z.object({
+    routeName: z.string().min(1).max(200).default('未命名线路'),
+    points: z.array(z.object({ name: z.string().max(100).optional(), lat: z.number().min(-90).max(90), lon: z.number().min(-180).max(180) })).min(2).max(200),
+    coordSystem: z.enum(['gcj02', 'wgs84']).default('gcj02'),
+    strategy: z.enum(['mileage', 'time', 'cost']).default('mileage'),
+    distanceMatrix: z.array(z.array(z.number())).optional(),
+    timeMatrix: z.array(z.array(z.number())).optional(),
+    tollMatrix: z.array(z.array(z.number())).optional(),
+  }),
+  local_route_replan: z.object({
+    points: z.array(z.object({ name: z.string().max(100).optional(), lat: z.number().min(-90).max(90), lon: z.number().min(-180).max(180) })).min(2).max(300),
+    numRoutes: z.number().int().min(2).max(10),
+    algorithm: z.enum(['balanced', 'kmeans']).default('balanced'),
+    coordSystem: z.enum(['gcj02', 'wgs84']).default('gcj02'),
+  }),
 };
 export const localToolCodes = runtimeSkillCatalog.filter(tool => tool.location === 'local').map(tool => tool.code);
 export const deviceRegistrationSchema = z.object({ installationId: z.string().uuid(), name: z.string().min(1).max(100), platform: z.string().max(50), capabilities: z.array(z.string().refine(code => localToolCodes.includes(code as typeof localToolCodes[number]))).max(localToolCodes.length) });
