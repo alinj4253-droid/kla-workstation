@@ -662,6 +662,35 @@ async function fetchTollMatrix(points) {
 // ==================== 优化前后地图对比 HTML（成果文件） ====================
 // 仿参考项目 route-optimizer 前端：单窗/双窗对比切换 + 双窗联动；复用本地 route-agent 算法的输入输出。
 const AMAP_FILENAME_SAFE = (s) => s.replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').slice(0, 80);
+const escapeHtmlText = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+// 零依赖兜底：把路线画成内嵌 SVG（无底图），高德 JS 加载失败时显示，保证发给任何人都能看
+function routeSvg(route, color) {
+  const lats = route.map(s => s.p.lat), lons = route.map(s => s.p.lon);
+  const minLat = Math.min(...lats), maxLat = Math.max(...lats);
+  const minLon = Math.min(...lons), maxLon = Math.max(...lons);
+  const pad = 0.14, W = 800, H = 600;
+  const spanLat = (maxLat - minLat) || 1e-6, spanLon = (maxLon - minLon) || 1e-6;
+  const px = lon => ((lon - minLon) / spanLon * (1 - 2 * pad) + pad) * W;
+  const py = lat => (1 - ((lat - minLat) / spanLat * (1 - 2 * pad) + pad)) * H;
+  const pts = route.map(s => `${px(s.p.lon).toFixed(1)},${py(s.p.lat).toFixed(1)}`).join(' ');
+  const dots = route.map((s, i) => {
+    const cx = px(s.p.lon).toFixed(1), cy = py(s.p.lat).toFixed(1);
+    const isStart = i === 0, isEnd = i === route.length - 1;
+    const fill = isStart ? '#059669' : isEnd ? '#111827' : '#fff';
+    const fg = isStart || isEnd ? '#fff' : color;
+    return `<g><circle cx="${cx}" cy="${cy}" r="13" fill="${fill}" stroke="${color}" stroke-width="3"/>` +
+      `<text x="${cx}" y="${+cy + 4}" text-anchor="middle" font-size="12" font-weight="700" fill="${fg}">${i + 1}</text>` +
+      `<text x="${cx}" y="${+cy - 20}" text-anchor="middle" font-size="13" fill="#111" stroke="#fff" stroke-width="3" paint-order="stroke">${escapeHtmlText(s.p.name)}</text></g>`;
+  }).join('');
+  // 比例尺（按纬度方向近似）
+  const kmPerPx = spanLat * 111 / (H * (1 - 2 * pad));
+  const barKm = 1, barPx = Math.max(30, Math.min(200, barKm / kmPerPx));
+  return `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%;background:#f2f4f7">` +
+    `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="4" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="1 0" opacity="0.9"/>` +
+    dots +
+    `<g><rect x="${W - 30 - barPx}" y="${H - 34}" width="${barPx}" height="4" fill="#374151"/>` +
+    `<text x="${W - 30 - barPx / 2}" y="${H - 40}" text-anchor="middle" font-size="12" fill="#374151">≈${barKm} km</text></g></svg>`;
+}
 function buildRouteMapHtml({ routeName, points, originalOrder, optimizedOrder, strategy, distanceKm, savedPercent }) {
   const payload = {
     routeName, strategy: strategy || 'mileage',
@@ -675,6 +704,9 @@ function buildRouteMapHtml({ routeName, points, originalOrder, optimizedOrder, s
       (payload.savedPercent != null ? `<span class="stat">节省 <b>${payload.savedPercent}%</b></span>` : '')
     : '';
   const body = JSON.stringify(payload);
+  const seqOf = o => o.map((idx, pos) => ({ pos: pos + 1, p: points[idx] }));
+  const svgA = routeSvg(seqOf(originalOrder), '#1677ff');
+  const svgB = routeSvg(seqOf(optimizedOrder), '#e60012');
   return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -696,7 +728,8 @@ function buildRouteMapHtml({ routeName, points, originalOrder, optimizedOrder, s
   .pane.hide{display:none}
   .pane h2{font-size:13px;margin:0;padding:6px 12px;background:#fff;border-bottom:1px solid #e5e7eb;color:#111;font-weight:600;flex:0 0 auto}
   .pane h2 i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
-  .map{flex:1;min-height:0}
+  .map{flex:1;min-height:0;position:relative}
+  .fallback{position:absolute;inset:0;display:none;overflow:hidden}
   footer{flex:0 0 auto;padding:4px 14px;font-size:12px;color:#6b7280;background:#fff;border-top:1px solid #e5e7eb}
 </style>
 </head>
@@ -708,8 +741,8 @@ function buildRouteMapHtml({ routeName, points, originalOrder, optimizedOrder, s
   ${stats}
 </header>
 <main>
-  <section class="pane" id="paneA"><h2><i style="background:#1677ff"></i>A · 原始线路</h2><div class="map" id="mapA"></div></section>
-  <section class="pane" id="paneB"><h2><i style="background:#e60012"></i>B · 优化后</h2><div class="map" id="mapB"></div></section>
+  <section class="pane" id="paneA"><h2><i style="background:#1677ff"></i>A · 原始线路</h2><div class="map" id="mapA"><div class="fallback" id="fbA">${svgA}</div></div></section>
+  <section class="pane" id="paneB"><h2><i style="background:#e60012"></i>B · 优化后</h2><div class="map" id="mapB"><div class="fallback" id="fbB">${svgB}</div></div></section>
 </main>
 <footer id="foot"></footer>
 <script>window._AMapSecurityConfig={securityJsCode:'${AMAP_JS_SECURITY_CODE}'};</script>
@@ -796,8 +829,11 @@ function broadcast(from) {
     }
   } finally { setTimeout(() => { syncing.v = false; }, 60); }
 }
-buildPane('A', 'mapA');
-buildPane('B', 'mapB');
+try {
+  if (!window.AMap) throw new Error('AMap 脚本未加载');
+  buildPane('A', 'mapA');
+  buildPane('B', 'mapB');
+} catch (e) { showFallback(); }
 
 document.getElementById('viewSeg').addEventListener('click', e => {
   const v = e.target && e.target.dataset && e.target.dataset.v;
@@ -815,6 +851,12 @@ function haversineKm(p1, p2) {
   const a = Math.sin(dLat / 2) ** 2 + Math.cos(p1.lat * Math.PI / 180) * Math.cos(p2.lat * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
+function showFallback() {
+  ['A', 'B'].forEach(k => { const el = document.getElementById('fb' + k); if (el) el.style.display = 'block'; });
+  document.getElementById('foot').innerHTML += ' · ⚠ 高德地图未能加载，当前为简化示意图（无底图，仅展示路线结构）';
+}
+// 高德 JS 加载失败（无外网/域名白名单/key 受限）时降级为内嵌 SVG 示意图
+if (!window.AMap) { showFallback(); }
 const straight = key => data[key].slice(0, -1).reduce((s, seg, i) => s + haversineKm(seg.p, data[key][i + 1].p), 0);
 function updateFoot() {
   const fmt = key => realDist[key] != null
