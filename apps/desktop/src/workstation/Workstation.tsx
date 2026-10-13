@@ -12,8 +12,9 @@ import { KnowledgeSection } from './KnowledgeSection';
 import { MemorySection } from './MemorySection';
 import { Badge, Chart, formatPoints, IconButton, Panel, Stat } from './ui';
 import { computeApi } from '../api/compute';
-import { ArtifactPane, MarkdownMessage, ProjectWorkspace, RunActivity, type RoomArtifact, type RunEvent, type RunStep } from './CollaborationViews';
+import { ArtifactPane, ProjectWorkspace, type RoomRun, type RoomArtifact, type RunEvent, type RunStep } from './CollaborationViews';
 import './collaboration.css';
+import { ConversationMessages, type ConversationMessage } from './ConversationMessages';
 import { CreateGroupDialog } from './CreateGroupDialog';
 import { runtimeApi } from '../api/runtime';
 import { QuickSearch } from './QuickSearch';
@@ -27,10 +28,10 @@ type LoginIdentity = IdentityDto & { role?: 'personal' | 'admin' | 'member' };
 type Modal = 'project' | 'chat' | 'knowledge' | 'knowledge-create' | 'register' | 'identity' | 'create-enterprise' | 'join-enterprise' | null;
 type Project = { id: string; name: string; description: string; progress: number; members: number; color: string; open?: boolean; groupIds?: string[] };
 type FileReference = { id: string; name: string; contentType?: string; sizeBytes: number };
-type Chat = { id: string; name: string; project: string; projectId?: string; messages: { id?: string; author: string; text: string; time: string; senderType?: string; artifactIds?: string[]; files?: FileReference[] }[] };
-type ChatMessage = { id: string; senderType: string; senderName?: string; text: string; createdAt: string; metadata?: { artifactId?: string; artifactIds?: string[]; files?: FileReference[] } };
-type ChatRun = { id: string; status: string; phase?: string; result?: { waitingReason?: string } };
-const mapChatMessages = (messages: ChatMessage[]): Chat['messages'] => messages.map(m => ({ id: m.id, author: m.senderType === 'agent' ? (m.senderName ?? '智能体') : '我', text: m.text, time: new Date(m.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }), senderType: m.senderType, files: m.metadata?.files, artifactIds: [...new Set([...(m.metadata?.artifactIds ?? []), ...(m.metadata?.artifactId ? [m.metadata.artifactId] : [])])] }));
+type Chat = { id: string; name: string; project: string; projectId?: string; messages: ConversationMessage[] };
+type ChatMessage = { id: string; senderType: string; senderName?: string; text: string; createdAt: string; metadata?: { runId?: string; artifactId?: string; artifactIds?: string[]; files?: FileReference[] } };
+type ChatRun = RoomRun;
+const mapChatMessages = (messages: ChatMessage[]): Chat['messages'] => messages.map(m => ({ id: m.id, author: m.senderType === 'agent' ? (m.senderName ?? '智能体') : '我', text: m.text, time: new Date(m.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }), senderType: m.senderType, runId: m.metadata?.runId, files: m.metadata?.files, artifactIds: [...new Set([...(m.metadata?.artifactIds ?? []), ...(m.metadata?.artifactId ? [m.metadata.artifactId] : [])])] }));
 type Document = { name: string; group: string; size: string; status: string; date: string };
 type KnowledgeScope = 'enterprise' | 'project' | 'personal';
 type KnowledgeTab = 'sources' | 'chunks';
@@ -176,6 +177,7 @@ export function Workstation(): React.JSX.Element {
   useEffect(() => { setAttachmentsUploading(false); }, [activeChat]);
   const [pendingRuns, setPendingRuns] = useState<Record<string, string>>({});
   const [activeRun, setActiveRun] = useState<ChatRun | null>(null);
+  const [roomRuns, setRoomRuns] = useState<ChatRun[]>([]);
   const [runSteps, setRunSteps] = useState<RunStep[]>([]);
   const [runEvents, setRunEvents] = useState<RunEvent[]>([]);
   const [chatArtifacts, setChatArtifacts] = useState<RoomArtifact[]>([]);
@@ -377,7 +379,7 @@ export function Workstation(): React.JSX.Element {
     let cancelled = false;
     const headers = activeIdentityId ? { 'x-identity-id': activeIdentityId } : undefined;
     setWorkspaceLoading(true);
-    setProjects([]); setChats([]); setActiveProject(''); setActiveChat(''); setPendingRuns({}); setPreviewArtifact(null); setChatArtifacts([]); setArtifactPaneOpen(false); setRunSteps([]); setRunEvents([]);
+    setProjects([]); setChats([]); setActiveProject(''); setActiveChat(''); setPendingRuns({}); setPreviewArtifact(null); setChatArtifacts([]); setArtifactPaneOpen(false); setRunSteps([]); setRunEvents([]); setRoomRuns([]);
     setHomeTasks(null); setSearchAgents(null); setAgentSearchRequest(null); setTaskFocusRequest(null);
     void (async () => {
       const result = await klaApi.request<{ projects: Array<{ id: string; name: string }>; conversations: Array<{ id: string; name: string; projectId: string; projectName?: string }>; tasks?: HomeTaskSummary[]; agents?: Array<{ id: string; name: string; role: string }> }>('/v1/bootstrap', { headers });
@@ -402,7 +404,7 @@ export function Workstation(): React.JSX.Element {
     if (!signedIn || !activeChat) { setChatLoading(false); return; }
     let cancelled = false;
     setChatLoading(true);
-    setRunSteps([]); setRunEvents([]); setChatArtifacts([]); setPreviewArtifact(null); setArtifactPaneOpen(false); setActiveRun(null);
+    setRunSteps([]); setRunEvents([]); setRoomRuns([]); setChatArtifacts([]); setPreviewArtifact(null); setArtifactPaneOpen(false); setActiveRun(null);
     void (async () => {
       const result = await klaApi.request<ChatMessage[]>(`/v1/conversations/${activeChat}/messages`);
       if (cancelled) return;
@@ -413,6 +415,7 @@ export function Workstation(): React.JSX.Element {
       const running = runs.data.find(run => ['queued', 'running', 'waiting_device', 'waiting_tool', 'waiting_approval'].includes(run.status));
       const latest = running ?? runs.data[0] ?? null;
       setActiveRun(latest);
+      setRoomRuns(runs.data);
       setPendingRuns(items => {
         if (running) return { ...items, [activeChat]: running.id };
         if (!items[activeChat]) return items;
@@ -426,7 +429,7 @@ export function Workstation(): React.JSX.Element {
       if (cancelled) return;
       if (artifacts.ok) setChatArtifacts(artifacts.data);
       if (steps?.ok) setRunSteps(steps.data);
-      if (events?.ok) setRunEvents(events.data.filter(event => event.run_id === latest?.id));
+      if (events?.ok) setRunEvents(events.data);
     })().catch(() => { if (!cancelled) notify('消息加载失败，请检查后端连接'); }).finally(() => { if (!cancelled) setChatLoading(false); });
     return () => { cancelled = true; };
   }, [signedIn, activeChat, activeIdentityId]);
@@ -463,9 +466,10 @@ export function Workstation(): React.JSX.Element {
         if (!result.ok) { notify(apiError(result)); clearPending(); return; }
         setChats(items => items.map(chat => chat.id === activeChat ? { ...chat, messages: mapChatMessages(result.data) } : chat));
         if (steps.ok) setRunSteps(steps.data);
-        if (events.ok) setRunEvents(events.data.filter(event => event.run_id === pendingRunId));
+        if (events.ok) setRunEvents(events.data);
         const run = runs.data.find(item => item.id === pendingRunId);
         setActiveRun(run ?? null);
+        setRoomRuns(runs.data);
         if (run && ['completed', 'failed', 'cancelled'].includes(run.status)) {
           const artifacts = await klaApi.request<RoomArtifact[]>(`/v1/conversations/${activeChat}/artifacts`);
           if (!cancelled && artifacts.ok) setChatArtifacts(artifacts.data);
@@ -551,10 +555,11 @@ export function Workstation(): React.JSX.Element {
       setPendingAttachments(items => ({ ...items, [conversationId]: (items[conversationId] ?? []).filter(file => !files.some(sent => sent.id === file.id)) }));
       if (submitted.data.run) {
         setPendingRuns(items => ({ ...items, [conversationId]: submitted.data.run!.id }));
-        setActiveRun(submitted.data.run); setRunSteps([]); setRunEvents([]);
+        setActiveRun(submitted.data.run); setRunSteps([]);
+        setRoomRuns(items => [submitted.data.run!, ...items.filter(item => item.id !== submitted.data.run!.id)]);
       } else {
         setPendingRuns(items => { const next = { ...items }; delete next[conversationId]; return next; });
-        setActiveRun(null); setRunSteps([]); setRunEvents([]);
+        setActiveRun(null); setRunSteps([]);
       }
     } catch {
       if (klaApi.getIdentity() === identityId) { notify('消息发送失败，请检查后端连接后重试'); setPendingRuns(items => { const next = { ...items }; delete next[conversationId]; return next; }); }
@@ -698,8 +703,7 @@ export function Workstation(): React.JSX.Element {
   <div className="ws-chat">
     <header><div><span className="ws-avatar">{currentChat.name.slice(0, 2)}</span><span><strong>{currentChat.name}</strong><small>{currentChat.project} · 智能体群聊 · 消息全量存档</small></span></div><div><IconButton title="管理群聊智能体" onClick={() => setRoomMembersOpen(true)}><Users size={17} /></IconButton><IconButton title="群组成果" onClick={() => { setArtifactPaneOpen(true); setArtifactPaneCollapsed(false); if (!previewArtifact && chatArtifacts[0]) setPreviewArtifact(chatArtifacts[0]); }}><Folder size={17} /></IconButton></div></header>
     <div className="ws-chat-messages"><p className="ws-chat-date">{chatLoading ? '正在加载消息…' : '消息记录'}</p>
-      {currentChat.messages.map((m, i) => <div className={`ws-message ${m.author === '我' ? 'self' : ''}`} key={m.id ?? `${m.time}-${i}`}><span className="ws-avatar">{m.author.slice(0, 2)}</span><div><small>{m.author} · {m.time}</small><div className="ws-message-bubble"><MarkdownMessage text={m.text} />{m.files?.map(file => <button key={file.id} className="ws-text-button" onClick={() => { setArtifactPaneOpen(true); setArtifactPaneCollapsed(false); setPreviewArtifact({ id: file.id, name: file.name, mimeType: file.contentType ?? 'application/octet-stream', content: '', sizeBytes: file.sizeBytes, createdAt: '', sourceKind: 'file', storageKey: file.id }); }}><Paperclip size={14} /> {file.name}</button>)}{m.artifactIds?.map((id, index) => <button key={id} className="ws-text-button" onClick={() => void openArtifact(id)}><FileText size={14} /> {index === 0 ? '打开成果文件' : `打开成果文件 ${index + 1}`}</button>)}</div></div></div>)}
-      <RunActivity run={activeRun} steps={runSteps} events={runEvents} submitting={pendingRunId === 'submitting'} onCancel={() => void cancelActiveRun()} />
+      <ConversationMessages key={`${activeIdentityId}:${activeChat}`} messages={currentChat.messages} run={activeRun} runs={roomRuns} steps={runSteps} events={runEvents} submitting={pendingRunId === 'submitting'} onCancel={() => void cancelActiveRun()} onOpenFile={file => { setArtifactPaneOpen(true); setArtifactPaneCollapsed(false); setPreviewArtifact({ id: file.id, name: file.name, mimeType: file.contentType ?? 'application/octet-stream', content: '', sizeBytes: file.sizeBytes, createdAt: '', sourceKind: 'file', storageKey: file.id }); }} onOpenArtifact={id => void openArtifact(id)} />
     </div>
     <div className="ws-chat-compose"><ConversationAttachments key={`${activeIdentityId}:${activeChat}`} conversationId={activeChat} identityId={activeIdentityId} files={pendingAttachments[activeChat] ?? []} onChange={files => setPendingAttachments(items => ({ ...items, [activeChat]: files }))} onBusy={setAttachmentsUploading} onError={notify} /><textarea placeholder="发送消息给智能体小组…（输入 @ 召唤特定智能体，Enter 发送、Shift + Enter 换行）" aria-label="发送消息给智能体小组" value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!chatSending) void send(); } }} /><div><span><Bot size={16} /> 智能体 <select aria-label="响应模式" value={chatMode} onChange={e => setChatMode(e.target.value as typeof chatMode)}><option value="fast">快速响应</option><option value="balanced">均衡协同</option><option value="expert">专家深度推理</option></select></span><button aria-label={chatSending ? '终止生成' : '发送给群组'} className={`ws-primary ${chatSending ? 'is-stop' : ''}`} disabled={attachmentsUploading || chatLoading || !currentChat.id || pendingRunId === 'submitting'} onClick={() => chatSending ? void cancelActiveRun() : void send()}><Send size={15} />{chatSending ? '终止生成' : '发送协同指令'}</button></div></div>
   </div>
