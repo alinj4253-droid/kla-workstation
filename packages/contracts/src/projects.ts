@@ -47,6 +47,8 @@ export type MessageDto = z.infer<typeof messageDtoSchema>;
 export const createMessageRequestSchema = z.object({
   text: z.string().max(100000).default(''),
   mode: z.string().max(50).optional(),
+  /** 本次运行的本地执行授权策略；不会提升操作系统权限。 */
+  executionAccess: z.enum(['approval', 'full']).default('approval'),
   fileIds: z.array(z.string().uuid()).max(20).default([]).transform(ids => [...new Set(ids)]),
   replyToId: z.string().min(1).optional(),
 }).refine(input => Boolean(input.text.trim()) || input.fileIds.length > 0, '消息不能为空');

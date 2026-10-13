@@ -59,8 +59,8 @@ export class AgentLoopWorker {
   }
   start(intervalMs=750):void {if(this.timer)return;this.timer=setInterval(()=>this.kick(),intervalMs);this.timer.unref();this.kick();}
   kick():void {if(this.pending)return;this.pending=this.tick().catch(this.onError).finally(()=>{this.pending=null;});}
-  async reserveRun(conversationId:string,triggerMessageId:string,mode:string):Promise<ConversationRun>{
-    const run=await this.accounts.createRun(conversationId,triggerMessageId,mode,this.owner);
+  async reserveRun(conversationId:string,triggerMessageId:string,mode:string,executionAccess:'approval'|'full'='approval'):Promise<ConversationRun>{
+    const run=await this.accounts.createRun(conversationId,triggerMessageId,mode,this.owner,executionAccess);
     this.kick();return run;
   }
   async resumeRun(conversationId:string,runId:string):Promise<ConversationRun|null>{

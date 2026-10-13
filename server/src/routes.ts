@@ -450,8 +450,8 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
       if (owner.rows[0]?.owner_identity_id !== identity.id) return reply.send({ ok: true, data: { message: userMessage, run: null } });
     }
     const run = deps.loopWorker?.reserveRun
-      ? await deps.loopWorker.reserveRun(params.conversationId, userMessage.id, body.mode ?? 'balanced')
-      : await deps.accounts.createRun(params.conversationId, userMessage.id, body.mode ?? 'balanced');
+      ? await deps.loopWorker.reserveRun(params.conversationId, userMessage.id, body.mode ?? 'balanced', body.executionAccess)
+      : await deps.accounts.createRun(params.conversationId, userMessage.id, body.mode ?? 'balanced', undefined, body.executionAccess);
     if (!deps.loopWorker) { await deps.accounts.completeRun(run.id, 'failed', '统筹智能体', {error:'执行器未启动'}); }
     else deps.loopWorker.kick();
     return reply.send({ ok: true, data: { message: userMessage, run } });
@@ -573,8 +573,8 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
       }
     }
     const retried = deps.loopWorker?.reserveRun
-      ? await deps.loopWorker.reserveRun(conversationId, source.triggerMessageId, source.mode)
-      : await deps.accounts.createRun(conversationId, source.triggerMessageId, source.mode); deps.loopWorker?.kick(); return reply.send({ ok: true, data: retried });
+      ? await deps.loopWorker.reserveRun(conversationId, source.triggerMessageId, source.mode, source.executionAccess)
+      : await deps.accounts.createRun(conversationId, source.triggerMessageId, source.mode, undefined, source.executionAccess); deps.loopWorker?.kick(); return reply.send({ ok: true, data: retried });
   });
   app.post('/api/v1/memories/search', async (request, reply) => {
     const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return;

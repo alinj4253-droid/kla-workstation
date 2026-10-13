@@ -196,9 +196,9 @@ export class MemoryAccountRepository implements AccountRepository {
     return this.runs.filter((run) => run.conversationId === conversationId).sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()).slice(0, 20);
   }
 
-  async createRun(conversationId: string, triggerMessageId: string, mode: string): Promise<ConversationRun> {
+  async createRun(conversationId: string, triggerMessageId: string, mode: string, _leaseOwner?: string, executionAccess: 'approval' | 'full' = 'approval'): Promise<ConversationRun> {
     const now = new Date().toISOString();
-    const run: StoredRun = { id: this.nextId('run'), conversationId, triggerMessageId, status: 'running', mode, currentAgent: '统筹智能体', result: {}, createdAt: now, updatedAt: now };
+    const run: StoredRun = { id: this.nextId('run'), conversationId, triggerMessageId, status: 'running', mode, executionAccess, currentAgent: '统筹智能体', result: {}, createdAt: now, updatedAt: now };
     this.runs.push(run);
     return run;
   }
