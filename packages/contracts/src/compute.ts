@@ -266,6 +266,21 @@ export const computeUsageBucketSchema = z.object({
 });
 export type ComputeUsageBucket = z.infer<typeof computeUsageBucketSchema>;
 
+/** 速率曲线单桶：requestCount / totalTokens 为桶内累计，前端按 intervalMinutes 折算 RPM / TPM */
+export const computeUsageRateBucketSchema = z.object({
+  bucketStart: z.string(),
+  requestCount: z.number().int().min(0),
+  totalTokens: z.number().int().min(0),
+});
+export type ComputeUsageRateBucket = z.infer<typeof computeUsageRateBucketSchema>;
+
+/** 速率曲线：服务端按所选时间范围自适应分桶（≤24h→30分钟、≤7天→6小时、其余→1天） */
+export const computeUsageRateSeriesSchema = z.object({
+  intervalMinutes: z.number().int().positive(),
+  buckets: z.array(computeUsageRateBucketSchema),
+});
+export type ComputeUsageRateSeries = z.infer<typeof computeUsageRateSeriesSchema>;
+
 /** §7.4 GET /compute/usage/summary */
 export const computeUsageSummarySchema = z.object({
   from: z.string().datetime().nullable(),
@@ -273,11 +288,19 @@ export const computeUsageSummarySchema = z.object({
   requestCount: z.number().int().min(0),
   inputTokens: z.number().int().min(0),
   outputTokens: z.number().int().min(0),
+  /** 缓存 token（创建 + 读取），来自上游计费明细，未命中为 0 */
+  cacheTokens: z.number().int().min(0),
   totalTokens: z.number().int().min(0),
   costPoints: z.number(),
   successCount: z.number().int().min(0),
   failureCount: z.number().int().min(0),
   avgLatencyMs: z.number().nullable(),
+  /** 最近 5 分钟窗口折算的请求速率（次/分钟），与所选时间范围无关 */
+  recentRpm: z.number().min(0),
+  /** 最近 5 分钟窗口折算的 Token 速率（Token/分钟），与所选时间范围无关 */
+  recentTpm: z.number().min(0),
+  /** 性能指标区速率曲线（RPM/TPM 时间桶序列），分桶粒度随所选时间范围自适应 */
+  rateSeries: computeUsageRateSeriesSchema,
   byModel: z.array(computeUsageBucketSchema),
   byDay: z.array(computeUsageBucketSchema),
 });

@@ -4,12 +4,12 @@
 // - 身份切换后清空并重新加载，禁止复用上一身份缓存（§12）
 // - 版式与文案对齐《鲲擎2.0 交互演示版》，计价单位为算力点（§4.2）
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, Check, Clock3, Copy, CreditCard, Database, Download, FileText, Gauge, KeyRound, Layers, Pencil, Plus, RefreshCw, Search, Send, Trash2, Undo2, Users, Wallet, X } from 'lucide-react';
-import type { ComputeKey, ComputeLedgerEntry, ComputeModel, ComputeOrgMember, ComputeOrgOverview, ComputeSummary, ComputeUsageBucket, ComputeUsageRecord, ComputeUsageSummary } from '@kla-workstation/contracts';
+import type { ComputeKey, ComputeLedgerEntry, ComputeModel, ComputeOrgMember, ComputeOrgOverview, ComputeSummary, ComputeUsageBucket, ComputeUsageRateSeries, ComputeUsageRecord, ComputeUsageSummary } from '@kla-workstation/contracts';
 import { computeApi } from '../api/compute';
 import { klaApi } from '../api/client';
-import { apiErrorMessage, Badge, formatTime, formatTokens, formatPoints, Panel } from './ui';
+import { apiErrorMessage, Badge, formatTime, formatTokens, formatPoints, formatPointsPrecise, Panel } from './ui';
 import './compute-keys.css';
 
 export type ComputeView = 'dashboard' | 'keys' | 'usage' | 'market' | 'members';
@@ -39,6 +39,10 @@ const RANGE_OPTIONS = [
   { id: '30d', label: '近30天', hours: 24 * 30 },
 ] as const;
 type RangeId = (typeof RANGE_OPTIONS)[number]['id'];
+
+/** 速率曲线：分桶粒度随时间范围自适应（与服务端 summary 口径一致），及空态文案前缀 */
+const RATE_GRANULARITY_LABEL: Record<RangeId, string> = { '24h': '30 分钟', '7d': '6 小时', '30d': '天' };
+const RATE_EMPTY_LABEL: Record<RangeId, string> = { '24h': '近 24 小时', '7d': '近 7 天', '30d': '近 30 天' };
 
 const CATEGORY_OPTIONS = [
   { id: 'all', label: '全部模型' },
@@ -78,6 +82,91 @@ function RatioBar({ value, total }: { value: number; total: number }) {
   return <div className="ws-bar"><i style={{ width: `${percent}%` }} /></div>;
 }
 
+const RPM_LINE_COLOR = '#2563eb';
+const TPM_LINE_COLOR = '#16a34a';
+
+/** 数值轴上限取 1/2/5×10^k 的「好看」刻度；无数据时给 10（对齐演示稿 0/5/10 RPM 刻度）。 */
+function niceAxisMax(value: number): number {
+  if (value <= 0) return 10;
+  const base = Math.pow(10, Math.floor(Math.log10(value)));
+  for (const m of [1, 2, 5, 10]) { if (m * base >= value) return m * base; }
+  return 10 * base;
+}
+
+/** 性能指标区速率曲线：RPM/TPM 各按自身峰值缩放；区间内没有调用时两条曲线平铺在 0 上（对齐演示稿）。 */
+function RateCurve({ series, emptyLabel, granularityLabel }: { series: ComputeUsageRateSeries | null; emptyLabel: string; granularityLabel: string }) {
+  const intervalMinutes = series?.intervalMinutes ?? 30;
+  const points = (series?.buckets ?? []).map((bucket) => ({
+    time: Date.parse(bucket.bucketStart),
+    rpm: bucket.requestCount / intervalMinutes,
+    tpm: bucket.totalTokens / intervalMinutes,
+    requestCount: bucket.requestCount,
+    totalTokens: bucket.totalTokens,
+  }));
+  const maxRpm = niceAxisMax(Math.max(...points.map((p) => p.rpm), 0));
+  const maxTpm = Math.max(...points.map((p) => p.tpm), 0);
+  const hasTraffic = points.some((p) => p.requestCount > 0);
+
+  const W = 760; const H = 240;
+  const padL = 64; const padR = 20; const padT = 18; const padB = 40;
+  const innerW = W - padL - padR; const innerH = H - padT - padB;
+  const x = (i: number) => (points.length <= 1 ? padL + innerW / 2 : padL + (i / (points.length - 1)) * innerW);
+  const yRpm = (v: number) => padT + innerH * (1 - v / maxRpm);
+  const yTpm = (v: number) => padT + innerH * (1 - (maxTpm > 0 ? v / maxTpm : 0));
+  const pathOf = (pick: (p: (typeof points)[number]) => number) =>
+    points.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(1)},${pick(p).toFixed(1)}`).join(' ');
+  const rpmPath = pathOf((p) => yRpm(p.rpm));
+  const tpmPath = pathOf((p) => yTpm(p.tpm));
+
+  const fmtX = (ms: number) => {
+    const d = new Date(ms);
+    const md = `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`;
+    return intervalMinutes >= 1440 ? md : `${md} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  };
+  const fmtFull = (ms: number) => new Date(ms).toLocaleString('zh-CN', { hour12: false });
+  const fmtAxis = (v: number) => {
+    // 小于 1 的刻度（如 0.005 RPM）保留 3 位小数，避免与相邻刻度四舍五入后重复
+    const text = v >= 10 ? v.toFixed(0) : v >= 1 ? v.toFixed(2) : v.toFixed(3);
+    return text.includes('.') ? text.replace(/0+$/, '').replace(/\.$/, '') || '0' : text;
+  };
+  const tickStep = Math.max(1, Math.ceil(points.length / 8));
+
+  return <div>
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', display: 'block' }} role="img" aria-label="RPM/TPM 速率曲线">
+      {[1, 0.5, 0].map((ratio) => {
+        const y = padT + innerH * (1 - ratio);
+        return <g key={ratio}>
+          <line x1={padL} x2={W - padR} y1={y} y2={y} stroke="#e5e7eb" strokeWidth={1} />
+          <text x={padL - 8} y={y + 4} textAnchor="end" fontSize={11} fill="#6b7280">{fmtAxis(maxRpm * ratio)} RPM</text>
+        </g>;
+      })}
+      {points.map((p, i) => (
+        <text key={p.time} x={x(i)} y={H - 14} textAnchor={i === 0 ? 'start' : i === points.length - 1 ? 'end' : 'middle'}
+          fontSize={11} fill="#6b7280" opacity={i % tickStep === 0 || i === points.length - 1 ? 1 : 0}>
+          {fmtX(p.time)}
+        </text>
+      ))}
+      {/* TPM 在下层、RPM 在上层；空数据时两者重合平铺在 0 基线 */}
+      <path d={tpmPath} fill="none" stroke={TPM_LINE_COLOR} strokeWidth={2} opacity={maxTpm > 0 ? 0.85 : 1} />
+      <path d={rpmPath} fill="none" stroke={RPM_LINE_COLOR} strokeWidth={2} />
+      {points.map((p, i) => <g key={p.time}>
+        <circle cx={x(i)} cy={yRpm(p.rpm)} r={3} fill={RPM_LINE_COLOR}>
+          <title>{`${fmtFull(p.time)} ｜ RPM ${p.rpm.toFixed(3)}（${p.requestCount} 次请求）｜ TPM ${fmtAxis(p.tpm)}`}</title>
+        </circle>
+        <circle cx={x(i)} cy={yTpm(p.tpm)} r={3} fill={TPM_LINE_COLOR} opacity={maxTpm > 0 ? 0.85 : 1}>
+          <title>{`${fmtFull(p.time)} ｜ TPM ${fmtAxis(p.tpm)}（${p.totalTokens} Token）｜ RPM ${p.rpm.toFixed(3)}`}</title>
+        </circle>
+      </g>)}
+      {!hasTraffic && <text x={padL + innerW / 2} y={padT + innerH / 2} textAnchor="middle" fontSize={13} fill="#9ca3af">{emptyLabel}没有新的请求进入网关，速率曲线恒为 0</text>}
+    </svg>
+    <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', marginTop: 8 }}>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#374151' }}><i style={{ width: 10, height: 10, borderRadius: 2, background: RPM_LINE_COLOR, display: 'inline-block' }} /> RPM · 每分钟请求数</span>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#374151' }}><i style={{ width: 10, height: 10, borderRadius: 2, background: TPM_LINE_COLOR, display: 'inline-block' }} /> TPM · 每分钟 Token 数</span>
+    </div>
+    <p className="ws-note" style={{ marginTop: 4 }}>说明：曲线按{granularityLabel}粒度聚合，取值为桶内请求 / Token 折算的每分钟速率；两条曲线各自按峰值缩放，{emptyLabel}内没有调用时平铺在 0 上。</p>
+  </div>;
+}
+
 export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, reloadKey, projects }: Props): React.JSX.Element {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -87,6 +176,7 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
   const [detailModel, setDetailModel] = useState<ComputeModel | null>(null);
   const [detailTab, setDetailTab] = useState<'overview' | 'performance' | 'api'>('overview');
   const [usageSummary, setUsageSummary] = useState<ComputeUsageSummary | null>(null);
+  const [lifetimeUsage, setLifetimeUsage] = useState<ComputeUsageSummary | null>(null);
   const [usageRows, setUsageRows] = useState<ComputeUsageRecord[]>([]);
   const [usageTotal, setUsageTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -129,12 +219,14 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
     setModels([]);
     setUsageRows([]);
     setUsageSummary(null);
+    setLifetimeUsage(null);
     setOrgOverview(null);
-    const [summaryResult, keysResult, modelsResult, usageResult] = await Promise.all([
+    const [summaryResult, keysResult, modelsResult, usageResult, lifetimeResult] = await Promise.all([
       computeApi.summary(),
       computeApi.keys(),
       computeApi.models(),
       computeApi.usageSummary({ scope, from: effectiveFrom, ...(effectiveTo ? { to: effectiveTo } : {}) }),
+      computeApi.usageSummary({ scope }),
     ]);
     if (summaryResult.ok) {
       setSummary(summaryResult.data);
@@ -148,10 +240,30 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
     if (keysResult.ok) setKeys(keysResult.data.items);
     if (modelsResult.ok) setModels(modelsResult.data.items);
     if (usageResult.ok) setUsageSummary(usageResult.data);
+    if (lifetimeResult.ok) setLifetimeUsage(lifetimeResult.data);
     setLoading(false);
   }, [scope, effectiveFrom, effectiveTo, onBalance, onAdminCapability]);
 
   useEffect(() => { void refresh(); }, [refresh, reloadKey]);
+
+  // 预扣恢复提示（§7.3）：存在预扣时每 5s 轮询 summary，网关在调用结束后 release，
+  // 预扣归零时提示用户余额已恢复并停止轮询；身份切换/reloadKey 变化随 summary 重置自然重启。
+  const hasReserve = (summary?.reserved ?? 0) > 0;
+  const callbacksRef = useRef({ onNotify, onBalance });
+  callbacksRef.current = { onNotify, onBalance };
+  useEffect(() => {
+    if (!hasReserve) return;
+    const timer = setInterval(() => {
+      void (async () => {
+        const result = await computeApi.summary();
+        if (!result.ok) return;
+        setSummary(result.data);
+        callbacksRef.current.onBalance(result.data.available);
+        if (result.data.reserved <= 0) callbacksRef.current.onNotify(`预扣已恢复，可用余额 ${formatPoints(result.data.available)}`);
+      })();
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [hasReserve]);
 
   useEffect(() => {
     void (async () => {
@@ -344,6 +456,11 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
     ? `${((usageSummary.successCount / usageSummary.requestCount) * 100).toFixed(1)}%`
     : '—';
   const avgTokensPerRequest = usageSummary && usageSummary.requestCount > 0 ? usageSummary.totalTokens / usageSummary.requestCount : null;
+  /** 累计口径（自开通以来）：供「累计 Token」卡使用，不随时间范围选择变化。 */
+  const lifetimeAvgTokens = lifetimeUsage && lifetimeUsage.requestCount > 0 ? lifetimeUsage.totalTokens / lifetimeUsage.requestCount : null;
+  const lifetimeSuccessRate = lifetimeUsage && lifetimeUsage.requestCount > 0
+    ? `${((lifetimeUsage.successCount / lifetimeUsage.requestCount) * 100).toFixed(1)}%`
+    : '—';
   const topModelTokens = usageSummary?.byModel[0]?.totalTokens ?? 0;
   /** 企业池口径：总额 = 管理员持有（未分发）+ 成员持有（已分发）；分发/回收不改变总额。 */
   const orgPool = orgOverview?.pool ?? null;
@@ -393,31 +510,50 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
         <Metric accent icon={<Wallet />} label="余额" value={formatPoints(summary.balance)} desc={`可用 ${formatPoints(summary.available)} ｜ 预扣 ${formatPoints(summary.reserved)}`} />
         <Metric icon={<KeyRound />} label="API 密钥" value={`${keys.length}`} desc={`● ${activeKeyCount} 启用 ｜ ${disabledKeyCount} 已停用`} />
         <Metric icon={<Send />} label={`${periodLabel}请求`} value={`${usageSummary?.requestCount ?? 0}`} desc={`成功 ${usageSummary?.successCount ?? 0} ｜ 失败 ${usageSummary?.failureCount ?? 0}`} />
-        <Metric icon={<CreditCard />} label={`${periodLabel}消费`} value={formatPoints(usageSummary?.costPoints)} desc={costShare == null ? '暂无额度基线' : `约占总额度 ${costShare.toFixed(2)}%`} />
+        <Metric icon={<CreditCard />} label={`${periodLabel}消费`} value={formatPointsPrecise(usageSummary?.costPoints)} desc={costShare == null ? '暂无额度基线' : `约占总额度 ${costShare.toFixed(2)}%`} />
       </div>
 
       <div className="ws-stats two">
         <Metric icon={<Database />} label={`${periodLabel} Token`} value={formatTokens(usageSummary?.totalTokens)}
-          desc={`输入 ${formatTokens(usageSummary?.inputTokens)} / 输出 ${formatTokens(usageSummary?.outputTokens)} / 缓存 —— ｜ 缓存口径由上游返回，网关暂未采集`} />
-        <Metric icon={<Activity />} label="响应表现" value={usageSummary?.avgLatencyMs != null ? `${Math.round(usageSummary.avgLatencyMs)}ms` : '—'}
-          desc={`成功率 ${successRate} ｜ 单次平均 ${avgTokensPerRequest != null ? formatTokens(Math.round(avgTokensPerRequest)) : '—'} Token`} />
+          desc={<>
+            <span>所选时间范围内的全部用量 ｜ 成功率 {successRate}</span>
+            <span style={{ display: 'block', marginTop: 3 }}>{formatTokens(usageSummary?.inputTokens)} 输入 / {formatTokens(usageSummary?.outputTokens)} 输出 / 缓存 {formatTokens(usageSummary?.cacheTokens)}</span>
+            <div className="ws-mini-grid" style={{ marginTop: 6 }}>
+              <div><div className="ws-t-micro">{periodLabel}请求</div><b>{usageSummary?.requestCount ?? 0}</b></div>
+              <div><div className="ws-t-micro">单次平均</div><b>{avgTokensPerRequest != null ? formatTokens(Math.round(avgTokensPerRequest)) : '—'}</b></div>
+              <div><div className="ws-t-micro">平均耗时</div><b>{usageSummary?.avgLatencyMs != null ? `${Math.round(usageSummary.avgLatencyMs)}ms` : '—'}</b></div>
+            </div>
+          </>} />
+        <Metric icon={<Activity />} label="累计 Token" value={formatTokens(lifetimeUsage?.totalTokens)}
+          desc={<>
+            <span>自账户开通以来的全部用量 ｜ 成功率 {lifetimeSuccessRate}</span>
+            <span style={{ display: 'block', marginTop: 3 }}>{formatTokens(lifetimeUsage?.inputTokens)} 输入 / {formatTokens(lifetimeUsage?.outputTokens)} 输出 / 缓存 {formatTokens(lifetimeUsage?.cacheTokens)}</span>
+            <div className="ws-mini-grid" style={{ marginTop: 6 }}>
+              <div><div className="ws-t-micro">累计请求</div><b>{lifetimeUsage?.requestCount ?? 0}</b></div>
+              <div><div className="ws-t-micro">单次平均</div><b>{lifetimeAvgTokens != null ? formatTokens(Math.round(lifetimeAvgTokens)) : '—'}</b></div>
+              <div><div className="ws-t-micro">平均耗时</div><b>{lifetimeUsage?.avgLatencyMs != null ? `${Math.round(lifetimeUsage.avgLatencyMs)}ms` : '—'}</b></div>
+            </div>
+          </>} />
       </div>
 
-      <Panel title="性能指标" subtitle="平台侧计量探针提供 RPM / TPM 速率，网关侧暂未接入该口径，以下仅展示可核实的响应指标。">
+      <Panel title="性能指标" subtitle="速率按本地用量流水的最近 5 分钟窗口折算（用量同步约每分钟一次）；平均响应取上游计费明细的端到端时延。">
         <div className="ws-stats three" style={{ marginBottom: 0 }}>
-          <Metric icon={<Gauge />} label="请求速率" value="—" desc="每分钟请求数（RPM），等待平台探针接入" />
-          <Metric icon={<Gauge />} label="Token 速率" value="—" desc="每分钟 Token 数（TPM），等待平台探针接入" />
-          <Metric icon={<Clock3 />} label="平均响应" value={usageSummary?.avgLatencyMs != null ? `${Math.round(usageSummary.avgLatencyMs)}ms` : '—'} desc={`${periodLabel}端到端平均时延，含排队与生成`} />
+          <Metric icon={<Gauge />} label="请求速率" value={`${usageSummary?.recentRpm ?? 0} 次/分`} desc="每分钟请求数（RPM），最近 5 分钟窗口" />
+          <Metric icon={<Gauge />} label="Token 速率" value={`${formatTokens(Math.round(usageSummary?.recentTpm ?? 0))}/分`} desc="每分钟 Token 数（TPM），最近 5 分钟窗口" />
+          <Metric icon={<Clock3 />} label="平均响应" value={usageSummary?.avgLatencyMs != null ? `${Math.round(usageSummary.avgLatencyMs)}ms` : '—'} desc={`${periodLabel}端到端平均时延（上游计费明细口径），含排队与生成`} />
+        </div>
+        <div style={{ marginTop: 16 }}>
+          <RateCurve series={usageSummary?.rateSeries ?? null} emptyLabel={RATE_EMPTY_LABEL[range]} granularityLabel={RATE_GRANULARITY_LABEL[range]} />
         </div>
       </Panel>
 
       <div className="ws-cols-3-2">
-        <Panel title="Token 使用趋势" subtitle="按天统计的输入与输出 Token，堆叠柱越高代表当天消耗越集中；缓存口径暂未采集。">
+        <Panel title="Token 使用趋势" subtitle="按天统计的输入与输出 Token，堆叠柱越高代表当天消耗越集中；缓存口径取自上游计费明细。">
           <TrendBars buckets={usageSummary?.byDay ?? []} />
           <div className="ws-inline" style={{ marginTop: 10, flexWrap: 'wrap' }}>
             <Badge>输入 {formatTokens(usageSummary?.inputTokens)}</Badge>
             <Badge tone="green">输出 {formatTokens(usageSummary?.outputTokens)}</Badge>
-            <span className="ws-muted">缓存 ——</span>
+            <span className="ws-muted">缓存 {formatTokens(usageSummary?.cacheTokens)}</span>
           </div>
         </Panel>
         <div>
@@ -426,7 +562,7 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
               {providerSplit.slice(0, 4).map((item) => <div className="ws-list-item" key={item.provider} style={{ marginBottom: 8 }}>
                 <span className="ws-avatar-sm">{item.provider.slice(0, 2)}</span>
                 <div className="ws-grow"><div className="t">{item.provider}</div><div className="s">请求 {item.requestCount} 次 · Token {formatTokens(item.totalTokens)}</div></div>
-                <div className="ws-amount"><div className="t">{formatPoints(item.costPoints)}</div><div className="s">{periodLabel}消费</div></div>
+                <div className="ws-amount"><div className="t">{formatPointsPrecise(item.costPoints)}</div><div className="s">{periodLabel}消费</div></div>
               </div>)}
               <RatioBar value={providerSplit[0].costPoints} total={usageSummary?.costPoints ?? 0} />
               <p className="ws-note" style={{ marginTop: 8 }}>首位平台占{periodLabel}全部消费的 {usageSummary && usageSummary.costPoints > 0 ? Math.round((providerSplit[0].costPoints / usageSummary.costPoints) * 100) : 0}%。</p>
@@ -438,7 +574,7 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
                 <td>{modelById.get(bucket.key)?.name ?? bucket.key}<div className="ws-note">{modelById.get(bucket.key)?.provider ?? '未标注'}</div></td>
                 <td>{bucket.requestCount}</td>
                 <td>{formatTokens(bucket.totalTokens)}</td>
-                <td>{formatPoints(bucket.costPoints)}</td>
+                <td>{formatPointsPrecise(bucket.costPoints)}</td>
               </tr>)}
             </tbody></table>}
           </Panel>
@@ -457,7 +593,7 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
 
       <Panel title="最近用量" subtitle="按当前身份与时间范围取最新的调用明细，完整记录见「使用记录」。">
         {usageRows.length === 0 ? <div className="ws-empty">暂无用量记录</div> : <table className="ws-table"><thead><tr><th>时间</th><th>模型</th><th>Token</th><th>消费</th><th>状态</th></tr></thead><tbody>
-          {usageRows.slice(0, 5).map((row) => <tr key={row.id}><td>{formatTime(row.usageAt)}</td><td>{row.modelId ?? '未标注'}</td><td>{formatTokens(row.totalTokens)}</td><td>{formatPoints(row.costPoints)}</td><td><Badge tone={row.status === 'success' ? 'green' : 'muted'}>{row.status === 'success' ? '成功' : '失败'}</Badge></td></tr>)}
+          {usageRows.slice(0, 5).map((row) => <tr key={row.id}><td>{formatTime(row.usageAt)}</td><td>{row.modelId ?? '未标注'}</td><td>{formatTokens(row.totalTokens)}</td><td>{formatPointsPrecise(row.costPoints)}</td><td><Badge tone={row.status === 'success' ? 'green' : 'muted'}>{row.status === 'success' ? '成功' : '失败'}</Badge></td></tr>)}
         </tbody></table>}
       </Panel>
 
@@ -504,7 +640,7 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
               <div className="ws-note">{key.rpm != null ? `${key.rpm} RPM` : '未设速率上限'}</div>
             </td>
             <td role="cell" data-label="用量">
-              <div>今日: {formatPoints(key.todayUsagePoints)}</div>
+              <div>今日: {formatPointsPrecise(key.todayUsagePoints)}</div>
               <div className="ws-note">30天: ——（服务端暂未提供该口径）</div>
             </td>
             <td role="cell" data-label="过期时间">{key.expiresAt ? <span>{formatTime(key.expiresAt)}</span> : <Badge tone="green">永久有效</Badge>}</td>
@@ -556,8 +692,8 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
       <div className="ws-stats four">
         <Metric icon={<FileText />} label="总请求数" value={`${usageSummary?.requestCount ?? 0}`} desc={`所选范围内 ｜ 成功率 ${successRate}，失败 ${usageSummary?.failureCount ?? 0} 次`} />
         <Metric icon={<Database />} label="总 Token" value={formatTokens(usageSummary?.totalTokens)}
-          desc={`输入 ${formatTokens(usageSummary?.inputTokens)} / 输出 ${formatTokens(usageSummary?.outputTokens)} / 缓存 ——`} />
-        <Metric accent icon={<Wallet />} label="总消费" value={formatPoints(usageSummary?.costPoints)} desc="按实际结算价计入（积分）" />
+          desc={`输入 ${formatTokens(usageSummary?.inputTokens)} / 输出 ${formatTokens(usageSummary?.outputTokens)} / 缓存 ${formatTokens(usageSummary?.cacheTokens)}`} />
+        <Metric accent icon={<Wallet />} label="总消费" value={formatPointsPrecise(usageSummary?.costPoints)} desc="按实际结算价计入（积分）" />
         <Metric icon={<Clock3 />} label="平均耗时" value={usageSummary?.avgLatencyMs != null ? `${Math.round(usageSummary.avgLatencyMs)}ms` : '—'} desc={`${usageSummary?.requestCount ?? 0} 次请求的端到端平均时延`} />
       </div>
 
@@ -572,7 +708,7 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
               </td>
               <td>{bucket.requestCount}</td>
               <td>{formatTokens(bucket.totalTokens)}</td>
-              <td>{formatPoints(bucket.costPoints)}</td>
+              <td>{formatPointsPrecise(bucket.costPoints)}</td>
             </tr>)}
           </tbody></table>
           <div>
@@ -590,12 +726,12 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
         </div>}
       </Panel>
 
-      <Panel title="Token 使用趋势" subtitle="按天铺开输入与输出 Token；缓存读取与缓存创建由上游返回，网关暂未采集。">
+      <Panel title="Token 使用趋势" subtitle="按天铺开输入与输出 Token；缓存读取与缓存创建取自上游计费明细。">
         <TrendBars buckets={usageSummary?.byDay ?? []} />
         <div className="ws-inline" style={{ marginTop: 10, flexWrap: 'wrap' }}>
           <Badge>输入 {formatTokens(usageSummary?.inputTokens)}</Badge>
           <Badge tone="green">输出 {formatTokens(usageSummary?.outputTokens)}</Badge>
-          <span className="ws-muted">缓存 ——</span>
+          <span className="ws-muted">缓存 {formatTokens(usageSummary?.cacheTokens)}</span>
         </div>
       </Panel>
 
@@ -620,7 +756,7 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
             <td>{row.modelId ?? '未标注'}</td>
             <td>{row.keyPrefix ? `${row.keyPrefix}…` : '—'}</td>
             <td>{formatTokens(row.inputTokens)} / {formatTokens(row.outputTokens)}</td>
-            <td>{formatPoints(row.costPoints)}</td>
+            <td>{formatPointsPrecise(row.costPoints)}</td>
             <td>{row.latencyMs != null ? `${row.latencyMs}ms` : '—'}</td>
             <td><Badge tone={row.status === 'success' ? 'green' : 'muted'}>{row.status === 'success' ? '成功' : '失败'}</Badge></td>
           </tr>)}
@@ -775,14 +911,16 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
                   <td>{entry.identityName ?? '—'}</td>
                   <td>{entry.counterpartyName ?? '—'}</td>
                   <td>{direction === 'in'
-                    ? <b style={{ color: '#1a7f37' }}>划入 +{formatPoints(entry.amount)}</b>
+                    ? <b style={{ color: '#1a7f37' }}>划入 +{formatPointsPrecise(entry.amount)}</b>
                     : direction === 'out'
-                      ? <b style={{ color: '#b42318' }}>划出 −{formatPoints(entry.amount)}</b>
-                      : (entry.operation === 'recharge' || entry.operation === 'grant')
-                        ? <b style={{ color: '#1a7f37' }}>+{formatPoints(entry.amount)}</b>
-                        : formatPoints(entry.amount)}</td>
+                      ? <b style={{ color: '#b42318' }}>划出 −{formatPointsPrecise(entry.amount)}</b>
+                      : (entry.operation === 'recharge' || entry.operation === 'grant' || entry.operation === 'release')
+                        ? <b style={{ color: '#1a7f37' }}>+{formatPointsPrecise(entry.amount)}</b>
+                        : <b style={{ color: '#b42318' }}>−{formatPointsPrecise(entry.amount)}</b>}</td>
                   <td>{entry.status === 'completed' ? '已完成' : entry.status}</td>
-                  <td>{entry.sub2apiSynced ? '已同步' : <Badge tone="orange">待同步</Badge>}</td>
+                  <td>{['reserve', 'commit', 'release'].includes(entry.operation)
+                    ? <span title="本地记账流水：预扣/扣减/释放不改变上游余额（扣减的扣费直接发生在上游用量明细），无需同步">—</span>
+                    : entry.sub2apiSynced ? '已同步' : <span title="本地已记账，这笔变动正在推送到上游 Sub2API 账户余额，推送成功后自动变为「已同步」，一般几秒到几分钟内完成"><Badge tone="orange">待同步</Badge></span>}</td>
                   <td><code>{entry.requestId ? `${entry.requestId.slice(0, 8)}…` : '—'}</code></td>
                 </tr>;
                 })}

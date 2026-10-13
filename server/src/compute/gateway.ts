@@ -2,7 +2,7 @@
 //
 // 流程：Session→当前 identity → 校验 model.use 与模型目录 → 锁定并预扣算力点
 //      → 按身份选 Key → 注入业务标签 → 透传普通响应 / SSE / tool calling / usage
-//      → 释放预扣；实际费用只由 Sub2API 用量明细同步入账。
+//      → 释放预扣；实际费用只由 Sub2API 用量明细同步入账（recordUpstreamUsage）。
 //
 // 约束：所有路由来自服务端模型目录，前端传入的 URL/Key 一律忽略（§8、§12）。
 
@@ -154,7 +154,8 @@ export class ComputeGateway {
     const password = resolveManagedPassword(binding.managedPassword, this.deps.encryptionKey);
     if (!password) throw new GatewayError('CONFLICT', '当前身份的托管凭据无法解密，请恢复原 COMPUTE_SECRET_ENCRYPTION_KEY 或由管理员重置上游账号凭据', 409);
 
-    // §8.3 锁定并预扣额度；并发下由 SELECT FOR UPDATE 行锁保证不超发
+    // §8.3 锁定并预扣额度；并发下由 SELECT FOR UPDATE 行锁保证不超发。
+    // 预扣是并发占位而非扣费：实际费用由 Sub2API 强制执行，用量明细同步后经 recordUpstreamUsage 入账。
     let ledgerId: string;
     try {
       ({ ledgerId } = await this.deps.quota.reserve(identity.id, this.points.fromUsd(this.deps.minReserveUsd), input.requestId));
@@ -193,9 +194,8 @@ export class ComputeGateway {
     return { identity, ledgerId, credential, keyId: key.id, modelId: catalogModel.id, startedAt: Date.now() };
   }
 
-  /** The upstream usage ledger is authoritative; a response only releases the hold. */
-  private async settle(prepared: Prepared, input: GatewayChatInput, usage: GatewayUsage, status: 'success' | 'failure'): Promise<number> {
-    const amountUsd = 0;
+  /** 失败请求落一条 status=failure 的用量记录，便于排查；实际费用仍以同步到的上游明细为准。 */
+  private async settle(prepared: Prepared, input: GatewayChatInput, usage: GatewayUsage, status: 'success' | 'failure'): Promise<void> {
     try {
       if (status === 'failure') await this.deps.computeRepo.upsertUsage({
         identityId: prepared.identity.id,
@@ -203,7 +203,7 @@ export class ComputeGateway {
         ledgerId: prepared.ledgerId,
         sub2apiUsageId: null,
         model: prepared.modelId,
-        amountUsd,
+        amountUsd: 0,
         promptTokens: usage.promptTokens,
         completionTokens: usage.completionTokens,
         metadata: { requestId: input.requestId, agentId: input.tags?.agentId ?? null, status },
@@ -222,9 +222,8 @@ export class ComputeGateway {
     try {
       await this.deps.quota.release(prepared.ledgerId);
     } catch {
-      // 结算失败由对账补偿；不覆盖已成功的模型响应
+      // 释放失败由超龄预扣兜底任务回收（releaseExpiredReserves）；不覆盖已成功的模型响应
     }
-    return amountUsd;
   }
 
   /** 普通（非流式）请求：透传响应体与 usage。 */
@@ -246,8 +245,8 @@ export class ComputeGateway {
       }
       const payload = (await response.json()) as Record<string, unknown>;
       const usage = parseUsage(payload);
-      const amountUsd = await this.settle(prepared, input, usage, 'success');
-      return { payload, usage, amountUsd };
+      await this.settle(prepared, input, usage, 'success');
+      return { payload, usage, amountUsd: 0 };
     } catch (error) {
       if (error instanceof GatewayError) throw error;
       await this.settle(prepared, input, EMPTY_USAGE, 'failure');
@@ -289,8 +288,8 @@ export class ComputeGateway {
         await onChunk(value);
       }
       const usage = parseUsageFromSse(buffer);
-      const amountUsd = await this.settle(prepared, input, usage, 'success');
-      return { usage, amountUsd };
+      await this.settle(prepared, input, usage, 'success');
+      return { usage, amountUsd: 0 };
     } catch (error) {
       if (error instanceof GatewayError) throw error;
       await this.settle(prepared, input, EMPTY_USAGE, 'failure');

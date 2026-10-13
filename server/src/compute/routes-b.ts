@@ -7,6 +7,7 @@ import type {
   ComputeModel,
   ComputeModelList,
   ComputeModelStatus,
+  ComputeUsageRateBucket,
   ComputeUsageRecord,
   ComputeUsageSummary,
   PagedData,
@@ -445,16 +446,27 @@ export async function registerComputeRoutesB(app: FastifyInstance, deps: Compute
       request_count: number;
       prompt_tokens: string | null;
       completion_tokens: string | null;
+      cache_tokens: string | number | null;
       amount_points: string | number | null;
       success_count: number;
       failure_count: number;
       avg_latency_ms: string | number | null;
     };
-    const [totals, byModel, byDay] = await Promise.all([
+    type RateRow = { rpm: string | number | null; tpm: string | number | null };
+    type RateBucketRow = { bucket_epoch: string | number; request_count: number; total_tokens: string | null };
+
+    // 速率曲线分桶粒度随所选时间范围自适应：≤24h→30 分钟、≤7 天→6 小时、其余→1 天
+    const rangeFromMs = filter.from ? Date.parse(filter.from) : Date.now() - 24 * 3_600_000;
+    const rangeToMs = filter.to ? Date.parse(filter.to) : Date.now();
+    const spanMs = Math.max(60_000, rangeToMs - rangeFromMs);
+    const intervalSeconds = spanMs <= 24 * 3_600_000 ? 1_800 : spanMs <= 7 * 24 * 3_600_000 ? 21_600 : 86_400;
+
+    const [totals, byModel, byDay, rate, rateBuckets] = await Promise.all([
       rawPool.query<TotalsRow>(
         `SELECT COUNT(*)::int AS request_count,
                 COALESCE(SUM(u.prompt_tokens),0)::bigint AS prompt_tokens,
                 COALESCE(SUM(u.completion_tokens),0)::bigint AS completion_tokens,
+                COALESCE(SUM(COALESCE(u.cache_creation_tokens,0) + COALESCE(u.cache_read_tokens,0)),0)::bigint AS cache_tokens,
                 COALESCE(SUM(u.amount_points),0) AS amount_points,
                 COUNT(*) FILTER (WHERE u.status = 'success')::int AS success_count,
                 COUNT(*) FILTER (WHERE u.status <> 'success')::int AS failure_count,
@@ -476,6 +488,21 @@ export async function registerComputeRoutesB(app: FastifyInstance, deps: Compute
          ${USAGE_FROM} WHERE ${where} GROUP BY 1 ORDER BY 1`,
         params,
       ),
+      // 速率口径：固定最近 5 分钟窗口按用量流水折算，不受所选时间范围/筛选影响（$1 为作用域）
+      rawPool.query<RateRow>(
+        `SELECT COUNT(*)::numeric / 5 AS rpm,
+                COALESCE(SUM(COALESCE(u.prompt_tokens,0) + COALESCE(u.completion_tokens,0)),0)::numeric / 5 AS tpm
+         ${USAGE_FROM} WHERE ${scoped.clause} AND u.recorded_at >= now() - interval '5 minutes'`,
+        [scoped.value],
+      ),
+      // 速率曲线：按自适应时间桶聚合（intervalSeconds 为服务端常量，非用户输入）
+      rawPool.query<RateBucketRow>(
+        `SELECT (floor(extract(epoch FROM u.recorded_at) / ${intervalSeconds}) * ${intervalSeconds}) AS bucket_epoch,
+                COUNT(*)::int AS request_count,
+                COALESCE(SUM(COALESCE(u.prompt_tokens,0) + COALESCE(u.completion_tokens,0)),0)::bigint AS total_tokens
+         ${USAGE_FROM} WHERE ${where} GROUP BY 1 ORDER BY 1`,
+        params,
+      ),
     ]);
     const bucket = (row: { key: string; request_count: number; total_tokens: string | null; cost_points: string | number | null }) => ({
       key: row.key,
@@ -486,17 +513,34 @@ export async function registerComputeRoutesB(app: FastifyInstance, deps: Compute
     const row = totals.rows[0];
     const inputTokens = toNumber(row?.prompt_tokens) ?? 0;
     const outputTokens = toNumber(row?.completion_tokens) ?? 0;
+    // 速率曲线：把有数据的桶对齐到等距时间轴，缺口补 0，保证曲线连续
+    const bucketByEpoch = new Map(rateBuckets.rows.map((r) => [Number(r.bucket_epoch), r]));
+    const startBucket = Math.floor(rangeFromMs / 1_000 / intervalSeconds) * intervalSeconds;
+    const endBucket = Math.floor(rangeToMs / 1_000 / intervalSeconds) * intervalSeconds;
+    const rateSeriesBuckets: ComputeUsageRateBucket[] = [];
+    for (let epoch = startBucket; epoch <= endBucket; epoch += intervalSeconds) {
+      const hit = bucketByEpoch.get(epoch);
+      rateSeriesBuckets.push({
+        bucketStart: new Date(epoch * 1_000).toISOString(),
+        requestCount: hit?.request_count ?? 0,
+        totalTokens: toNumber(hit?.total_tokens) ?? 0,
+      });
+    }
     const data: ComputeUsageSummary = {
       from: filter.from,
       to: filter.to,
       requestCount: row?.request_count ?? 0,
       inputTokens,
       outputTokens,
+      cacheTokens: toNumber(row?.cache_tokens) ?? 0,
       totalTokens: inputTokens + outputTokens,
       costPoints: toNumber(row?.amount_points) ?? 0,
       successCount: row?.success_count ?? 0,
       failureCount: row?.failure_count ?? 0,
       avgLatencyMs: toNumber(row?.avg_latency_ms),
+      recentRpm: Math.round((toNumber(rate.rows[0]?.rpm) ?? 0) * 10) / 10,
+      recentTpm: Math.round((toNumber(rate.rows[0]?.tpm) ?? 0) * 10) / 10,
+      rateSeries: { intervalMinutes: Math.round(intervalSeconds / 60), buckets: rateSeriesBuckets },
       byModel: byModel.rows.map(bucket),
       byDay: byDay.rows.map(bucket),
     };
