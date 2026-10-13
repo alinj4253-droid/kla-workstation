@@ -1,0 +1,70 @@
+.ws-app.ws-key-layout{min-height:0}
+.ws-key-layout>.ws-sidebar{min-height:0;overflow-y:auto}
+.ws-keys-page{min-width:0;max-width:100%}
+.ws-keys-page>.ws-page-heading>div{min-width:0}
+.ws-keys-page>.ws-page-heading p{line-height:1.7;overflow-wrap:anywhere}
+.ws-keys-page>.ws-keys-panel{container-name:compute-keys;container-type:inline-size;max-width:100%;overflow:visible}
+.ws-keys-panel>.ws-panel-head{align-items:flex-start;flex-wrap:wrap}
+.ws-keys-panel>.ws-panel-head>div{min-width:0}
+.ws-keys-panel .ws-panel-sub{display:block;line-height:1.7;overflow-wrap:anywhere}
+.ws-key-toolbar{display:grid;grid-template-columns:minmax(180px,1fr) minmax(110px,150px) minmax(110px,130px) auto;align-items:center;gap:10px;margin:0 0 16px;min-width:0}
+.ws-key-toolbar .ws-sub-search{display:flex;margin:0;min-width:0;min-height:36px}
+.ws-key-toolbar .ws-sub-search svg{flex:none}
+.ws-key-toolbar input{min-width:0}
+.ws-key-toolbar select{width:100%;min-width:0;max-width:100%;height:36px;border:1px solid #e3eaf2;border-radius:7px;padding:0 9px;background:#fff;color:#475569;font-size:11px;text-overflow:ellipsis}
+.ws-key-toolbar>.ws-primary{min-height:36px;white-space:nowrap;justify-content:center}
+.ws-keys-table-scroll{width:100%;max-width:100%;overflow-x:auto;overscroll-behavior-x:contain;border:1px solid #eef2f5;border-radius:8px}
+.ws-keys-table-scroll>.ws-keys-table{table-layout:fixed;width:100%;min-width:980px;margin:0}
+.ws-keys-panel .ws-keys-table th,.ws-keys-panel .ws-keys-table td{vertical-align:top;white-space:normal;overflow-wrap:anywhere;line-height:1.7}
+.ws-keys-table th:nth-child(1){width:16%}.ws-keys-table th:nth-child(2){width:12%}.ws-keys-table th:nth-child(3){width:11%}.ws-keys-table th:nth-child(4){width:10%}.ws-keys-table th:nth-child(5){width:12%}.ws-keys-table th:nth-child(6){width:9%}.ws-keys-table th:nth-child(7){width:12%}.ws-keys-table th:nth-child(8){width:18%}
+.ws-keys-table .ws-badge{max-width:100%;white-space:normal;overflow-wrap:anywhere}
+.ws-key-name{white-space:normal;overflow-wrap:anywhere;font-weight:600;line-height:1.6;margin-bottom:5px}
+.ws-keys-table code{display:inline-block;max-width:100%;white-space:normal;overflow-wrap:anywhere;font-size:10px}
+.ws-key-row-actions{display:flex;align-items:center;flex-wrap:wrap;gap:6px}
+.ws-key-row-actions>button{flex:none}
+.ws-key-row-actions>.ws-muted{flex-basis:100%;white-space:normal;line-height:1.6}
+.ws-keys-panel>.ws-table-footer{white-space:normal;line-height:1.7;overflow-wrap:anywhere}
+.ws-modal.ws-key-dialog{width:min(520px,calc(100vw - 40px));max-height:calc(100dvh - 40px);overflow-y:auto;overscroll-behavior:contain;min-width:0}
+.ws-key-dialog header{gap:10px}.ws-key-dialog header h2{min-width:0;overflow-wrap:anywhere;line-height:1.5}.ws-key-dialog header button{flex:none}
+.ws-key-dialog form,.ws-key-dialog label{min-width:0}.ws-key-dialog input{min-width:0;max-width:100%}
+.ws-key-dialog footer{flex-wrap:wrap}
+.ws-key-secret-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:start;max-width:100%}.ws-key-secret-row code{min-width:0;white-space:normal;overflow-wrap:anywhere}.ws-key-secret-row button{white-space:nowrap}
+@container compute-keys (max-width:900px){
+  .ws-key-toolbar{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .ws-key-toolbar>.ws-sub-search{grid-column:1/-1}
+  .ws-key-toolbar>.ws-primary{grid-column:1/-1;justify-self:end}
+  .ws-keys-table-scroll{border:0;overflow:visible}
+  .ws-keys-table-scroll>.ws-keys-table{display:block;width:100%;min-width:0;border-collapse:separate}
+  .ws-keys-table thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+  .ws-keys-table tbody{display:grid;gap:12px;width:100%}
+  .ws-keys-table tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 14px;padding:14px;border:1px solid #e3eaf2;border-radius:9px;background:#fff}
+  .ws-keys-table td{display:block;min-width:0;padding:0;border:0;font-size:11px;white-space:normal}
+  .ws-keys-table td::before{content:attr(data-label);display:block;color:#8495aa;font-size:10px;margin-bottom:5px;font-weight:400}
+  .ws-keys-table td:first-child,.ws-keys-table td:last-child{grid-column:1/-1}
+  .ws-keys-table td:first-child{padding-bottom:10px;border-bottom:1px solid #eef2f5}
+  .ws-keys-table td:last-child{padding-top:10px;border-top:1px solid #eef2f5}
+  .ws-key-name{font-size:13px}
+  .ws-key-row-actions>button{min-height:32px;padding:6px 10px}
+}
+@container compute-keys (max-width:400px){
+  .ws-key-toolbar{grid-template-columns:minmax(0,1fr)}
+  .ws-key-toolbar>.ws-primary{justify-self:stretch}
+  .ws-keys-table tr{grid-template-columns:minmax(0,1fr)}
+}
+@media(min-width:761px) and (max-width:1100px){.ws-key-layout>.ws-sidebar{width:180px}.ws-key-layout>.ws-main.ws-compute-keys-layout{grid-template-columns:190px minmax(0,1fr)}.ws-main.ws-compute-keys-layout>.ws-content{padding:18px}}
+@media(max-width:760px){
+  .ws-app.ws-key-layout{height:auto;min-height:100dvh;overflow:visible}
+  .ws-key-layout>.ws-sidebar{width:100%;overflow:visible;flex-wrap:wrap;gap:6px}
+  .ws-key-layout>.ws-sidebar .ws-brand{padding:4px}
+  .ws-key-layout>.ws-sidebar nav{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:3px}
+  .ws-key-layout>.ws-sidebar nav button{font-size:0;height:36px;width:auto;padding:8px}
+  .ws-key-layout>.ws-main.ws-compute-keys-layout{display:grid;width:100%;grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto auto;gap:8px;padding:8px;overflow:visible;min-height:0}
+  .ws-main.ws-compute-keys-layout>.ws-topbar{grid-row:1;grid-column:1;height:auto;min-height:44px;padding:6px 8px;flex-wrap:wrap}
+  .ws-compute-keys-layout .ws-breadcrumb{min-width:0;flex:1}.ws-compute-keys-layout .ws-breadcrumb strong{overflow-wrap:anywhere}
+  .ws-main.ws-compute-keys-layout>.ws-topbar>.ws-badge{display:none}
+  .ws-main.ws-compute-keys-layout>.ws-subnav{grid-row:2;grid-column:1;height:auto;max-height:none;padding:8px;overflow:visible}
+  .ws-main.ws-compute-keys-layout .ws-compute-links{display:flex;flex-wrap:wrap;gap:6px;padding:0}
+  .ws-compute-keys-layout .ws-compute-links button{flex:1 1 auto;white-space:nowrap;justify-content:center}
+  .ws-main.ws-compute-keys-layout>.ws-content{grid-row:3;grid-column:1;width:100%;height:auto;padding:14px;overflow:visible;min-height:0}
+}
+@media(max-width:460px){.ws-compute-keys-layout .ws-breadcrumb>span,.ws-compute-keys-layout .ws-breadcrumb>b{display:none}.ws-key-secret-row{grid-template-columns:minmax(0,1fr)}}

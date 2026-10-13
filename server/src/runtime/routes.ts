@@ -71,7 +71,7 @@ export async function registerRuntimeRoutes(app: FastifyInstance, deps: {pool:Po
     const key=await deps.computeRepo.getKey(modelKeyId,identityId);
     if (!key || key.status!=='active') throw app.httpErrors.badRequest('模型挂载 Key 不属于当前身份或已停用');
     const model=await deps.computeRepo.getCatalogModel(modelId);
-    if (!model?.enabled) throw app.httpErrors.badRequest('模型不在平台可用目录中');
+    if (model && !model.enabled) throw app.httpErrors.badRequest('模型已停用');
     const binding=await deps.computeRepo.getBinding(identityId);
     const password=resolveManagedPassword(binding?.managedPassword??null,deps.encryptionKey??'');
     if (!binding || !password) throw app.httpErrors.serviceUnavailable('当前身份算力账号不可用');

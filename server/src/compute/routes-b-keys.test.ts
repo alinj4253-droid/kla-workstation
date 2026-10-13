@@ -112,7 +112,7 @@ describe('§7.2 GET /compute/keys', () => {
 });
 
 describe('Key 模型发现', () => {
-  it('按当前身份和 Key 限定模型，且不返回密钥', async () => {
+  it('上游列表为地面真相，目录仅补名称，且不返回密钥', async () => {
     const repo = repoWith((sql) => sql.includes('SELECT id,name FROM models')
       ? { rows: [{ id: 'm1', name: '模型一' }], rowCount: 1 }
       : grantPermissions()(sql), {
@@ -122,7 +122,9 @@ describe('Key 模型发现', () => {
     const app = await buildApp(repo, { getUserJwt: async () => 'jwt', resolveApiKeySecret: async () => 'secret', listModels: async () => ['m1', 'm2'] });
     const found = await app.inject({ method: 'GET', url: '/api/v1/compute/keys/k1/models', headers: AUTH });
     expect(found.statusCode).toBe(200);
-    expect(found.json().data).toEqual([{ id: 'm1', name: '模型一' }]);
+    const items = found.json().data;
+    expect(items).toHaveLength(2);
+    expect(items).toEqual(expect.arrayContaining([{ id: 'm1', name: '模型一' }, { id: 'm2', name: 'm2' }]));
     expect(found.body).not.toContain('secret');
     expect((await app.inject({ method: 'GET', url: '/api/v1/compute/keys/foreign/models', headers: AUTH })).statusCode).toBe(404);
     await app.close();

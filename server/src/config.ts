@@ -39,6 +39,10 @@ export type ComputeConfig = {
   toolModelTimeoutMs: number;
   /** Model Gateway 预扣下限（美元）：调用前的软额度闸门金额（§4.2、§8.3） */
   minReserveUsd: number;
+  /** 预扣超时自动释放（毫秒）：进程异常终止后兜底回收，防止可用余额被残留占位永久虚减 */
+  reserveTimeoutMs: number;
+  /** 上游 → KLA 余额对账周期（毫秒）：追认直接在 Sub2API 管理面发生的充值，补记为充值流水 */
+  balanceReconcileIntervalMs: number;
   /**
    * 算力点汇率：1 USD = pointsPerUsd 点（DESIGN_POINTS_BASED_BILLING.md §3）。
    * 当前 1 元 = 1 美元 = 1000 积分；调整必须与存量重估迁移及兼容触发器同时发布。
@@ -102,6 +106,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       modelTimeoutMs: positiveInterval(env.SUB2API_MODEL_TIMEOUT_MS, 60000),
       toolModelTimeoutMs: positiveInterval(env.SUB2API_TOOL_MODEL_TIMEOUT_MS, 300000),
       minReserveUsd: Number(env.COMPUTE_MIN_RESERVE_USD ?? 0.01),
+      reserveTimeoutMs: positiveInterval(env.COMPUTE_RESERVE_TIMEOUT_MS, 600000),
+      balanceReconcileIntervalMs: positiveInterval(env.COMPUTE_BALANCE_RECONCILE_INTERVAL_MS, 60_000),
       pointsPerUsd: Number(env.POINTS_PER_USD ?? 1000),
     },
     tools: {

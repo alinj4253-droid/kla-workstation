@@ -143,7 +143,11 @@ export class ComputeRepository {
     for (const [name, amount] of Object.entries(delta)) {
       if (amount === undefined) continue;
       const column = name === 'total' ? 'total' : name === 'granted' ? 'granted' : name === 'used' ? 'used' : 'reserved';
-      sets.push(`points_${column} = points_${column} + $${idx}, quota_${column} = quota_${column} + $${idx + 1}`);
+      // reserved 下限保护：异常路径（重复释放等）不得把预扣占位打成负数，否则可用余额虚增
+      const expr = name === 'reserved'
+        ? `points_reserved = GREATEST(0, points_reserved + $${idx}), quota_reserved = GREATEST(0, quota_reserved + $${idx + 1})`
+        : `points_${column} = points_${column} + $${idx}, quota_${column} = quota_${column} + $${idx + 1}`;
+      sets.push(expr);
       vals.push(amount, this.points.toUsd(Math.abs(amount)) * Math.sign(amount));
       idx += 2;
     }
@@ -168,14 +172,16 @@ export class ComputeRepository {
     requestId?: string | null;
     relatedLedgerId?: string | null;
     operatorIdentityId?: string | null;
+    /** 上游余额是否已生效：commit（源自上游用量）/reserve（本地占位不推上游）入账即为 true */
+    sub2apiSynced?: boolean;
     metadata?: Record<string, unknown>;
   }, client?: QueryClient): Promise<AllocationLedger> {
     const c = client ?? this.pool;
     const { rows } = await c.query(
       `INSERT INTO compute_allocation_ledger
-        (entitlement_id, operation, amount, amount_points, rate_snapshot, status, idempotency_key, request_id, related_ledger_id, operator_identity_id, metadata)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
-      [input.entitlementId, input.operation, this.points.toUsd(input.amount), input.amount, this.points.pointsPerUsd, input.status, input.idempotencyKey, input.requestId ?? null, input.relatedLedgerId ?? null, input.operatorIdentityId ?? null, input.metadata ?? {}],
+        (entitlement_id, operation, amount, amount_points, rate_snapshot, status, idempotency_key, request_id, related_ledger_id, operator_identity_id, sub2api_synced, metadata)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
+      [input.entitlementId, input.operation, this.points.toUsd(input.amount), input.amount, this.points.pointsPerUsd, input.status, input.idempotencyKey, input.requestId ?? null, input.relatedLedgerId ?? null, input.operatorIdentityId ?? null, input.sub2apiSynced ?? false, input.metadata ?? {}],
     );
     return this.ledger(rows[0]);
   }
@@ -186,52 +192,27 @@ export class ComputeRepository {
     return rows[0] ? this.ledger(rows[0]) : null;
   }
 
-  /**
-   * 计算某身份在 Sub2API 上的预期余额（USD）：仅汇总 sub2api_synced=true 的流水，
-   * 按操作方向带符号。用于对账时判断 Sub2API 余额是否包含 KLA 未知的充值。
-   *
-   * 规则：
-   * - grant：+amount（平台发放，已推上游）
-   * - allocate/reclaim：metadata.direction='in' → +amount，'out' → -amount
-   * - commit：-amount（用量扣费，已推上游）
-   * - recharge：不参与（来自上游，sub2api_synced=false）
-   * - reserve/release：不参与（不影响上游余额）
-   */
-  async getSyncedSub2ApiBalanceUsd(entitlementId: string, client?: QueryClient): Promise<number> {
-    const c = client ?? this.pool;
-    const { rows } = await c.query(
-      `SELECT
-         operation,
-         amount,
-         COALESCE(metadata->>'direction', '') AS direction
-       FROM compute_allocation_ledger
-       WHERE entitlement_id = $1 AND sub2api_synced = true AND status = 'completed'`,
-      [entitlementId],
-    );
-    let total = 0;
-    for (const row of rows) {
-      const amt = Number(row.amount);
-      switch (row.operation) {
-        case 'grant':
-          total += amt;
-          break;
-        case 'allocate':
-        case 'reclaim':
-          total += row.direction === 'in' ? amt : -amt;
-          break;
-        case 'commit':
-          total -= amt;
-          break;
-        // recharge / reserve / release: 不影响上游余额
-      }
-    }
-    return total;
-  }
-
   async getLedger(id: string, client?: QueryClient): Promise<AllocationLedger | null> {
     const c = client ?? this.pool;
     const { rows } = await c.query('SELECT * FROM compute_allocation_ledger WHERE id = $1', [id]);
     return rows[0] ? this.ledger(rows[0]) : null;
+  }
+
+  /** SELECT ... FOR UPDATE 锁定流水行，用于释放/结算的事务内状态复查 */
+  async lockLedger(id: string, client: QueryClient): Promise<AllocationLedger | null> {
+    const { rows } = await client.query('SELECT * FROM compute_allocation_ledger WHERE id = $1 FOR UPDATE', [id]);
+    return rows[0] ? this.ledger(rows[0]) : null;
+  }
+
+  /** 超龄仍未释放的预扣流水（兜底回收用） */
+  async listExpiredPendingReserves(olderThanMs: number, limit = 200): Promise<AllocationLedger[]> {
+    const { rows } = await this.pool.query(
+      `SELECT * FROM compute_allocation_ledger
+       WHERE operation = 'reserve' AND status = 'pending' AND created_at < now() - ($1::bigint * interval '1 millisecond')
+       ORDER BY created_at ASC LIMIT $2`,
+      [olderThanMs, limit],
+    );
+    return rows.map((r) => this.ledger(r));
   }
 
   async updateLedgerStatus(id: string, status: LedgerStatus, sub2apiSynced?: boolean, client?: QueryClient): Promise<void> {
@@ -249,6 +230,31 @@ export class ComputeRepository {
       [entitlementId, limit],
     );
     return rows.map((r) => this.ledger(r));
+  }
+
+  /**
+   * 已同步流水的上游影响净额（USD），作为余额对账的 KLA 侧基准。
+   * 口径：recharge/grant 为入账(+)，commit 为上游扣减(-)，allocate/reclaim 按 metadata.direction 定符号；
+   * reserve/release 是本地占位流水（不推上游），不计入。仅统计 sub2api_synced = true 的行。
+   */
+  async sumSyncedLedgerNet(identityId: string, client?: QueryClient): Promise<number> {
+    const c = client ?? this.pool;
+    const { rows } = await c.query(
+      `SELECT COALESCE(SUM(
+         CASE
+           WHEN l.operation IN ('recharge', 'grant') THEN l.amount
+           WHEN l.operation = 'commit' THEN -l.amount
+           WHEN l.operation IN ('allocate', 'reclaim') THEN
+             CASE WHEN l.metadata->>'direction' = 'in' THEN l.amount ELSE -l.amount END
+           ELSE 0
+         END
+       ), 0) AS net
+       FROM compute_allocation_ledger l
+       JOIN compute_entitlements e ON e.id = l.entitlement_id
+       WHERE e.identity_id = $1 AND l.sub2api_synced = true`,
+      [identityId],
+    );
+    return Number(rows[0]?.net ?? 0);
   }
 
   // ---- 企业视图聚合（§7.5：企业池 = 管理员持有 + 成员持有） ----
@@ -487,6 +493,8 @@ export class ComputeRepository {
     amountUsd: number;
     promptTokens: number | null;
     completionTokens: number | null;
+    cacheCreationTokens?: number | null;
+    cacheReadTokens?: number | null;
     metadata?: Record<string, unknown>;
     dedupeHash: string;
     recordedAt: string;
@@ -501,18 +509,40 @@ export class ComputeRepository {
     const c = client ?? this.pool;
     const { rows } = await c.query(
       `INSERT INTO compute_usage
-        (identity_id, ledger_id, sub2api_usage_id, model, amount_usd, amount_points, prompt_tokens, completion_tokens, metadata, dedupe_hash, recorded_at,
+        (identity_id, ledger_id, sub2api_usage_id, model, amount_usd, amount_points, prompt_tokens, completion_tokens, cache_creation_tokens, cache_read_tokens, metadata, dedupe_hash, recorded_at,
          organization_id, key_id, project_id, conversation_id, task_id, latency_ms, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
        ON CONFLICT (dedupe_hash) DO NOTHING RETURNING *`,
       [
         input.identityId, input.ledgerId, input.sub2apiUsageId, input.model, input.amountUsd, this.points.fromUsd(input.amountUsd), input.promptTokens, input.completionTokens,
+        input.cacheCreationTokens ?? 0, input.cacheReadTokens ?? 0,
         input.metadata ?? {}, input.dedupeHash, input.recordedAt,
         input.organizationId ?? null, input.keyId ?? null, input.projectId ?? null, input.conversationId ?? null, input.taskId ?? null,
         input.latencyMs ?? null, input.status ?? 'success',
       ],
     );
     return rows[0] ? this.usage(rows[0]) : null;
+  }
+
+  /**
+   * 补齐上游延迟回填的展示指标：Sub2API 计费明细的 duration_ms / 缓存 token 可能晚于明细行落库，
+   * 导致首次同步读到空值且此后被幂等跳过。每轮同步幂等命中时调用，只补空缺列，不影响金额与台账。
+   */
+  async refreshUsageMetrics(client: QueryClient, input: {
+    identityId: string;
+    sub2apiUsageId: string;
+    latencyMs: number | null;
+    cacheCreationTokens: number;
+    cacheReadTokens: number;
+  }): Promise<void> {
+    await client.query(
+      `UPDATE compute_usage SET
+         latency_ms = COALESCE(latency_ms, $3),
+         cache_creation_tokens = GREATEST(cache_creation_tokens, $4),
+         cache_read_tokens = GREATEST(cache_read_tokens, $5)
+       WHERE identity_id = $1 AND sub2api_usage_id = $2`,
+      [input.identityId, input.sub2apiUsageId, input.latencyMs, input.cacheCreationTokens, input.cacheReadTokens],
+    );
   }
 
   async sumUsageByIdentity(identityId: string, client?: QueryClient): Promise<number> {

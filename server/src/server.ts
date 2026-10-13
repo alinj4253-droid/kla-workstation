@@ -90,7 +90,7 @@ export async function createServer() {
   await registerComputeGatewayRoutes(app, { accounts, computeRepo, gateway });
 
   const outboxWorker = new OutboxWorker(computeRepo, provisioning, config.compute.outboxIntervalMs);
-  const usageSyncWorker = new UsageSyncWorker(computeRepo, sub2api, quota, config.compute.usageSyncIntervalMs);
+  const usageSyncWorker = new UsageSyncWorker(computeRepo, sub2api, quota, config.compute.usageSyncIntervalMs, config.compute.reserveTimeoutMs, config.compute.balanceReconcileIntervalMs);
   loopWorker.start();
   outboxWorker.start();
   usageSyncWorker.start();

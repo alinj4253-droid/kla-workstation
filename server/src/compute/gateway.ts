@@ -2,7 +2,7 @@
 //
 // 流程：Session→当前 identity → 校验 model.use 与模型目录 → 锁定并预扣算力点
 //      → 按身份选 Key → 注入业务标签 → 透传普通响应 / SSE / tool calling / usage
-//      → 释放预扣；实际费用只由 Sub2API 用量明细同步入账。
+//      → 释放预扣；实际费用只由 Sub2API 用量明细同步入账（recordUpstreamUsage）。
 //
 // 约束：所有路由来自服务端模型目录，前端传入的 URL/Key 一律忽略（§8、§12）。
 
@@ -139,11 +139,11 @@ export class ComputeGateway {
   constructor(private readonly deps: ComputeGatewayDeps) {}
   private get points(): PointsConverter { return this.deps.points ?? createPointsConverter(); }
 
-  /** §8.1–§8.4：模型目录校验、凭据、预扣额度、选 Key。 */
+  /** §8.1–§8.4：模型校验、凭据、预扣额度、选 Key。 */
   private async prepare(identity: Identity, input: GatewayChatInput): Promise<Prepared> {
+    // 上游 /v1/models 是可调用性的地面真相（按 Key 分组生效）；本地目录只用于显式停用拦截与展示元数据。
     const catalogModel = await this.deps.computeRepo.getCatalogModel(input.model);
-    if (!catalogModel) throw new GatewayError('NOT_FOUND', `模型不在服务端目录中：${input.model}`, 404);
-    if (!catalogModel.enabled) throw new GatewayError('NOT_FOUND', `模型已停用：${input.model}`, 404);
+    if (catalogModel && !catalogModel.enabled) throw new GatewayError('NOT_FOUND', `模型已停用：${input.model}`, 404);
 
     const binding = await this.deps.computeRepo.getBinding(identity.id);
     if (!binding) throw new GatewayError('CONFLICT', '算力账号尚未初始化，请先重试初始化', 409);
@@ -154,7 +154,8 @@ export class ComputeGateway {
     const password = resolveManagedPassword(binding.managedPassword, this.deps.encryptionKey);
     if (!password) throw new GatewayError('CONFLICT', '当前身份的托管凭据无法解密，请恢复原 COMPUTE_SECRET_ENCRYPTION_KEY 或由管理员重置上游账号凭据', 409);
 
-    // §8.3 锁定并预扣额度；并发下由 SELECT FOR UPDATE 行锁保证不超发
+    // §8.3 锁定并预扣额度；并发下由 SELECT FOR UPDATE 行锁保证不超发。
+    // 预扣是并发占位而非扣费：实际费用由 Sub2API 强制执行，用量明细同步后经 recordUpstreamUsage 入账。
     let ledgerId: string;
     try {
       ({ ledgerId } = await this.deps.quota.reserve(identity.id, this.points.fromUsd(this.deps.minReserveUsd), input.requestId));
@@ -167,7 +168,7 @@ export class ComputeGateway {
     try {
       jwt = await this.deps.sub2api.getUserJwt(binding.sub2apiUserId, binding.sub2apiUsername, password);
     } catch (error) {
-      await this.settle({ identity, ledgerId, credential: '', keyId: null, modelId: catalogModel.id, startedAt: Date.now() }, input, EMPTY_USAGE, 'failure');
+      await this.settle({ identity, ledgerId, credential: '', keyId: null, modelId: catalogModel?.id ?? input.model, startedAt: Date.now() }, input, EMPTY_USAGE, 'failure');
       throw new GatewayError('UNAVAILABLE', error instanceof Error ? error.message : 'Sub2API 不可用', 503);
     }
 
@@ -176,7 +177,7 @@ export class ComputeGateway {
       ? await this.deps.computeRepo.getKey(input.keyId, identity.id)
       : await this.deps.computeRepo.getActiveKey(identity.id);
     if (!key?.sub2apiKeyId || (input.keyId && key.status !== 'active')) {
-      await this.settle({ identity, ledgerId, credential: '', keyId: null, modelId: catalogModel.id, startedAt: Date.now() }, input, EMPTY_USAGE, 'failure');
+      await this.settle({ identity, ledgerId, credential: '', keyId: null, modelId: catalogModel?.id ?? input.model, startedAt: Date.now() }, input, EMPTY_USAGE, 'failure');
       throw new GatewayError('CONFLICT', input.keyId ? '智能体挂载的 API Key 已不可用，请重新挂载' : '当前身份没有可用的 API Key，请先在「API 密钥」页创建', 409);
     }
 
@@ -187,15 +188,14 @@ export class ComputeGateway {
       if (!secret) throw new Error('上游未返回该 Key 的明文，请在 Sub2API 侧确认');
       credential = secret;
     } catch (error) {
-      await this.settle({ identity, ledgerId, credential: '', keyId: key.id, modelId: catalogModel.id, startedAt: Date.now() }, input, EMPTY_USAGE, 'failure');
+      await this.settle({ identity, ledgerId, credential: '', keyId: key.id, modelId: catalogModel?.id ?? input.model, startedAt: Date.now() }, input, EMPTY_USAGE, 'failure');
       throw new GatewayError('UNAVAILABLE', error instanceof Error ? error.message : '获取上游 Key 失败', 503);
     }
-    return { identity, ledgerId, credential, keyId: key.id, modelId: catalogModel.id, startedAt: Date.now() };
+    return { identity, ledgerId, credential, keyId: key.id, modelId: catalogModel?.id ?? input.model, startedAt: Date.now() };
   }
 
-  /** The upstream usage ledger is authoritative; a response only releases the hold. */
-  private async settle(prepared: Prepared, input: GatewayChatInput, usage: GatewayUsage, status: 'success' | 'failure'): Promise<number> {
-    const amountUsd = 0;
+  /** 失败请求落一条 status=failure 的用量记录，便于排查；实际费用仍以同步到的上游明细为准。 */
+  private async settle(prepared: Prepared, input: GatewayChatInput, usage: GatewayUsage, status: 'success' | 'failure'): Promise<void> {
     try {
       if (status === 'failure') await this.deps.computeRepo.upsertUsage({
         identityId: prepared.identity.id,
@@ -203,7 +203,7 @@ export class ComputeGateway {
         ledgerId: prepared.ledgerId,
         sub2apiUsageId: null,
         model: prepared.modelId,
-        amountUsd,
+        amountUsd: 0,
         promptTokens: usage.promptTokens,
         completionTokens: usage.completionTokens,
         metadata: { requestId: input.requestId, agentId: input.tags?.agentId ?? null, status },
@@ -222,9 +222,8 @@ export class ComputeGateway {
     try {
       await this.deps.quota.release(prepared.ledgerId);
     } catch {
-      // 结算失败由对账补偿；不覆盖已成功的模型响应
+      // 释放失败由超龄预扣兜底任务回收（releaseExpiredReserves）；不覆盖已成功的模型响应
     }
-    return amountUsd;
   }
 
   /** 普通（非流式）请求：透传响应体与 usage。 */
@@ -246,8 +245,8 @@ export class ComputeGateway {
       }
       const payload = (await response.json()) as Record<string, unknown>;
       const usage = parseUsage(payload);
-      const amountUsd = await this.settle(prepared, input, usage, 'success');
-      return { payload, usage, amountUsd };
+      await this.settle(prepared, input, usage, 'success');
+      return { payload, usage, amountUsd: 0 };
     } catch (error) {
       if (error instanceof GatewayError) throw error;
       await this.settle(prepared, input, EMPTY_USAGE, 'failure');
@@ -289,8 +288,8 @@ export class ComputeGateway {
         await onChunk(value);
       }
       const usage = parseUsageFromSse(buffer);
-      const amountUsd = await this.settle(prepared, input, usage, 'success');
-      return { usage, amountUsd };
+      await this.settle(prepared, input, usage, 'success');
+      return { usage, amountUsd: 0 };
     } catch (error) {
       if (error instanceof GatewayError) throw error;
       await this.settle(prepared, input, EMPTY_USAGE, 'failure');
