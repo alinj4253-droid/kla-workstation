@@ -60,7 +60,7 @@ async function openProjects() {
 
 async function openChat() {
   const user = await openProjects();
-  await user.click(screen.getByRole('button', { name: /已有群聊/ }));
+  await user.click(screen.getByRole('button', { name: /^已有群聊/ }));
   await waitFor(() => expect(screen.getByRole('button', { name: '发送给群组' })).toBeEnabled());
   return user;
 }
@@ -157,7 +157,7 @@ describe('首页快捷键发送', () => {
     await waitFor(() => expect(request.mock.calls.filter(([path, init]) => path.endsWith('/messages') && init?.method === 'POST')).toHaveLength(1));
     const submission = request.mock.calls.find(([path, init]) => path.endsWith('/messages') && init?.method === 'POST');
     expect(submission![0]).toBe('/v1/conversations/chat-a/messages');
-    expect(JSON.parse(submission![1].body)).toEqual({ text: message.text, mode: 'balanced', fileIds: [] });
+    expect(JSON.parse(submission![1].body)).toEqual({ text: message.text, mode: 'balanced', fileIds: [], executionAccess: 'approval', idempotencyKey: expect.any(String) });
     expect(submission![1].headers).toEqual({ 'x-identity-id': 'identity-a' });
     await waitFor(() => expect(screen.getByRole('textbox', { name: '发送消息给智能体小组' })).toHaveValue(''));
     expect(screen.queryByRole('textbox', { name: '首页任务输入' })).not.toBeInTheDocument();
@@ -378,7 +378,7 @@ describe('新版项目和群聊的真实接口交互', () => {
     expect(uploaded![1].headers).toEqual({ 'x-identity-id': 'identity-a', 'content-type': 'application/octet-stream' });
     await user.click(screen.getByRole('button', { name: '发送给群组' }));
     const sent = request.mock.calls.find(([path, init]) => path === '/v1/conversations/chat-a/messages' && init?.method === 'POST');
-    expect(JSON.parse(sent![1].body)).toEqual({ text: '', mode: 'balanced', fileIds: [file.id] });
+    expect(JSON.parse(sent![1].body)).toEqual({ text: '', mode: 'balanced', fileIds: [file.id], executionAccess: 'approval', idempotencyKey: expect.any(String) });
     expect(screen.queryByLabelText(`移除附件 ${file.name}`)).not.toBeInTheDocument();
     await user.click(await screen.findByRole('button', { name: file.name }));
     expect(await screen.findByRole('heading', { name: '共享文件内容' })).toBeVisible();
@@ -409,7 +409,7 @@ describe('新版项目和群聊的真实接口交互', () => {
     await user.click(screen.getByRole('button', { name: '打开成果文件' }));
     const preview = await screen.findByTitle('报告.html');
     expect(preview).toHaveAttribute('srcdoc', '<h1>蓝鲸报告</h1>');
-    expect(preview).toHaveAttribute('sandbox', '');
+    expect(preview).toHaveAttribute('sandbox', 'allow-scripts');
     await user.click(screen.getByRole('button', { name: '关闭预览' }));
     expect(screen.queryByTitle('报告.html')).not.toBeInTheDocument();
   });

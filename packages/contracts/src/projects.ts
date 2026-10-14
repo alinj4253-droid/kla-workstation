@@ -5,6 +5,8 @@ export const projectDtoSchema = z.object({
   name: z.string(),
   ownerIdentityId: z.string().min(1),
   createdAt: z.string().datetime(),
+  /** standalone：每身份固定的「独立群组」容器，仅承载不归属项目的群组，前端不作为项目展示。 */
+  kind: z.enum(['normal', 'standalone']).optional(),
 });
 
 export type ProjectDto = z.infer<typeof projectDtoSchema>;
@@ -25,13 +27,21 @@ export const conversationDtoSchema = z.object({
 export type ConversationDto = z.infer<typeof conversationDtoSchema>;
 
 export const createConversationRequestSchema = z.object({
-  projectId: z.string().min(1),
+  // 未提供时回落到当前身份的「独立群组」容器项目。
+  projectId: z.string().min(1).optional(),
   name: z.string().trim().min(1).max(100),
   // Collaborating agents only; the server always adds the project coordinator.
   agentIds: z.array(z.string().uuid()).min(1).max(100).refine(ids => new Set(ids).size === ids.length, '智能体不能重复').optional(),
 });
 
 export type CreateConversationRequest = z.infer<typeof createConversationRequestSchema>;
+
+export const updateConversationRequestSchema = z.object({
+  name: z.string().trim().min(1).max(100).optional(),
+  projectId: z.string().min(1).optional(),
+});
+
+export type UpdateConversationRequest = z.infer<typeof updateConversationRequestSchema>;
 
 export const messageDtoSchema = z.object({
   id: z.string().min(1),
