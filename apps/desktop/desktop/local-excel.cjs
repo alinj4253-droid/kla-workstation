@@ -221,7 +221,7 @@ function profileSheet(sheet, name, maxEnum) {
 function profileMarkdown(result) {
   const lines = ['# 数据画像报告', '', `- 源文件：\`${path.basename(String(result.source_file))}\`（${result.file_size.toLocaleString('en-US')} 字节）`, `- 分析时间：${result.profiled_at}`, `- 表数量：${result.sheet_names.length}`, ''];
   for (const info of result.sheets) {
-    lines.push(`## ${info.name}`, '', `规模：**${info.rows.toLocaleString('en-US')} 行 × ${info.cols} 列**` + (info.duplicate_rows ? `　｜　全行重复 **${info.duplicate_rows}** 行` : ''), '', '| 字段 | 形态 | 空值 | 空值占比 | 唯一值 | 取值范围 / 枚举 |', '|---|---|---|---|---|---|');
+    lines.push(`## ${info.name}`, '', `规模：**${info.rows.toLocaleString('en-US')} 行 × ${info.cols} 列**` + (info.duplicate_rows ? ` ｜ 全行重复 **${info.duplicate_rows}** 行` : ''), '', '| 字段 | 形态 | 空值 | 空值占比 | 唯一值 | 取值范围 / 枚举 |', '|---|---|---|---|---|---|');
     for (const c of info.columns) {
       let rng = '';
       if (c.enum) rng = c.enum.slice(0, 8).join(', ') + (c.enum.length > 8 ? ' ...' : '');
@@ -236,7 +236,7 @@ function profileMarkdown(result) {
 }
 
 async function excelProfile(a, input, workspace, signal) {
-  const { wb, sheets } = await readWorkbook(input, signal);
+  const { sheets } = await readWorkbook(input, signal);
   const targets = Array.isArray(a.sheets) && a.sheets.length ? a.sheets.map(s => String(s)) : Object.keys(sheets);
   const maxEnum = Math.max(1, Math.min(Number(a.maxEnum) || 30, 200));
   const profiledAt = fmtDateTime(new Date());
@@ -540,36 +540,36 @@ function renderHtml(data, theme) {
   .hero h1 { margin:0 0 6px; font-size:25px; letter-spacing:.4px; }
   .hero p { margin:0; opacity:.93; font-size:13.5px; }
   .hero .tags { margin-top:14px; display:flex; gap:8px; flex-wrap:wrap; }
-  .hero .tags span { background:rgba(255,255,255,.2); border:1px solid rgba(255,255,255,.3);
+  .hero .tags span { background:rgba(255,255,255,.2); border-width:1px; border-style:solid; border-color:rgba(255,255,255,.3);
                      border-radius:20px; padding:3px 12px; font-size:12px; }
   h2 { font-size:18px; margin:42px 0 6px; padding-left:12px;
-       border-left:4px solid ${th.accent}; color:${th.ink}; }
+       border-left-width:4px; border-left-style:solid; border-left-color:${th.accent}; color:${th.ink}; }
   h2 .no { color:${th.accent}; font-weight:800; margin-right:6px; }
   h3.sub-h { font-size:15px; margin:22px 0 8px; color:${th.ink}; }
   .lead { color:${th.sub}; font-size:13px; margin:0 0 18px 16px; }
   .grid { display:grid; gap:14px; }
   .g4 { grid-template-columns:repeat(4,1fr); }
   .g3 { grid-template-columns:repeat(3,1fr); }
-  .metric { background:${th.card}; border:1px solid ${th.line}; border-radius:14px;
+  .metric { background:${th.card}; border-width:1px; border-style:solid; border-color:${th.line}; border-radius:14px;
             padding:18px 18px 16px; box-shadow:0 2px 10px rgba(20,40,80,.04); }
   .metric.hl { border-color:${th.accent}; }
   .ml { font-size:12.5px; color:${th.sub}; }
   .mv { font-size:25px; font-weight:800; margin:6px 0 2px;
         font-variant-numeric:tabular-nums; }
   .ms { font-size:11.5px; color:${th.sub}; opacity:.85; }
-  .panel { background:${th.card}; border:1px solid ${th.line}; border-radius:14px;
+  .panel { background:${th.card}; border-width:1px; border-style:solid; border-color:${th.line}; border-radius:14px;
            padding:6px 4px 10px; margin-top:14px; box-shadow:0 2px 10px rgba(20,40,80,.04); }
   .panel svg { width:100%; height:auto; display:block; }
   table { width:100%; border-collapse:collapse; background:${th.card};
-          border-radius:14px; overflow:hidden; border:1px solid ${th.line};
+          border-radius:14px; overflow:hidden; border-width:1px; border-style:solid; border-color:${th.line};
           font-size:13px; margin-top:12px; }
   thead th { background:${th.bg}; text-align:left; padding:11px 14px;
              font-weight:700; font-size:12.5px; white-space:nowrap; color:${th.ink}; }
-  tbody td { padding:10px 14px; border-top:1px solid ${th.line}; vertical-align:top; }
+  tbody td { padding:10px 14px; border-top-width:1px; border-top-style:solid; border-top-color:${th.line}; vertical-align:top; }
   .num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
-  .notes { border:1px solid; border-radius:12px; padding:14px 18px; font-size:13px;
+  .notes { border-width:1px; border-style:solid; border-radius:12px; padding:14px 18px; font-size:13px;
            margin-top:14px; }
-  .foot { margin-top:46px; padding-top:18px; border-top:1px solid ${th.line};
+  .foot { margin-top:46px; padding-top:18px; border-top-width:1px; border-top-style:solid; border-top-color:${th.line};
           color:${th.sub}; font-size:12px; text-align:center; }
   @media (max-width:860px) {
     .g4,.g3 { grid-template-columns:repeat(2,1fr); }
