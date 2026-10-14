@@ -51,6 +51,16 @@ export const runtimeSkillCatalog = [
   { code: 'local_route_optimize', name: '路线顺序优化', description: '固定起终点 TSP 优化：多初始解+2-opt+Or-opt+节点交换+ILS，支持里程/时间/成本三种策略；矩阵缺省时自动调用高德获取；优化不劣于原始顺序', location: 'local' },
   { code: 'local_route_replan', name: '线路拆分重排', description: '把一组点位重新拆分为多条线路：均衡分配或 K-means 聚类+边界交换，再逐线最近邻+2-opt 排序并汇总里程', location: 'local' },
   { code: 'local_route_map', name: '路线对比地图', description: '生成优化前后路线对比的 HTML 地图（高德 JS API，单窗/双窗切换、双窗联动），作为成果文件交付', location: 'local' },
+  { code: 'local_waste_status', name: '经营分析数据源状态', description: '检查垃圾量快照库与业务库连通性、快照覆盖范围（日期/天数/作业所清单）', location: 'local' },
+  { code: 'local_waste_report', name: '垃圾量经营分析报告', description: '按公司级/作业所级 × 年报/季报/月报从快照表聚合：总计量/日均/收运覆盖率/漏收率 KPI、趋势同比、作业所分解、分类结构', location: 'local' },
+  { code: 'local_waste_detail', name: '垃圾量明细分析', description: '按日期区间查询明细：收运时段热力图、分类作业量同比、班次垃圾量、作业所×垃圾类型堆叠、本所与公司均值对比', location: 'local' },
+  { code: 'local_biz_configure', name: '数据源连接管理', description: '对话中动态管理 MySQL 数据源：新增/切换/删除连接（持久化到本地配置），连接前自动验证', location: 'local' },
+  { code: 'local_biz_schema', name: '表结构探查', description: '探查当前连接库的表清单、字段（类型/主键/注释）与抽样数据，用于分析任意陌生数据库', location: 'local' },
+  { code: 'local_biz_query', name: '只读 SQL 分析', description: '对当前连接执行只读 SQL（SELECT/SHOW/DESC/EXPLAIN，单条，最多 500 行），支撑任意库的经营分析', location: 'local' },
+  { code: 'local_excel_doctor', name: 'Excel 分析环境检查', description: '检查本地 Python 与 pandas/openpyxl/matplotlib 依赖，返回 full/partial/blocked 与缺失项安装指引', location: 'local' },
+  { code: 'local_excel_profile', name: 'Excel 数据画像', description: '对上传的 .xlsx/.xlsm 做多表结构画像与质量探查：行列规模、字段形态、缺失分布、重复行、枚举取值域、数值区间、日期范围与风险提示；只读源文件，输出 JSON+Markdown 成果', location: 'local' },
+  { code: 'local_excel_validate', name: 'Excel 溯源校验', description: '源文件 SHA256/MD5 指纹 + openpyxl 独立第二路径重算（可排除取消/退款单）+ 明细汇总双向勾稽 + 源文件未修改复验；每个对外数字可追溯', location: 'local' },
+  { code: 'local_excel_report', name: 'Excel 分析 HTML 报告', description: '把分析结果 JSON 编译为自包含 HTML 报告（matplotlib 图表 base64 内嵌、涨红跌绿、明暗主题），作为成果文件交付', location: 'local' },
 ] as const;
 export type RuntimeSkillCode = typeof runtimeSkillCatalog[number]['code'];
 export const runtimeSkillBundles = [
@@ -63,8 +73,20 @@ export const runtimeSkillBundles = [
   { code: 'local_development', name: '本地代码开发', description: '编写代码并执行本地命令', tools: ['local_code', 'local_cli', 'local_bat'] },
   { code: 'ppt_assistant', name: 'PPT 制作与改稿', description: 'deck-agent-kit 1.0：环境检查 → 材料读取 → 大纲确认 → 语义编译 → 质量门禁 → 真实渲染 → 成果交付；本地执行', tools: ['local_ppt_doctor', 'local_ppt_build', 'local_ppt_inspect', 'local_ppt_render'] },
   { code: 'route_planning', name: '路线规划', description: 'route-agent-kit 1.0：高德距离/时间/过路费矩阵 → 固定起终点 TSP 优化（里程/时间/成本三策略）→ 多线路拆分重排 → 优化前后地图对比；本地执行', tools: ['local_route_matrix', 'local_route_optimize', 'local_route_replan', 'local_route_map'] },
+  { code: 'waste_analysis', name: '经营分析', description: 'biz-agent-kit 2.0：对话中动态连接任意 MySQL 数据源（configure/schema/query 通用只读分析）+ 垃圾量专项快路径（快照库聚合：总量/日均/收运覆盖率/漏收率、趋势同比、作业所分解、分类结构与时段明细）；本地执行', tools: ['local_waste_status', 'local_waste_report', 'local_waste_detail', 'local_biz_configure', 'local_biz_schema', 'local_biz_query'] },
+  { code: 'excel_analysis', name: 'Excel 数据分析', description: 'excel-agent-kit 1.0（技能包 excel-pro 1.1）：环境检查 → 多表数据画像与质量探查 → 源文件指纹+独立重算+双向勾稽的溯源校验 → 自包含 HTML 分析报告；全程只读源文件，口径显式声明；本地执行', tools: ['local_excel_doctor', 'local_excel_profile', 'local_excel_validate', 'local_excel_report'] },
 ] as const satisfies ReadonlyArray<{ code: string; name: string; description: string; tools: readonly RuntimeSkillCode[] }>;
 export type RuntimeSkillBundleCode = typeof runtimeSkillBundles[number]['code'];
+// 枚举参数的中文容错：模型在自然语言场景常把 periodType 传成「年报」等值，
+// 若直接拒绝会导致整个任务续跑失败；这里统一映射为合法枚举（精确优先，其次包含匹配）
+const cnAlias = (aliases: Record<string, string>) => (v: unknown) => {
+  if (typeof v === 'string') {
+    const key = v.trim().toLowerCase();
+    if (key in aliases) return aliases[key];
+    for (const [alias, target] of Object.entries(aliases)) if (key.includes(alias)) return target;
+  }
+  return v;
+};
 export const toolArguments = {
   ...homeAiToolArguments,
   knowledge_search: z.object({ query: z.string().min(1), topK: z.number().int().min(1).max(20).default(5) }),
@@ -90,14 +112,14 @@ export const toolArguments = {
   local_ppt_render: z.object({ path: z.string().min(1).optional(), documentId: z.string().min(1).max(500).optional() }).refine(a => Boolean(a.path) !== Boolean(a.documentId), '选择 path 或 documentId 之一'),
   local_route_matrix: z.object({
     points: z.array(z.object({ name: z.string().max(100).optional(), lat: z.number().min(-90).max(90), lon: z.number().min(-180).max(180) })).min(2).max(200),
-    coordSystem: z.enum(['gcj02', 'wgs84']).default('gcj02'),
-    kind: z.enum(['distance', 'toll']).default('distance'),
+    coordSystem: z.preprocess(cnAlias({ '高德': 'gcj02', '国测局': 'gcj02', '火星坐标': 'gcj02', 'gps': 'wgs84', '国际': 'wgs84' }), z.enum(['gcj02', 'wgs84'])).default('gcj02'),
+    kind: z.preprocess(cnAlias({ '距离': 'distance', '行车距离': 'distance', '过路费': 'toll', '收费': 'toll', '费用': 'toll' }), z.enum(['distance', 'toll'])).default('distance'),
   }),
   local_route_optimize: z.object({
     routeName: z.string().min(1).max(200).default('未命名线路'),
     points: z.array(z.object({ name: z.string().max(100).optional(), lat: z.number().min(-90).max(90), lon: z.number().min(-180).max(180) })).min(2).max(200),
     coordSystem: z.enum(['gcj02', 'wgs84']).default('gcj02'),
-    strategy: z.enum(['mileage', 'time', 'cost']).default('mileage'),
+    strategy: z.preprocess(cnAlias({ '里程': 'mileage', '距离': 'mileage', '时间': 'time', '耗时': 'time', '成本': 'cost', '花费': 'cost', '费用': 'cost' }), z.enum(['mileage', 'time', 'cost'])).default('mileage'),
     distanceMatrix: z.array(z.array(z.number())).optional(),
     timeMatrix: z.array(z.array(z.number())).optional(),
     tollMatrix: z.array(z.array(z.number())).optional(),
@@ -105,8 +127,8 @@ export const toolArguments = {
   local_route_replan: z.object({
     points: z.array(z.object({ name: z.string().max(100).optional(), lat: z.number().min(-90).max(90), lon: z.number().min(-180).max(180) })).min(2).max(300),
     numRoutes: z.number().int().min(2).max(10),
-    algorithm: z.enum(['balanced', 'kmeans']).default('balanced'),
-    coordSystem: z.enum(['gcj02', 'wgs84']).default('gcj02'),
+    algorithm: z.preprocess(cnAlias({ '均衡': 'balanced', '均衡分配': 'balanced', '平均': 'balanced', '聚类': 'kmeans' }), z.enum(['balanced', 'kmeans'])).default('balanced'),
+    coordSystem: z.preprocess(cnAlias({ '高德': 'gcj02', '国测局': 'gcj02', '火星坐标': 'gcj02', 'gps': 'wgs84', '国际': 'wgs84' }), z.enum(['gcj02', 'wgs84'])).default('gcj02'),
   }),
   local_route_map: z.object({
     routeName: z.string().min(1).max(200).default('路线对比'),
@@ -118,6 +140,62 @@ export const toolArguments = {
     distanceKm: z.number().optional(),
     savedPercent: z.number().optional(),
   }),
+  local_waste_status: z.object({}),
+  local_waste_report: z.object({
+    scope: z.string().max(100).default('company'),
+    periodType: z.preprocess(cnAlias({ '年报': 'year', '年度': 'year', '年': 'year', '季报': 'quarter', '季度': 'quarter', '季': 'quarter', '月报': 'month', '月度': 'month', '月': 'month' }), z.enum(['year', 'quarter', 'month'])).default('year'),
+    year: z.number().int().min(2000).max(2100).optional(),
+    quarter: z.number().int().min(1).max(4).optional(),
+    month: z.number().int().min(1).max(12).optional(),
+  }),
+  local_waste_detail: z.object({
+    kind: z.preprocess(cnAlias({ '热力图': 'heatmap', '时段': 'heatmap', '分类同比': 'category_yoy', '分类': 'category_yoy', '同比': 'category_yoy', '班次': 'shift', '作业所': 'unit_category', '堆叠': 'unit_category', '均值': 'unit_vs_avg', '本所': 'unit_vs_avg', '对比': 'unit_vs_avg' }), z.enum(['heatmap', 'category_yoy', 'shift', 'unit_category', 'unit_vs_avg'])),
+    start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '开始日期格式 YYYY-MM-DD'),
+    end: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '结束日期格式 YYYY-MM-DD'),
+    pStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    pEnd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    unit: z.string().max(100).optional(),
+  }),
+  local_biz_configure: z.object({
+    action: z.preprocess(cnAlias({ '设置': 'set', '新增': 'set', '创建': 'set', '添加': 'set', '连接': 'set', '切换': 'activate', '激活': 'activate', '删除': 'remove', '移除': 'remove', '列表': 'list', '查看': 'list' }), z.enum(['set', 'activate', 'remove', 'list'])).default('list'),
+    name: z.string().max(50).optional(),
+    host: z.string().max(100).optional(),
+    port: z.number().int().min(1).max(65535).optional(),
+    user: z.string().max(100).optional(),
+    password: z.string().max(200).optional(),
+    database: z.string().max(100).optional(),
+  }),
+  local_biz_schema: z.object({}),
+  local_biz_query: z.object({
+    sql: z.string().min(1).max(20000),
+    maxRows: z.number().int().min(1).max(500).optional(),
+  }),
+  local_excel_doctor: z.object({}),
+  local_excel_profile: z.object({
+    path: z.string().min(1).max(500),
+    sheets: z.array(z.string().max(100)).max(20).optional(),
+    maxEnum: z.number().int().min(1).max(200).optional(),
+  }),
+  local_excel_validate: z.object({
+    path: z.string().min(1).max(500),
+    sheet: z.string().max(100).optional(),
+    sum: z.array(z.string().max(100)).max(20).optional(),
+    count: z.boolean().optional(),
+    filterCol: z.string().max(100).optional(),
+    filterExclude: z.string().max(200).optional(),
+    reconcileDetail: z.string().max(100).optional(),
+    reconcileDKeys: z.string().max(200).optional(),
+    reconcileDValue: z.string().max(100).optional(),
+    reconcileSummary: z.string().max(100).optional(),
+    reconcileSKeys: z.string().max(200).optional(),
+    reconcileSValue: z.string().max(100).optional(),
+  }),
+  local_excel_report: z.object({
+    jsonPath: z.string().max(500).optional(),
+    content: z.string().max(1_000_000).optional(),
+    theme: z.enum(['light', 'dark']).default('light'),
+    fileName: z.string().max(200).optional(),
+  }).refine(input => Boolean(input.jsonPath) !== Boolean(input.content), '提供 jsonPath 或 content 之一'),
 };
 export const localToolCodes = runtimeSkillCatalog.filter(tool => tool.location === 'local').map(tool => tool.code);
 export const deviceRegistrationSchema = z.object({ installationId: z.string().uuid(), name: z.string().min(1).max(100), platform: z.string().max(50), capabilities: z.array(z.string().refine(code => localToolCodes.includes(code as typeof localToolCodes[number]))).max(localToolCodes.length) });

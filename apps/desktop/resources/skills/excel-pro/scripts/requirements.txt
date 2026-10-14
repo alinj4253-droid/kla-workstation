@@ -1,0 +1,5 @@
+# excel-pro 技能包运行时依赖（excel-agent-kit 1.0）
+# 由 scripts/setup-excel-runtime.ps1 装入 %LOCALAPPDATA%/kla-workstation/excel-runtime
+pandas>=1.5
+openpyxl>=3.1
+matplotlib>=3.7

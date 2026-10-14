@@ -19,6 +19,14 @@ const string = { type: 'string' }, integer = { type: 'integer' };
 const matrixOfNumbers = { type: 'array', items: { type: 'array', items: { type: 'number' } } };
 const arrayOfIntegers = { type: 'array', items: integer };
 const pointList = { type: 'array', items: { type: 'object', properties: { name: string, lat: { type: 'number' }, lon: { type: 'number' } }, required: ['lat', 'lon'], additionalProperties: false } };
+// 枚举参数显式列出合法值，引导模型传英文枚举而非「年报」等自然语言值
+const periodTypeEnum = { type: 'string', enum: ['year', 'quarter', 'month'] };
+const detailKindEnum = { type: 'string', enum: ['heatmap', 'category_yoy', 'shift', 'unit_category', 'unit_vs_avg'] };
+const bizActionEnum = { type: 'string', enum: ['set', 'activate', 'remove', 'list'] };
+const routeKindEnum = { type: 'string', enum: ['distance', 'toll'] };
+const routeStrategyEnum = { type: 'string', enum: ['mileage', 'time', 'cost'] };
+const routeAlgorithmEnum = { type: 'string', enum: ['balanced', 'kmeans'] };
+const coordSystemEnum = { type: 'string', enum: ['gcj02', 'wgs84'] };
 const properties: Record<RuntimeSkillCode, Record<string, unknown>> = {
   home_ai_session_open: { sessionId: string },
   home_ai_interview_update: { sessionId:string, expectedRevision:integer, answerId:{type:'string',enum:['role','mission','handoff','workflow','capability','kpi','idea','success','constraints','materials']}, answer:string },
@@ -52,17 +60,17 @@ const properties: Record<RuntimeSkillCode, Record<string, unknown>> = {
   local_ppt_render: { path: string, documentId: string },
   local_route_matrix: {
     points: pointList,
-    coordSystem: string, kind: string,
+    coordSystem: coordSystemEnum, kind: routeKindEnum,
   },
   local_route_optimize: {
     routeName: string,
     points: pointList,
-    coordSystem: string, strategy: string,
+    coordSystem: coordSystemEnum, strategy: routeStrategyEnum,
     distanceMatrix: matrixOfNumbers, timeMatrix: matrixOfNumbers, tollMatrix: matrixOfNumbers,
   },
   local_route_replan: {
     points: pointList,
-    numRoutes: integer, algorithm: string, coordSystem: string,
+    numRoutes: integer, algorithm: routeAlgorithmEnum, coordSystem: coordSystemEnum,
   },
   local_route_map: {
     routeName: string,
@@ -70,6 +78,36 @@ const properties: Record<RuntimeSkillCode, Record<string, unknown>> = {
     coordSystem: string,
     optimizedOrder: arrayOfIntegers, originalOrder: arrayOfIntegers,
     strategy: string, distanceKm: { type: 'number' }, savedPercent: { type: 'number' },
+  },
+  local_waste_status: {},
+  local_waste_report: {
+    scope: string, periodType: periodTypeEnum,
+    year: integer, quarter: integer, month: integer,
+  },
+  local_waste_detail: {
+    kind: detailKindEnum, start: string, end: string,
+    pStart: string, pEnd: string, unit: string,
+  },
+  local_biz_configure: {
+    action: bizActionEnum, name: string,
+    host: string, port: integer, user: string, password: string, database: string,
+  },
+  local_biz_schema: {},
+  local_biz_query: {
+    sql: string, maxRows: integer,
+  },
+  local_excel_doctor: {},
+  local_excel_profile: {
+    path: string, sheets: { type: 'array', items: string }, maxEnum: integer,
+  },
+  local_excel_validate: {
+    path: string, sheet: string, sum: { type: 'array', items: string }, count: { type: 'boolean' },
+    filterCol: string, filterExclude: string,
+    reconcileDetail: string, reconcileDKeys: string, reconcileDValue: string,
+    reconcileSummary: string, reconcileSKeys: string, reconcileSValue: string,
+  },
+  local_excel_report: {
+    jsonPath: string, content: string, theme: { type: 'string', enum: ['light', 'dark'] }, fileName: string,
   },
 };
 const required: Record<RuntimeSkillCode, string[]> = {
@@ -86,6 +124,9 @@ const required: Record<RuntimeSkillCode, string[]> = {
   local_ppt_doctor: [], local_ppt_build: ['specJson'], local_ppt_inspect: [], local_ppt_render: [],
   local_route_matrix: ['points'], local_route_optimize: ['points'], local_route_replan: ['points', 'numRoutes'],
   local_route_map: ['points', 'optimizedOrder'],
+  local_waste_status: [], local_waste_report: [], local_waste_detail: ['kind', 'start', 'end'],
+  local_biz_configure: [], local_biz_schema: [], local_biz_query: ['sql'],
+  local_excel_doctor: [], local_excel_profile: ['path'], local_excel_validate: ['path'], local_excel_report: [],
 };
 export function agentTools(agent: RegisteredAgent) {
   return runtimeSkillCatalog.filter(s => agent.skills.includes(s.code) && (s.location === 'server' || agent.execution_location === 'local'))
@@ -95,7 +136,17 @@ export function parseToolArguments(name: string, raw: unknown): Record<string, u
   if (!(name in toolArguments)) throw new Error(`未知技能：${name}`);
   try { return toolArguments[name as RuntimeSkillCode].parse(raw); }
   catch(error) {
-    if(name.startsWith('home_ai_')&&error instanceof z.ZodError) throw new Error(`诊断参数无效：${error.issues.map(issue=>`${issue.path.join('.')||'参数'}：${issue.message}`).join('；')}。请按工具参数格式修正；revision请重新读取会话获取。`,{cause:error});
+    if(error instanceof z.ZodError) {
+      // 参数错误转中文并附合法值，模型才能自纠重试（enum 类错误必须列出 options）
+      const detail = error.issues.map(issue => {
+        const path = issue.path.join('.') || '参数';
+        const options = 'options' in issue && Array.isArray(issue.options) ? `（可选值：${(issue.options as string[]).join(' / ')}）` : '';
+        return `${path}：${issue.message}${options}`;
+      }).join('；');
+      throw new Error(name.startsWith('home_ai_')
+        ? `诊断参数无效：${detail}。请按工具参数格式修正；revision请重新读取会话获取。`
+        : `工具参数无效：${detail}。请按工具参数格式修正后重试。`, { cause: error });
+    }
     throw error;
   }
 }

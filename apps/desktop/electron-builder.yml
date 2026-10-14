@@ -16,6 +16,12 @@ extraResources:
       - '**/*'
       - '!**/__pycache__/**'
       - '!**/*.pyc'
+  - from: resources/skills/excel-pro
+    to: skills/excel-pro
+    filter:
+      - '**/*'
+      - '!**/__pycache__/**'
+      - '!**/*.pyc'
 win:
   icon: resources/kla-app-icon.ico
   target:
