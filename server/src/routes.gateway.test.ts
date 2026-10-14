@@ -19,7 +19,7 @@ describe('durable conversation entry point', () => {
     await registerRoutes(app, { accounts, database, gateway, mode: 'mock' });
     try {
       const response = await app.inject({ method: 'POST', url: `/api/v1/conversations/${conversation.id}/messages`,
-        headers: { authorization: `Bearer ${session.accessToken}`, 'x-identity-id': identity.id }, payload: { text: '请写报告' } });
+        headers: { authorization: `Bearer ${session.accessToken}`, 'x-identity-id': identity.id }, payload: { text: '请写报告', submitObject: [{ type: 'command', id: 'task_execution' }] } });
       expect(response.statusCode).toBe(200);
       expect(response.json().data.run.status).toBe('failed');
       expect(gateway.completeChat).not.toHaveBeenCalled();
@@ -39,7 +39,7 @@ describe('durable conversation entry point', () => {
     const database = { rawPool: new CatalogPool(accounts) } as unknown as PostgresDatabase;
     await registerRoutes(app, { accounts, database, mode: 'mock' });
     try {
-      const payload = { text: '只执行一次', idempotencyKey: '4f3c7b1b-53f4-4c07-a1e8-1c2c3a8a5e21' };
+      const payload = { text: '只执行一次', idempotencyKey: '4f3c7b1b-53f4-4c07-a1e8-1c2c3a8a5e21', submitObject: [{ type: 'command', id: 'task_execution' }] };
       const headers = { authorization: `Bearer ${session.accessToken}`, 'x-identity-id': identity.id };
       const first = await app.inject({ method: 'POST', url: `/api/v1/conversations/${conversation.id}/messages`, headers, payload });
       const second = await app.inject({ method: 'POST', url: `/api/v1/conversations/${conversation.id}/messages`, headers, payload });

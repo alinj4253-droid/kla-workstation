@@ -5,7 +5,7 @@ import { loadConfig } from '../config.js';
 import { PostgresDatabase } from '../database/postgres.js';
 import { PostgresAccountRepository } from '../repositories/index.js';
 import { registerRoutes } from '../routes.js';
-import { ensureRuntimeRegistry, roomRegistry } from './registry.js';
+import { ensureRuntimeRegistry, roomRegistry, validatePlan } from './registry.js';
 
 const config = loadConfig();
 const testCase = config.databaseUrl ? it : it.skip;
@@ -62,10 +62,16 @@ describe('群组选择智能体真实数据库链路', () => {
       }
       const legacy = await app.inject({ method: 'POST', url: '/api/v1/conversations', headers, payload: { projectId: project.id, name: '原有调用' } });
       expect(legacy.statusCode, legacy.body).toBe(200);
-      // 旧调用不带 agentIds：房间按「统筹 + 当前身份所有启用的非统筹智能体」惰性补齐。
-      // 期望集合从库中推导，避免以后新增内置智能体（如「路线规划助手」）时再次写死而误红。
+      // HTTP 创建接口为兼容旧客户端，在省略 agentIds 时把当前可用智能体
+      // 明确写入该群聊成员池；这仍然是“已加入”而不是运行时动态可见。
       const enabledPool = (await pool.query(`SELECT id FROM agents WHERE identity_id=$1 AND enabled AND name<>'统筹智能体'`, [account.identity.id])).rows.map(row => row.id as string);
       expect((await roomRegistry(pool, legacy.json().data.id)).map(agent => agent.id).sort()).toEqual([...enabledPool, coordinator.id].sort());
+      // 直接创建的历史空群聊只惰性补齐必选群聊秘书，绝不把全局智能体目录
+      // 当作成员池；后续必须通过群聊成员管理显式加入执行智能体。
+      const emptyLegacy = (await pool.query('INSERT INTO conversations(project_id,name) VALUES($1,$2) RETURNING id', [project.id, '历史空群聊'])).rows[0] as { id: string };
+      const emptyRegistry = await roomRegistry(pool, emptyLegacy.id);
+      expect(emptyRegistry.map(agent => agent.id)).toEqual([coordinator.id]);
+      expect(() => validatePlan({ tasks: [{ title: '越界任务', instruction: '不能执行', agentId: ppt.id, dependsOn: [] }] }, emptyRegistry)).toThrow('群聊外');
     } finally {
       await app.close();
       await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);

@@ -63,8 +63,9 @@ export class PostgresAccountRepository implements AccountRepository {
       const identityResult = await client.query("INSERT INTO identities (user_id, type, display_name, is_default) VALUES ($1, 'personal', $2, true) RETURNING id, user_id, type, display_name, organization_id, status, is_default", [userRow.id, input.nickname]);
       await client.query("INSERT INTO workspaces (identity_id, type, name) VALUES ($1, 'personal', $2)", [identityResult.rows[0].id, `${input.nickname}的个人工作区`]);
       const project = await client.query("INSERT INTO projects (owner_identity_id, name) VALUES ($1, $2) RETURNING id", [identityResult.rows[0].id, '我的协作项目']);
-      for (const [name, role, location] of [['统筹智能体', '识别目标、规划协作任务并调度执行智能体', 'server'], ['本地执行智能体', '检索知识、编写材料并交付成果文件', 'local']] as const) await client.query('INSERT INTO agents (identity_id, name, role, type, execution_location) VALUES ($1,$2,$3,$4,$5)', [identityResult.rows[0].id, name, role, 'official', location]);
-      await client.query('INSERT INTO conversations (project_id, name) VALUES ($1, $2)', [project.rows[0].id, '默认协作群聊']);
+      await this.populateIdentityOfficialAgents(client, identityResult.rows[0].id);
+      const defaultConversation = await client.query('INSERT INTO conversations (project_id, name) VALUES ($1, $2) RETURNING id', [project.rows[0].id, '默认协作群聊']);
+      await this.populateConversationAgentPool(client, defaultConversation.rows[0].id, project.rows[0].id);
       await client.query(
         `INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload, idempotency_key)
          VALUES ('identity', $1, 'provision_identity_compute', $2, $3)
@@ -126,17 +127,50 @@ export class PostgresAccountRepository implements AccountRepository {
     WHERE ($1::uuid IS NULL OR c.project_id=$1) AND ($2::uuid IS NULL OR EXISTS (
       SELECT 1 FROM conversation_members cm JOIN project_members pm ON pm.project_id=cm.project_id AND pm.identity_id=cm.identity_id
       WHERE cm.conversation_id=c.id AND cm.identity_id=$2)) ORDER BY c.created_at DESC`, [projectId ?? null, identityId ?? null]); return rows.map((row) => ({ id: row.id, projectId: row.project_id, name: row.name, createdAt: new Date(row.created_at).toISOString() })); }
-  async createConversation(projectId: string, name: string): Promise<Conversation> { const { rows } = await this.pool.query('INSERT INTO conversations (project_id, name) VALUES ($1, $2) RETURNING id, project_id, name, created_at', [projectId, name]); const row = rows[0]; return { id: row.id, projectId: row.project_id, name: row.name, createdAt: new Date(row.created_at).toISOString() }; }
-  async listMessages(conversationId: string): Promise<Message[]> { const { rows } = await this.pool.query('SELECT id, conversation_id, sender_id, sender_type, sender_name, kind, text, metadata, created_at FROM messages WHERE conversation_id = $1 ORDER BY created_at, id', [conversationId]); return rows.map((row) => this.message(row)); }
-  async createMessage(conversationId: string, senderId: string, text: string, metadata: Record<string, unknown> = {}): Promise<Message> { const { rows } = await this.pool.query("INSERT INTO messages (conversation_id, sender_id, sender_type, text, metadata) VALUES ($1, $2, 'user', $3, $4) RETURNING id, conversation_id, sender_id, sender_type, sender_name, kind, text, metadata, created_at", [conversationId, senderId, text, JSON.stringify(metadata)]); return this.message(rows[0]); }
+  async createConversation(projectId: string, name: string): Promise<Conversation> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await client.query('INSERT INTO conversations (project_id, name) VALUES ($1, $2) RETURNING id, project_id, name, created_at', [projectId, name]);
+      const row = result.rows[0];
+      await this.populateConversationAgentPool(client, row.id, row.project_id);
+      await client.query('COMMIT');
+      return { id: row.id, projectId: row.project_id, name: row.name, createdAt: new Date(row.created_at).toISOString() };
+    } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
+  }
+  /**
+   * Snapshot the enabled agents available when a default room is created.
+   * Later registry refreshes may create new identity agents, but they must not
+   * silently enter an existing room; only explicit room-agent management may
+   * change this pool.
+   */
+  private async populateConversationAgentPool(client: PoolClient, conversationId: string, projectId: string): Promise<void> {
+    await client.query(`INSERT INTO conversation_agents(conversation_id,agent_id,role)
+      SELECT $1,a.id,CASE WHEN a.name IN ('群聊秘书','统筹智能体') THEN 'coordinator' ELSE 'member' END
+      FROM agents a JOIN projects p ON p.owner_identity_id=a.identity_id
+      WHERE p.id=$2 AND a.enabled
+      ON CONFLICT (conversation_id,agent_id) DO NOTHING`, [conversationId, projectId]);
+  }
+  private async populateIdentityOfficialAgents(client: PoolClient, identityId: string): Promise<void> {
+    for (const [name, role, location] of [
+      ['统筹智能体', '识别目标、规划协作任务并调度执行智能体', 'server'],
+      ['本地执行智能体', '检索知识、编写材料并交付成果文件', 'local'],
+      ['PPT助手', '设计、生成和检查演示文稿', 'local'],
+      ['路线规划助手', '规划和优化路线并生成路线成果', 'local'],
+    ] as const) {
+      await client.query('INSERT INTO agents (identity_id, name, role, type, execution_location) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (identity_id,name) DO NOTHING', [identityId, name, role, 'official', location]);
+    }
+  }
+  async listMessages(conversationId: string): Promise<Message[]> { const { rows } = await this.pool.query('SELECT id, conversation_id, sender_id, sender_identity_id, sender_type, sender_name, kind, text, metadata, created_at FROM messages WHERE conversation_id = $1 ORDER BY created_at, id', [conversationId]); return rows.map((row) => this.message(row)); }
+  async createMessage(conversationId: string, senderId: string, text: string, metadata: Record<string, unknown> = {}, senderIdentityId?: string): Promise<Message> { const { rows } = await this.pool.query("INSERT INTO messages (conversation_id, sender_id, sender_identity_id, sender_type, text, metadata) VALUES ($1, $2, COALESCE($5::uuid, (SELECT owner_identity_id FROM projects WHERE id=(SELECT project_id FROM conversations WHERE id=$1))), 'user', $3, $4) RETURNING id, conversation_id, sender_id, sender_type, sender_name, kind, text, metadata, created_at", [conversationId, senderId, text, JSON.stringify(metadata), senderIdentityId ?? null]); return this.message(rows[0]); }
   async createAgentMessage(conversationId: string, agentName: string, text: string, metadata: Record<string, unknown> = {}): Promise<Message> {
     const { rows } = await this.pool.query("INSERT INTO messages (conversation_id, sender_id, sender_type, sender_name, text, metadata) VALUES ($1, (SELECT user_id FROM identities WHERE id = (SELECT owner_identity_id FROM projects WHERE id = (SELECT project_id FROM conversations WHERE id = $1))), 'agent', $2, $3, $4) RETURNING id, conversation_id, sender_id, sender_type, sender_name, kind, text, metadata, created_at", [conversationId, agentName, text, JSON.stringify(metadata)]);
     return this.message(rows[0]);
   }
   async listAgents(identityId: string): Promise<AgentProfile[]> { const { rows } = await this.pool.query('SELECT id, name, role, type, model_id, enabled FROM agents WHERE identity_id = $1 AND enabled = true ORDER BY created_at', [identityId]); return rows.map((r) => ({ id: r.id, name: r.name, role: r.role, type: r.type, modelId: r.model_id, enabled: r.enabled })); }
   async listConversationRuns(conversationId: string): Promise<ConversationRun[]> { const { rows } = await this.pool.query('SELECT * FROM conversation_runs WHERE conversation_id = $1 ORDER BY updated_at DESC LIMIT 20', [conversationId]); return rows.map((r) => this.run(r)); }
-  async createRun(conversationId: string, triggerMessageId: string, mode: string, leaseOwner?: string, executionAccess: 'approval' | 'full' = 'approval'): Promise<ConversationRun> { const { rows } = await this.pool.query(`INSERT INTO conversation_runs (conversation_id, trigger_message_id, mode, execution_access, status, lease_owner, lease_until)
-    VALUES ($1,$2,$3,$4,'queued',$5,CASE WHEN $5::uuid IS NULL THEN NULL ELSE now()+interval '60 seconds' END) RETURNING *`, [conversationId, triggerMessageId, mode, executionAccess, leaseOwner ?? null]); return this.run(rows[0]); }
+  async createRun(conversationId: string, triggerMessageId: string, mode: string, leaseOwner?: string, executionAccess: 'approval' | 'full' = 'approval', options: { triggerIdentityId?: string; routeMode?: 'direct_agent' | 'coordinator_simple' | 'coordinator_complex' } = {}): Promise<ConversationRun> { const { rows } = await this.pool.query(`INSERT INTO conversation_runs (conversation_id, trigger_message_id, trigger_identity_id, route_mode, mode, execution_access, status, phase, lease_owner, lease_until)
+    VALUES ($1,$2,COALESCE($3::uuid,(SELECT sender_identity_id FROM messages WHERE id=$2)),$4,$5,$6,'queued',CASE WHEN $4='direct_agent' THEN 'execution' ELSE 'coordination' END,$7,CASE WHEN $7::uuid IS NULL THEN NULL ELSE now()+interval '60 seconds' END) RETURNING *`, [conversationId, triggerMessageId, options.triggerIdentityId ?? null, options.routeMode ?? 'coordinator_complex', mode, executionAccess, leaseOwner ?? null]); return this.run(rows[0]); }
   async completeRun(runId: string, status: string, agentName?: string, result: Record<string, unknown> = {}): Promise<ConversationRun> { const { rows } = await this.pool.query('UPDATE conversation_runs SET status=$2, current_agent=$3, result=$4, updated_at=now() WHERE id=$1 RETURNING *', [runId, status, agentName ?? null, JSON.stringify(result)]); return this.run(rows[0]); }
   async createArtifact(identityId: string, conversationId: string, name: string, mimeType: string, content: string): Promise<Artifact> { const { rows } = await this.pool.query('INSERT INTO artifacts (identity_id, conversation_id, name, mime_type, content, size_bytes) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *', [identityId, conversationId, name, mimeType, content, Buffer.byteLength(content)]); return this.artifact(rows[0]); }
   async listArtifacts(identityId: string, conversationId?: string): Promise<Artifact[]> {
@@ -149,8 +183,8 @@ export class PostgresAccountRepository implements AccountRepository {
     if (!rows[0] || !(await this.listAllConversations(identityId)).some(item => item.id === rows[0].conversation_id)) return null;
     return this.artifact(rows[0]);
   }
-  private message(row: Record<string, any>): Message { return { id: row.id, conversationId: row.conversation_id, senderId: row.sender_id, senderType: row.sender_type ?? 'user', senderName: row.sender_name, kind: row.kind ?? 'text', text: row.text, metadata: row.metadata ?? {}, createdAt: new Date(row.created_at).toISOString() }; }
-  private run(row: Record<string, any>): ConversationRun { return { id: row.id, conversationId: row.conversation_id, triggerMessageId: row.trigger_message_id, status: row.status, mode: row.mode, executionAccess: row.execution_access === 'full' ? 'full' : 'approval', currentAgent: row.current_agent, phase: row.phase, result: row.result ?? {}, createdAt: new Date(row.created_at).toISOString(), updatedAt: new Date(row.updated_at).toISOString() } as ConversationRun; }
+  private message(row: Record<string, any>): Message { return { id: row.id, conversationId: row.conversation_id, senderId: row.sender_id, senderIdentityId: row.sender_identity_id ?? null, senderType: row.sender_type ?? 'user', senderName: row.sender_name, kind: row.kind ?? 'text', text: row.text, metadata: row.metadata ?? {}, createdAt: new Date(row.created_at).toISOString() }; }
+  private run(row: Record<string, any>): ConversationRun { return { id: row.id, conversationId: row.conversation_id, triggerMessageId: row.trigger_message_id, status: row.status, mode: row.mode, executionAccess: row.execution_access === 'full' ? 'full' : 'approval', routeMode: row.route_mode, triggerIdentityId: row.trigger_identity_id, currentAgent: row.current_agent, phase: row.phase, result: row.result ?? {}, createdAt: new Date(row.created_at).toISOString(), updatedAt: new Date(row.updated_at).toISOString() } as ConversationRun; }
   private artifact(row: Record<string, any>): Artifact { return { id: row.id, conversationId: row.conversation_id, name: row.name, mimeType: row.mime_type, content: row.content ?? '', contentEncoding: row.content_encoding ?? 'utf8', storageKey: row.storage_key ?? null, storageStatus: row.storage_status ?? 'inline', sizeBytes: Number(row.size_bytes ?? 0), createdAt: new Date(row.created_at).toISOString() }; }
   async createOrganization(userId: string, name: string, licenseNumber: string): Promise<Identity> {
     const client = await this.pool.connect();
@@ -161,6 +195,7 @@ export class PostgresAccountRepository implements AccountRepository {
       const userEmailRow = await client.query('SELECT email FROM users WHERE id = $1', [userId]);
       const org = await client.query('INSERT INTO organizations (name, license_number) VALUES ($1, $2) RETURNING id', [name, licenseNumber]);
       const identity = await client.query("INSERT INTO identities (user_id, type, display_name, organization_id, is_default) VALUES ($1, 'enterprise', $2, $3, false) RETURNING id, user_id, type, display_name, organization_id, status, is_default", [userId, name, org.rows[0].id]);
+      await this.populateIdentityOfficialAgents(client, identity.rows[0].id);
       const role = await client.query("INSERT INTO roles (organization_id, name, description, is_system) VALUES ($1, '管理员', '企业管理员', true) RETURNING id", [org.rows[0].id]);
       // 基础权限（read/write/execute/manage/export）与算力权限集合并绑定
       await this.bindRolePermissions(client, role.rows[0].id, [...ENTERPRISE_ADMIN_PERMISSIONS, 'read', 'write', 'execute', 'manage', 'export']);
@@ -192,6 +227,7 @@ export class PostgresAccountRepository implements AccountRepository {
       }
       const userEmailRow = await client.query('SELECT email FROM users WHERE id = $1', [userId]);
       const identity = await client.query("INSERT INTO identities (user_id, type, display_name, organization_id, is_default) VALUES ($1, 'enterprise', $2, $3, false) RETURNING id, user_id, type, display_name, organization_id, status, is_default", [userId, org.rows[0].name, org.rows[0].id]);
+      await this.populateIdentityOfficialAgents(client, identity.rows[0].id);
       const role = await client.query("INSERT INTO roles (organization_id, name, description, is_system) VALUES ($1, '成员', '企业成员', true) ON CONFLICT (organization_id, name) DO UPDATE SET name = EXCLUDED.name RETURNING id", [org.rows[0].id]);
       await this.bindRolePermissions(client, role.rows[0].id, [...ENTERPRISE_MEMBER_PERMISSIONS, 'read', 'write', 'execute', 'export']);
       await client.query('INSERT INTO identity_roles (identity_id, role_id) VALUES ($1, $2)', [identity.rows[0].id, role.rows[0].id]);

@@ -24,7 +24,7 @@ export function MarkdownMessage({ text }: { text: string }) {
 function eventLabel(event: RunEvent): string {
   const data = event.payload;
   switch (event.kind) {
-    case 'plan.created': return '统筹智能体已拆解任务';
+    case 'plan.created': return '群聊秘书已拆解任务';
     case 'step.running': return `${String(data.agentName ?? '执行智能体')} · ${String(data.title ?? '执行任务')}`;
     case 'step.waiting_device': return '等待本地执行设备上线';
     case 'step.completed': return `${String(data.agentName ?? '执行智能体')}已完成任务`;
@@ -62,10 +62,13 @@ export function RunActivity({ run, steps, events, submitting, onCancel, author, 
   useEffect(() => { setOpen(active); setExpanded(null); pinnedRef.current = true; }, [run?.id, active]);
   useEffect(() => { if (open && pinnedRef.current && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight; }, [open, steps.length, events.length]);
   if (!run && !submitting && !children) return null;
-  const name = author ?? run?.currentAgent ?? '统筹智能体';
+  const name = author === '统筹智能体' ? '群聊秘书' : author ?? (run?.currentAgent === '统筹智能体' ? '群聊秘书' : run?.currentAgent) ?? '群聊秘书';
   const phase = submitting ? '正在提交消息' : run?.status === 'failed' ? '执行失败' : run?.status === 'cancelled' ? '已终止' : run?.status === 'completed' ? '已完成' : run?.status === 'queued' ? '排队中' : run?.status === 'waiting_device' ? '等待本地设备' : run?.status === 'waiting_approval' ? '等待本地授权' : run?.status === 'waiting_tool' ? '调用工具中' : run?.phase === 'coordination' ? '正在规划' : run?.phase === 'summary' ? '正在汇总' : '执行中';
   const state = active ? 'is-active' : run?.status === 'failed' ? 'is-failed' : run?.status === 'cancelled' ? 'is-cancelled' : 'is-done';
-  const visibleEvents = events.filter(event => event.run_id === run?.id);
+  // The step list is the canonical task timeline. Tool queue/dispatch/receipt
+  // events are implementation details and must not create duplicate checklist
+  // rows. Keep only high-level system events in the collapsed timeline.
+  const visibleEvents = events.filter(event => event.run_id === run?.id && !event.kind.startsWith('tool.') && !['step.running', 'step.completed', 'message.created'].includes(event.kind));
   return <div className="ws-run-activity" aria-live={active ? 'polite' : undefined}>
     <span className="ws-avatar" aria-hidden="true">{name.slice(0, 1)}</span>
     <div className="ws-agent-reply-content">

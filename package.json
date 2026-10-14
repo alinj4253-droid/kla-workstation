@@ -1,6 +1,6 @@
 {
   "name": "kla-workstation",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "KLA Workstation 企业多智能体协同工作站（客户端 + 服务端）",
   "packageManager": "pnpm@11.9.0",

@@ -74,7 +74,7 @@ describe('short-term recall and retention', () => {
       loopWorker.start(100);
       const session = await accounts.createSession(owner.user.id);
       const headers = { authorization: `Bearer ${session.accessToken}`, 'x-identity-id': owner.identity.id };
-      const response = await app.inject({ method: 'POST', url: `/api/v1/conversations/${chat.id}/messages`, headers, payload: { text: 'bluewhale 谁负责？' } });
+      const response = await app.inject({ method: 'POST', url: `/api/v1/conversations/${chat.id}/messages`, headers, payload: { text: 'bluewhale 谁负责？', submitObject: [{ type: 'command', id: 'task_execution' }] } });
       expect(response.statusCode).toBe(200);
       await vi.waitFor(async () => expect((await accounts.listConversationRuns(chat.id))[0].status).toBe('completed'));
       const context = JSON.stringify(completeChat.mock.calls[0][1].messages);

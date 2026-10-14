@@ -53,6 +53,12 @@ export const createMessageRequestSchema = z.object({
   executionAccess: z.enum(['approval', 'full']).default('approval'),
   fileIds: z.array(z.string().uuid()).max(20).default([]).transform(ids => [...new Set(ids)]),
   replyToId: z.string().min(1).optional(),
+  /** Structured recipients selected from the conversation member picker. */
+  submitObject: z.array(z.discriminatedUnion('type', [
+    z.object({ type: z.literal('user'), id: z.string().uuid() }),
+    z.object({ type: z.literal('agent'), id: z.string().uuid() }),
+    z.object({ type: z.literal('command'), id: z.literal('task_execution') }),
+  ])).max(32).default([]),
 }).refine(input => Boolean(input.text.trim()) || input.fileIds.length > 0, '消息不能为空');
 
 export type CreateMessageRequest = z.infer<typeof createMessageRequestSchema>;
