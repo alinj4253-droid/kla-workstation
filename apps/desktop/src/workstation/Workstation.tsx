@@ -18,6 +18,7 @@ import './collaboration.css';
 import { ConversationMessages, type ConversationMessage } from './ConversationMessages';
 import { CreateGroupDialog } from './CreateGroupDialog';
 import { runtimeApi } from '../api/runtime';
+import { v4 as randomUUID } from 'uuid';
 import { QuickSearch } from './QuickSearch';
 import { HomeCollaborationPanel } from './HomeCollaborationPanel';
 import { HomeAiEntry } from './HomeAiEntry';
@@ -30,9 +31,16 @@ type Modal = 'project' | 'chat' | 'knowledge' | 'knowledge-create' | 'register' 
 type Project = { id: string; name: string; description: string; progress: number; members: number; color: string; open?: boolean; groupIds?: string[] };
 type FileReference = { id: string; name: string; contentType?: string; sizeBytes: number };
 type Chat = { id: string; name: string; project: string; projectId?: string; messages: ConversationMessage[] };
-type ChatMessage = { id: string; senderType: string; senderName?: string; text: string; createdAt: string; metadata?: { runId?: string; artifactId?: string; artifactIds?: string[]; files?: FileReference[] } };
+type DeliveryBlock = { type: 'markdown'; content: string } | { type: 'image' | 'video' | 'audio'; asset_id: string; asset_kind: 'file' | 'artifact'; mime_type: string; url?: string; alt?: string; poster_url?: string } | { type: 'file'; artifact_id: string; name: string; mime_type: string; size_bytes?: number; open_mode?: 'right_drawer' };
+type MentionTarget = { type: 'user' | 'agent' | 'command'; id: string; name: string };
+type ChatMessage = { id: string; senderType: string; senderName?: string; text: string; createdAt: string; metadata?: { runId?: string; artifactId?: string; artifactIds?: string[]; files?: FileReference[]; kind?: string; recipient?: string; submitObject?: Array<{ type: 'user' | 'agent' | 'command'; id: string }>; delivery?: { submit_object?: Array<{ type: 'user' | 'agent' | 'command'; id: string }>; display_content?: { blocks?: DeliveryBlock[] } } } };
 type ChatRun = RoomRun & { executionAccess?: 'approval' | 'full' };
-const mapChatMessages = (messages: ChatMessage[]): Chat['messages'] => messages.map(m => ({ id: m.id, author: m.senderType === 'agent' ? (m.senderName ?? '智能体') : '我', text: m.text, time: new Date(m.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }), senderType: m.senderType, runId: m.metadata?.runId, files: m.metadata?.files, artifactIds: [...new Set([...(m.metadata?.artifactIds ?? []), ...(m.metadata?.artifactId ? [m.metadata.artifactId] : [])])] }));
+const mapChatMessages = (messages: ChatMessage[]): Chat['messages'] => messages
+  // Delegation plans and sub-agent hand-offs remain in the run event log. Keep the
+  // main chat focused on user messages and user-facing results to prevent an
+  // implementation detail from looking like multiple answers.
+  .filter(m => !(m.senderType === 'agent' && !m.metadata?.delivery && (m.metadata?.recipient === 'coordinator' || m.metadata?.kind === 'delegation')))
+  .map(m => { const blocks = m.metadata?.delivery?.display_content?.blocks ?? []; const hasDelivery = Boolean(m.metadata?.delivery); const displayName = m.senderName === '统筹智能体' ? '群聊秘书' : m.senderName; return { id: m.id, author: m.senderType === 'agent' ? (displayName ?? '智能体') : '我', text: m.text, time: new Date(m.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }), senderType: m.senderType, runId: m.metadata?.runId, files: m.metadata?.files, submitObject: m.metadata?.delivery?.submit_object ?? m.metadata?.submitObject ?? [], blocks, artifactIds: hasDelivery ? blocks.filter((block): block is Extract<DeliveryBlock, { type: 'file' }> => block.type === 'file').map(block => block.artifact_id) : [...new Set([...(m.metadata?.artifactIds ?? []), ...(m.metadata?.artifactId ? [m.metadata.artifactId] : [])])] }; });
 type Document = { name: string; group: string; size: string; status: string; date: string };
 type KnowledgeScope = 'enterprise' | 'project' | 'personal';
 type KnowledgeTab = 'sources' | 'chunks';
@@ -142,6 +150,9 @@ export function Workstation(): React.JSX.Element {
   const [activeChat, setActiveChat] = useState('');
   const [query, setQuery] = useState('');
   const [draft, setDraft] = useState('');
+  const [mentionCandidates, setMentionCandidates] = useState<MentionTarget[]>([]);
+  const [selectedMentions, setSelectedMentions] = useState<MentionTarget[]>([]);
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [chatMode, setChatMode] = useState<'fast' | 'balanced' | 'expert'>('balanced');
   const [executionAccess, setExecutionAccess] = useState<'approval' | 'full'>('approval');
   const [newName, setNewName] = useState('');
@@ -213,6 +224,7 @@ export function Workstation(): React.JSX.Element {
     document.documentElement.dataset.klaReducedMotion = localStorage.getItem('kla.appearance.reducedMotion') ?? 'false';
   }, []);
   const sendingChats = useRef(new Set<string>());
+  const messageRequestKeys = useRef(new Map<string, { signature: string; key: string }>());
   const createLock = useRef(false);
   const [creating, setCreating] = useState(false);
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
@@ -436,6 +448,18 @@ export function Workstation(): React.JSX.Element {
     return () => { cancelled = true; };
   }, [signedIn, activeChat, activeIdentityId]);
   useEffect(() => {
+    if (!signedIn || !activeChat) { setMentionCandidates([]); return; }
+    setSelectedMentions([]); setMentionQuery(null);
+    void Promise.all([runtimeApi.members(activeChat), runtimeApi.conversationMembers(activeChat)]).then(([agents, users]) => {
+      const next: MentionTarget[] = [
+        { type: 'command', id: 'task_execution', name: '任务执行' },
+        ...(agents.ok ? agents.data.map(agent => ({ type: 'agent' as const, id: agent.id, name: agent.name === '统筹智能体' ? '群聊秘书' : agent.name })) : []),
+        ...(users.ok ? users.data.map(member => ({ type: 'user' as const, id: member.identity_id, name: member.display_name })) : []),
+      ];
+      setMentionCandidates(next);
+    });
+  }, [signedIn, activeChat, activeIdentityId]);
+  useEffect(() => {
     if (signedIn && activeIdentityId) void memoryApi.warm(activeIdentityId);
   }, [signedIn, activeIdentityId]);
   useEffect(() => {
@@ -545,15 +569,33 @@ export function Workstation(): React.JSX.Element {
     if ((!draft.trim() && !files.length) || attachmentsUploading || pendingRuns[conversationId] || sendingChats.current.has(conversationId) || chatLoading) return;
     if (!signedIn || !conversationId) { notify('请先创建或选择一个真实群组'); return; }
     const text = draft.trim();
+    const signature = `${text}\n${files.map(file => file.id).sort().join(',')}`;
+    const previousRequest = messageRequestKeys.current.get(conversationId);
+    const idempotencyKey = previousRequest?.signature === signature ? previousRequest.key : randomUUID();
+    messageRequestKeys.current.set(conversationId, { signature, key: idempotencyKey });
     const identityId = activeIdentityId;
     sendingChats.current.add(conversationId);
     setPendingRuns(items => ({ ...items, [conversationId]: 'submitting' }));
     try {
-      const submitted = await klaApi.request<{ message: ChatMessage; run: ChatRun | null }>(`/v1/conversations/${conversationId}/messages`, { method: 'POST', body: JSON.stringify({ text, mode: chatMode, executionAccess, fileIds: files.map(file => file.id) }), headers: { 'x-identity-id': identityId } });
+      // Menu selection is the preferred path, but typed leading mentions are
+      // also resolved so keyboard users get the same routing semantics.
+      const leadingNames: string[] = [];
+      let mentionText = text.trimStart();
+      while (mentionText.startsWith('@')) {
+        const match = mentionText.match(/^@([^\s@]+)\s*/);
+        if (!match) break;
+        leadingNames.push(match[1]);
+        mentionText = mentionText.slice(match[0].length);
+      }
+      const inferredMentions = mentionCandidates.filter(candidate => leadingNames.includes(candidate.name));
+      const submitObject = (selectedMentions.length ? selectedMentions : inferredMentions).map(({ type, id }) => ({ type, id }));
+      const submitted = await klaApi.request<{ message: ChatMessage; run: ChatRun | null }>(`/v1/conversations/${conversationId}/messages`, { method: 'POST', body: JSON.stringify({ text, mode: chatMode, executionAccess, idempotencyKey, fileIds: files.map(file => file.id), ...(submitObject.length ? { submitObject } : {}) }), headers: { 'x-identity-id': identityId } });
       if (klaApi.getIdentity() !== identityId) return;
       if (!submitted.ok) { notify(apiError(submitted)); setPendingRuns(items => { const next = { ...items }; delete next[conversationId]; return next; }); return; }
+      messageRequestKeys.current.delete(conversationId);
       setChats(items => items.map(chat => chat.id === conversationId ? { ...chat, messages: [...chat.messages.filter(message => message.id !== submitted.data.message.id), ...mapChatMessages([submitted.data.message])] } : chat));
       setDraft(current => current.trim() === text ? '' : current);
+      setSelectedMentions([]); setMentionQuery(null);
       setPendingAttachments(items => ({ ...items, [conversationId]: (items[conversationId] ?? []).filter(file => !files.some(sent => sent.id === file.id)) }));
       if (submitted.data.run) {
         setPendingRuns(items => ({ ...items, [conversationId]: submitted.data.run!.id }));
@@ -705,10 +747,10 @@ export function Workstation(): React.JSX.Element {
   <div className="ws-chat">
     <header><div><span className="ws-avatar">{currentChat.name.slice(0, 2)}</span><span><strong>{currentChat.name}</strong><small>{currentChat.project} · 智能体群聊 · 消息全量存档</small></span></div><div><IconButton title="管理群聊智能体" onClick={() => setRoomMembersOpen(true)}><Users size={17} /></IconButton><IconButton title="群组成果" onClick={() => { setArtifactPaneOpen(true); setArtifactPaneCollapsed(false); if (!previewArtifact && chatArtifacts[0]) setPreviewArtifact(chatArtifacts[0]); }}><Folder size={17} /></IconButton></div></header>
     <div className="ws-chat-messages"><p className="ws-chat-date">{chatLoading ? '正在加载消息…' : '消息记录'}</p>
-      <ConversationMessages key={`${activeIdentityId}:${activeChat}`} messages={currentChat.messages} run={activeRun} runs={roomRuns} steps={runSteps} events={runEvents} submitting={pendingRunId === 'submitting'} onCancel={() => void cancelActiveRun()} onOpenFile={file => { setArtifactPaneOpen(true); setArtifactPaneCollapsed(false); setPreviewArtifact({ id: file.id, name: file.name, mimeType: file.contentType ?? 'application/octet-stream', content: '', sizeBytes: file.sizeBytes, createdAt: '', sourceKind: 'file', storageKey: file.id }); }} onOpenArtifact={id => void openArtifact(id)} />
+      <ConversationMessages key={`${activeIdentityId}:${activeChat}`} messages={currentChat.messages} memberNames={new Map(mentionCandidates.map(item => [`${item.type}:${item.id}`, item.name]))} run={activeRun} runs={roomRuns} steps={runSteps} events={runEvents} submitting={pendingRunId === 'submitting'} onCancel={() => void cancelActiveRun()} onOpenFile={file => { setArtifactPaneOpen(true); setArtifactPaneCollapsed(false); setPreviewArtifact({ id: file.id, name: file.name, mimeType: file.contentType ?? 'application/octet-stream', content: '', sizeBytes: file.sizeBytes, createdAt: '', sourceKind: 'file', storageKey: file.id }); }} onOpenArtifact={id => void openArtifact(id)} />
       <HomeAiReview key={`${activeIdentityId}:${activeChat}`} conversationId={activeChat} identityId={activeIdentityId} />
     </div>
-    <div className="ws-chat-compose"><ConversationAttachments key={`${activeIdentityId}:${activeChat}`} conversationId={activeChat} identityId={activeIdentityId} files={pendingAttachments[activeChat] ?? []} onChange={files => setPendingAttachments(items => ({ ...items, [activeChat]: files }))} onBusy={setAttachmentsUploading} onError={notify} /><textarea placeholder="发送消息给智能体小组…（输入 @ 召唤特定智能体，Enter 发送、Shift + Enter 换行）" aria-label="发送消息给智能体小组" value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!chatSending) void send(); } }} /><div><span><Bot size={16} /> 智能体 <select aria-label="响应模式" value={chatMode} onChange={e => setChatMode(e.target.value as typeof chatMode)}><option value="fast">快速响应</option><option value="balanced">均衡协同</option><option value="expert">专家深度推理</option></select></span><label className="ws-execution-access" title="仅控制本次运行的本地操作审批，不会改变 Windows 用户权限或本地允许目录"><ShieldCheck size={15} /><span>本地权限</span><select aria-label="本地执行权限" value={executionAccess} onChange={e => setExecutionAccess(e.target.value as typeof executionAccess)}><option value="approval">请求批准</option><option value="full">完全访问权限</option></select></label><button aria-label={chatSending ? '终止生成' : '发送给群组'} className={`ws-primary ${chatSending ? 'is-stop' : ''}`} disabled={attachmentsUploading || chatLoading || !currentChat.id || pendingRunId === 'submitting'} onClick={() => chatSending ? void cancelActiveRun() : void send()}><Send size={15} />{chatSending ? '终止生成' : '发送协同指令'}</button></div></div>
+      <div className="ws-chat-compose"><ConversationAttachments key={`${activeIdentityId}:${activeChat}`} conversationId={activeChat} identityId={activeIdentityId} files={pendingAttachments[activeChat] ?? []} onChange={files => setPendingAttachments(items => ({ ...items, [activeChat]: files }))} onBusy={setAttachmentsUploading} onError={notify} /><div className="ws-chat-input-wrap"><textarea placeholder="发送消息给群聊…（输入 @ 选择群聊秘书、任务执行、智能体或成员，Enter 发送）" aria-label="发送消息给群聊" value={draft} onChange={e => { const value = e.target.value; setDraft(value); const match = value.match(/(?:^|\s)@([^\s@]*)$/); setMentionQuery(match ? match[1] : null); }} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!chatSending) void send(); } }} />{mentionQuery !== null && <div className="ws-mention-menu" role="listbox">{mentionCandidates.filter(item => item.name.toLowerCase().includes(mentionQuery.toLowerCase())).slice(0, 8).map(item => <button type="button" role="option" key={`${item.type}:${item.id}`} onMouseDown={event => event.preventDefault()} onClick={() => { setDraft(value => value.replace(/(?:^|\s)@([^\s@]*)$/, match => `${match.slice(0, match.lastIndexOf('@'))}@${item.name} `)); setSelectedMentions(items => items.some(selected => selected.id === item.id && selected.type === item.type) ? items : [...items, item]); setMentionQuery(null); }}>{item.type === 'agent' ? '智能体' : item.type === 'command' ? '系统路由' : '成员'} · {item.name}</button>)}</div>}</div><div><span><Bot size={16} /> 智能体 <select aria-label="响应模式" value={chatMode} onChange={e => setChatMode(e.target.value as typeof chatMode)}><option value="fast">快速响应</option><option value="balanced">均衡协同</option><option value="expert">专家深度推理</option></select></span><label className="ws-execution-access" title="仅控制本次运行的本地操作审批，不会改变 Windows 用户权限或本地允许目录"><ShieldCheck size={15} /><span>本地权限</span><select aria-label="本地执行权限" value={executionAccess} onChange={e => setExecutionAccess(e.target.value as typeof executionAccess)}><option value="approval">请求批准</option><option value="full">完全访问权限</option></select></label><button aria-label={chatSending ? '终止生成' : '发送给群组'} className={`ws-primary ${chatSending ? 'is-stop' : ''}`} disabled={attachmentsUploading || chatLoading || !currentChat.id || pendingRunId === 'submitting'} onClick={() => chatSending ? void cancelActiveRun() : void send()}><Send size={15} />{chatSending ? '终止生成' : '发送消息'}</button></div></div>
   </div>
   {artifactPaneOpen && <ArtifactPane artifacts={chatArtifacts} selected={previewArtifact} loading={artifactLoading} collapsed={artifactPaneCollapsed} onSelect={id => void openArtifact(id)} onCollapse={() => setArtifactPaneCollapsed(value => !value)} onClose={() => { setArtifactPaneOpen(false); setArtifactPaneCollapsed(false); setPreviewArtifact(null); }} onDownload={artifact => void klaApi.download(artifact.sourceKind === 'file' ? `/v1/files/${artifact.id}/content` : `/v1/artifacts/${artifact.id}/download`).then(result => { if (!result.ok) { notify(result.message); return; } const url = URL.createObjectURL(result.blob); const anchor = document.createElement('a'); anchor.href = url; anchor.download = artifact.name; anchor.click(); URL.revokeObjectURL(url); })} />}
 </div>}

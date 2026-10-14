@@ -71,7 +71,11 @@ describe('mock server 契约联调', () => {
   it('无执行器时群聊消息保留，且不会伪造成果文件', async () => {
     const conversations = await get<{ data: Array<{ id: string }> }>('/api/v1/conversations');
     const conversationId = conversations.body.data[0]!.id;
-    const sent = await post<{ ok: boolean; data: { message: { id: string }; run: { id: string; status: string } } }>(`/api/v1/conversations/${conversationId}/messages`, { text: '请生成一份项目周报文档', mode: 'balanced' });
+    const sent = await post<{ ok: boolean; data: { message: { id: string }; run: { id: string; status: string } } }>(`/api/v1/conversations/${conversationId}/messages`, {
+      text: '@任务执行 请生成一份项目周报文档',
+      mode: 'balanced',
+      submitObject: [{ type: 'command', id: 'task_execution' }],
+    });
     expect(sent.status).toBe(200);
     expect(sent.body.data.run.status).toBe('failed');
     const messages = await get<{ data: Array<{ senderType: string }> }>(`/api/v1/conversations/${conversationId}/messages`);
@@ -151,7 +155,7 @@ describe('mock server 契约联调', () => {
     const conversation = await app.inject({ method: 'POST', url: '/api/v1/conversations', headers, payload: { name: '非默认身份群聊', projectId: created.json().data.id } });
     expect(conversation.statusCode).toBe(200);
     const id = conversation.json().data.id;
-    const sent = await app.inject({ method: 'POST', url: `/api/v1/conversations/${id}/messages`, headers, payload: { text: '请生成测试报告文件' } });
+    const sent = await app.inject({ method: 'POST', url: `/api/v1/conversations/${id}/messages`, headers, payload: { text: '请生成测试报告文件', submitObject: [{ type: 'command', id: 'task_execution' }] } });
     expect(sent.statusCode).toBe(200);
     const messages = await app.inject({ method: 'GET', url: `/api/v1/conversations/${id}/messages`, headers });
     expect(messages.json().data.at(-1).text).toBe('请生成测试报告文件');

@@ -30,6 +30,7 @@ import { PostgresKnowledgeStore } from './knowledge-api/context.js';
 import { ComputeGateway } from './compute/gateway.js';
 import { MemoryRetentionWorker, ShortTermMemoryService } from './memories/short-term.js';
 import { ObjectStore } from './storage/object-store.js';
+import { registerPointsAdminRoutes } from './compute/points-admin-routes.js';
 
 export const corsOptions = { origin: true, methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'] };
 
@@ -88,6 +89,7 @@ export async function createServer() {
     defaultGroupId: config.sub2api.defaultGroupId,
   });
   await registerComputeGatewayRoutes(app, { accounts, computeRepo, gateway });
+  await registerPointsAdminRoutes(app, { computeRepo, quota, username: config.pointsAdmin.username, password: config.pointsAdmin.password });
 
   const outboxWorker = new OutboxWorker(computeRepo, provisioning, config.compute.outboxIntervalMs);
   const usageSyncWorker = new UsageSyncWorker(computeRepo, sub2api, quota, config.compute.usageSyncIntervalMs, config.compute.reserveTimeoutMs, config.compute.balanceReconcileIntervalMs);

@@ -44,7 +44,7 @@ export type Entitlement = {
   updatedAt: string;
 };
 
-export type LedgerOperation = 'grant' | 'allocate' | 'reclaim' | 'reserve' | 'commit' | 'release' | 'recharge';
+export type LedgerOperation = 'grant' | 'revoke' | 'allocate' | 'reclaim' | 'reserve' | 'commit' | 'release' | 'recharge';
 
 export type LedgerStatus = 'pending' | 'completed' | 'failed' | 'released';
 

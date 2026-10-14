@@ -222,6 +222,47 @@ export class QuotaService {
     }
   }
 
+  /** 平台收回额度，只允许从指定身份的可用余额中扣减。 */
+  async revoke(owner: { identityId?: string; organizationId?: string }, amount: number, requestId: string): Promise<{ entitlementId: string; ledgerId: string; sub2apiSynced: boolean }> {
+    if (amount <= 0) throw new Error('收回金额必须大于 0');
+    const idempotencyKey = `revoke:${owner.identityId ?? owner.organizationId}:${requestId}`;
+    const existing = await this.repo.getLedgerByIdempotency(idempotencyKey);
+    if (existing) return { entitlementId: existing.entitlementId, ledgerId: existing.id, sub2apiSynced: existing.sub2apiSynced };
+
+    const client = await this.pool.connect();
+    let entitlementId = '';
+    let ledgerId = '';
+    let synced = false;
+    try {
+      await client.query('BEGIN');
+      const ent = await this.repo.getOrCreateEntitlement(owner, client as unknown as QueryClient);
+      const locked = await this.repo.lockEntitlement(client as unknown as QueryClient, owner);
+      const available = availableBalance(locked);
+      if (available < amount) throw new QuotaInsufficientError(available, amount);
+      await this.repo.updateEntitlementAmounts(client as unknown as QueryClient, locked.id, { total: -amount });
+      const ledger = await this.repo.createLedger({
+        entitlementId: ent.id,
+        operation: 'revoke',
+        amount,
+        status: 'completed',
+        idempotencyKey,
+        requestId,
+        metadata: { source: 'platform_revoke' },
+      }, client as unknown as QueryClient);
+      entitlementId = ent.id;
+      ledgerId = ledger.id;
+      await client.query('COMMIT');
+      synced = await this.syncBalanceToSub2Api(client as unknown as QueryClient, owner, -amount);
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+    if (synced) await this.repo.updateLedgerStatus(ledgerId, 'completed', true);
+    return { entitlementId, ledgerId, sub2apiSynced: synced };
+  }
+
   /**
    * 分发额度（企业管理员 → 企业成员）。
    *
@@ -433,12 +474,9 @@ export class QuotaService {
     }
   }
 
-  /**
-   * 发放额度时同步本次增量；Sub2API 的余额接口不是设置绝对值。
-   * 返回是否已在上游生效：企业池/成功=true；账号未初始化或推送失败=false（流水保持待同步）。
-   */
+  /** 发放额度时同步本次增量；Sub2API 的余额接口不是设置绝对值。 */
   private async syncBalanceToSub2Api(client: QueryClient, owner: { identityId?: string; organizationId?: string }, delta: number): Promise<boolean> {
-    if (!owner.identityId) return true; // 企业池不同步到 Sub2API
+    if (!owner.identityId) return false; // 企业池不同步到 Sub2API
     const binding = await this.repo.getBinding(owner.identityId, client);
     if (!binding || !binding.sub2apiUserId) return false;
     try {

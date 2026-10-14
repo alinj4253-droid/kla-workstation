@@ -169,9 +169,9 @@ export class MemoryAccountRepository implements AccountRepository {
     return this.messages.filter((message) => message.conversationId === conversationId).sort((a, b) => a.seq - b.seq);
   }
 
-  async createMessage(conversationId: string, senderId: string, text: string): Promise<Message> {
+  async createMessage(conversationId: string, senderId: string, text: string, metadata: Record<string, unknown> = {}, _senderIdentityId?: string): Promise<Message> {
     this.seq += 1;
-    const message: StoredMessage = { id: this.nextId('msg'), conversationId, senderId, senderType: 'user', senderName: null, kind: 'text', text, metadata: {}, createdAt: new Date().toISOString(), seq: this.seq };
+    const message: StoredMessage = { id: this.nextId('msg'), conversationId, senderId, senderIdentityId: _senderIdentityId ?? null, senderType: 'user', senderName: null, kind: 'text', text, metadata, createdAt: new Date().toISOString(), seq: this.seq };
     this.messages.push(message);
     return message;
   }
@@ -196,9 +196,9 @@ export class MemoryAccountRepository implements AccountRepository {
     return this.runs.filter((run) => run.conversationId === conversationId).sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()).slice(0, 20);
   }
 
-  async createRun(conversationId: string, triggerMessageId: string, mode: string, _leaseOwner?: string, executionAccess: 'approval' | 'full' = 'approval'): Promise<ConversationRun> {
+  async createRun(conversationId: string, triggerMessageId: string, mode: string, _leaseOwner?: string, executionAccess: 'approval' | 'full' = 'approval', options: { triggerIdentityId?: string; routeMode?: 'direct_agent' | 'coordinator_simple' | 'coordinator_complex' } = {}): Promise<ConversationRun> {
     const now = new Date().toISOString();
-    const run: StoredRun = { id: this.nextId('run'), conversationId, triggerMessageId, status: 'running', mode, executionAccess, currentAgent: '统筹智能体', result: {}, createdAt: now, updatedAt: now };
+    const run: StoredRun = { id: this.nextId('run'), conversationId, triggerMessageId, status: 'running', mode, executionAccess, currentAgent: options.routeMode === 'direct_agent' ? null : '群聊秘书', result: {}, createdAt: now, updatedAt: now };
     this.runs.push(run);
     return run;
   }
