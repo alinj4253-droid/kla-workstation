@@ -40,10 +40,11 @@ try {
     & pnpm --filter '@kla-workstation/server' deploy --prod --legacy --config.node-linker=hoisted $out
     if ($LASTEXITCODE -ne 0) { throw 'pnpm deploy failed' }
 
-    # deploy follows npm packing rules, so the gitignored dist/ tree is excluded;
-    # copy the freshly built output in explicitly.
-    Write-Host '==> copy dist'
+    # deploy follows npm packing rules, so the gitignored dist/ tree is excluded
+    # (and migrations/ may be dropped as well); copy both in explicitly.
+    Write-Host '==> copy dist & migrations'
     Copy-Item -Path (Join-Path $root 'server\dist') -Destination (Join-Path $out 'dist') -Recurse -Force
+    Copy-Item -Path (Join-Path $root 'server\migrations') -Destination (Join-Path $out 'migrations') -Recurse -Force
 
     # The server only needs dist/, migrations/, package.json and node_modules/ at
     # runtime; drop sources and configs that deploy copied from the package dir.
