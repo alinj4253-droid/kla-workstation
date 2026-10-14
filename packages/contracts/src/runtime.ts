@@ -57,10 +57,10 @@ export const runtimeSkillCatalog = [
   { code: 'local_biz_configure', name: '数据源连接管理', description: '对话中动态管理 MySQL 数据源：新增/切换/删除连接（持久化到本地配置），连接前自动验证', location: 'local' },
   { code: 'local_biz_schema', name: '表结构探查', description: '探查当前连接库的表清单、字段（类型/主键/注释）与抽样数据，用于分析任意陌生数据库', location: 'local' },
   { code: 'local_biz_query', name: '只读 SQL 分析', description: '对当前连接执行只读 SQL（SELECT/SHOW/DESC/EXPLAIN，单条，最多 500 行），支撑任意库的经营分析', location: 'local' },
-  { code: 'local_excel_doctor', name: 'Excel 分析环境检查', description: '检查本地 Python 与 pandas/openpyxl/matplotlib 依赖，返回 full/partial/blocked 与缺失项安装指引', location: 'local' },
+  { code: 'local_excel_doctor', name: 'Excel 分析环境检查', description: '自检内置 Excel 引擎（exceljs，纯 JS 无需安装环境），返回 full/blocked', location: 'local' },
   { code: 'local_excel_profile', name: 'Excel 数据画像', description: '对上传的 .xlsx/.xlsm 做多表结构画像与质量探查：行列规模、字段形态、缺失分布、重复行、枚举取值域、数值区间、日期范围与风险提示；只读源文件，输出 JSON+Markdown 成果', location: 'local' },
-  { code: 'local_excel_validate', name: 'Excel 溯源校验', description: '源文件 SHA256/MD5 指纹 + openpyxl 独立第二路径重算（可排除取消/退款单）+ 明细汇总双向勾稽 + 源文件未修改复验；每个对外数字可追溯', location: 'local' },
-  { code: 'local_excel_report', name: 'Excel 分析 HTML 报告', description: '把分析结果 JSON 编译为自包含 HTML 报告（matplotlib 图表 base64 内嵌、涨红跌绿、明暗主题），作为成果文件交付', location: 'local' },
+  { code: 'local_excel_validate', name: 'Excel 溯源校验', description: '源文件 SHA256/MD5 指纹 + exceljs 独立第二路径重算（可排除取消/退款单）+ 明细汇总双向勾稽 + 源文件未修改复验；每个对外数字可追溯', location: 'local' },
+  { code: 'local_excel_report', name: 'Excel 分析 HTML 报告', description: '把分析结果 JSON 编译为自包含 HTML 报告（内联 SVG 图表、涨红跌绿、明暗主题），作为成果文件交付', location: 'local' },
 ] as const;
 export type RuntimeSkillCode = typeof runtimeSkillCatalog[number]['code'];
 export const runtimeSkillBundles = [
@@ -74,7 +74,7 @@ export const runtimeSkillBundles = [
   { code: 'ppt_assistant', name: 'PPT 制作与改稿', description: 'deck-agent-kit 1.0：环境检查 → 材料读取 → 大纲确认 → 语义编译 → 质量门禁 → 真实渲染 → 成果交付；本地执行', tools: ['local_ppt_doctor', 'local_ppt_build', 'local_ppt_inspect', 'local_ppt_render'] },
   { code: 'route_planning', name: '路线规划', description: 'route-agent-kit 1.0：高德距离/时间/过路费矩阵 → 固定起终点 TSP 优化（里程/时间/成本三策略）→ 多线路拆分重排 → 优化前后地图对比；本地执行', tools: ['local_route_matrix', 'local_route_optimize', 'local_route_replan', 'local_route_map'] },
   { code: 'waste_analysis', name: '经营分析', description: 'biz-agent-kit 2.0：对话中动态连接任意 MySQL 数据源（configure/schema/query 通用只读分析）+ 垃圾量专项快路径（快照库聚合：总量/日均/收运覆盖率/漏收率、趋势同比、作业所分解、分类结构与时段明细）；本地执行', tools: ['local_waste_status', 'local_waste_report', 'local_waste_detail', 'local_biz_configure', 'local_biz_schema', 'local_biz_query'] },
-  { code: 'excel_analysis', name: 'Excel 数据分析', description: 'excel-agent-kit 1.0（技能包 excel-pro 1.1）：环境检查 → 多表数据画像与质量探查 → 源文件指纹+独立重算+双向勾稽的溯源校验 → 自包含 HTML 分析报告；全程只读源文件，口径显式声明；本地执行', tools: ['local_excel_doctor', 'local_excel_profile', 'local_excel_validate', 'local_excel_report'] },
+  { code: 'excel_analysis', name: 'Excel 数据分析', description: 'excel-agent-kit 1.1（内置纯 JS 引擎）：环境自检 → 多表数据画像与质量探查 → 源文件指纹+独立重算+双向勾稽的溯源校验 → 自包含 HTML 分析报告；全程只读源文件，口径显式声明；本地执行', tools: ['local_excel_doctor', 'local_excel_profile', 'local_excel_validate', 'local_excel_report'] },
 ] as const satisfies ReadonlyArray<{ code: string; name: string; description: string; tools: readonly RuntimeSkillCode[] }>;
 export type RuntimeSkillBundleCode = typeof runtimeSkillBundles[number]['code'];
 // 枚举参数的中文容错：模型在自然语言场景常把 periodType 传成「年报」等值，

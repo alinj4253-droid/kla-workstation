@@ -19,6 +19,13 @@ function localPath(value, root) {
 }
 function absolute(value) { if (typeof value !== 'string' || !path.isAbsolute(value)) throw new Error('本地路径必须是绝对路径'); return path.resolve(value); }
 function filename(value) { if (typeof value !== 'string' || !value || value === '.' || value === '..' || /[\\/:*?"<>|\x00-\x1f]/.test(value)) throw new Error('文件名无效'); return value; }
+// 交付物名校验：拦探针/临时/占位文件（模型曾自写 _probe_*.txt 的 ping 内容并被当附件发布）。
+// 垃圾词要求前后均为非字母边界（避免误伤 template.html / tmpfile 等正常名）；不拦「测试」「demo」等业务字样。
+const JUNK_NAME = /^[_.~]|(^|[^a-z])(probe|ping|scratch|placeholder|tmp|temp|占位|临时)([^a-z]|$)/i;
+function assertDeliverableName(name) {
+  if (JUNK_NAME.test(name)) throw new Error(`禁止写入探针/临时/占位文件（${name}）。文件保存仅用于最终交付物；能在回复中直接给出的结论不要写文件，需要验证工具时直接调用目标工具。`);
+  return name;
+}
 function within(target, root) { const relative = path.relative(root, target); return relative === '' || (relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative)); }
 async function existingParent(target) {
   let candidate = target;
@@ -103,7 +110,7 @@ async function executeLocal(call,root,signal,approvedRead=false,downloadInput) {
   if(call.tool==='local_read'){const target=await approvedReadPath(localPath(a.path,root),root,approvedRead);const stat=await fs.stat(target);if(stat.size>10_000_000)throw new Error('文本读取限 10 MB，请用 CLI 分段处理');const text=await fs.readFile(target,'utf8');return{result:{content:text.slice(a.offset??0,(a.offset??0)+(a.maxChars??20000)),sizeBytes:stat.size,truncated:text.length>(a.offset??0)+(a.maxChars??20000)}};}
   if(call.tool==='local_list'){const target=await approvedReadPath(localPath(a.path,root),root,approvedRead);const entries=await fs.readdir(target,{withFileTypes:true});return{result:{entries:entries.slice(0,2000).map(e=>({name:e.name,directory:e.isDirectory()})),truncated:entries.length>2000}};}
   if(call.tool==='local_write'||call.tool==='local_code'){
-    const name=filename(a.fileName);if(typeof a.content!=='string'||a.content.length>1_000_000)throw new Error('文件内容过大或无效');const target=await allowedPath(a.path?localPath(a.path,root):path.join(workspace.output,name),root,true);
+    const name=assertDeliverableName(filename(a.fileName));if(typeof a.content!=='string'||a.content.length>1_000_000)throw new Error('文件内容过大或无效');const target=await allowedPath(a.path?localPath(a.path,root):path.join(workspace.output,name),root,true);
     signal.throwIfAborted();await fs.mkdir(path.dirname(target),{recursive:true});await fs.writeFile(target,a.content,'utf8');
     const content=await fs.readFile(target,'utf8');const checksum=createHash('sha256').update(content).digest('hex');
     const mimeType=path.extname(name).toLowerCase()==='.html'?'text/html':'text/plain';

@@ -44,6 +44,23 @@ test('local file skills write, read, and list actual files', async () => {
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
+test('local write rejects probe/temp filenames while keeping real deliverables', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'kla-junk-name-'));
+  const base = { id: randomUUID(), runId: randomUUID(), stepId: randomUUID() };
+  try {
+    // 拦截：探针/临时/占位/隐藏文件（含 2026-10-14 实锤的 _probe_local_waste_status.txt 模式）
+    for (const bad of ['_probe_local_waste_status.txt', 'ping.txt', 'tmp-data.json', '临时数据.md', '.hidden.txt', 'scratch.py', 'probe.py', 'TEMP.txt', '占位.xlsx']) {
+      await assert.rejects(executeLocal({ ...base, tool: 'local_write', arguments: { fileName: bad, content: 'x' } }, root, new AbortController().signal), /禁止写入探针/, `应拦截：${bad}`);
+      await assert.rejects(executeLocal({ ...base, tool: 'local_code', arguments: { fileName: bad, content: 'x' } }, root, new AbortController().signal), /禁止写入探针/, `local_code 也应拦截：${bad}`);
+    }
+    // 放行：正常交付物（含「测试」「demo」「template」等易误伤字样）
+    for (const ok of ['测试报告.md', 'demo-data.xlsx', 'template.html', 'result.py', 'notes.md']) {
+      const written = await executeLocal({ ...base, id: randomUUID(), tool: 'local_write', arguments: { fileName: ok, content: 'ok' } }, root, new AbortController().signal);
+      assert.equal(written.result.stored, true, `应放行：${ok}`);
+    }
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
 test('local CLI reports command output and can be cancelled', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'kla-local-cli-'));
   const base = { id: randomUUID(), runId: randomUUID(), stepId: randomUUID(), tool: 'local_cli' };
@@ -199,43 +216,36 @@ test('excel tools are registered in local capabilities', () => {
   for (const code of excelCapabilities) assert.ok(capabilities.includes(code), `缺少 ${code}`);
 });
 
-test('excel doctor reports interpreter and dependency status', async () => {
+test('excel doctor reports builtin engine status', async () => {
   const { result } = await executeLocal(wasteCall('local_excel_doctor', {}), os.tmpdir(), signal);
-  assert.ok(['full', 'partial', 'blocked'].includes(result.status), 'status 应为 full/partial/blocked');
-  if (result.status !== 'blocked') {
-    assert.ok(result.python, '应报告 Python 版本');
-    assert.ok(result.deps, '应报告依赖状态');
-    if (result.status === 'partial') assert.ok(result.hint, 'partial 应给出缺项提示');
-  }
+  assert.ok(['full', 'blocked'].includes(result.status), 'status 应为 full/blocked');
+  if (result.status === 'full') assert.ok(result.engine, '应报告内置引擎版本');
+  else assert.ok(result.hint, 'blocked 应给出修复提示');
 });
 
 test('excel profile, validate and report run on a generated workbook', async () => {
-  const doctor = (await executeLocal(wasteCall('local_excel_doctor', {}), os.tmpdir(), signal)).result;
-  if (doctor.status === 'blocked') return; // 无可用 Python 环境：跳过（由 setup-excel-runtime.ps1 安装）
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'kla-excel-'));
   const xlsx = path.join(root, 'sales.xlsx');
   try {
-    // 用 doctor 解析到的同一解释器造测试工作簿（含已取消单与重复行）
-    const gen = [
-      'import openpyxl',
-      'wb = openpyxl.Workbook(); ws = wb.active; ws.title = "订单明细"',
-      'ws.append(["订单号", "订单日期", "大区", "销售额_元", "订单状态"])',
-      'for r in [["A1","2026-01-05","华东",1000,"已完成"],["A2","2026-01-06","华东",2000,"已完成"],',
-      '          ["A3","2026-02-07","华北",1500,"已完成"],["A4","2026-02-08","华北",500,"已取消"],',
-      '          ["A5","2026-02-09","华东","","已完成"],["A1","2026-01-05","华东",1000,"已完成"]]: ws.append(r)',
-      'ws2 = wb.create_sheet("月度销售汇总"); ws2.append(["月份","大区","销售额_元"])',
-      'ws2.append(["2026-01","华东",3000]); ws2.append(["2026-02","华北",1500])',
-      `wb.save(${JSON.stringify(xlsx)})`,
-    ].join('\n');
-    const gen0 = require('node:child_process').spawnSync(doctor.pythonPath, ['-X', 'utf8', '-c', gen], { encoding: 'utf8' });
-    assert.equal(gen0.status, 0, '测试工作簿生成失败：' + (gen0.stderr || '').slice(-300));
+    // 用 exceljs 造测试工作簿（含已取消单与重复行）
+    const ExcelJS = require('exceljs');
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('订单明细');
+    ws.addRow(['订单号', '订单日期', '大区', '销售额_元', '订单状态']);
+    for (const r of [['A1', '2026-01-05', '华东', 1000, '已完成'], ['A2', '2026-01-06', '华东', 2000, '已完成'],
+      ['A3', '2026-02-07', '华北', 1500, '已完成'], ['A4', '2026-02-08', '华北', 500, '已取消'],
+      ['A5', '2026-02-09', '华东', '', '已完成'], ['A1', '2026-01-05', '华东', 1000, '已完成']]) ws.addRow(r);
+    const ws2 = wb.addWorksheet('月度销售汇总');
+    ws2.addRow(['月份', '大区', '销售额_元']);
+    ws2.addRow(['2026-01', '华东', 3000]); ws2.addRow(['2026-02', '华北', 1500]);
+    await wb.xlsx.writeFile(xlsx);
 
     // 画像：两张表、字段形态、重复行识别
     const profileOut = await executeLocal(wasteCall('local_excel_profile', { path: xlsx }), root, signal);
     const profile = profileOut.result;
     assert.ok(profile.summary, '画像应返回摘要');
     assert.equal(profile.summary.sheetCount, 2);
-    assert.equal(profile.summary.totalIssues > 0, true, '应识别出质量问题（空值/重复行）');
+    assert.ok(profile.summary.totalIssues > 0, '应识别出质量问题（日期文本存储/重复行）');
     assert.ok(profile.uploaded, '画像产物应回传');
 
     // 溯源校验：排除已取消单独立重算 + 明细汇总勾稽 + 源文件未修改
@@ -251,17 +261,12 @@ test('excel profile, validate and report run on a generated workbook', async () 
     assert.ok(validate.summary.sourceFingerprint.sha256, '应给出 SHA256 指纹');
     assert.equal(validate.summary.independentRecalc.sums['销售额_元'], 5500, '排除已取消单后应为 5500');
 
-    // HTML 报告：full 走成功路径；partial 断言缺依赖的友好提示
-    // 输入用画像回传的 profile.json 文本（端到端，不硬编码 workspace 路径）
+    // HTML 报告：纯 JS + 内联 SVG，恒可用
     const reportInput = (profileOut.artifacts || []).find(x => x.fileName === 'profile.json');
     assert.ok(reportInput && reportInput.content, '画像应回传 profile.json 文本');
     const report = (await executeLocal(wasteCall('local_excel_report', { content: reportInput.content }), root, signal)).result;
-    if (doctor.status === 'full') {
-      assert.ok(report.fileName && report.fileName.endsWith('.html'), 'full 环境应产出 HTML');
-      assert.equal(report.uploaded, true);
-    } else {
-      assert.match(report.error || '', /matplotlib/, 'partial 环境应提示缺 matplotlib');
-    }
+    assert.ok(report.fileName && report.fileName.endsWith('.html'), '应产出 HTML');
+    assert.equal(report.uploaded, true);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 

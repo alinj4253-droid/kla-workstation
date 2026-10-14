@@ -8,7 +8,7 @@ const actions = {
   local_waste_status: '查询经营分析数据源与快照状态', local_waste_report: '生成垃圾量经营分析报告',
   local_waste_detail: '查询垃圾量明细分析（热力图/分类同比/班次等）',
   local_biz_configure: '管理经营分析数据源连接（可切换数据库）', local_biz_schema: '探查数据库表结构', local_biz_query: '执行只读 SQL 查询',
-  local_excel_doctor: '检查 Excel 分析环境（Python 与依赖）', local_excel_profile: '执行 Excel 数据画像与质量探查（只读源文件）',
+  local_excel_doctor: '检查 Excel 分析环境（内置引擎自检）', local_excel_profile: '执行 Excel 数据画像与质量探查（只读源文件）',
   local_excel_validate: '执行 Excel 溯源校验与双路径对账（只读源文件）', local_excel_report: '生成 Excel 分析 HTML 报告',
   local_ppt_doctor: '检查本地 PPT 环境', local_ppt_build: '生成 PPTX 并检查与渲染', local_ppt_inspect: '读取 PPTX 内容与备注', local_ppt_render: '检查并渲染本地 PPTX',
 };
