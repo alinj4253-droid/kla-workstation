@@ -84,6 +84,9 @@ export class MemoryAccountRepository implements AccountRepository {
     for (const [name, role, type] of [
       ['统筹智能体', '识别目标、规划协作任务并调度执行智能体', 'official'],
       ['本地执行智能体', '检索知识、编写材料并交付成果文件', 'official'],
+      ['PPT助手', '设计、生成和检查演示文稿', 'official'],
+      ['路线规划助手', '规划和优化路线并生成路线成果', 'official'],
+      ['建潘-三一规划智能体', '基于鲲鹭经营数据完成目标拆解、偏差分析、经营规划和三一规划 PPT', 'official'],
     ] as const) this.createAgentRow(identity.id, name, role, type);
     this.createConversationRow(project.id, '默认协作群聊');
     return { user: this.toUser(user), identity };
@@ -154,6 +157,23 @@ export class MemoryAccountRepository implements AccountRepository {
     return this.createProjectRow(identityId, name);
   }
 
+  async renameProject(identityId: string, projectId: string, name: string): Promise<Project | null> {
+    const project = this.projects.find((item) => item.id === projectId && item.ownerIdentityId === identityId);
+    if (!project) return null;
+    project.name = name;
+    return { id: project.id, name: project.name, ownerIdentityId: project.ownerIdentityId, createdAt: project.createdAt };
+  }
+
+  async deleteProject(identityId: string, projectId: string): Promise<boolean> {
+    const index = this.projects.findIndex((item) => item.id === projectId && item.ownerIdentityId === identityId);
+    if (index === -1) return false;
+    this.projects.splice(index, 1);
+    const removedConversations = new Set(this.conversations.filter((item) => item.projectId === projectId).map((item) => item.id));
+    for (let i = this.conversations.length - 1; i >= 0; i -= 1) { if (this.conversations[i].projectId === projectId) this.conversations.splice(i, 1); }
+    for (let i = this.messages.length - 1; i >= 0; i -= 1) { if (removedConversations.has(this.messages[i].conversationId)) this.messages.splice(i, 1); }
+    return true;
+  }
+
   async listConversations(projectId?: string, identityId?: string): Promise<Conversation[]> {
     const owned = identityId ? new Set(this.projects.filter((project) => project.ownerIdentityId === identityId).map((project) => project.id)) : null;
     return this.conversations
@@ -163,6 +183,39 @@ export class MemoryAccountRepository implements AccountRepository {
 
   async createConversation(projectId: string, name: string): Promise<Conversation> {
     return this.createConversationRow(projectId, name);
+  }
+
+  async ensureStandaloneProject(identityId: string): Promise<Project> {
+    const existing = this.projects.find((project) => project.ownerIdentityId === identityId && project.kind === 'standalone');
+    if (existing) return existing;
+    return this.createProjectRow(identityId, '独立群组', 'standalone');
+  }
+
+  async renameConversation(identityId: string, conversationId: string, name: string): Promise<Conversation | null> {
+    const owned = new Set((await this.listProjects(identityId)).map((project) => project.id));
+    const conversation = this.conversations.find((item) => item.id === conversationId && owned.has(item.projectId));
+    if (!conversation) return null;
+    conversation.name = name;
+    return conversation;
+  }
+
+  async moveConversation(identityId: string, conversationId: string, targetProjectId: string): Promise<Conversation | null> {
+    const owned = new Set((await this.listProjects(identityId)).map((project) => project.id));
+    const conversation = this.conversations.find((item) => item.id === conversationId && owned.has(item.projectId));
+    if (!conversation || !owned.has(targetProjectId)) return null;
+    conversation.projectId = targetProjectId;
+    return conversation;
+  }
+
+  async deleteConversation(identityId: string, conversationId: string): Promise<boolean> {
+    const owned = new Set((await this.listProjects(identityId)).map((project) => project.id));
+    const index = this.conversations.findIndex((item) => item.id === conversationId && owned.has(item.projectId));
+    if (index === -1) return false;
+    this.conversations.splice(index, 1);
+    for (let i = this.messages.length - 1; i >= 0; i -= 1) { if (this.messages[i].conversationId === conversationId) this.messages.splice(i, 1); }
+    for (let i = this.runs.length - 1; i >= 0; i -= 1) { if (this.runs[i].conversationId === conversationId) this.runs.splice(i, 1); }
+    for (const artifact of this.artifacts) { if (artifact.conversationId === conversationId) artifact.conversationId = null; }
+    return true;
   }
 
   async listMessages(conversationId: string): Promise<Message[]> {
@@ -412,9 +465,9 @@ export class MemoryAccountRepository implements AccountRepository {
     this.workspaces.push({ id: this.nextId('wsp'), identityId: identity.id, type, name, projectId: null });
   }
 
-  private createProjectRow(identityId: string, name: string): StoredProject {
+  private createProjectRow(identityId: string, name: string, kind: 'normal' | 'standalone' = 'normal'): StoredProject {
     this.seq += 1;
-    const project: StoredProject = { id: this.nextId('prj'), name, ownerIdentityId: identityId, createdAt: new Date().toISOString(), seq: this.seq };
+    const project: StoredProject = { id: this.nextId('prj'), name, ownerIdentityId: identityId, createdAt: new Date().toISOString(), kind, seq: this.seq };
     this.projects.push(project);
     return project;
   }
