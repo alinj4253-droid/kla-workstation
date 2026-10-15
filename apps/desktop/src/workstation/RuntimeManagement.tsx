@@ -8,8 +8,8 @@ import { DEFAULT_AGENT_MODEL_ID, DEFAULT_AGENT_MODEL_NAME, type ComputeKey, type
 
 type Props = { identityId: string; notify: (text: string) => void };
 type AgentKey = Pick<ComputeKey, 'id' | 'name' | 'keyPrefix' | 'status' | 'isDefault'>;
-const isBuiltinAgent = (agent: RuntimeAgent): boolean => agent.type === 'official' || ['统筹智能体', '本地执行智能体', 'PPT助手', '路线规划助手', '建潘-三一规划智能体', '经营分析助手'].includes(agent.name);
-const agentDescription = (agent: RuntimeAgent): string => agent.name === 'PPT助手' ? '从材料生成可编辑 PPTX，支持大纲确认、对话改稿、质量检查及真实 PDF 预览。通过统一网关在本地执行。' : agent.name === '路线规划助手' ? '调用高德矩阵与固定起终点 TSP 算法，完成里程/时间/成本三策略路线优化与多线路拆分重排。通过统一网关在本地执行。' : agent.name === '建潘-三一规划智能体' ? '读取 kunlu-business-planner 经营规划知识包，完成指标查询、目标拆解、偏差分析、公司/部门规划及三一规划 PPT。通过统一网关在本地执行。' : agent.name === '经营分析助手' ? '通用经营分析：默认内置演示数据（快照 2025-01 ~ 2026-10，公司级/作业所 × 年/季/月报、同比、趋势、分类与时段明细）；对话中提供 MySQL 连接信息即可切换任意真实库做只读 SQL 分析；上传 Excel 附件可做数据画像、溯源校验与 HTML 报告。通过统一网关在本地执行。' : agent.role || '暂无角色说明';
+const isBuiltinAgent = (agent: RuntimeAgent): boolean => agent.type === 'official' || ['统筹智能体', '本地执行智能体', 'PPT助手', '路线规划助手', '建潘-三一规划智能体', '经营分析助手', '家居 AI 机会诊断'].includes(agent.name);
+const agentDescription = (agent: RuntimeAgent): string => agent.name === 'PPT助手' ? '从材料生成可编辑 PPTX，支持大纲确认、对话改稿、质量检查及真实 PDF 预览。通过统一网关在本地执行。' : agent.name === '路线规划助手' ? '调用高德矩阵与固定起终点 TSP 算法，完成里程/时间/成本三策略路线优化与多线路拆分重排。通过统一网关在本地执行。' : agent.name === '建潘-三一规划智能体' ? '读取 kunlu-business-planner 经营规划知识包，完成指标查询、目标拆解、偏差分析、公司/部门规划及三一规划 PPT。通过统一网关在本地执行。' : agent.name === '经营分析助手' ? '通用经营分析：默认内置演示数据（快照 2025-01 ~ 2026-10，公司级/作业所 × 年/季/月报、同比、趋势、分类与时段明细）；对话中提供 MySQL 连接信息即可切换任意真实库做只读 SQL 分析；上传 Excel 附件可做数据画像、溯源校验与 HTML 报告。通过统一网关在本地执行。' : agent.name === '家居 AI 机会诊断' ? '定制家居岗位的 AI 试点诊断：岗位访谈与画像核对 → 候选场景匹配 → 条件澄清与材料引用 → 价值测算与分级报告，关键结论须在「诊断核对」面板人工确认。通过统一网关在服务端执行。' : agent.role || '暂无角色说明';
 
 const marketAgents = [
   { name: '家居 AI 机会诊断', category: '行业专业', description: '从真实岗位出发，核对材料和试点条件，确定性测算价值，形成由用户确认的诊断报告。', tags: ['家居', '岗位访谈', '价值测算'], rating: '待评价', installs: '—', tone: 'cyan' },

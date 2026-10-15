@@ -1,5 +1,8 @@
 import { z } from 'zod';
 import { homeAiToolArguments } from './home-ai.js';
+import { cnAlias } from './cn-alias.js';
+
+export { cnAlias };
 
 export const DEFAULT_AGENT_MODEL_ID = 'zhipu/glm-5.3-flash';
 export const DEFAULT_AGENT_MODEL_NAME = 'GLM 5.3 Flash';
@@ -87,14 +90,7 @@ export const runtimeSkillBundles = [
 export type RuntimeSkillBundleCode = typeof runtimeSkillBundles[number]['code'];
 // 枚举参数的中文容错：模型在自然语言场景常把 periodType 传成「年报」等值，
 // 若直接拒绝会导致整个任务续跑失败；这里统一映射为合法枚举（精确优先，其次包含匹配）
-const cnAlias = (aliases: Record<string, string>) => (v: unknown) => {
-  if (typeof v === 'string') {
-    const key = v.trim().toLowerCase();
-    if (key in aliases) return aliases[key];
-    for (const [alias, target] of Object.entries(aliases)) if (key.includes(alias)) return target;
-  }
-  return v;
-};
+// cnAlias 已提取到 cn-alias.ts（home-ai.ts 也要用，避免循环依赖）
 export const toolArguments = {
   ...homeAiToolArguments,
   knowledge_search: z.object({ query: z.string().min(1), topK: z.number().int().min(1).max(20).default(5) }),
