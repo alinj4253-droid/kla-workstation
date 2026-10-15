@@ -10,6 +10,9 @@ const actions = {
   local_biz_configure: '管理经营分析数据源连接（可切换数据库）', local_biz_schema: '探查数据库表结构', local_biz_query: '执行只读 SQL 查询',
   local_excel_doctor: '检查 Excel 分析环境（内置引擎自检）', local_excel_profile: '执行 Excel 数据画像与质量探查（只读源文件）',
   local_excel_validate: '执行 Excel 溯源校验与双路径对账（只读源文件）', local_excel_report: '生成 Excel 分析 HTML 报告',
+  local_business_metrics: '读取鲲鹭经营规划知识包中的业绩、人力与规划指标', local_business_goal_decompose: '将公司年度或半年度目标拆解到部门与 KPI',
+  local_business_deviation: '对比计划与实际，识别经营偏差、根因和对策', local_business_plan: '生成公司整体或指定部门的经营规划',
+  local_business_ppt: '生成可编辑的三一规划 PPTX 成果',
   local_ppt_doctor: '检查本地 PPT 环境', local_ppt_build: '生成 PPTX 并检查与渲染', local_ppt_inspect: '读取 PPTX 内容与备注', local_ppt_render: '检查并渲染本地 PPTX',
 };
 function describeRequest(call) {
@@ -49,7 +52,14 @@ function describeRequest(call) {
       if (args.reconcileDetail && args.reconcileSummary) add('双向勾稽', `${args.reconcileDetail} ↔ ${args.reconcileSummary}`);
     }
     else if (call.tool === 'local_excel_report') { add('输入', args.jsonPath || '内联 JSON', true); add('主题', args.theme === 'dark' ? '暗色' : '亮色'); add('报告名', args.fileName); }
-    else add('检查内容', 'Python、pandas、openpyxl、matplotlib');
+    else add('检查内容', '内置引擎（exceljs）');
+  }
+  else if (call.tool.startsWith('local_business')) {
+    if (call.tool === 'local_business_goal_decompose') { add('拆解年份', args.year); add('半年度', args.half === 'H1' ? '上半年' : '下半年'); }
+    else if (call.tool === 'local_business_deviation') { add('分析范围', { all: '全部', revenue: '营收', h1: '上半年', project: '项目' }[args.scope] || args.scope); }
+    else if (call.tool === 'local_business_plan') { add('规划类型', { company: '公司整体', department: '部门', all: '公司+部门' }[args.type] || args.type); if (args.department) add('部门', args.department); add('规划年份', args.year); }
+    else if (call.tool === 'local_business_ppt') { add('规划类型', { company: '公司整体', department: '部门' }[args.type] || args.type); if (args.department) add('部门', args.department); add('报告名', args.fileName); }
+    else add('操作', '读取经营规划知识包指标');
   }
   else if (call.tool === 'local_ppt_doctor') add('检查内容', 'Python 依赖、中文字体及 Office / WPS 渲染器');
   else add(args.path ? '文件路径' : args.documentId ? '文档编号' : '文件名称', args.path || args.documentId || args.fileName, true);

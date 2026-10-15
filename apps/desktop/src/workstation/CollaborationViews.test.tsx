@@ -19,8 +19,8 @@ describe('群聊呈现', () => {
     expect(screen.getByRole('button', { name: /调用工具中/ })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /编写文档/ }));
     expect(screen.getByText(/材料编写智能体 · 整理正文/)).toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: /准备调用 local_write/ }));
-    expect(screen.getByText(/工具：local_write/)).toBeVisible();
+    // 工具事件已融入步骤行状态展示，不生成重复日志行（见 RunActivity 的 visibleEvents 过滤）
+    expect(screen.queryByRole('button', { name: /准备调用 local_write/ })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '终止生成' }));
     expect(cancel).toHaveBeenCalledOnce();
   });
@@ -35,7 +35,7 @@ describe('群聊呈现', () => {
     const download = vi.fn();
     const close = vi.fn();
     const { rerender } = render(<ArtifactPane artifacts={artifacts} selected={artifacts[0]} loading={false} collapsed={false} onSelect={select} onCollapse={collapse} onClose={close} onDownload={download} />);
-    expect(document.querySelector('iframe[title="报告.html"]')).toHaveAttribute('sandbox', '');
+    expect(document.querySelector('iframe[title="报告.html"]')).toHaveAttribute('sandbox', 'allow-scripts');
     fireEvent.click(screen.getByRole('button', { name: '说明.md' }));
     expect(select).toHaveBeenCalledWith('b');
     rerender(<ArtifactPane artifacts={artifacts} selected={artifacts[1]} loading={false} collapsed={false} onSelect={select} onCollapse={collapse} onClose={close} onDownload={download} />);
