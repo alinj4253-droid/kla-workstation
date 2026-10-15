@@ -54,6 +54,23 @@ export type ToolsConfig = {
   bochaApiKey: string;
 };
 
+/** Independent server-only WeKnora configuration; never sent to models or clients. */
+export type WeKnoraConfig = {
+  baseUrl: string;
+  apiKey: string;
+  knowledgeBaseIds: string[];
+  timeoutMs: number;
+  maxConcurrent: number;
+  queueLimit: number;
+  cacheTtlMs: number;
+  cacheVersion: string;
+};
+
+function boundedInteger(value: string | undefined, fallback: number, min: number, max: number): number {
+  const parsed = value === undefined || value.trim() === '' ? fallback : Number(value);
+  return Number.isInteger(parsed) && parsed >= min && parsed <= max ? parsed : fallback;
+}
+
 export type ServerConfig = {
   nodeEnv: string;
   host: string;
@@ -65,6 +82,7 @@ export type ServerConfig = {
   sub2api: Sub2ApiConfig;
   compute: ComputeConfig;
   tools: ToolsConfig;
+  weknora?: WeKnoraConfig;
   objectStoragePath: string;
   objectStorageMaxFileBytes: number;
   agentStepMaxTurns: number;
@@ -106,6 +124,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     },
     tools: {
       bochaApiKey: env.BOCHA_API_KEY ?? '',
+    },
+    weknora: {
+      baseUrl: env.WEKNORA_BASE_URL?.trim() ?? '',
+      apiKey: env.WEKNORA_API_KEY?.trim() ?? '',
+      knowledgeBaseIds: [...new Set((env.WEKNORA_KNOWLEDGE_BASE_IDS ?? '').split(',').map(id => id.trim()).filter(Boolean))],
+      timeoutMs: boundedInteger(env.WEKNORA_TIMEOUT_MS, 15000, 100, 120000),
+      maxConcurrent: boundedInteger(env.WEKNORA_MAX_CONCURRENT, 2, 1, 32),
+      queueLimit: boundedInteger(env.WEKNORA_QUEUE_LIMIT, 16, 0, 256),
+      cacheTtlMs: boundedInteger(env.WEKNORA_CACHE_TTL_MS, 60000, 0, 3600000),
+      cacheVersion: env.WEKNORA_CACHE_VERSION?.trim() || '1',
     },
     objectStoragePath: resolve(env.OBJECT_STORAGE_PATH ?? resolve(process.cwd(), '.runtime/object-storage')),
     objectStorageMaxFileBytes: Math.max(1, Number(env.OBJECT_STORAGE_MAX_FILE_BYTES ?? 100 * 1024 * 1024)),

@@ -8,6 +8,7 @@ import type { ComputeGateway, GatewayChatInput } from '../compute/gateway.js';
 import type { Identity } from '../repositories/types.js';
 import type { AgentMemoryScope, ShortTermMemoryService } from '../memories/short-term.js';
 import { effectiveToolCodes } from './registry.js';
+import { assertKnowledgeToolPolicy, isHomeAiDiagnosis } from './home-ai/knowledge-policy.js';
 import { homeAiWriteTools } from './home-ai/service.js';
 
 export type ToolScope = {
@@ -17,6 +18,7 @@ export type ToolScope = {
   stepId: string;
   agent: RegisteredAgent;
   deviceId: string | null;
+  signal?: AbortSignal;
 };
 
 export type ModelToolCall = {
@@ -88,7 +90,9 @@ export class ToolGateway {
   }
 
   private async authorize(scope: ToolScope, name: string): Promise<{ location: 'local' | 'server'; action: PermissionAction }> {
+    await assertKnowledgeToolPolicy(this.pool, name, { identityId: scope.identityId, conversationId: scope.conversationId, agentId: scope.agent.id, runId: scope.runId, stepId: scope.stepId });
     const skill = catalog.get(name as RuntimeSkillCode);
+    if (skill?.location === 'local' && await isHomeAiDiagnosis(this.pool, scope.identityId, scope.agent.id)) throw new Error('诊断智能体禁止本地工具；用户附件请使用服务端 file_read 或诊断材料工具。');
     if (!skill || !scope.agent.skills.includes(skill.code) || !this.discover(scope.agent).some(tool => tool.function.name === name)) {
       throw new Error(`智能体无权调用未挂载或已停用的工具：${name}`);
     }
@@ -130,7 +134,7 @@ export class ToolGateway {
         await this.authorize(scope, call.tool_name);
         if (catalog.get(call.tool_name as RuntimeSkillCode)?.location !== 'server') throw new Error('本地工具不能由服务端执行');
         result = await this.serverTools.execute(call.tool_name, call.arguments,
-          { identityId: scope.identityId, conversationId: scope.conversationId, agentId: scope.agent.id, toolCallId: call.id });
+          { identityId: scope.identityId, conversationId: scope.conversationId, agentId: scope.agent.id, toolCallId: call.id, runId: scope.runId, stepId: scope.stepId, signal: scope.signal });
       } catch (error) {
         result = { error: error instanceof Error ? error.message : String(error) };
       }

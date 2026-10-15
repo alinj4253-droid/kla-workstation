@@ -1,3 +1,5 @@
+import { loadConfig } from '../config.js';
+import { createWeKnoraClient } from '../tools/weknora-client.js';
 import { createHash } from 'node:crypto';
 import type { Pool } from 'pg';
 import { toolArguments, runtimeSkillCatalog, type RuntimeSkillCode } from '@kla-workstation/contracts';
@@ -13,7 +15,13 @@ import type { ObjectStore } from '../storage/object-store.js';
 import { knowledgeRequest } from './knowledge-transport.js';
 import { accessibleFile } from '../storage/file-access.js';
 import { HomeAiService, homeAiWriteTools } from './home-ai/service.js';
+import { assertKnowledgeToolPolicy, isHomeAiDiagnosis, type KnowledgeToolScope } from './home-ai/knowledge-policy.js';
 import type { HomeAiToolCode } from '@kla-workstation/contracts';
+
+function defaultWeKnoraClient() {
+  const config = loadConfig().weknora;
+  return config ? createWeKnoraClient(config) : undefined;
+}
 
 const string = { type: 'string' }, integer = { type: 'integer' };
 const properties: Record<RuntimeSkillCode, Record<string, unknown>> = {
@@ -29,6 +37,7 @@ const properties: Record<RuntimeSkillCode, Record<string, unknown>> = {
     source:{type:'string',enum:['estimate','measured']},targetHours:{anyOf:[{type:'number',minimum:0,maximum:1e9},{type:'string',enum:['']}]}},
   home_ai_report_build:{sessionId:string,stageId:string},
   home_ai_materials_add:{sessionId:string,expectedRevision:integer,fileId:string},
+  weknora_search: { query: { type: 'string', minLength: 1, maxLength: 240 } },
   knowledge_search: { query: string, topK: integer },
   knowledge_read: { knowledgeBaseId: string, docId: string, offset: integer, limit: integer },
   knowledge_ocr: { artifactId: string, maxPages: integer },
@@ -53,7 +62,7 @@ const required: Record<RuntimeSkillCode, string[]> = {
   home_ai_opportunity_discover:['sessionId'],home_ai_conditions_update:['sessionId','expectedRevision','stageId'],
   home_ai_value_estimate:['sessionId','expectedRevision','stageId','numbers'],home_ai_report_build:['sessionId','stageId'],
   home_ai_materials_add:['sessionId','expectedRevision','fileId'],
-  knowledge_search: ['query'], knowledge_read: ['knowledgeBaseId','docId'], knowledge_ocr: ['artifactId'],
+  weknora_search: ['query'], knowledge_search: ['query'], knowledge_read: ['knowledgeBaseId','docId'], knowledge_ocr: ['artifactId'],
   web_search: ['query'], memory_recall: ['query'],
   artifact_write: ['fileName','content'], artifact_compose: ['fileName','artifactIds'], artifact_read: ['artifactId'], local_read: ['path'], local_list: ['path'],
   file_read: ['fileId'], local_file_fetch: [],
@@ -74,16 +83,25 @@ export function parseToolArguments(name: string, raw: unknown): Record<string, u
   }
 }
 export class RuntimeTools {
-  constructor(private readonly pool: Pool, private readonly accounts: AccountRepository, private readonly memory: ShortTermMemoryService, private readonly encryptionKey: string, private readonly objectStore?: ObjectStore) {}
+  constructor(private readonly pool: Pool, private readonly accounts: AccountRepository, private readonly memory: ShortTermMemoryService, private readonly encryptionKey: string, private readonly objectStore?: ObjectStore, private readonly weknora: { search(query: string, signal?: AbortSignal): Promise<unknown> } | undefined = defaultWeKnoraClient()) {}
+  private async assertArtifactAgentAccess(artifactId: string, agentId: string) {
+    const row = (await this.pool.query('SELECT source_agent_id,agent_private FROM artifacts WHERE id=$1', [artifactId])).rows[0];
+    if (!row || (row.agent_private && row.source_agent_id !== agentId)) throw new Error('诊断私有成果仅允许来源诊断智能体读取；协作请委派诊断智能体并使用受控交接。');
+  }
   async knowledgeInfo(identityId:string, conversationId:string):Promise<unknown> {
     try { const targets = await resolveSearchTargets(this.pool, identityId, { conversationId });
       return targets?.libraries.length ? { libraries: targets.libraries.map(item => ({ id: item.id, name: item.name, scope: item.scope })) } : null; }
     catch { return null; }
   }
-  async execute(name: string, raw: unknown, scope: { identityId: string; conversationId: string; agentId: string; toolCallId?: string }): Promise<unknown> {
+  async execute(name: string, raw: unknown, scope: KnowledgeToolScope & { signal?: AbortSignal }): Promise<unknown> {
     const args = parseToolArguments(name, raw);
+    await assertKnowledgeToolPolicy(this.pool, name, scope, true);
     await requirePermission(this.pool, scope.identityId, homeAiWriteTools.has(name) || name === 'artifact_write' || name === 'artifact_compose' ? 'write'
       : name === 'knowledge_ocr' || name === 'web_search' ? 'execute' : 'read');
+    if (name === 'weknora_search') {
+      if (!this.weknora) throw new Error('WeKnora 服务未配置，请在工作站服务端配置独立地址、凭据及授权库范围。');
+      return this.weknora.search(String(args.query), scope.signal);
+    }
     if(name.startsWith('home_ai_')) return new HomeAiService(this.pool,this.objectStore).execute(name as HomeAiToolCode,args,scope);
     if (name === 'web_search') {
       const results = await createBochaClient({ apiKey: process.env.BOCHA_API_KEY ?? '' }).searchWeb({
@@ -108,6 +126,7 @@ export class RuntimeTools {
       const artifact = await this.accounts.getArtifact(scope.identityId, String(args.artifactId));
       if (!artifact) throw new Error('成果不存在或当前身份无权访问');
       if (artifact.conversationId !== scope.conversationId) throw new Error('成果不属于当前群聊');
+      await this.assertArtifactAgentAccess(artifact.id, scope.agentId);
       if (artifact.storageKey && !this.objectStore) throw new Error('对象存储未配置');
       if (artifact.storageKey && this.objectStore) {
         const bytes = await this.objectStore.get(artifact.storageKey);
@@ -124,6 +143,7 @@ export class RuntimeTools {
         const artifact = await this.accounts.getArtifact(scope.identityId, id);
         if (!artifact || artifact.conversationId !== scope.conversationId || artifact.contentEncoding === 'base64')
           throw new Error('章节成果不存在、无权访问或不是文本文件');
+        await this.assertArtifactAgentAccess(artifact.id, scope.agentId);
         const content = artifact.storageKey ? await this.objectStore?.get(artifact.storageKey) : null;
         if (artifact.storageKey && !content) throw new Error('章节成果对象不可用');
         parts.push(content ? content.toString('utf8') : artifact.content);
@@ -133,15 +153,16 @@ export class RuntimeTools {
       return this.execute('artifact_write', { fileName: args.fileName, content: merged, mimeType: args.mimeType }, scope);
     }
     if (name === 'artifact_write') {
+      const agentPrivate = await isHomeAiDiagnosis(this.pool, scope.identityId, scope.agentId);
       const content = String(args.content);
       const checksum = createHash('sha256').update(content).digest('hex');
       const bytes = Buffer.from(content, 'utf8');
       const client = await this.pool.connect();
       try {
         await client.query('BEGIN');
-        const {rows} = await client.query(`INSERT INTO artifacts(identity_id,conversation_id,name,mime_type,content,size_bytes,checksum,tool_call_id)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(tool_call_id) WHERE tool_call_id IS NOT NULL DO UPDATE SET tool_call_id=EXCLUDED.tool_call_id RETURNING *`,
-        [scope.identityId,scope.conversationId,args.fileName,args.mimeType,content,bytes.byteLength,checksum,scope.toolCallId??null]);
+        const {rows} = await client.query(`INSERT INTO artifacts(identity_id,conversation_id,name,mime_type,content,size_bytes,checksum,tool_call_id,source_agent_id,agent_private)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(tool_call_id) WHERE tool_call_id IS NOT NULL DO UPDATE SET tool_call_id=EXCLUDED.tool_call_id RETURNING *`,
+        [scope.identityId,scope.conversationId,args.fileName,args.mimeType,content,bytes.byteLength,checksum,scope.toolCallId??null,scope.agentId,agentPrivate]);
         const artifact = rows[0];
         if (artifact.identity_id !== scope.identityId || artifact.conversation_id !== scope.conversationId) throw new Error('成果调用不属于当前身份或群聊');
         if (artifact.checksum !== checksum || artifact.name !== args.fileName || artifact.mime_type !== args.mimeType) throw new Error('同一工具调用不可覆盖已有成果');
@@ -164,6 +185,7 @@ export class RuntimeTools {
       const artifact = await this.accounts.getArtifact(scope.identityId, String(args.artifactId));
       if (!artifact) throw new Error('成果不存在或当前身份无权访问');
       if (artifact.conversationId !== scope.conversationId) throw new Error('成果不属于当前群聊');
+      await this.assertArtifactAgentAccess(artifact.id, scope.agentId);
       if (artifact.mimeType !== 'application/pdf' || artifact.sizeBytes > 16 * 1024 * 1024)
         throw new Error('OCR 仅支持不超过 16 MiB 的 PDF 成果');
       const bytes = artifact.storageKey
