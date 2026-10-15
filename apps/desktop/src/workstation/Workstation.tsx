@@ -7,6 +7,7 @@ import logo from '../assets/kla-sidebar-logo.png';
 import type { CreateConversationRequest, IdentityDto } from '@kla-workstation/contracts';
 import { authExpiredEventName, klaApi, sessionChangedEventName } from '../api/client';
 import { RuntimeAgentManagement, RuntimeRoomMembers, RuntimeSkillManagement, RuntimeToolManagement, RuntimeSettingsView } from './RuntimeManagement';
+import { applyAppearance, readAppearance } from './appearance';
 import { memoryApi } from '../api/memories';
 import { ComputeSection, type ComputeView } from './ComputeSection';
 import { KnowledgeSection } from './KnowledgeSection';
@@ -213,11 +214,7 @@ export function Workstation(): React.JSX.Element {
     return () => { document.removeEventListener('pointerdown', close); document.removeEventListener('keydown', escape); };
   }, [userMenuOpen]);
   useEffect(() => { const sync = () => setLocalProfile({ nickname: localStorage.getItem('kla.profile.nickname') ?? '', avatar: localStorage.getItem('kla.profile.avatar') ?? '' }); window.addEventListener('kla:profile-changed', sync); return () => window.removeEventListener('kla:profile-changed', sync); }, []);
-  useEffect(() => {
-    document.documentElement.dataset.klaTheme = localStorage.getItem('kla.appearance.theme') ?? 'light';
-    document.documentElement.dataset.klaCompact = localStorage.getItem('kla.appearance.compact') ?? 'false';
-    document.documentElement.dataset.klaReducedMotion = localStorage.getItem('kla.appearance.reducedMotion') ?? 'false';
-  }, []);
+  useEffect(() => { applyAppearance(readAppearance()); }, []);
   const sendingChats = useRef(new Set<string>());
   const messageRequestKeys = useRef(new Map<string, { signature: string; key: string }>());
   const createLock = useRef(false);
@@ -699,7 +696,7 @@ export function Workstation(): React.JSX.Element {
       </div></div></div>
       <div className={`ws-content ${navProgress ? 'ws-content-transition' : ''}`}>
         {section === 'agents' && (agentView === 'manage' ? <RuntimeAgentManagement searchRequest={agentSearchRequest} identityId={activeIdentityId} notify={notify} /> : agentView === 'skills' ? <RuntimeSkillManagement identityId={activeIdentityId} notify={notify} /> : <RuntimeToolManagement identityId={activeIdentityId} notify={notify} />)}
-        {section === 'settings' && <RuntimeSettingsView view={settingsView === 'members' && !canManageMembers ? 'channels' : settingsView} identityId={activeIdentityId} notify={notify} />}
+        {section === 'settings' && <RuntimeSettingsView view={settingsView === 'members' && !canManageMembers ? 'channels' : settingsView} identityId={activeIdentityId} notify={notify} identities={identities} canManageMembers={canManageMembers} />}
         {section === 'home' && <div className="ws-home-prototype">
           <section className="ws-proto-welcome"><span className="ws-proto-avatar">{displayName.slice(0, 1)}</span><div className="ws-proto-welcome-copy"><h1>你好，{displayName} · 开启高效多智能体协同的一天</h1><p>{displayName} · 数字化员工 ｜ 已自动识别身份 · 员工目录 ｜ 科技BG · 数字化中心 · 数字化员工</p><div className="ws-proto-tags"><Badge tone="green">全域智能调度引擎运行中</Badge><Badge tone="green">算力响应正常 · 延迟 &lt; 85ms</Badge><Badge>4 大业务群组在线协同</Badge><Badge>已连接 4 个核心模型</Badge><Badge tone="muted">岗位语义智能自动匹配</Badge></div></div><div className="ws-proto-summary"><b>4<small>在线协同群组</small></b><b>6<small>可访问知识库</small></b><b>18<small>工作记忆条目</small></b></div><div className="ws-proto-actions"><button className="ws-primary" onClick={() => { navigate('compute'); setComputeView('market'); }}>查看模型矩阵与算力 <ArrowRight size={14} /></button><button onClick={() => navigate('knowledge')}>进入知识库</button></div></section>
           <div className="ws-proto-stats"><Stat icon={<Wallet />} label="积分余额" value={formatPoints(computeBalancePoints)} hint="当前身份可用额度，可在算力与计费中心查看明细" /><Stat icon={<Bot />} label="已安装应用" value="4 个" hint="可选 4 个 · 均由管理员统一授权" color="green" /><Stat icon={<BookOpen />} label="可访问知识" value="12 份" hint="按 BG 与权限过滤 · 可见范围随岗位权限变化" color="teal" /><Stat icon={<FileText />} label="工作记忆" value="18 条" hint="员工可查看、可删除 · 记忆随时由本人管理" color="orange" /></div>

@@ -21,6 +21,7 @@ import { registerFileRoutes } from './storage/routes.js';
 import { registerTaskRoutes } from './tasks/routes.js';
 import { messageFileReferences } from './storage/file-access.js';
 import { createMessageRequestSchema } from '@kla-workstation/contracts';
+import { channelStats, isChannelType, listActivity, listChannels, removeChannel, saveChannel, setChannelEnabled } from './channels/registry.js';
 
 /** pino 子 logger 支持运行时 setBindings；FastifyBaseLogger 类型未暴露，且 logger:false 的 noop 实现没有该方法（规范 §3）。 */
 function bindRequestLog(request: FastifyRequest, bindings: Record<string, unknown>): void {
@@ -418,6 +419,38 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
     return reply.send({ ok: true, data: null });
   });
   app.get('/api/v1/conversations', async (request, reply) => { const session = await auth(request, reply); if (!session) return; const identity = await enforce(session, request, 'read', reply); if (!identity) return; return reply.send({ ok: true, data: await deps.accounts.listAllConversations(identity.id) }); });
+
+  // ---------- 渠道（设置 → 渠道）----------
+  // 从遗留桌面桥接（window.kunqing.channels）迁到 REST：列表/新增/启停/删除 + 24 小时活动与指标。
+  app.get('/api/v1/channels', async (request, reply) => {
+    const session = await auth(request, reply); if (!session) return;
+    const identity = await enforce(session, request, 'read', reply); if (!identity) return;
+    return reply.send({ ok: true, data: { channels: listChannels(identity.id), activity: listActivity(identity.id), stats: channelStats(identity.id) } });
+  });
+  app.post('/api/v1/channels', async (request, reply) => {
+    const session = await auth(request, reply); if (!session) return;
+    const identity = await enforce(session, request, 'manage', reply); if (!identity) return;
+    const body = (request.body ?? {}) as { id?: string; type?: string; name?: string; credential?: string; enabled?: boolean };
+    if (!isChannelType(body.type)) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: '渠道类型不支持' } });
+    return reply.send({ ok: true, data: saveChannel(identity.id, { type: body.type, ...(body.id !== undefined ? { id: body.id } : {}), ...(body.name !== undefined ? { name: body.name } : {}), ...(body.credential !== undefined ? { credential: body.credential } : {}), ...(body.enabled !== undefined ? { enabled: body.enabled } : {}) }) });
+  });
+  app.patch('/api/v1/channels/:channelId', async (request, reply) => {
+    const session = await auth(request, reply); if (!session) return;
+    const identity = await enforce(session, request, 'manage', reply); if (!identity) return;
+    const { channelId } = request.params as { channelId: string };
+    const { enabled } = (request.body ?? {}) as { enabled?: boolean };
+    if (typeof enabled !== 'boolean') return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: '缺少启用状态' } });
+    const channel = setChannelEnabled(identity.id, channelId, enabled);
+    if (!channel) return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: '渠道不存在' } });
+    return reply.send({ ok: true, data: channel });
+  });
+  app.delete('/api/v1/channels/:channelId', async (request, reply) => {
+    const session = await auth(request, reply); if (!session) return;
+    const identity = await enforce(session, request, 'manage', reply); if (!identity) return;
+    const { channelId } = request.params as { channelId: string };
+    if (!removeChannel(identity.id, channelId)) return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: '渠道不存在' } });
+    return reply.send({ ok: true, data: true });
+  });
   app.get('/api/v1/projects/:projectId/agents', async (request, reply) => {
     const session = await auth(request, reply); if (!session) return;
     if (!deps.database?.rawPool) return reply.code(503).send({ ok: false, error: { code: 'DATABASE_NOT_CONFIGURED', message: '数据库未配置，无法加载可用智能体' } });

@@ -5,8 +5,12 @@ import { computeApi } from '../api/compute';
 import { klaApi } from '../api/client';
 import { Badge, IconButton } from './ui';
 import { DEFAULT_AGENT_MODEL_ID, DEFAULT_AGENT_MODEL_NAME, type ComputeKey, type ExecutionLocation } from '@kla-workstation/contracts';
+import { applyAppearance, readAppearance, saveAppearance, type AppearancePreferences } from './appearance';
+import { channelTypeDetails, channelTypeLabels, channelTypes, channelsApi, type ChannelOverview, type ChannelRecord, type ChannelType } from '../api/channels';
 
 type Props = { identityId: string; notify: (text: string) => void };
+/** 个人页「身份与权限」用到的身份视图（结构类型，避免与登录接口耦合）。 */
+export type ProfileIdentity = { id: string; displayName?: string | null; type?: string; organizationName?: string | null };
 type AgentKey = Pick<ComputeKey, 'id' | 'name' | 'keyPrefix' | 'status' | 'isDefault'>;
 const isBuiltinAgent = (agent: RuntimeAgent): boolean => agent.type === 'official' || ['统筹智能体', '本地执行智能体', 'PPT助手', '路线规划助手'].includes(agent.name);
 /** 内置智能体的稳定编码（与「鲲擎2.0 交互演示版」一致）；非内置沿用 builtin.<id 前 8 位>。 */
@@ -262,23 +266,56 @@ export function RuntimeRoomMembers({ room, identityId, notify, onClose }: Props 
 type SettingsView = 'channels' | 'members' | 'profile' | 'appearance' | 'ops';
 
 /** 原型中的平台设置页面，保留现有服务端和桌面桥接能力边界。 */
-export function RuntimeSettingsView({ view, identityId, notify }: Props & { view: SettingsView }): React.JSX.Element {
+export function RuntimeSettingsView({ view, identityId, notify, identities = [], canManageMembers = false }: Props & { view: SettingsView; identities?: ProfileIdentity[]; canManageMembers?: boolean }): React.JSX.Element {
   if (view === 'channels') return <ChannelSettings notify={notify} />;
   if (view === 'members') return <MemberSettings identityId={identityId} notify={notify} />;
-  if (view === 'profile') return <ProfileSettings notify={notify} />;
+  if (view === 'profile') return <ProfileSettings notify={notify} identities={identities} activeIdentityId={identityId} canManageMembers={canManageMembers} />;
   if (view === 'appearance') return <AppearanceSettings notify={notify} />;
   return <OperationsSettings notify={notify} />;
 }
 
 function ChannelSettings({ notify }: { notify: (text: string) => void }): React.JSX.Element {
-  const [channels, setChannels] = useState<Array<{ id: string; name: string; type: string; enabled: boolean; status: string }>>([]);
-  useEffect(() => { void (async () => { try { const result = await window.kunqing?.channels.list() as { ok: boolean; data?: typeof channels } | undefined; if (result?.ok && result.data) setChannels(result.data); } catch { notify('渠道列表加载失败'); } })(); }, []);
-  const labels: Record<string, string> = { telegram: 'Telegram', lark: '飞书 / Lark', dingtalk: '钉钉', 'wecom-webhook': '企业微信群机器人' };
-  return <div className="ws-settings-page"><div className="ws-agent-heading"><div><h1>渠道配置</h1><p>连接 Telegram、飞书、钉钉和企业微信群机器人，让群聊可从本地工作站收发消息。</p></div><button className="ws-primary" disabled={!window.kunqing?.channels} title={!window.kunqing?.channels ? '新版 REST 渠道配置接口尚未接入' : '渠道配置'} onClick={() => notify('渠道配置请在桌面版操作')}><Plus size={15} /> 添加渠道</button></div><div className="ws-channel-stats"><article><strong>{channels.filter(channel => channel.enabled && channel.status === 'connected').length}</strong><span>已连接渠道</span><small>实时连接状态</small></article><article><strong>{channels.length}</strong><span>已配置渠道</span><small>当前设备读取</small></article><article><strong>{channels.filter(channel => channel.enabled && channel.status !== 'connected').length}</strong><span>待连接渠道</span><small>需检查凭据或连接状态</small></article><article><strong>{window.kunqing?.channels ? '可用' : '待接入'}</strong><span>渠道管理服务</span><small>{window.kunqing?.channels ? '桌面桥接' : '新版 REST 接口未开放'}</small></article></div><section className="ws-settings-card"><header><div><h3>已配置渠道</h3><p>启用后渠道在本地常驻监听，消息统一交给群聊 Leader 处理。</p></div><Cable size={18} /></header>{channels.length ? channels.map(channel => <div className="ws-channel-row" key={channel.id}><span className="ws-tool-icon"><Cable size={16} /></span><div><b>{labels[channel.type] ?? channel.name}</b><small>{channel.type} · {channel.status}</small></div><Badge tone={channel.enabled && channel.status === 'connected' ? 'green' : 'muted'}>{channel.enabled && channel.status === 'connected' ? '已连接' : '未连接'}</Badge><button disabled={!window.kunqing?.channels} onClick={() => notify(`渠道配置：${channel.name}`)}><Settings size={14} /> 配置</button></div>) : <div className="ws-empty-line">尚未配置渠道；新版 REST 渠道接口接入后可在此配置。</div>}</section><section className="ws-settings-card"><header><div><h3>最近活动</h3><p>最近 24 小时的渠道收发记录</p></div></header><div className="ws-activity-line"><Check size={15} /> 暂无可用的渠道活动记录</div></section></div>;
+  const [overview, setOverview] = useState<ChannelOverview | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState<{ id?: string; type: ChannelType; name: string; credential: string }>({ type: 'telegram', name: '', credential: '' });
+  const load = async (): Promise<void> => {
+    const result = await channelsApi.overview();
+    if (!result.ok) { notify(result.message); setLoading(false); return; }
+    setOverview(result.data); setLoading(false);
+  };
+  useEffect(() => { void load().catch(() => { setLoading(false); notify('渠道列表加载失败'); }); }, []);
+  const channels = overview?.channels ?? [];
+  const activity = overview?.activity ?? [];
+  const stats = overview?.stats;
+  const onlineText = stats?.onlineMs == null ? '—' : `${Math.floor(stats.onlineMs / 3_600_000)}h ${Math.floor((stats.onlineMs % 3_600_000) / 60_000)}m`;
+  const submit = async (): Promise<void> => {
+    const result = await channelsApi.save({ ...(draft.id ? { id: draft.id } : {}), type: draft.type, ...(draft.name.trim() ? { name: draft.name.trim() } : {}), ...(draft.credential.trim() ? { credential: draft.credential.trim() } : {}) });
+    if (!result.ok) { notify(result.message); return; }
+    setAdding(false); setDraft({ type: 'telegram', name: '', credential: '' }); await load(); notify(`${result.data.name} 已添加`);
+  };
+  const toggleChannel = async (channel: ChannelRecord, enabled: boolean): Promise<void> => {
+    const result = await channelsApi.toggle(channel.id, enabled);
+    if (!result.ok) { notify(result.message); return; }
+    await load(); notify(enabled ? `${channel.name} 已启用` : `${channel.name} 已停止`);
+  };
+  const removeChannelRow = async (channel: ChannelRecord): Promise<void> => {
+    const result = await channelsApi.remove(channel.id);
+    if (!result.ok) { notify(result.message); return; }
+    await load(); notify(`${channel.name} 已移除`);
+  };
+  return <div className="ws-settings-page"><div className="ws-agent-heading"><div><h1>渠道配置</h1><p>连接 Telegram、飞书、钉钉和企业微信群机器人，让群聊可从本地工作站收发消息。</p></div><button className="ws-primary" onClick={() => setAdding(true)}><Plus size={15} /> 添加渠道</button></div>
+    <div className="ws-channel-stats"><article><strong>{stats?.requestsToday ?? 0}</strong><span>今日请求</span><small>今日累计 · 由群聊 Leader 统一处理</small></article><article><strong>{stats ? `${stats.errorRate}%` : '—'}</strong><span>错误率</span><small>过去 24h · 失败请求占比</small></article><article><strong>{stats ? `${stats.connected} / ${stats.total}` : '—'}</strong><span>连接渠道</span><small>{stats?.connected ? '运行正常' : '尚未有在线渠道'}</small></article><article><strong>{onlineText}</strong><span>在线时长</span><small>今日累计 · 本地常驻监听运行时间</small></article></div>
+    <section className="ws-settings-card"><header><div><h3>接入流程</h3><p>配置凭据后启用常驻监听，消息统一交给群聊 Leader 处理</p></div><Cable size={18} /></header><div className="ws-channel-steps"><span><Badge tone="blue">1</Badge>选择一个渠道并完成凭据配置</span><span><Badge tone="muted">2</Badge>启用后在本地常驻监听，由群聊 Leader 处理消息</span><small>{stats && stats.total ? `当前 ${stats.total} 个渠道中 ${stats.connected} 个在线` : '尚未配置渠道，点击右上角「添加渠道」开始接入'}</small></div></section>
+    <section className="ws-settings-card"><header><div><h3>最近活动</h3><p>最近 24 小时的渠道变更与收发记录，按时间倒序</p></div></header>{loading ? <div className="ws-empty-line">正在加载渠道…</div> : !activity.length ? <div className="ws-empty-line">暂无渠道活动；添加或启停渠道后会记录在这里。</div> : <div className="ws-channel-activity"><div className="ws-channel-activity-head"><span>渠道</span><span>状态</span><span>最近活动</span><span>类型</span></div>{activity.map(item => <div className="ws-channel-activity-row" key={item.id}><span><b>{item.channelName}</b></span><span><Badge tone={item.channelStatus === 'connected' ? 'green' : item.channelStatus === 'error' ? 'orange' : 'muted'}>{item.channelStatus === 'connected' ? '已连接' : item.channelStatus === 'error' ? '配置异常' : '已断开'}</Badge></span><span>{item.detail} · {new Date(item.at).toLocaleString()}</span><span><Badge tone="blue">{item.kind === 'inbound' ? '收到消息' : item.kind === 'outbound' ? '发送消息' : '系统'}</Badge></span></div>)}</div>}</section>
+    <div className="ws-channel-grid">{channels.map(channel => <article className="ws-settings-card ws-channel-card" key={channel.id}><div className="ws-agent-card-head"><span className={`ws-agent-avatar is-${channel.status === 'connected' ? 'green' : channel.status === 'error' ? 'orange' : 'muted'}`}>{channel.name.slice(0, 1)}</span><div><h3>{channel.name}</h3><small className="ws-agent-code">{channelTypeLabels[channel.type]} · {channelTypeDetails[channel.type]}</small></div><button role="switch" aria-label={`${channel.name} 启用状态`} aria-checked={channel.enabled} className={`ws-agent-switch ${channel.enabled ? 'active' : ''}`} onClick={() => void toggleChannel(channel, !channel.enabled)}><span /></button></div><div className="ws-agent-tags"><Badge tone={channel.status === 'connected' ? 'green' : channel.status === 'error' ? 'orange' : 'muted'}>{channel.status === 'connected' ? '已连接' : channel.status === 'error' ? '配置异常' : '已断开'}</Badge>{channel.credentialHint && <Badge tone="muted">凭据 {channel.credentialHint}</Badge>}</div><footer><button onClick={() => { setDraft({ id: channel.id, type: channel.type, name: channel.name, credential: '' }); setAdding(true); }}><Settings size={14} /> 配置</button><button onClick={() => void removeChannelRow(channel)}>移除</button></footer></article>)}{!loading && !channels.length && <article className="ws-settings-card ws-channel-card is-empty"><Cable size={20} /><b>尚未配置渠道</b><small>添加 Telegram、飞书、钉钉或企业微信机器人后，可在群聊里直接收发消息。</small><button className="ws-primary" onClick={() => setAdding(true)}><Plus size={15} /> 添加渠道</button></article>}</div>
+    {adding && <div className="ws-modal-backdrop"><div className="ws-modal"><header><h2>添加渠道</h2><IconButton title="关闭" onClick={() => setAdding(false)}><X size={18} /></IconButton></header><label className="ws-settings-field">渠道类型<select value={draft.type} onChange={event => setDraft(current => ({ ...current, type: event.target.value as ChannelType }))}>{channelTypes.map(type => <option key={type} value={type}>{channelTypeLabels[type]}</option>)}</select></label><label className="ws-settings-field">显示名称<input value={draft.name} maxLength={60} placeholder={channelTypeLabels[draft.type]} onChange={event => setDraft(current => ({ ...current, name: event.target.value }))} /></label><label className="ws-settings-field">凭据<input value={draft.credential} placeholder="Bot Token / Webhook 地址" onChange={event => setDraft(current => ({ ...current, credential: event.target.value }))} /></label><p className="ws-settings-note">{channelTypeDetails[draft.type]}；凭据只保存尾部片段用于回显，服务端不返回明文。</p><footer><button onClick={() => setAdding(false)}>取消</button><button className="ws-primary" onClick={() => void submit()}>保存并启用</button></footer></div></div>}
+  </div>;
 }
 
 type OrganizationMember = { identityId: string; displayName: string; nickname: string; email?: string | null; status: string; roles: Array<{ id: string; name: string; isSystem?: boolean }> };
 type OrganizationRole = { id: string; name: string; is_system: boolean };
+type ConversationOption = { id: string; name?: string | null; title?: string | null };
 
 function MemberSettings({ identityId, notify }: Props): React.JSX.Element {
   const [organizationId, setOrganizationId] = useState('');
@@ -288,6 +325,11 @@ function MemberSettings({ identityId, notify }: Props): React.JSX.Element {
   const [editing, setEditing] = useState<OrganizationMember | null>(null);
   const [selectedRoles, setSelectedRoles] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
+  const [query, setQuery] = useState('');
+  // 「邀请进群」：先选一个可管理的群聊，再把成员加入（依赖 /v1/conversations 与 /v1/conversations/:id/members）。
+  const [inviting, setInviting] = useState<OrganizationMember | null>(null);
+  const [rooms, setRooms] = useState<ConversationOption[]>([]);
+  const [roomsLoading, setRoomsLoading] = useState(false);
   const load = async (): Promise<void> => {
     const identities = await klaApi.request<Array<{ id: string; organizationId?: string | null }>>('/v1/me/identities');
     if (!identities.ok) { notify(identities.message); setLoading(false); return; }
@@ -311,10 +353,25 @@ function MemberSettings({ identityId, notify }: Props): React.JSX.Element {
     if (!result.ok) { notify(result.message); return; }
     setEditing(null); await load(); notify('成员角色已更新');
   };
-  return <div className="ws-settings-page"><div className="ws-agent-heading"><div><h1>成员管理</h1><p>管理当前企业身份下的成员、角色与访问权限。</p></div>{inviteCode && <button className="ws-primary" onClick={() => void navigator.clipboard.writeText(inviteCode).then(() => notify('企业邀请码已复制')).catch(() => notify(`邀请码：${inviteCode}`))}><Plus size={15} /> 复制邀请码</button>}</div><section className="ws-settings-card"><header><div><h3>企业成员</h3><p>管理员可为成员设置新的业务角色；系统管理员与成员身份不可修改。</p></div><Users size={18} /></header>{loading ? <div className="ws-empty-line">正在加载成员…</div> : !organizationId ? <div className="ws-empty-line">当前不是企业身份</div> : <div className="ws-member-table"><div className="ws-member-table-head"><span>成员</span><span>角色</span><span>状态</span><span>操作</span></div>{members.map(member => <div className="ws-member-table-row" key={member.identityId}><span><b>{member.nickname || member.displayName}</b><small>{member.email ?? member.displayName}</small></span><span>{member.roles.map(role => role.name).join('、') || '成员'}</span><Badge tone={member.status === 'active' ? 'green' : 'muted'}>{member.status === 'active' ? '正常' : '停用'}</Badge><button onClick={() => { setEditing(member); setSelectedRoles(member.roles.map(role => role.id)); }}>设置角色</button></div>)}</div>}</section>{editing && <div className="ws-modal-backdrop"><div className="ws-modal"><header><h2>设置成员角色</h2><IconButton title="关闭" onClick={() => setEditing(null)}><X size={18} /></IconButton></header><div className="ws-settings-role-options">{roles.map(role => <label key={role.id}><input type="checkbox" checked={selectedRoles.includes(role.id)} disabled={role.is_system} onChange={event => setSelectedRoles(current => event.target.checked ? [...current, role.id] : current.filter(id => id !== role.id))} />{role.name}{role.is_system && <small>系统角色不可修改</small>}</label>)}</div><footer><button onClick={() => setEditing(null)}>取消</button><button className="ws-primary" onClick={() => void saveRoles()}>保存</button></footer></div></div>}</div>;
+  const openInvite = async (member: OrganizationMember): Promise<void> => {
+    setInviting(member); setRoomsLoading(true);
+    const result = await klaApi.request<ConversationOption[] | { items?: ConversationOption[] }>('/v1/conversations');
+    setRoomsLoading(false);
+    if (!result.ok) { notify(result.message); setInviting(null); return; }
+    setRooms(Array.isArray(result.data) ? result.data : result.data.items ?? []);
+  };
+  const inviteToRoom = async (member: OrganizationMember, room: ConversationOption): Promise<void> => {
+    const result = await klaApi.request(`/v1/conversations/${room.id}/members`, { method: 'POST', body: JSON.stringify({ identityId: member.identityId }) });
+    if (!result.ok) { notify(result.message); return; }
+    setInviting(null);
+    notify(`${member.nickname || member.displayName} 已加入「${room.name ?? room.title ?? room.id}」`);
+  };
+  const keyword = query.trim().toLowerCase();
+  const visible = keyword ? members.filter(member => `${member.nickname} ${member.displayName} ${member.email ?? ''} ${member.roles.map(role => role.name).join(' ')}`.toLowerCase().includes(keyword)) : members;
+  return <div className="ws-settings-page"><div className="ws-agent-heading"><div><h1>成员管理</h1><p>管理当前企业身份下的成员、角色与访问权限。</p></div>{inviteCode && <button className="ws-primary" onClick={() => void navigator.clipboard.writeText(inviteCode).then(() => notify('企业邀请码已复制')).catch(() => notify(`邀请码：${inviteCode}`))}><Plus size={15} /> 复制邀请码</button>}</div><section className="ws-settings-card"><header><div><h3>企业成员</h3><p>管理员可为成员设置新的业务角色；系统管理员与成员身份不可修改。</p></div><Users size={18} /></header><label className="ws-agent-search ws-member-search"><Search size={15} /><input placeholder="搜索姓名 / 邮箱 / 角色" value={query} onChange={event => setQuery(event.target.value)} /></label>{loading ? <div className="ws-empty-line">正在加载成员…</div> : !organizationId ? <div className="ws-empty-line">当前不是企业身份</div> : !visible.length ? <div className="ws-empty-line">{members.length ? '没有匹配的成员' : '暂无企业成员'}</div> : <div className="ws-member-table"><div className="ws-member-table-head"><span>成员</span><span>角色</span><span>状态</span><span>操作</span></div>{visible.map(member => <div className="ws-member-table-row" key={member.identityId}><span><b>{member.nickname || member.displayName}</b><small>{member.email ?? member.displayName}</small></span><span>{member.roles.map(role => role.name).join('、') || '成员'}</span><Badge tone={member.status === 'active' ? 'green' : 'muted'}>{member.status === 'active' ? '正常' : '停用'}</Badge><span className="ws-member-actions"><button onClick={() => { setEditing(member); setSelectedRoles(member.roles.map(role => role.id)); }}>设置角色</button><button onClick={() => void openInvite(member)}>邀请进群</button></span></div>)}</div>}</section>{inviting && <div className="ws-modal-backdrop"><div className="ws-modal"><header><h2>邀请进群 · {inviting.nickname || inviting.displayName}</h2><IconButton title="关闭" onClick={() => setInviting(null)}><X size={18} /></IconButton></header>{roomsLoading ? <div className="ws-empty-line">正在读取可加入的群聊…</div> : !rooms.length ? <div className="ws-empty-line">没有可加入的群聊；请先在项目下创建群聊。</div> : <div className="ws-room-options">{rooms.map(room => <button key={room.id} onClick={() => void inviteToRoom(inviting, room)}><Users size={15} /> {room.name ?? room.title ?? room.id}</button>)}</div>}<footer><button onClick={() => setInviting(null)}>取消</button></footer></div></div>}{editing && <div className="ws-modal-backdrop"><div className="ws-modal"><header><h2>设置成员角色</h2><IconButton title="关闭" onClick={() => setEditing(null)}><X size={18} /></IconButton></header><div className="ws-settings-role-options">{roles.map(role => <label key={role.id}><input type="checkbox" checked={selectedRoles.includes(role.id)} disabled={role.is_system} onChange={event => setSelectedRoles(current => event.target.checked ? [...current, role.id] : current.filter(id => id !== role.id))} />{role.name}{role.is_system && <small>系统角色不可修改</small>}</label>)}</div><footer><button onClick={() => setEditing(null)}>取消</button><button className="ws-primary" onClick={() => void saveRoles()}>保存</button></footer></div></div>}</div>;
 }
 
-function ProfileSettings({ notify }: { notify: (text: string) => void }): React.JSX.Element {
+function ProfileSettings({ notify, identities, activeIdentityId, canManageMembers }: { notify: (text: string) => void; identities: ProfileIdentity[]; activeIdentityId: string; canManageMembers: boolean }): React.JSX.Element {
   const [nickname, setNickname] = useState(() => localStorage.getItem('kla.profile.nickname') ?? '老K');
   const [avatar, setAvatar] = useState(() => localStorage.getItem('kla.profile.avatar') ?? '');
   const chooseAvatar = (file?: File): void => {
@@ -331,26 +388,36 @@ function ProfileSettings({ notify }: { notify: (text: string) => void }): React.
     window.dispatchEvent(new Event('kla:profile-changed'));
     notify('本机个人信息已保存');
   };
-  return <div className="ws-settings-page ws-settings-narrow"><div className="ws-agent-heading"><div><h1>个人</h1><p>设置你在本机群聊中的昵称与头像，并查看当前账号绑定的身份。</p></div></div><div className="ws-profile-layout"><section className="ws-settings-card ws-profile-avatar"><h3>头像</h3><span className="ws-user-avatar large">{avatar ? <img src={avatar} alt="当前头像" /> : nickname.slice(0, 1)}</span><label className="ws-avatar-upload"><UserCircle size={14} /> 更换头像<input type="file" accept="image/png,image/jpeg" onChange={event => chooseAvatar(event.target.files?.[0])} /></label><button onClick={() => setAvatar('')}>恢复默认</button><small>支持 PNG 与 JPG，建议 512 × 512，单个文件不超过 2MB。</small></section><section className="ws-settings-card"><header><div><h3>昵称</h3><p>昵称与头像保存在本机，只影响本设备上看到的名字。</p></div><Badge tone="blue">本机生效</Badge></header><label className="ws-settings-field">昵称<input value={nickname} maxLength={16} onChange={event => setNickname(event.target.value)} /></label><footer><button className="ws-primary" onClick={save}>保存个人信息</button></footer></section></div></div>;
+  // 权限清单与交互演示版一致：基础能力对所有登录身份开放，治理类按企业管理员判定，运维管理需密码。
+  const permissions = [
+    { name: '群组协作与智能体对话', detail: '创建群组、@智能体、发起协同任务并查看执行记录', ok: true },
+    { name: '知识库创建与上传', detail: '创建知识库、上传文件、查看切片与知识检索', ok: true },
+    { name: '企业记忆查看与编辑', detail: '查看本群组及其智能体的记忆，编辑与删除条目', ok: true },
+    { name: '算力调用与积分查看', detail: '调用模型、查看使用记录与积分余额', ok: true },
+    { name: '企业治理 · 成员管理', detail: '管理企业成员、知识库权限、Token 配额与企业邀请码', ok: canManageMembers },
+    { name: 'Token 配额分配', detail: '为成员分配与追加 Token 配额，不设时间周期', ok: canManageMembers },
+    { name: '企业邀请码管理', detail: '生成、复制、停用与删除企业邀请码', ok: canManageMembers },
+    { name: '运维管理', detail: '切换产品交付方式、维护本地授权参数', ok: true, note: '需运维密码' },
+  ];
+  return <div className="ws-settings-page ws-settings-narrow"><div className="ws-agent-heading"><div><h1>个人</h1><p>设置你在本机群聊中的昵称与头像，并查看该账号绑定的身份与权限。</p></div></div><div className="ws-profile-layout"><section className="ws-settings-card ws-profile-avatar"><h3>头像</h3><span className="ws-user-avatar large">{avatar ? <img src={avatar} alt="当前头像" /> : nickname.slice(0, 1)}</span><label className="ws-avatar-upload"><UserCircle size={14} /> 更换头像<input type="file" accept="image/png,image/jpeg" onChange={event => chooseAvatar(event.target.files?.[0])} /></label><button onClick={() => setAvatar('')}>恢复默认</button><small>支持 PNG 与 JPG，建议 512 × 512，单个文件不超过 2MB。</small></section><section className="ws-settings-card"><header><div><h3>昵称</h3><p>昵称与头像保存在本机，只影响本设备上看到的名字。</p></div><Badge tone="blue">本机生效</Badge></header><label className="ws-settings-field">昵称<input value={nickname} maxLength={16} onChange={event => setNickname(event.target.value)} /></label><footer><button className="ws-primary" onClick={save}>保存个人信息</button></footer></section></div>
+    <section className="ws-settings-card ws-profile-identities"><header><div><h3>身份与权限</h3><p>该账号绑定的身份，以及当前身份可用的能力范围。</p></div><ShieldCheck size={18} /></header>
+      <div className="ws-identity-list">{identities.length ? identities.map(identity => <div className={`ws-identity-row ${identity.id === activeIdentityId ? 'is-active' : ''}`} key={identity.id}><span className="ws-tool-icon"><UserCircle size={16} /></span><span><b>{identity.displayName || '未命名身份'}</b><small>{identity.organizationName || (identity.type === 'enterprise' ? '企业身份' : '个人身份')}</small></span><Badge tone={identity.type === 'enterprise' ? 'blue' : 'muted'}>{identity.type === 'enterprise' ? '企业' : '个人'}</Badge>{identity.id === activeIdentityId && <Badge tone="green">当前身份</Badge>}</div>) : <div className="ws-empty-line">尚未绑定身份</div>}</div>
+      <div className="ws-permission-list">{permissions.map(item => <div className={`ws-permission-row ${item.ok ? '' : 'is-off'}`} key={item.name}><span className="ws-permission-mark">{item.ok ? <Check size={14} /> : <X size={14} />}</span><span><b>{item.name}</b><small>{item.detail}</small></span>{item.note && <Badge tone="muted">{item.note}</Badge>}</div>)}</div>
+    </section></div>;
 }
 
 function AppearanceSettings({ notify }: { notify: (text: string) => void }): React.JSX.Element {
-  const [theme, setTheme] = useState<'light' | 'dark' | 'system'>(() => (localStorage.getItem('kla.appearance.theme') as 'light' | 'dark' | 'system') || 'light');
-  const [preferences, setPreferences] = useState(() => ({ compact: localStorage.getItem('kla.appearance.compact') === 'true', persistentNav: localStorage.getItem('kla.appearance.persistentNav') !== 'false', reducedMotion: localStorage.getItem('kla.appearance.reducedMotion') === 'true' }));
-  const selectTheme = (value: 'light' | 'dark' | 'system'): void => { setTheme(value); document.documentElement.dataset.klaTheme = value; };
-  const save = (): void => {
-    localStorage.setItem('kla.appearance.theme', theme);
-    Object.entries(preferences).forEach(([key, value]) => localStorage.setItem(`kla.appearance.${key}`, String(value)));
-    document.documentElement.dataset.klaCompact = preferences.compact ? 'true' : 'false';
-    document.documentElement.dataset.klaReducedMotion = preferences.reducedMotion ? 'true' : 'false';
-    notify('本机外观设置已保存');
-  };
+  const [preferences, setPreferences] = useState<AppearancePreferences>(() => readAppearance());
+  const { theme } = preferences;
+  // 主题与开关都立即预览（写 dataset），只有「保存外观设置」才持久化。
+  const update = (patch: Partial<AppearancePreferences>): void => setPreferences(current => { const next = { ...current, ...patch }; applyAppearance(next); return next; });
+  const save = (): void => { saveAppearance(preferences); notify('本机外观设置已保存'); };
   const rows = [
     { key: 'compact' as const, name: '紧凑密度', detail: '列表与表格行高收窄，一屏可容纳更多条目' },
     { key: 'persistentNav' as const, name: '左侧导航常驻', detail: '窗口变窄时保持导航文字可见' },
     { key: 'reducedMotion' as const, name: '减少动效', detail: '关闭卡片入场与悬浮窗过渡动画' },
   ];
-  return <div className="ws-settings-page ws-settings-narrow"><div className="ws-agent-heading"><div><h1>外观</h1><p>选择界面主题与信息密度，设置只作用于当前工作站。</p></div></div><div className="ws-profile-layout"><section className="ws-settings-card"><header><div><h3>主题</h3><p>深色可降低夜间长时间使用的视觉疲劳</p></div><Badge tone="blue">{theme === 'light' ? '浅色' : theme === 'dark' ? '深色' : '跟随系统'}</Badge></header><div className="ws-segmented">{(['light', 'dark', 'system'] as const).map(value => <button key={value} className={theme === value ? 'active' : ''} onClick={() => selectTheme(value)}>{value === 'light' ? '浅色' : value === 'dark' ? '深色' : '跟随系统'}</button>)}</div><p className="ws-settings-note">切换主题立即预览，保存后本机下次启动继续使用。</p></section><section className="ws-settings-card"><header><div><h3>界面密度</h3><p>列表与表格的行高、留白与导航常驻策略</p></div><Sun size={18} /></header>{rows.map(row => <div className="ws-preference-row" key={row.key}><span><b>{row.name}</b><small>{row.detail}</small></span><button role="switch" aria-label={row.name} aria-checked={preferences[row.key]} className={`ws-agent-switch ${preferences[row.key] ? 'active' : ''}`} onClick={() => setPreferences(current => ({ ...current, [row.key]: !current[row.key] }))}><span /></button></div>)}<button className="ws-primary" onClick={save}>保存外观设置</button></section></div></div>;
+  return <div className="ws-settings-page ws-settings-narrow"><div className="ws-agent-heading"><div><h1>外观</h1><p>选择界面主题与信息密度，设置只作用于当前工作站。</p></div></div><div className="ws-profile-layout"><section className="ws-settings-card"><header><div><h3>主题</h3><p>深色可降低夜间长时间使用的视觉疲劳</p></div><Badge tone="blue">{theme === 'light' ? '浅色' : theme === 'dark' ? '深色' : '跟随系统'}</Badge></header><div className="ws-segmented">{(['light', 'dark', 'system'] as const).map(value => <button key={value} className={theme === value ? 'active' : ''} onClick={() => update({ theme: value })}>{value === 'light' ? '浅色' : value === 'dark' ? '深色' : '跟随系统'}</button>)}</div><p className="ws-settings-note">切换主题立即预览，保存后本机下次启动继续使用。</p></section><section className="ws-settings-card"><header><div><h3>界面密度</h3><p>列表与表格的行高、留白与导航常驻策略</p></div><Sun size={18} /></header>{rows.map(row => <div className="ws-preference-row" key={row.key}><span><b>{row.name}</b><small>{row.detail}</small></span><button role="switch" aria-label={row.name} aria-checked={preferences[row.key]} className={`ws-agent-switch ${preferences[row.key] ? 'active' : ''}`} onClick={() => update({ [row.key]: !preferences[row.key] })}><span /></button></div>)}<button className="ws-primary" onClick={save}>保存外观设置</button></section></div></div>;
 }
 
 function OperationsSettings({ notify }: { notify: (text: string) => void }): React.JSX.Element {
@@ -361,15 +428,22 @@ function OperationsSettings({ notify }: { notify: (text: string) => void }): Rea
   const [lockedUntil, setLockedUntil] = useState(0);
   const [tokenAmount, setTokenAmount] = useState('1000000');
   const [expiresAt, setExpiresAt] = useState('');
+  // 连续失败每满 3 次锁定一次，锁定时长依次递增（与交互演示版一致：3 / 5 / 10 / 30 分钟）。
+  const lockMinutes = [3, 5, 10, 30];
   const verify = (): void => {
     if (Date.now() < lockedUntil) return;
     if (password === '123456') { setVerified(true); setAttempts(0); setPassword(''); return; }
     setPassword('');
     const next = attempts + 1;
     setAttempts(next);
-    if (next % 3 === 0) setLockedUntil(Date.now() + 3 * 60_000);
+    if (next % 3 === 0) setLockedUntil(Date.now() + (lockMinutes[Math.min(Math.floor(next / 3) - 1, lockMinutes.length - 1)] ?? 3) * 60_000);
     notify('运维密码不正确');
   };
-  if (!verified) return <div className="ws-settings-page ws-settings-narrow ws-ops-gate"><ShieldCheck size={29} /><h1>运维管理</h1><p>该模块涉及产品交付方式与本地授权参数，需先通过运维密码验证。</p><section className="ws-settings-card"><header><div><h3>运维密码验证</h3><p>仅运维人员可用，请勿将密码告知他人</p></div><Badge tone={Date.now() < lockedUntil ? 'orange' : 'muted'}>{Date.now() < lockedUntil ? '已锁定' : '待验证'}</Badge></header><label className="ws-settings-field">运维密码<input type="password" value={password} disabled={Date.now() < lockedUntil} onChange={event => setPassword(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') verify(); }} placeholder="请输入运维密码" /></label>{attempts > 0 && <p>已失败 {attempts} 次；连续失败 3 次将暂时锁定输入。</p>}<button className="ws-primary" disabled={Date.now() < lockedUntil} onClick={verify}>验证并进入</button></section></div>;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => { if (Date.now() >= lockedUntil) return; const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, [lockedUntil]);
+  const remaining = Math.max(0, lockedUntil - now);
+  const locked = remaining > 0;
+  const countdown = `${String(Math.floor(remaining / 60_000)).padStart(2, '0')}:${String(Math.floor((remaining % 60_000) / 1000)).padStart(2, '0')}`;
+  if (!verified) return <div className="ws-settings-page ws-settings-narrow ws-ops-gate"><ShieldCheck size={29} /><h1>运维管理</h1><p>该模块涉及产品交付方式与本地授权参数，需先通过运维密码验证。</p><section className="ws-settings-card"><header><div><h3>运维密码验证</h3><p>仅运维人员可用，请勿将密码告知他人</p></div><Badge tone={locked ? 'orange' : 'muted'}>{locked ? '已锁定' : '待验证'}</Badge></header><label className="ws-settings-field">运维密码<input type="password" value={password} disabled={locked} onChange={event => setPassword(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') verify(); }} placeholder={locked ? '锁定期内不可输入' : '请输入运维密码'} /></label>{locked ? <p role="status">输入已锁定，请在 <b>{countdown}</b> 后重新输入；再次连续失败，锁定时长会依次延长。</p> : attempts > 0 && <p role="alert">运维密码不正确，请重新输入（已失败 {attempts} 次，连续失败 3 次将锁定输入）。</p>}<button className="ws-primary" disabled={locked} onClick={verify}>{locked ? '锁定中…' : '验证并进入'}</button></section></div>;
   return <div className="ws-settings-page ws-settings-narrow"><div className="ws-agent-heading"><div><h1>运维管理</h1><p>选择产品交付方式并维护本地授权参数。</p></div><button onClick={() => setVerified(false)}><KeyRound size={15} /> 锁定并退出</button></div><div className="ws-profile-layout"><button className={`ws-deploy-card ${mode === 'saas' ? 'active' : ''}`} onClick={() => setMode('saas')}><Gauge size={22} /><b>SaaS 版本</b><span>由平台提供模型额度，按配额统一结算。</span></button><button className={`ws-deploy-card ${mode === 'private' ? 'active' : ''}`} onClick={() => setMode('private')}><ShieldCheck size={22} /><b>私有化部署版本</b><span>模型和数据均在私有环境运行。</span></button></div><section className="ws-settings-card"><header><div><h3>{mode === 'saas' ? 'SaaS 额度配置' : '私有化授权配置'}</h3><p>新版服务端运维配置接口尚未接入；以下参数仅用于查看交互，无法应用。</p></div></header><label className="ws-settings-field">{mode === 'saas' ? 'Token 总量' : '产品激活有效期'}<input type={mode === 'saas' ? 'number' : 'date'} value={mode === 'saas' ? tokenAmount : expiresAt} onChange={event => mode === 'saas' ? setTokenAmount(event.target.value) : setExpiresAt(event.target.value)} /></label><footer><button className="ws-primary" disabled title="服务端运维配置接口尚未接入">确认并应用配置</button></footer></section></div>;
 }

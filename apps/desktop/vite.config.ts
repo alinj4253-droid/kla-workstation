@@ -12,5 +12,7 @@ export default defineConfig({
   oxc: { target: 'es2020' },
   optimizeDeps: { rolldownOptions: { transform: { target: 'es2020' } } },
   build: { target: 'es2020', outDir: 'dist', emptyOutDir: true },
-  server: { port: 5173, strictPort: false },
+  // 编辑器/工具写文件时会先在同目录建 `.xxx.tmpdir/` 临时目录，Vite 的看门狗会因
+  // Windows 文件锁报 EBUSY 直接退出 dev server，这里忽略这类临时产物。
+  server: { port: 5173, strictPort: false, watch: { ignored: ['**/.tmpdir/**', '**/*.tmpdir/**', '**/*.tmp'] } },
 });
