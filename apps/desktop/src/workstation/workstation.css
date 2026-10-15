@@ -152,11 +152,41 @@
 .ws-md-code .ws-md-copy:hover{background:#27496f}
 @media(max-width:760px){.ws-md-kpis{grid-template-columns:1fr 1fr}.ws-md-meta{grid-template-columns:1fr}}
 .ws-home-ai-review{margin:12px 0;font-size:13px;line-height:1.6}
-.ws-home-ai-review section{max-height:55vh;overflow:auto;background:#fff;border:1px solid #dce7f3;border-radius:10px;padding:16px}
-.ws-home-ai-review article{border-top:1px solid #dce7f3;margin-top:16px;padding-top:12px}
-.ws-home-ai-review dl{margin:10px 0}.ws-home-ai-review dt{font-weight:600;color:#304d6d}.ws-home-ai-review dd{margin:0 0 8px;white-space:pre-wrap;overflow-wrap:anywhere}
-.ws-home-ai-review label{display:block;margin:10px 0}.ws-home-ai-review select{max-width:100%;margin-left:8px;padding:4px}
-.ws-home-ai-review button{cursor:pointer;padding:5px 9px;margin-right:8px}.ws-home-ai-review button:disabled{cursor:default;opacity:.55}
+.ws-home-ai-review-panel{position:fixed;inset:12px 12px 12px auto;z-index:125;width:min(520px,calc(100vw - 24px));display:flex;flex-direction:column;box-sizing:border-box;background:#fff;color:#243b53;border:1px solid #dce7f3;border-radius:14px;box-shadow:0 12px 42px #102f5026;font-size:13px;line-height:1.6;overflow:hidden}
+.ws-home-ai-review-panel:focus-visible{outline:2px solid #2563eb;outline-offset:2px}
+.ws-home-ai-review-panel__header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:18px 20px;border-bottom:1px solid #e5edf5;flex-shrink:0}
+.ws-home-ai-review-panel__header h2{margin:0;font-size:18px;color:#183b56}
+.ws-home-ai-review-panel__header p{margin:4px 0 0;overflow-wrap:anywhere;color:#52677e}
+.ws-home-ai-review-panel__body{padding:16px 20px;overflow:auto;overscroll-behavior:contain;min-height:0}
+.ws-home-ai-review-panel h3{margin:16px 0 10px;font-size:15px}.ws-home-ai-review-panel h4{margin:16px 0 8px;font-size:13px}
+.ws-home-ai-review-panel .ws-home-ai-review-panel__eyebrow{margin:0 0 8px;font-size:12px;color:#52677e}
+.ws-home-ai-review-panel button{font:inherit;cursor:pointer;min-height:36px;padding:7px 11px;border:1px solid #dce7f3;border-radius:8px;background:#fff;color:#304d6d;white-space:normal}
+.ws-home-ai-review-panel button:hover:not(:disabled){background:#f0f6ff;border-color:#a6c4ed}
+.ws-home-ai-review-panel button:disabled{cursor:default;opacity:.55}
+.ws-home-ai-review-panel :is(button,input,select,summary):focus-visible{outline:2px solid #2563eb;outline-offset:2px}
+.ws-home-ai-review-panel__actions{display:flex;flex-wrap:wrap;gap:8px;flex-shrink:0}
+.ws-home-ai-review-panel__management{padding:10px 12px;background:#f7f9fc;border:1px solid #e5edf5;border-radius:8px}
+.ws-home-ai-review-panel details>summary{cursor:pointer;padding:8px 0;font-weight:600}
+.ws-home-ai-review-panel label{display:block;margin:12px 0}
+.ws-home-ai-review-panel :is(input:not([type=checkbox]),select){display:block;box-sizing:border-box;width:100%;min-width:0;margin-top:6px;padding:8px;border:1px solid #cbd8e6;border-radius:6px;background:#fff;color:inherit;font:inherit}
+.ws-home-ai-review-panel input[type=checkbox]{margin:0 8px 0 0;vertical-align:middle;accent-color:#2563eb}
+.ws-home-ai-review-panel p{overflow-wrap:anywhere}
+.ws-home-ai-review-panel__hint{font-size:12px;color:#52677e;margin:12px 0}
+.ws-home-ai-review-panel__notice{padding:10px 12px;background:#eff6ff;border-radius:8px;color:#254d7a}
+.ws-home-ai-review-panel__state{font-size:12px;color:#52677e}
+.ws-home-ai-review-panel__tabs{display:flex;gap:6px;padding-bottom:12px;border-bottom:1px solid #e5edf5}
+.ws-home-ai-review-panel__tabs button{flex:1;padding:8px 4px}
+.ws-home-ai-review-panel__tabs button[aria-pressed=true]{background:#eaf2ff;border-color:#b8d0f8;color:#174ba0;font-weight:600}
+.ws-home-ai-review-panel dl{margin:10px 0}.ws-home-ai-review-panel dt{font-weight:600;color:#304d6d}.ws-home-ai-review-panel dd{margin:2px 0 12px;white-space:pre-wrap;overflow-wrap:anywhere}
+.ws-home-ai-review-panel__numbers{display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;background:#f7f9fc;border-radius:8px;padding:12px}
+.ws-home-ai-review-panel__numbers dd{margin-bottom:0}
+.ws-home-ai-review-panel__reports{display:grid;gap:10px}
+.ws-home-ai-review-panel__reports button{display:flex;flex-direction:column;align-items:flex-start;gap:5px;text-align:left;padding:12px 14px}
+.ws-home-ai-review-panel__reports span{font-size:12px;color:#52677e}
+.ws-home-ai-review-panel__confirmation{margin-top:20px;padding-top:12px;border-top:1px solid #e5edf5}
+.ws-home-ai-review-panel button.ws-home-ai-review-panel__primary{background:#2563eb;color:#fff;border-color:#2563eb;width:100%}
+.ws-home-ai-review-panel button.ws-home-ai-review-panel__primary:hover:not(:disabled){background:#1d4ed8}
+@media(max-width:600px){.ws-home-ai-review-panel{inset:0;width:100%;border-radius:0}.ws-home-ai-review-panel__header{padding:14px}.ws-home-ai-review-panel__body{padding:14px}.ws-home-ai-review-panel button{min-height:44px}.ws-home-ai-review-panel__header .ws-home-ai-review-panel__actions{gap:4px}}
 
 /* ===== 项目树「⋯ 更多操作」与右键式弹出菜单 ===== */
 .ws-project-tree .ws-tree-more{width:22px;height:22px;flex:0 0 22px;display:grid;place-items:center;padding:0;color:#8293a8}
