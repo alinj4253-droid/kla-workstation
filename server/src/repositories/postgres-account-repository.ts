@@ -109,11 +109,20 @@ export class PostgresAccountRepository implements AccountRepository {
   async listSessions(userId: string): Promise<Array<{ id: string; deviceId: string | null; deviceName: string | null; userAgent: string | null; ipAddress: string | null; expiresAt: string; lastSeenAt: string; current: boolean }>> { const { rows } = await this.pool.query('SELECT id,device_id,device_name,user_agent,host(ip_address) AS ip_address,expires_at,last_seen_at FROM sessions WHERE user_id=$1 AND revoked_at IS NULL AND expires_at>now() ORDER BY last_seen_at DESC', [userId]); return rows.map((row) => ({ id: row.id, deviceId: row.device_id, deviceName: row.device_name, userAgent: row.user_agent, ipAddress: row.ip_address, expiresAt: new Date(row.expires_at).toISOString(), lastSeenAt: new Date(row.last_seen_at).toISOString(), current: false })); }
   async revokeAllSessions(userId: string, exceptSessionId?: string): Promise<void> { await this.pool.query('UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL AND ($2::uuid IS NULL OR id<>$2)', [userId, exceptSessionId ?? null]); }
 
-  async listProjects(identityId: string): Promise<Project[]> { const { rows } = await this.pool.query(`SELECT p.id,p.name,p.owner_identity_id,p.created_at FROM projects p
+  async listProjects(identityId: string): Promise<Project[]> { const { rows } = await this.pool.query(`SELECT p.id,p.name,p.owner_identity_id,p.created_at,p.kind FROM projects p
     JOIN project_members pm ON pm.project_id=p.id AND pm.identity_id=$1
     JOIN identities i ON i.id=pm.identity_id AND i.status='active'
     WHERE (p.organization_id IS NULL AND i.type='personal' AND p.owner_identity_id=i.id
-      OR p.organization_id=i.organization_id AND i.type='enterprise') ORDER BY p.created_at DESC`, [identityId]); return rows.map((row) => ({ id: row.id, name: row.name, ownerIdentityId: row.owner_identity_id, createdAt: new Date(row.created_at).toISOString() })); }
+      OR p.organization_id=i.organization_id AND i.type='enterprise') ORDER BY p.created_at DESC`, [identityId]); return rows.map((row) => ({ id: row.id, name: row.name, ownerIdentityId: row.owner_identity_id, createdAt: new Date(row.created_at).toISOString(), kind: row.kind === 'standalone' ? 'standalone' : 'normal' })); }
+  async ensureStandaloneProject(identityId: string): Promise<Project> {
+    const existing = await this.pool.query("SELECT id,name,owner_identity_id,created_at,kind FROM projects WHERE owner_identity_id=$1 AND kind='standalone' ORDER BY created_at LIMIT 1", [identityId]);
+    if (existing.rows[0]) { const row = existing.rows[0]; return { id: row.id, name: row.name, ownerIdentityId: row.owner_identity_id, createdAt: new Date(row.created_at).toISOString(), kind: 'standalone' }; }
+    const { rows } = await this.pool.query(`INSERT INTO projects (owner_identity_id, organization_id, name, kind)
+      SELECT i.id, i.organization_id, '独立群组', 'standalone' FROM identities i WHERE i.id=$1 AND i.status='active'
+      RETURNING id,name,owner_identity_id,created_at,kind`, [identityId]);
+    const row = rows[0]; if (!row) throw new Error('PROJECT_IDENTITY_UNAVAILABLE');
+    return { id: row.id, name: row.name, ownerIdentityId: row.owner_identity_id, createdAt: new Date(row.created_at).toISOString(), kind: 'standalone' };
+  }
   async listAllConversations(identityId: string): Promise<Array<Conversation & { projectName: string }>> { const { rows } = await this.pool.query(`SELECT c.id,c.project_id,c.name,c.created_at,p.name AS project_name FROM conversations c
     JOIN projects p ON p.id=c.project_id JOIN conversation_members cm ON cm.conversation_id=c.id AND cm.identity_id=$1
     JOIN project_members pm ON pm.project_id=p.id AND pm.identity_id=cm.identity_id
@@ -123,6 +132,20 @@ export class PostgresAccountRepository implements AccountRepository {
   async createProject(identityId: string, name: string): Promise<Project> { const { rows } = await this.pool.query(`INSERT INTO projects (owner_identity_id, organization_id, name)
     SELECT i.id,i.organization_id,$2 FROM identities i WHERE i.id=$1 AND i.status='active'
     RETURNING id,name,owner_identity_id,created_at`, [identityId, name]); const row = rows[0]; if (!row) throw new Error('PROJECT_IDENTITY_UNAVAILABLE'); return { id: row.id, name: row.name, ownerIdentityId: row.owner_identity_id, createdAt: new Date(row.created_at).toISOString() }; }
+  async renameProject(identityId: string, projectId: string, name: string): Promise<Project | null> { const { rows } = await this.pool.query(`UPDATE projects p SET name=$3
+    WHERE p.id=$2 AND EXISTS (
+      SELECT 1 FROM project_members pm JOIN identities i ON i.id=pm.identity_id AND i.status='active'
+      WHERE pm.project_id=p.id AND pm.identity_id=$1
+        AND (p.organization_id IS NULL AND i.type='personal' AND p.owner_identity_id=i.id
+          OR p.organization_id=i.organization_id AND i.type='enterprise'))
+    RETURNING p.id,p.name,p.owner_identity_id,p.created_at`, [identityId, projectId, name]); const row = rows[0]; return row ? { id: row.id, name: row.name, ownerIdentityId: row.owner_identity_id, createdAt: new Date(row.created_at).toISOString() } : null; }
+  async deleteProject(identityId: string, projectId: string): Promise<boolean> { const { rows } = await this.pool.query(`DELETE FROM projects p
+    WHERE p.id=$2 AND EXISTS (
+      SELECT 1 FROM project_members pm JOIN identities i ON i.id=pm.identity_id AND i.status='active'
+      WHERE pm.project_id=p.id AND pm.identity_id=$1
+        AND (p.organization_id IS NULL AND i.type='personal' AND p.owner_identity_id=i.id
+          OR p.organization_id=i.organization_id AND i.type='enterprise'))
+    RETURNING p.id`, [identityId, projectId]); return Boolean(rows[0]); }
   async listConversations(projectId?: string, identityId?: string): Promise<Conversation[]> { const { rows } = await this.pool.query(`SELECT c.id,c.project_id,c.name,c.created_at FROM conversations c
     WHERE ($1::uuid IS NULL OR c.project_id=$1) AND ($2::uuid IS NULL OR EXISTS (
       SELECT 1 FROM conversation_members cm JOIN project_members pm ON pm.project_id=cm.project_id AND pm.identity_id=cm.identity_id
@@ -160,6 +183,60 @@ export class PostgresAccountRepository implements AccountRepository {
     ] as const) {
       await client.query('INSERT INTO agents (identity_id, name, role, type, execution_location) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (identity_id,name) DO NOTHING', [identityId, name, role, 'official', location]);
     }
+  }
+  /** 会话访问权限：当前身份是会话成员，且其身份类型与项目归属（个人/企业）匹配。identityParam 指向身份 id 占位符。 */
+  private conversationAccess(identityParam: string): string {
+    return `EXISTS (
+      SELECT 1 FROM conversation_members cm
+      JOIN project_members pm ON pm.project_id=cm.project_id AND pm.identity_id=cm.identity_id
+      JOIN identities i ON i.id=cm.identity_id AND i.status='active'
+      JOIN projects p ON p.id=cm.project_id
+      WHERE cm.conversation_id=c.id AND cm.identity_id=${identityParam}
+        AND (p.organization_id IS NULL AND i.type='personal' AND p.owner_identity_id=i.id
+          OR p.organization_id=i.organization_id AND i.type='enterprise'))`;
+  }
+  async renameConversation(identityId: string, conversationId: string, name: string): Promise<Conversation | null> {
+    const { rows } = await this.pool.query(`UPDATE conversations c SET name=$3 WHERE c.id=$2 AND ${this.conversationAccess('$1')}
+      RETURNING c.id,c.project_id,c.name,c.created_at`, [identityId, conversationId, name]);
+    const row = rows[0]; return row ? { id: row.id, projectId: row.project_id, name: row.name, createdAt: new Date(row.created_at).toISOString() } : null;
+  }
+  async moveConversation(identityId: string, conversationId: string, targetProjectId: string): Promise<Conversation | null> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      // 目标项目管理权限
+      const target = await client.query(`SELECT p.id FROM projects p WHERE p.id=$1 AND EXISTS (
+        SELECT 1 FROM project_members pm JOIN identities i ON i.id=pm.identity_id AND i.status='active'
+        WHERE pm.project_id=p.id AND pm.identity_id=$2
+          AND (p.organization_id IS NULL AND i.type='personal' AND p.owner_identity_id=i.id
+            OR p.organization_id=i.organization_id AND i.type='enterprise'))`, [targetProjectId, identityId]);
+      if (!target.rows[0]) { await client.query('ROLLBACK'); return null; }
+      const moved = await client.query(`UPDATE conversations c SET project_id=$2 WHERE c.id=$1 AND ${this.conversationAccess('$3')}
+        RETURNING c.id,c.project_id,c.name,c.created_at`, [conversationId, targetProjectId, identityId]);
+      if (!moved.rows[0]) { await client.query('ROLLBACK'); return null; }
+      // 成员表 (project_id, identity_id) 外键指向 project_members：先移除不属于目标项目成员的行，再同步剩余成员的 project_id
+      await client.query(`DELETE FROM conversation_members cm WHERE cm.conversation_id=$1 AND NOT EXISTS (
+        SELECT 1 FROM project_members pm WHERE pm.project_id=$2 AND pm.identity_id=cm.identity_id)`, [conversationId, targetProjectId]);
+      await client.query('UPDATE conversation_members SET project_id=$2 WHERE conversation_id=$1', [conversationId, targetProjectId]);
+      await client.query('COMMIT');
+      const row = moved.rows[0];
+      return { id: row.id, projectId: row.project_id, name: row.name, createdAt: new Date(row.created_at).toISOString() };
+    } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
+  }
+  async deleteConversation(identityId: string, conversationId: string): Promise<boolean> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const allowed = await client.query(`SELECT 1 FROM conversations c WHERE c.id=$1 AND ${this.conversationAccess('$2')}`, [conversationId, identityId]);
+      if (!allowed.rows[0]) { await client.query('ROLLBACK'); return false; }
+      await client.query('DELETE FROM messages WHERE conversation_id=$1', [conversationId]);
+      await client.query('DELETE FROM conversation_runs WHERE conversation_id=$1', [conversationId]);
+      await client.query('UPDATE artifacts SET conversation_id=NULL WHERE conversation_id=$1', [conversationId]);
+      await client.query('DELETE FROM conversation_members WHERE conversation_id=$1', [conversationId]);
+      const deleted = await client.query('DELETE FROM conversations WHERE id=$1 RETURNING id', [conversationId]);
+      await client.query('COMMIT');
+      return Boolean(deleted.rows[0]);
+    } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
   }
   async listMessages(conversationId: string): Promise<Message[]> { const { rows } = await this.pool.query('SELECT id, conversation_id, sender_id, sender_identity_id, sender_type, sender_name, kind, text, metadata, created_at FROM messages WHERE conversation_id = $1 ORDER BY created_at, id', [conversationId]); return rows.map((row) => this.message(row)); }
   async createMessage(conversationId: string, senderId: string, text: string, metadata: Record<string, unknown> = {}, senderIdentityId?: string): Promise<Message> { const { rows } = await this.pool.query("INSERT INTO messages (conversation_id, sender_id, sender_identity_id, sender_type, text, metadata) VALUES ($1, $2, COALESCE($5::uuid, (SELECT owner_identity_id FROM projects WHERE id=(SELECT project_id FROM conversations WHERE id=$1))), 'user', $3, $4) RETURNING id, conversation_id, sender_id, sender_type, sender_name, kind, text, metadata, created_at", [conversationId, senderId, text, JSON.stringify(metadata), senderIdentityId ?? null]); return this.message(rows[0]); }
