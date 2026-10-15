@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ConversationAttachments } from './ConversationAttachments';
 import { HomeAiReview } from './HomeAiReview';
 import type { FileItem } from '@kla-workstation/contracts';
-import { Activity, ArrowRight, Bell, BookOpen, Bot, BriefcaseBusiness, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronRight, CircleHelp, Clock3, Cloud, Code2, Copy, CreditCard, Database, Download, Eye, EyeOff, FileText, Folder, FolderPlus, Home, KeyRound, LayoutDashboard, LogOut, Menu, MessageSquare, MoreHorizontal, Paperclip, Plus, Search, Send, Settings, ShieldCheck, Sparkles, Upload, UserCircle, Users, Wallet, X, Wrench, Route, RefreshCw, Brain as BrainIcon } from 'lucide-react';
+import { Activity, Archive, ArrowRight, Bell, BookOpen, Bot, BriefcaseBusiness, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronRight, CircleHelp, Clock3, Cloud, Code2, Copy, CreditCard, Database, Download, Eye, EyeOff, FileText, Folder, FolderPlus, Home, KeyRound, LayoutDashboard, Link2, LogOut, Menu, MessageSquare, MoreHorizontal, Paperclip, Pencil, Pin, PinOff, Plus, Search, Send, Settings, ShieldCheck, Sparkles, Trash2, Upload, UserCircle, Users, Wallet, X, Wrench, Route, RefreshCw, Brain as BrainIcon } from 'lucide-react';
 import logo from '../assets/kla-sidebar-logo.png';
 import type { CreateConversationRequest, IdentityDto } from '@kla-workstation/contracts';
 import { authExpiredEventName, klaApi, sessionChangedEventName } from '../api/client';
@@ -13,20 +13,47 @@ import { KnowledgeSection } from './KnowledgeSection';
 import { MemorySection } from './MemorySection';
 import { Badge, Chart, formatPoints, IconButton, Panel, Stat } from './ui';
 import { computeApi } from '../api/compute';
-import { ArtifactPane, MarkdownMessage, ProjectWorkspace, RunActivity, type RoomArtifact, type RunEvent, type RunStep } from './CollaborationViews';
+import { ArtifactPane, ProjectWorkspace, type RoomRun, type RoomArtifact, type RunEvent, type RunStep } from './CollaborationViews';
 import './collaboration.css';
+import { ConversationMessages, type ConversationMessage } from './ConversationMessages';
 import { CreateGroupDialog } from './CreateGroupDialog';
 import { runtimeApi } from '../api/runtime';
+import { v4 as randomUUID } from 'uuid';
+import { QuickSearch } from './QuickSearch';
+import { HomeCollaborationPanel } from './HomeCollaborationPanel';
+import { HomeAiEntry } from './HomeAiEntry';
+import { featureSearchEntries, type QuickSearchEntry, type WorkstationSection } from './quick-search';
+import { HomeTasksPanel, type TaskFocusRequest, type HomeTaskSummary } from './HomeTasksPanel';
 
-type Section = 'home' | 'projects' | 'knowledge' | 'agents' | 'memory' | 'compute' | 'chats' | 'settings';
+type Section = WorkstationSection;
 type LoginIdentity = IdentityDto & { role?: 'personal' | 'admin' | 'member' };
 type Modal = 'project' | 'chat' | 'knowledge' | 'knowledge-create' | 'register' | 'identity' | 'create-enterprise' | 'join-enterprise' | null;
 type Project = { id: string; name: string; description: string; progress: number; members: number; color: string; open?: boolean; groupIds?: string[] };
+type ProjectMenuState = { id: string; name: string; x: number; y: number };
+type ChatMenuState = { id: string; name: string; x: number; y: number; moveOpen?: boolean };
+type ProjectSettingsMap = Record<string, { description?: string }>;
+const projectSettingsKey = (identityId: string): string => `kla.project-settings:${identityId}`;
+const projectPinsKey = (identityId: string): string => `kla.project-pins:${identityId}`;
+const chatPinsKey = (identityId: string): string => `kla.chat-pins:${identityId}`;
+const chatArchiveKey = (identityId: string): string => `kla.chat-archive:${identityId}`;
+function readLocalJson<T>(key: string, fallback: T): T {
+  try { const raw = localStorage.getItem(key); return raw ? (JSON.parse(raw) as T) : fallback; } catch { return fallback; }
+}
+function writeLocalJson(key: string, value: unknown): void {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* 本地存储不可用时忽略 */ }
+}
 type FileReference = { id: string; name: string; contentType?: string; sizeBytes: number };
-type Chat = { id: string; name: string; project: string; projectId?: string; messages: { id?: string; author: string; text: string; time: string; senderType?: string; artifactIds?: string[]; files?: FileReference[] }[] };
-type ChatMessage = { id: string; senderType: string; senderName?: string; text: string; createdAt: string; metadata?: { artifactId?: string; artifactIds?: string[]; files?: FileReference[] } };
-type ChatRun = { id: string; status: string; phase?: string; result?: { waitingReason?: string } };
-const mapChatMessages = (messages: ChatMessage[]): Chat['messages'] => messages.map(m => ({ id: m.id, author: m.senderType === 'agent' ? (m.senderName ?? '智能体') : '我', text: m.text, time: new Date(m.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }), senderType: m.senderType, files: m.metadata?.files, artifactIds: [...new Set([...(m.metadata?.artifactIds ?? []), ...(m.metadata?.artifactId ? [m.metadata.artifactId] : [])])] }));
+type Chat = { id: string; name: string; project: string; projectId?: string; messages: ConversationMessage[] };
+type DeliveryBlock = { type: 'markdown'; content: string } | { type: 'image' | 'video' | 'audio'; asset_id: string; asset_kind: 'file' | 'artifact'; mime_type: string; url?: string; alt?: string; poster_url?: string } | { type: 'file'; artifact_id: string; name: string; mime_type: string; size_bytes?: number; open_mode?: 'right_drawer' };
+type MentionTarget = { type: 'user' | 'agent' | 'command'; id: string; name: string };
+type ChatMessage = { id: string; senderType: string; senderName?: string; text: string; createdAt: string; metadata?: { runId?: string; artifactId?: string; artifactIds?: string[]; files?: FileReference[]; kind?: string; recipient?: string; submitObject?: Array<{ type: 'user' | 'agent' | 'command'; id: string }>; delivery?: { submit_object?: Array<{ type: 'user' | 'agent' | 'command'; id: string }>; display_content?: { blocks?: DeliveryBlock[] } } } };
+type ChatRun = RoomRun & { executionAccess?: 'approval' | 'full' };
+const mapChatMessages = (messages: ChatMessage[]): Chat['messages'] => messages
+  // Delegation plans and sub-agent hand-offs remain in the run event log. Keep the
+  // main chat focused on user messages and user-facing results to prevent an
+  // implementation detail from looking like multiple answers.
+  .filter(m => !(m.senderType === 'agent' && !m.metadata?.delivery && (m.metadata?.recipient === 'coordinator' || m.metadata?.kind === 'delegation')))
+  .map(m => { const blocks = m.metadata?.delivery?.display_content?.blocks ?? []; const hasDelivery = Boolean(m.metadata?.delivery); const displayName = m.senderName === '统筹智能体' ? '群聊秘书' : m.senderName; return { id: m.id, author: m.senderType === 'agent' ? (displayName ?? '智能体') : '我', text: m.text, time: new Date(m.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }), senderType: m.senderType, runId: m.metadata?.runId, files: m.metadata?.files, submitObject: m.metadata?.delivery?.submit_object ?? m.metadata?.submitObject ?? [], blocks, artifactIds: hasDelivery ? blocks.filter((block): block is Extract<DeliveryBlock, { type: 'file' }> => block.type === 'file').map(block => block.artifact_id) : [...new Set([...(m.metadata?.artifactIds ?? []), ...(m.metadata?.artifactId ? [m.metadata.artifactId] : [])])] }; });
 type Document = { name: string; group: string; size: string; status: string; date: string };
 type KnowledgeScope = 'enterprise' | 'project' | 'personal';
 type KnowledgeTab = 'sources' | 'chunks';
@@ -136,10 +163,27 @@ export function Workstation(): React.JSX.Element {
   const [activeChat, setActiveChat] = useState('');
   const [query, setQuery] = useState('');
   const [draft, setDraft] = useState('');
+  const [mentionCandidates, setMentionCandidates] = useState<MentionTarget[]>([]);
+  const [selectedMentions, setSelectedMentions] = useState<MentionTarget[]>([]);
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [chatMode, setChatMode] = useState<'fast' | 'balanced' | 'expert'>('balanced');
+  const [executionAccess, setExecutionAccess] = useState<'approval' | 'full'>('approval');
   const [newName, setNewName] = useState('');
   const [newDescription, setNewDescription] = useState('');
   const [newProject, setNewProject] = useState('');
+  const [projectMenu, setProjectMenu] = useState<ProjectMenuState | null>(null);
+  const [projectPins, setProjectPins] = useState<string[]>(() => readLocalJson<string[]>(projectPinsKey(klaApi.getIdentity() ?? ''), []));
+  const [renameProjectTarget, setRenameProjectTarget] = useState<Project | null>(null);
+  const [renameProjectValue, setRenameProjectValue] = useState('');
+  const [settingsProjectTarget, setSettingsProjectTarget] = useState<Project | null>(null);
+  const [settingsProjectDescription, setSettingsProjectDescription] = useState('');
+  const [deleteProjectTarget, setDeleteProjectTarget] = useState<Project | null>(null);
+  const [chatMenu, setChatMenu] = useState<ChatMenuState | null>(null);
+  const [chatPins, setChatPins] = useState<string[]>(() => readLocalJson<string[]>(chatPinsKey(klaApi.getIdentity() ?? ''), []));
+  const [chatArchived, setChatArchived] = useState<string[]>(() => readLocalJson<string[]>(chatArchiveKey(klaApi.getIdentity() ?? ''), []));
+  const [renameChatTarget, setRenameChatTarget] = useState<Chat | null>(null);
+  const [renameChatValue, setRenameChatValue] = useState('');
+  const [deleteChatTarget, setDeleteChatTarget] = useState<Chat | null>(null);
   const [knowledgeScope, setKnowledgeScope] = useState('全部知识');
   const [knowledgeView, setKnowledgeView] = useState<'catalog' | 'detail'>('catalog');
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
@@ -172,12 +216,18 @@ export function Workstation(): React.JSX.Element {
   useEffect(() => { setAttachmentsUploading(false); }, [activeChat]);
   const [pendingRuns, setPendingRuns] = useState<Record<string, string>>({});
   const [activeRun, setActiveRun] = useState<ChatRun | null>(null);
+  const [roomRuns, setRoomRuns] = useState<ChatRun[]>([]);
   const [runSteps, setRunSteps] = useState<RunStep[]>([]);
   const [runEvents, setRunEvents] = useState<RunEvent[]>([]);
   const [chatArtifacts, setChatArtifacts] = useState<RoomArtifact[]>([]);
   const [artifactPaneOpen, setArtifactPaneOpen] = useState(false);
   const [artifactPaneCollapsed, setArtifactPaneCollapsed] = useState(false);
   const [roomMembersOpen, setRoomMembersOpen] = useState(false);
+  const [homeTasks, setHomeTasks] = useState<{ identityId: string; tasks: HomeTaskSummary[] } | null>(null);
+  const [taskFocusRequest, setTaskFocusRequest] = useState<TaskFocusRequest | null>(null);
+  const [searchAgents, setSearchAgents] = useState<{ identityId: string; agents: Array<{ id: string; name: string; role: string }> } | null>(null);
+  const [agentSearchRequest, setAgentSearchRequest] = useState<{ query: string; nonce: number } | null>(null);
+  const homeTasksButtonRef = useRef<HTMLButtonElement>(null);
   const [agentView, setAgentView] = useState<'manage' | 'skills' | 'tools'>('manage');
   const [settingsView, setSettingsView] = useState<'channels' | 'members' | 'profile' | 'appearance' | 'ops'>('channels');
   const [localProfile, setLocalProfile] = useState(() => ({ nickname: localStorage.getItem('kla.profile.nickname') ?? '', avatar: localStorage.getItem('kla.profile.avatar') ?? '' }));
@@ -200,6 +250,9 @@ export function Workstation(): React.JSX.Element {
     document.documentElement.dataset.klaReducedMotion = localStorage.getItem('kla.appearance.reducedMotion') ?? 'false';
   }, []);
   const sendingChats = useRef(new Set<string>());
+  const messageRequestKeys = useRef(new Map<string, { signature: string; key: string }>());
+  const chatMessagesRef = useRef<HTMLDivElement | null>(null);
+  const chatScrollPinnedRef = useRef(true);
   const createLock = useRef(false);
   const [creating, setCreating] = useState(false);
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
@@ -266,6 +319,61 @@ export function Workstation(): React.JSX.Element {
     if (navTimer.current !== null) window.clearTimeout(navTimer.current);
     navTimer.current = window.setTimeout(() => { setNavProgress(false); navTimer.current = null; }, 300);
   }, [signedIn, section, activeProject, activeChat, agentView, settingsView, computeView]);
+  const updateHomeTask = (task: HomeTaskSummary) => {
+    if (klaApi.getIdentity() !== activeIdentityId) return;
+    setHomeTasks(current => ({ identityId: activeIdentityId, tasks: current?.identityId === activeIdentityId && current.tasks.some(item => item.id === task.id)
+      ? current.tasks.map(item => item.id === task.id ? task : item)
+      : [task, ...(current?.identityId === activeIdentityId ? current.tasks : [])].slice(0, 50) }));
+  };
+  const removeHomeTask = (id: string) => {
+    if (klaApi.getIdentity() !== activeIdentityId) return;
+    setHomeTasks(current => current?.identityId === activeIdentityId ? { ...current, tasks: current.tasks.filter(task => task.id !== id) } : current);
+  };
+  const openTasks = (taskId?: string, create?: boolean) => {
+    navigate('home');
+    setTaskFocusRequest(current => ({ nonce: (current?.nonce ?? 0) + 1, taskId, create }));
+  };
+  const searchEntries = useMemo<QuickSearchEntry[]>(() => [
+    ...featureSearchEntries.filter(entry => !entry.adminOnly || canManageMembers),
+    ...(homeTasks?.identityId === activeIdentityId ? projects : []).map(project => ({ id: `project-${project.id}`, title: project.name, description: '打开项目工作区', keywords: '项目 project', category: '项目', section: 'projects' as const, target: { kind: 'project' as const, id: project.id } })),
+    ...(homeTasks?.identityId === activeIdentityId ? chats : []).map(chat => ({ id: `chat-${chat.id}`, title: chat.name, description: `群组 · ${chat.project}`, keywords: '群组 群聊 chat', category: '群组', section: 'chats' as const, target: { kind: 'chat' as const, id: chat.id, projectId: chat.projectId } })),
+    ...(homeTasks?.identityId === activeIdentityId ? homeTasks.tasks.map(task => ({ id: `task-${task.id}`, title: task.title, description: `任务 · ${task.status === 'completed' ? '已完成' : task.status === 'pending' ? '待办' : task.status}`, keywords: '任务 待办 task', category: '任务', section: 'home' as const, target: { kind: 'tasks' as const, taskId: task.id } })) : []),
+    ...(searchAgents?.identityId === activeIdentityId ? searchAgents.agents.map(agent => ({ id: `agent-${agent.id}`, title: agent.name, description: `智能体 · ${agent.role || '我的智能体'}`, keywords: '智能体 agent 助手', category: '智能体', section: 'agents' as const, target: { kind: 'agent' as const, name: agent.name } })) : []),
+  ], [canManageMembers, projects, chats, homeTasks, activeIdentityId, searchAgents]);
+  const openSearchResult = (entry: QuickSearchEntry) => {
+    if (entry.adminOnly && !canManageMembers) { notify('此功能仅限企业管理员'); return; }
+    const target = entry.target;
+    switch (target.kind) {
+      case 'page':
+        if (target.agentView) { setAgentView(target.agentView); setAgentSearchRequest(null); }
+        if (target.settingsView) setSettingsView(target.settingsView);
+        if (target.computeView) setComputeView(target.computeView);
+        navigate(target.section); return;
+      case 'tasks': openTasks(target.taskId, target.create); return;
+      case 'project': setActiveProject(target.id); navigate('projects'); return;
+      case 'chat': setActiveChat(target.id); if (target.projectId) setActiveProject(target.projectId); navigate('chats'); return;
+      case 'agent': setAgentSearchRequest(current => ({ query: target.name, nonce: (current?.nonce ?? 0) + 1 })); setAgentView('manage'); navigate('agents'); return;
+      case 'create-project': setNewName(''); setNewDescription(''); setModal('project'); return;
+      case 'create-chat': setNewProject(''); setModal('chat'); return;
+    }
+  };
+  const openHomeShortcut = (name: string): void => {
+    switch (name) {
+      case '知识库': navigate('knowledge'); return;
+      case '项目与群组': navigate('projects'); return;
+      case '算力与积分': navigate('compute'); return;
+      case '平台设置': navigate('settings'); return;
+      case '智能体': setAgentView('manage'); navigate('agents'); return;
+      case '记忆': navigate('memory'); return;
+      case '统一任务':
+        homeTasksButtonRef.current?.scrollIntoView({ behavior: document.documentElement.dataset.klaReducedMotion === 'true' ? 'auto' : 'smooth', block: 'center' });
+        homeTasksButtonRef.current?.focus({ preventScroll: true });
+        return;
+      case '成员管理':
+        if (!canManageMembers) { notify('成员管理仅限企业管理员，请先切换到管理员身份'); return; }
+        setSettingsView('members'); navigate('settings'); return;
+    }
+  };
   const openKnowledgeBase = (base: KnowledgeBase) => { setActiveKnowledgeBase(base); setKnowledgeView('detail'); setKnowledgeTab('sources'); setQuery(''); };
   const addKnowledgeFiles = (files: File[]) => {
     if (!activeKnowledgeBase || !files.length) return;
@@ -313,12 +421,18 @@ export function Workstation(): React.JSX.Element {
     let cancelled = false;
     const headers = activeIdentityId ? { 'x-identity-id': activeIdentityId } : undefined;
     setWorkspaceLoading(true);
-    setProjects([]); setChats([]); setActiveProject(''); setActiveChat(''); setPendingRuns({}); setPreviewArtifact(null); setChatArtifacts([]); setArtifactPaneOpen(false); setRunSteps([]); setRunEvents([]);
+    setProjects([]); setChats([]); setActiveProject(''); setActiveChat(''); setPendingRuns({}); setPreviewArtifact(null); setChatArtifacts([]); setArtifactPaneOpen(false); setRunSteps([]); setRunEvents([]); setRoomRuns([]);
+    setHomeTasks(null); setSearchAgents(null); setAgentSearchRequest(null); setTaskFocusRequest(null);
     void (async () => {
-      const result = await klaApi.request<{ projects: Array<{ id: string; name: string }>; conversations: Array<{ id: string; name: string; projectId: string; projectName?: string }> }>('/v1/bootstrap', { headers });
+      const result = await klaApi.request<{ projects: Array<{ id: string; name: string; kind?: string }>; conversations: Array<{ id: string; name: string; projectId: string; projectName?: string }>; tasks?: HomeTaskSummary[]; agents?: Array<{ id: string; name: string; role: string }> }>('/v1/bootstrap', { headers });
       if (cancelled) return;
       if (!result.ok) { notify(apiError(result)); return; }
-      const nextProjects = result.data.projects.map((p, index) => ({ id: p.id, name: p.name, description: '当前身份下的项目工作区', progress: 0, members: 1, color: ['#2779e9', '#0d9488', '#8b5cf6'][index % 3], open: true, groupIds: result.data.conversations.filter(c => c.projectId === p.id).map(c => c.id) }));
+      setHomeTasks({ identityId: activeIdentityId, tasks: result.data.tasks ?? [] });
+      setSearchAgents({ identityId: activeIdentityId, agents: result.data.agents ?? [] });
+      const savedProjectSettings = readLocalJson<ProjectSettingsMap>(projectSettingsKey(activeIdentityId), {});
+      // 「独立群组」容器仅承载不归属项目的群组，不作为项目展示
+      const visibleProjects = result.data.projects.filter(p => p.kind !== 'standalone');
+      const nextProjects = visibleProjects.map((p, index) => ({ id: p.id, name: p.name, description: savedProjectSettings[p.id]?.description || '当前身份下的项目工作区', progress: 0, members: 1, color: ['#2779e9', '#0d9488', '#8b5cf6'][index % 3], open: true, groupIds: result.data.conversations.filter(c => c.projectId === p.id).map(c => c.id) }));
       const nextChats = result.data.conversations.map((c) => ({ id: c.id, name: c.name, project: c.projectName ?? nextProjects.find((p) => p.id === c.projectId)?.name ?? '项目', projectId: c.projectId, messages: [] }));
       if (nextProjects.length) { setProjects(nextProjects); setActiveProject(nextProjects[0].id); }
       if (nextChats.length) { setChats(nextChats); setActiveChat(nextChats[0].id); }
@@ -331,11 +445,152 @@ export function Workstation(): React.JSX.Element {
     })().catch(() => { if (!cancelled) notify('工作区加载失败，请检查后端连接'); }).finally(() => { if (!cancelled) setWorkspaceLoading(false); });
     return () => { cancelled = true; };
   }, [signedIn, activeIdentityId]);
+  // 身份切换后重载本地的项目置顶与设置（演示版「更多操作」能力）
+  useEffect(() => { setProjectPins(readLocalJson<string[]>(projectPinsKey(activeIdentityId), [])); setChatPins(readLocalJson<string[]>(chatPinsKey(activeIdentityId), [])); setChatArchived(readLocalJson<string[]>(chatArchiveKey(activeIdentityId), [])); }, [activeIdentityId]);
+  // 「⋯ 更多操作」弹出菜单：点击外部或 Esc 关闭
+  useEffect(() => {
+    if (!projectMenu && !chatMenu) return;
+    const close = (): void => { setProjectMenu(null); setChatMenu(null); };
+    const onKeyDown = (event: KeyboardEvent): void => { if (event.key === 'Escape') close(); };
+    document.addEventListener('mousedown', close);
+    document.addEventListener('keydown', onKeyDown);
+    return () => { document.removeEventListener('mousedown', close); document.removeEventListener('keydown', onKeyDown); };
+  }, [projectMenu, chatMenu]);
+  const sortedProjects = useMemo(
+    () => [...projects].sort((a, b) => (projectPins.includes(b.id) ? 1 : 0) - (projectPins.includes(a.id) ? 1 : 0)),
+    [projects, projectPins],
+  );
+  const toggleProjectPin = (project: Project): void => {
+    setProjectPins(items => {
+      const next = items.includes(project.id) ? items.filter(id => id !== project.id) : [...items, project.id];
+      writeLocalJson(projectPinsKey(activeIdentityId), next);
+      return next;
+    });
+    notify(projectPins.includes(project.id) ? `已取消置顶项目「${project.name}」` : `已置顶项目「${project.name}」`);
+  };
+  const shareProject = async (project: Project): Promise<void> => {
+    const link = `${globalThis.location.origin}/#/projects?project=${encodeURIComponent(project.id)}`;
+    try { await navigator.clipboard.writeText(`【鲲擎平台】邀请你协作查看项目「${project.name}」：${link}`); notify('项目分享链接已复制到剪贴板'); }
+    catch { notify('分享链接复制失败，请重试'); }
+  };
+  const toggleChatPin = (chat: Chat): void => {
+    setChatPins(items => {
+      const next = items.includes(chat.id) ? items.filter(id => id !== chat.id) : [...items, chat.id];
+      writeLocalJson(chatPinsKey(activeIdentityId), next);
+      return next;
+    });
+    notify(chatPins.includes(chat.id) ? `已取消置顶聊天「${chat.name}」` : `已置顶聊天「${chat.name}」`);
+  };
+  const toggleChatArchive = (chat: Chat): void => {
+    setChatArchived(items => {
+      const next = items.includes(chat.id) ? items.filter(id => id !== chat.id) : [...items, chat.id];
+      writeLocalJson(chatArchiveKey(activeIdentityId), next);
+      return next;
+    });
+    notify(chatArchived.includes(chat.id) ? `已取消归档「${chat.name}」` : `已归档「${chat.name}」，可随时取消归档`);
+  };
+  const shareChat = async (chat: Chat): Promise<void> => {
+    const link = `${globalThis.location.origin}/#/chats?chat=${encodeURIComponent(chat.id)}`;
+    try { await navigator.clipboard.writeText(`【鲲擎平台】邀请你加入群聊「${chat.name}」：${link}`); notify('群聊分享链接已复制到剪贴板'); }
+    catch { notify('分享链接复制失败，请重试'); }
+  };
+  const submitProjectRename = async (): Promise<void> => {
+    const project = renameProjectTarget; if (!project || creating) return;
+    const trimmed = renameProjectValue.trim();
+    if (!trimmed) { notify('项目名称不能为空'); return; }
+    if (trimmed === project.name) { setRenameProjectTarget(null); return; }
+    createLock.current = true; setCreating(true);
+    const identityId = activeIdentityId;
+    try {
+      const result = await klaApi.request<{ id: string; name: string }>(`/v1/projects/${project.id}`, { method: 'PATCH', body: JSON.stringify({ name: trimmed }) });
+      if (klaApi.getIdentity() !== identityId) return;
+      if (!result.ok) { notify(apiError(result)); return; }
+      setProjects(items => items.map(item => item.id === project.id ? { ...item, name: result.data.name } : item));
+      setChats(items => items.map(chat => chat.projectId === project.id ? { ...chat, project: result.data.name } : chat));
+      setRenameProjectTarget(null); notify(`项目已重命名为「${result.data.name}」`);
+    } catch (error) { notify(error instanceof Error ? `重命名失败：${error.message}` : '重命名失败，请检查后端连接后重试'); }
+    finally { createLock.current = false; setCreating(false); }
+  };
+  const submitProjectSettings = (): void => {
+    const project = settingsProjectTarget; if (!project) return;
+    const map = readLocalJson<ProjectSettingsMap>(projectSettingsKey(activeIdentityId), {});
+    map[project.id] = { ...map[project.id], description: settingsProjectDescription.trim() };
+    writeLocalJson(projectSettingsKey(activeIdentityId), map);
+    setProjects(items => items.map(item => item.id === project.id ? { ...item, description: settingsProjectDescription.trim() || item.description } : item));
+    setSettingsProjectTarget(null); notify('项目设置已保存');
+  };
+  const submitProjectDelete = async (): Promise<void> => {
+    const project = deleteProjectTarget; if (!project || creating) return;
+    createLock.current = true; setCreating(true);
+    const identityId = activeIdentityId;
+    try {
+      const result = await klaApi.request<null>(`/v1/projects/${project.id}`, { method: 'DELETE' });
+      if (klaApi.getIdentity() !== identityId) return;
+      if (!result.ok) { notify(apiError(result)); return; }
+      const removedChatIds = new Set(project.groupIds ?? []);
+      setProjects(items => items.filter(item => item.id !== project.id));
+      setChats(items => items.filter(chat => !removedChatIds.has(chat.id)));
+      if (activeProject === project.id) setActiveProject('');
+      if (activeChat && removedChatIds.has(activeChat)) setActiveChat('');
+      setDeleteProjectTarget(null); notify(`项目「${project.name}」已删除，其中群组一并移除`);
+    } catch (error) { notify(error instanceof Error ? `删除失败：${error.message}` : '删除失败，请检查后端连接后重试'); }
+    finally { createLock.current = false; setCreating(false); }
+  };
+  const submitChatRename = async (): Promise<void> => {
+    const chat = renameChatTarget; if (!chat || creating) return;
+    const trimmed = renameChatValue.trim();
+    if (!trimmed) { notify('群组名称不能为空'); return; }
+    if (trimmed === chat.name) { setRenameChatTarget(null); return; }
+    createLock.current = true; setCreating(true);
+    const identityId = activeIdentityId;
+    try {
+      const result = await klaApi.request<{ id: string; name: string }>(`/v1/conversations/${chat.id}`, { method: 'PATCH', body: JSON.stringify({ name: trimmed }) });
+      if (klaApi.getIdentity() !== identityId) return;
+      if (!result.ok) { notify(apiError(result)); return; }
+      setChats(items => items.map(item => item.id === chat.id ? { ...item, name: result.data.name } : item));
+      setRenameChatTarget(null); notify(`群组已重命名为「${result.data.name}」`);
+    } catch (error) { notify(error instanceof Error ? `重命名失败：${error.message}` : '重命名失败，请检查后端连接后重试'); }
+    finally { createLock.current = false; setCreating(false); }
+  };
+  const submitChatDelete = async (): Promise<void> => {
+    const chat = deleteChatTarget; if (!chat || creating) return;
+    createLock.current = true; setCreating(true);
+    const identityId = activeIdentityId;
+    try {
+      const result = await klaApi.request<null>(`/v1/conversations/${chat.id}`, { method: 'DELETE' });
+      if (klaApi.getIdentity() !== identityId) return;
+      if (!result.ok) { notify(apiError(result)); return; }
+      setChats(items => items.filter(item => item.id !== chat.id));
+      setProjects(items => items.map(project => project.groupIds?.includes(chat.id) ? { ...project, groupIds: (project.groupIds ?? []).filter(id => id !== chat.id) } : project));
+      if (activeChat === chat.id) setActiveChat('');
+      setDeleteChatTarget(null); notify(`群组「${chat.name}」已删除`);
+    } catch (error) { notify(error instanceof Error ? `删除失败：${error.message}` : '删除失败，请检查后端连接后重试'); }
+    finally { createLock.current = false; setCreating(false); }
+  };
+  const submitChatMove = async (chat: Chat, targetProjectId: string): Promise<void> => {
+    if (creating || targetProjectId === chat.projectId) return;
+    const target = projects.find(project => project.id === targetProjectId);
+    if (!target) { notify('目标项目不存在，请刷新后重试'); return; }
+    createLock.current = true; setCreating(true);
+    const identityId = activeIdentityId;
+    try {
+      const result = await klaApi.request<{ id: string; projectId: string }>(`/v1/conversations/${chat.id}`, { method: 'PATCH', body: JSON.stringify({ projectId: targetProjectId }) });
+      if (klaApi.getIdentity() !== identityId) return;
+      if (!result.ok) { notify(apiError(result)); return; }
+      setChats(items => items.map(item => item.id === chat.id ? { ...item, projectId: targetProjectId, project: target.name } : item));
+      setProjects(items => items.map(project => {
+        const without = (project.groupIds ?? []).filter(id => id !== chat.id);
+        return project.id === targetProjectId ? { ...project, groupIds: [...without, chat.id], open: true } : { ...project, groupIds: without };
+      }));
+      notify(`群组「${chat.name}」已移至项目「${target.name}」`);
+    } catch (error) { notify(error instanceof Error ? `移动失败：${error.message}` : '移动失败，请检查后端连接后重试'); }
+    finally { createLock.current = false; setCreating(false); }
+  };
   useEffect(() => {
     if (!signedIn || !activeChat) { setChatLoading(false); return; }
     let cancelled = false;
     setChatLoading(true);
-    setRunSteps([]); setRunEvents([]); setChatArtifacts([]); setPreviewArtifact(null); setArtifactPaneOpen(false); setActiveRun(null);
+    setRunSteps([]); setRunEvents([]); setRoomRuns([]); setChatArtifacts([]); setPreviewArtifact(null); setArtifactPaneOpen(false); setActiveRun(null);
     void (async () => {
       const result = await klaApi.request<ChatMessage[]>(`/v1/conversations/${activeChat}/messages`);
       if (cancelled) return;
@@ -346,6 +601,7 @@ export function Workstation(): React.JSX.Element {
       const running = runs.data.find(run => ['queued', 'running', 'waiting_device', 'waiting_tool', 'waiting_approval'].includes(run.status));
       const latest = running ?? runs.data[0] ?? null;
       setActiveRun(latest);
+      setRoomRuns(runs.data);
       setPendingRuns(items => {
         if (running) return { ...items, [activeChat]: running.id };
         if (!items[activeChat]) return items;
@@ -359,9 +615,28 @@ export function Workstation(): React.JSX.Element {
       if (cancelled) return;
       if (artifacts.ok) setChatArtifacts(artifacts.data);
       if (steps?.ok) setRunSteps(steps.data);
-      if (events?.ok) setRunEvents(events.data.filter(event => event.run_id === latest?.id));
+      if (events?.ok) setRunEvents(events.data);
     })().catch(() => { if (!cancelled) notify('消息加载失败，请检查后端连接'); }).finally(() => { if (!cancelled) setChatLoading(false); });
     return () => { cancelled = true; };
+  }, [signedIn, activeChat, activeIdentityId]);
+  // 切换群组时重置为「贴底」状态并立即滚到底部。
+  useEffect(() => { chatScrollPinnedRef.current = true; }, [activeChat]);
+  // 新消息、智能体回答（run 步骤/事件流式更新）到达时自动跟随滚动；用户上翻历史时暂停。
+  useEffect(() => {
+    const el = chatMessagesRef.current;
+    if (el && chatScrollPinnedRef.current) el.scrollTop = el.scrollHeight;
+  }, [currentChat.messages, activeRun, runSteps, runEvents, pendingRunId, activeChat]);
+  useEffect(() => {
+    if (!signedIn || !activeChat) { setMentionCandidates([]); return; }
+    setSelectedMentions([]); setMentionQuery(null);
+    void Promise.all([runtimeApi.members(activeChat), runtimeApi.conversationMembers(activeChat)]).then(([agents, users]) => {
+      const next: MentionTarget[] = [
+        { type: 'command', id: 'task_execution', name: '任务执行' },
+        ...(agents.ok ? agents.data.map(agent => ({ type: 'agent' as const, id: agent.id, name: agent.name === '统筹智能体' ? '群聊秘书' : agent.name })) : []),
+        ...(users.ok ? users.data.map(member => ({ type: 'user' as const, id: member.identity_id, name: member.display_name })) : []),
+      ];
+      setMentionCandidates(next);
+    });
   }, [signedIn, activeChat, activeIdentityId]);
   useEffect(() => {
     if (signedIn && activeIdentityId) void memoryApi.warm(activeIdentityId);
@@ -396,9 +671,10 @@ export function Workstation(): React.JSX.Element {
         if (!result.ok) { notify(apiError(result)); clearPending(); return; }
         setChats(items => items.map(chat => chat.id === activeChat ? { ...chat, messages: mapChatMessages(result.data) } : chat));
         if (steps.ok) setRunSteps(steps.data);
-        if (events.ok) setRunEvents(events.data.filter(event => event.run_id === pendingRunId));
+        if (events.ok) setRunEvents(events.data);
         const run = runs.data.find(item => item.id === pendingRunId);
         setActiveRun(run ?? null);
+        setRoomRuns(runs.data);
         if (run && ['completed', 'failed', 'cancelled'].includes(run.status)) {
           const artifacts = await klaApi.request<RoomArtifact[]>(`/v1/conversations/${activeChat}/artifacts`);
           if (!cancelled && artifacts.ok) setChatArtifacts(artifacts.data);
@@ -472,26 +748,55 @@ export function Workstation(): React.JSX.Element {
     if ((!draft.trim() && !files.length) || attachmentsUploading || pendingRuns[conversationId] || sendingChats.current.has(conversationId) || chatLoading) return;
     if (!signedIn || !conversationId) { notify('请先创建或选择一个真实群组'); return; }
     const text = draft.trim();
+    const signature = `${text}\n${files.map(file => file.id).sort().join(',')}`;
+    const previousRequest = messageRequestKeys.current.get(conversationId);
+    const idempotencyKey = previousRequest?.signature === signature ? previousRequest.key : randomUUID();
+    messageRequestKeys.current.set(conversationId, { signature, key: idempotencyKey });
     const identityId = activeIdentityId;
     sendingChats.current.add(conversationId);
     setPendingRuns(items => ({ ...items, [conversationId]: 'submitting' }));
     try {
-      const submitted = await klaApi.request<{ message: ChatMessage; run: ChatRun | null }>(`/v1/conversations/${conversationId}/messages`, { method: 'POST', body: JSON.stringify({ text, mode: chatMode, fileIds: files.map(file => file.id) }), headers: { 'x-identity-id': identityId } });
+      // Menu selection is the preferred path, but typed leading mentions are
+      // also resolved so keyboard users get the same routing semantics.
+      const leadingNames: string[] = [];
+      let mentionText = text.trimStart();
+      while (mentionText.startsWith('@')) {
+        const match = mentionText.match(/^@([^\s@]+)\s*/);
+        if (!match) break;
+        leadingNames.push(match[1]);
+        mentionText = mentionText.slice(match[0].length);
+      }
+      const inferredMentions = mentionCandidates.filter(candidate => leadingNames.includes(candidate.name));
+      const submitObject = (selectedMentions.length ? selectedMentions : inferredMentions).map(({ type, id }) => ({ type, id }));
+      const submitted = await klaApi.request<{ message: ChatMessage; run: ChatRun | null }>(`/v1/conversations/${conversationId}/messages`, { method: 'POST', body: JSON.stringify({ text, mode: chatMode, executionAccess, idempotencyKey, fileIds: files.map(file => file.id), ...(submitObject.length ? { submitObject } : {}) }), headers: { 'x-identity-id': identityId } });
       if (klaApi.getIdentity() !== identityId) return;
       if (!submitted.ok) { notify(apiError(submitted)); setPendingRuns(items => { const next = { ...items }; delete next[conversationId]; return next; }); return; }
+      messageRequestKeys.current.delete(conversationId);
+      chatScrollPinnedRef.current = true; // 提问后总是跳回聊天记录底部
       setChats(items => items.map(chat => chat.id === conversationId ? { ...chat, messages: [...chat.messages.filter(message => message.id !== submitted.data.message.id), ...mapChatMessages([submitted.data.message])] } : chat));
       setDraft(current => current.trim() === text ? '' : current);
+      setSelectedMentions([]); setMentionQuery(null);
       setPendingAttachments(items => ({ ...items, [conversationId]: (items[conversationId] ?? []).filter(file => !files.some(sent => sent.id === file.id)) }));
       if (submitted.data.run) {
         setPendingRuns(items => ({ ...items, [conversationId]: submitted.data.run!.id }));
-        setActiveRun(submitted.data.run); setRunSteps([]); setRunEvents([]);
+        setActiveRun(submitted.data.run); setRunSteps([]);
+        setRoomRuns(items => [submitted.data.run!, ...items.filter(item => item.id !== submitted.data.run!.id)]);
       } else {
         setPendingRuns(items => { const next = { ...items }; delete next[conversationId]; return next; });
-        setActiveRun(null); setRunSteps([]); setRunEvents([]);
+        setActiveRun(null); setRunSteps([]);
       }
     } catch {
       if (klaApi.getIdentity() === identityId) { notify('消息发送失败，请检查后端连接后重试'); setPendingRuns(items => { const next = { ...items }; delete next[conversationId]; return next; }); }
     } finally { sendingChats.current.delete(conversationId); }
+  };
+  const sendFromHome = (): void => {
+    if (!draft.trim()) return;
+    const conversationId = chats[0]?.id;
+    if (!conversationId) { notify('请先创建或选择一个真实群组'); return; }
+    if (attachmentsUploading || pendingRuns[conversationId] || sendingChats.current.has(conversationId) || chatLoading) return;
+    setActiveChat(conversationId);
+    navigate('chats');
+    void send(conversationId);
   };
   const cancelActiveRun = async () => {
     if (!activeChat || !pendingRunId || pendingRunId === 'submitting') return;
@@ -525,16 +830,18 @@ export function Workstation(): React.JSX.Element {
   const createGroup = async (input: CreateConversationRequest) => {
     if (!signedIn) throw new Error('请先登录后创建群组');
     if (workspaceLoading) throw new Error('工作区正在加载，请稍后重试');
-    const selectedProject = projects.find(project => project.id === input.projectId);
-    if (!selectedProject) throw new Error('项目不存在，请刷新后重试');
+    // 未指定项目时由服务端落入「独立群组」容器，前端不归属任何项目、显示在底部群组区
+    const selectedProject = input.projectId ? projects.find(project => project.id === input.projectId) : undefined;
+    if (input.projectId && !selectedProject) throw new Error('项目不存在，请刷新后重试');
     const identityId = activeIdentityId;
     const result = await runtimeApi.createGroup(input, identityId);
     if (klaApi.getIdentity() !== identityId) return;
     if (!result.ok) throw new Error(apiError(result));
-    const chat: Chat = { id: result.data.id, name: result.data.name, project: selectedProject.name, projectId: selectedProject.id, messages: [] };
+    const chat: Chat = { id: result.data.id, name: result.data.name, project: selectedProject?.name ?? '独立群组', projectId: selectedProject?.id, messages: [] };
     setChats(items => [...items, chat]);
-    setProjects(items => items.map(project => project.id === selectedProject.id ? { ...project, groupIds: [...(project.groupIds ?? []), chat.id], open: true } : project));
-    setActiveChat(chat.id); setActiveProject(selectedProject.id); setModal(null); setNewName(''); setNewProject(''); setSection('chats'); notify('群组已创建并保存到数据库');
+    if (selectedProject) setProjects(items => items.map(project => project.id === selectedProject.id ? { ...project, groupIds: [...(project.groupIds ?? []), chat.id], open: true } : project));
+    setActiveChat(chat.id); if (selectedProject) setActiveProject(selectedProject.id); setModal(null); setNewName(''); setNewProject(''); setSection('chats');
+    notify(selectedProject ? '群组已创建并保存到数据库' : '独立群组已创建，未归属任何项目');
   };
   // 用量导出改由服务端生成（§7.4），前端不再本地拼接 CSV。
 
@@ -559,10 +866,10 @@ export function Workstation(): React.JSX.Element {
     </form><footer>● 集群所有核心服务已连接正常 · 延迟 12ms <span>© 2026 鲲擎智能 · 保障企业数据与合规隐私安全</span></footer>{authModal}{notice && <div className="ws-toast">{notice}</div>}
   </div>;
 
-  return <div className="ws-app">
+  return <div className={`ws-app ${section === 'compute' && computeView === 'keys' ? 'ws-key-layout' : ''}`}>
     <div className={`ws-navigation-progress ${navProgress || workspaceLoading ? 'is-active' : ''}`} aria-hidden="true" />
     <aside className="ws-sidebar"><div><div className="ws-brand"><img src={logo} alt="鲲擎" /><span>鲲擎平台<small>AI INTELLIGENCE</small></span></div><nav>{nav.map(({ id, label, Icon }) => <button key={id} className={section === id ? 'active' : ''} onClick={() => navigate(id)}><Icon size={19} />{label}</button>)}</nav></div><div className="ws-sidebar-bottom"><button onClick={() => { navigate('compute'); setComputeView('dashboard'); }}><Sparkles size={15} /> 积分余额 <b>{formatPoints(computeBalancePoints)}</b><span className="ws-side-chevron">›</span></button><button onClick={() => navigate('settings')}><Settings size={17} /> 设置</button></div></aside>
-    <main className={`ws-main ${(section === 'projects' || section === 'chats' || section === 'compute' || section === 'agents' || section === 'settings') ? 'has-subnav' : 'wide'}`}>
+    <main className={`ws-main ${section === 'compute' && computeView === 'keys' ? 'ws-compute-keys-layout' : ''} ${(section === 'projects' || section === 'chats' || section === 'compute' || section === 'agents' || section === 'settings') ? 'has-subnav' : 'wide'}`}>
     {(section === 'projects' || section === 'chats' || section === 'compute' || section === 'agents' || section === 'settings') && <aside className="ws-subnav">
         {(section === 'projects' || section === 'chats') && <>
           <header className="ws-panel-heading">
@@ -571,26 +878,34 @@ export function Workstation(): React.JSX.Element {
           </header>
           <div className="ws-sub-list ws-project-tree">
             <div className="ws-tree-label"><span>项目</span><button title="新建项目" onClick={() => setModal('project')}><Plus size={12} />新建项目</button></div>
-            {projects.map(p => <div key={p.id} className="ws-tree-project">
+            {sortedProjects.map(p => <div key={p.id} className="ws-tree-project">
               <div className={`ws-tree-row ${section === 'projects' && p.id === activeProject ? 'active' : ''}`}>
                 <button className={`ws-tree-toggle ${p.open ? 'is-open' : ''}`} title={p.open ? '收起群组' : '展开群组'} aria-label={`${p.open ? '收起' : '展开'}${p.name}的群组`} aria-expanded={!!p.open} onClick={() => setProjects(items => items.map(x => x.id === p.id ? { ...x, open: !x.open } : x))}><ChevronRight size={13} /></button>
-                <button className="ws-tree-main" title={p.name} onClick={() => { setActiveProject(p.id); setSection('projects'); }}><span className="ws-tree-copy"><span className="ws-tree-name">{p.name}</span><small>{p.groupIds?.length ?? 0} 个关联群组</small></span></button>
+                <button className="ws-tree-main" title={p.name} onClick={() => { setActiveProject(p.id); setSection('projects'); }}><span className="ws-tree-copy"><span className="ws-tree-name">{projectPins.includes(p.id) ? <Pin size={11} className="ws-tree-pin" /> : null}{p.name}</span><small>{p.groupIds?.length ?? 0} 个关联群组</small></span></button>
                 <button className="ws-tree-add" title="在此项目下新建群聊" aria-label={`在${p.name}下新建群聊`} onClick={() => { setNewProject(p.id); setNewName(''); setModal('chat'); }}><Plus size={13} /></button>
+                <button className="ws-tree-more" title="更多操作" aria-label={`更多操作：${p.name}`} aria-haspopup="menu" aria-expanded={projectMenu?.id === p.id} onClick={event => { event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect(); setProjectMenu(current => current?.id === p.id ? null : { id: p.id, name: p.name, x: rect.right, y: rect.bottom }); }}><MoreHorizontal size={13} /></button>
               </div>
               {p.open && <div className="ws-tree-children">{(p.groupIds ?? []).map(id => {
                 const chat = chats.find(c => c.id === id);
-                return chat ? <button key={chat.id} className={`ws-tree-child ${section === 'chats' && activeChat === chat.id ? 'active' : ''}`} title={chat.name} onClick={() => { setActiveChat(chat.id); setActiveProject(p.id); setSection('chats'); }}><span className="ws-tree-copy"><span className="ws-tree-name">{chat.name}</span><small>进行中 · {chat.messages.at(-1)?.time ?? '暂无消息'}</small></span></button> : null;
+                return chat ? <div key={chat.id} className={`ws-tree-child ${section === 'chats' && activeChat === chat.id ? 'active' : ''}`}>
+                  <button className="ws-tree-main" title={chat.name} onClick={() => { setActiveChat(chat.id); setActiveProject(p.id); setSection('chats'); }}><span className="ws-tree-copy"><span className="ws-tree-name">{chatPins.includes(chat.id) ? <Pin size={11} className="ws-tree-pin" /> : null}{chat.name}</span><small>{chatArchived.includes(chat.id) ? '已归档' : '进行中'} · {chat.messages.at(-1)?.time ?? '暂无消息'}</small></span></button>
+                  <button className="ws-tree-more" title="更多操作" aria-label={`更多操作：${chat.name}`} aria-haspopup="menu" aria-expanded={chatMenu?.id === chat.id} onClick={event => { event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect(); setProjectMenu(null); setChatMenu(current => current?.id === chat.id ? null : { id: chat.id, name: chat.name, x: rect.right, y: rect.bottom }); }}><MoreHorizontal size={13} /></button>
+                </div> : null;
               })}</div>}
             </div>)}
             <div className="ws-tree-label ws-tree-orphans"><span>群组</span><button title="新建群组" onClick={() => { setNewProject(''); setNewName(''); setModal('chat'); }}><Plus size={12} />新建群组</button></div>
-            {chats.filter(c => !projects.some(p => p.groupIds?.includes(c.id))).map(chat => <button key={chat.id} className={`ws-tree-orphan ${section === 'chats' && activeChat === chat.id ? 'active' : ''}`} title={chat.name} onClick={() => { setActiveChat(chat.id); setSection('chats'); }}><span className="ws-tree-spacer" aria-hidden="true" /><span className="ws-tree-copy"><span className="ws-tree-name">{chat.name}</span><small>进行中 · {chat.messages.at(-1)?.time ?? '暂无消息'}</small></span></button>)}
+            {chats.filter(c => !projects.some(p => p.groupIds?.includes(c.id))).map(chat => <div key={chat.id} className={`ws-tree-orphan ${section === 'chats' && activeChat === chat.id ? 'active' : ''}`}>
+              <span className="ws-tree-spacer" aria-hidden="true" />
+              <button className="ws-tree-main" title={chat.name} onClick={() => { setActiveChat(chat.id); setSection('chats'); }}><span className="ws-tree-copy"><span className="ws-tree-name">{chatPins.includes(chat.id) ? <Pin size={11} className="ws-tree-pin" /> : null}{chat.name}</span><small>{chatArchived.includes(chat.id) ? '已归档' : '进行中'} · {chat.messages.at(-1)?.time ?? '暂无消息'}</small></span></button>
+              <button className="ws-tree-more" title="更多操作" aria-label={`更多操作：${chat.name}`} aria-haspopup="menu" aria-expanded={chatMenu?.id === chat.id} onClick={event => { event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect(); setProjectMenu(null); setChatMenu(current => current?.id === chat.id ? null : { id: chat.id, name: chat.name, x: rect.right, y: rect.bottom }); }}><MoreHorizontal size={13} /></button>
+            </div>)}
           </div>
         </>}
       {section === 'compute' && <><header className="ws-compute-title"><span className="ws-tiny-icon"><Activity size={18} /></span><span>算力与计费中心<small>Cluster Mesh v4.8</small></span></header><div className="ws-compute-links">{computeNav.filter(item => item.id !== 'members' || computeAdmin).map(({ id, label, Icon }) => <button key={id} className={computeView === id ? 'active' : ''} onClick={() => { setComputeView(id); setQuery(''); }}><Icon size={16} />{label}</button>)}</div><div className="ws-wallet"><small>账户可用积分余额 <b>{computeBalancePoints === null ? '待加载' : computeBalancePoints > 0 ? '可用' : '不足'}</b></small><strong>{formatPoints(computeBalancePoints)}</strong><button className="ws-primary" onClick={() => setComputeView('dashboard')}>查看余额与额度</button></div></>}
       {section === 'agents' && <><header className="ws-compute-title"><span className="ws-tiny-icon"><Bot size={18} /></span><span>智能体<small>Agent Control · 我的智能体与市场</small></span></header><div className="ws-settings-menu"><small>智能体</small><button className={agentView === 'manage' ? 'active' : ''} onClick={() => setAgentView('manage')}><Bot size={16} /> 智能体管理</button><button className={agentView === 'skills' ? 'active' : ''} onClick={() => setAgentView('skills')}><Sparkles size={16} /> 技能</button><button className={agentView === 'tools' ? 'active' : ''} onClick={() => setAgentView('tools')}><Wrench size={16} /> 工具</button></div></>}
       {section === 'settings' && <><header className="ws-compute-title"><span className="ws-tiny-icon"><Settings size={18} /></span><span>平台设置<small>v2.4.0</small></span></header><div className="ws-settings-menu"><small>AI 核心</small><button className={settingsView === 'channels' ? 'active' : ''} onClick={() => setSettingsView('channels')}><Route size={16} /> 渠道</button>{canManageMembers && <><small>企业治理</small><button className={settingsView === 'members' ? 'active' : ''} onClick={() => setSettingsView('members')}><Users size={16} /> 成员管理</button></>}<small>扩展设置</small><button className={settingsView === 'profile' ? 'active' : ''} onClick={() => setSettingsView('profile')}><UserCircle size={16} /> 个人</button><button className={settingsView === 'appearance' ? 'active' : ''} onClick={() => setSettingsView('appearance')}><Sparkles size={16} /> 外观</button><button className={settingsView === 'ops' ? 'active' : ''} onClick={() => setSettingsView('ops')}><ShieldCheck size={16} /> 运维管理</button></div></>}
     </aside>}
-    <div className="ws-topbar"><div className="ws-breadcrumb"><span>协同工作台</span><b>/</b><strong>{section === 'home' ? '总览主页' : section === 'compute' ? `算力平台 / ${computeNav.find(n => n.id === computeView)?.label}` : section === 'settings' ? `平台设置 / ${currentSubpage}` : section === 'agents' ? `智能体 / ${currentSubpage}` : section === 'chats' ? '群聊 / 工作空间' : `${nav.find(n => n.id === section)?.label ?? '工作空间'} / 工作空间`}</strong></div><Badge tone="green">系统正常运行</Badge><div className="ws-top-actions"><button className="ws-top-search" onClick={() => notify('已提交搜索')}><Search size={14} /> 快速搜索智能体、任务…</button><IconButton title="通知" onClick={() => notify('暂无新通知')}><Bell size={16} /></IconButton><IconButton title="帮助" onClick={() => notify('帮助中心')}><CircleHelp size={16} /></IconButton>
+    <div className="ws-topbar"><div className="ws-breadcrumb"><span>协同工作台</span><b>/</b><strong>{section === 'home' ? '总览主页' : section === 'compute' ? `算力平台 / ${computeNav.find(n => n.id === computeView)?.label}` : section === 'settings' ? `平台设置 / ${currentSubpage}` : section === 'agents' ? `智能体 / ${currentSubpage}` : section === 'chats' ? '群聊 / 工作空间' : `${nav.find(n => n.id === section)?.label ?? '工作空间'} / 工作空间`}</strong></div><Badge tone="green">系统正常运行</Badge><div className="ws-top-actions"><QuickSearch key={activeIdentityId} entries={searchEntries} currentSection={section} onSelect={openSearchResult} /><IconButton title="通知" onClick={() => notify('暂无新通知')}><Bell size={16} /></IconButton><IconButton title="帮助" onClick={() => notify('帮助中心')}><CircleHelp size={16} /></IconButton>
       <div className="ws-user-menu-wrap" ref={userMenuRef}>
         <button className="ws-user ws-user-button" aria-haspopup="menu" aria-expanded={userMenuOpen} onClick={() => setUserMenuOpen(open => !open)}><span className="ws-user-avatar">{localProfile.avatar ? <img src={localProfile.avatar} alt="" /> : displayName.slice(0, 1)}</span><span>{displayName}<small>{identities.find(item => item.id === activeIdentityId)?.displayName ?? '个人身份'}</small></span></button>
         {userMenuOpen && <div className="ws-user-popover" role="menu">
@@ -603,13 +918,17 @@ export function Workstation(): React.JSX.Element {
         </div>}
       </div></div></div>
       <div className={`ws-content ${navProgress ? 'ws-content-transition' : ''}`}>
-        {section === 'agents' && (agentView === 'manage' ? <RuntimeAgentManagement identityId={activeIdentityId} notify={notify} /> : agentView === 'skills' ? <RuntimeSkillManagement identityId={activeIdentityId} notify={notify} /> : <RuntimeToolManagement identityId={activeIdentityId} notify={notify} />)}
+        {section === 'agents' && (agentView === 'manage' ? <RuntimeAgentManagement searchRequest={agentSearchRequest} identityId={activeIdentityId} notify={notify} /> : agentView === 'skills' ? <RuntimeSkillManagement identityId={activeIdentityId} notify={notify} /> : <RuntimeToolManagement identityId={activeIdentityId} notify={notify} />)}
         {section === 'settings' && <RuntimeSettingsView view={settingsView === 'members' && !canManageMembers ? 'channels' : settingsView} identityId={activeIdentityId} notify={notify} />}
         {section === 'home' && <div className="ws-home-prototype">
-          <section className="ws-proto-welcome"><span className="ws-proto-avatar">K</span><div className="ws-proto-welcome-copy"><h1>早上好，老K · 开启高效多智能体协同的一天</h1><p>老K · 数字化员工 ｜ 已自动识别身份 · 员工目录 ｜ 科技BG · 数字化中心 · 数字化员工</p><div className="ws-proto-tags"><Badge tone="green">全域智能调度引擎运行中</Badge><Badge tone="green">算力响应正常 · 延迟 &lt; 85ms</Badge><Badge>4 大业务群组在线协同</Badge><Badge>已连接 4 个核心模型</Badge><Badge tone="muted">岗位语义智能自动匹配</Badge></div></div><div className="ws-proto-summary"><b>4<small>在线协同群组</small></b><b>6<small>可访问知识库</small></b><b>18<small>工作记忆条目</small></b></div><div className="ws-proto-actions"><button className="ws-primary" onClick={() => { navigate('compute'); setComputeView('market'); }}>查看模型矩阵与算力 <ArrowRight size={14} /></button><button onClick={() => navigate('knowledge')}>进入知识库</button></div></section>
+          <section className="ws-proto-welcome"><span className="ws-proto-avatar">{displayName.slice(0, 1)}</span><div className="ws-proto-welcome-copy"><h1>你好，{displayName} · 开启高效多智能体协同的一天</h1><p>{displayName} · 数字化员工 ｜ 已自动识别身份 · 员工目录 ｜ 科技BG · 数字化中心 · 数字化员工</p><div className="ws-proto-tags"><Badge tone="green">全域智能调度引擎运行中</Badge><Badge tone="green">算力响应正常 · 延迟 &lt; 85ms</Badge><Badge>4 大业务群组在线协同</Badge><Badge>已连接 4 个核心模型</Badge><Badge tone="muted">岗位语义智能自动匹配</Badge></div></div><div className="ws-proto-summary"><b>4<small>在线协同群组</small></b><b>6<small>可访问知识库</small></b><b>18<small>工作记忆条目</small></b></div><div className="ws-proto-actions"><button className="ws-primary" onClick={() => { navigate('compute'); setComputeView('market'); }}>查看模型矩阵与算力 <ArrowRight size={14} /></button><button onClick={() => navigate('knowledge')}>进入知识库</button></div></section>
           <div className="ws-proto-stats"><Stat icon={<Wallet />} label="积分余额" value={formatPoints(computeBalancePoints)} hint="当前身份可用额度，可在算力与计费中心查看明细" /><Stat icon={<Bot />} label="已安装应用" value="4 个" hint="可选 4 个 · 均由管理员统一授权" color="green" /><Stat icon={<BookOpen />} label="可访问知识" value="12 份" hint="按 BG 与权限过滤 · 可见范围随岗位权限变化" color="teal" /><Stat icon={<FileText />} label="工作记忆" value="18 条" hint="员工可查看、可删除 · 记忆随时由本人管理" color="orange" /></div>
-  <div className="ws-proto-two"><Panel title="AI 工作入口 · 今天想完成什么？" action={<Badge tone="green">当前已连接 DeepSeek-V3 与百炼核心模型</Badge>}><div className="ws-proto-chatbar"><button onClick={() => notify('已打开智能体选择')}>@ 智能体</button><button onClick={() => notify('已打开技能库')}>/ 技能</button><button onClick={() => notify('已打开附件上传')}><Paperclip size={13} />附件</button></div><textarea className="ws-home-prompt" rows={3} placeholder="试试：帮我把上周的投资可行性评估整理成一页汇报…" value={draft} onChange={e => setDraft(e.target.value)} /><div className="ws-proto-chatfoot"><div className="ws-chip-row">{['总结本周工作', '查询集团制度', '生成项目汇报', '拆解今天的任务'].map(t => <button key={t} onClick={() => setDraft(t)}>{t}</button>)}</div><button className="ws-primary" onClick={() => { if (!chats[0]?.id) { notify('请先创建或选择一个真实群组'); return; } setActiveChat(chats[0].id); navigate('chats'); void send(chats[0].id); }}><Sparkles size={14} />发送</button></div><small className="ws-proto-note">已就绪：自动根据任务语义匹配最优模型并完成协同 <button onClick={() => { navigate('compute'); setComputeView('market'); }}>查看模型市场 →</button></small></Panel><Panel title="快捷功能入口" action={<Badge>6 大模块</Badge>}><div className="ws-proto-functions">{([['知识库','6 个知识库 · 28,452 个切片，支持检索与文件预览',BookOpen],['智能体','4 个已安装 · 可挂载模型与配置技能',Bot],['记忆','按群组隔离，可下钻到每个智能体的记忆',FileText],['算力与积分','积分余额、使用记录与模型广场',Activity],['项目与群组','2 个项目 · 4 个群组，项目内可直接建群组',Folder],['统一任务','待办 0 项 · 与群组任务实时同步',CheckCircle2],['成员管理','超管专属 · 成员、知识库权限、Token 与邀请码',Users],['平台设置','渠道 / 技能 / 工具 / 外观 / 运维管理',Settings]] as const).map(([name, desc, Icon]) => <button key={name} onClick={() => name === '知识库' ? navigate('knowledge') : name === '项目与群组' ? navigate('projects') : name === '算力与积分' ? navigate('compute') : name === '平台设置' ? navigate('settings') : notify(`${name}模块已聚焦`)}><span><Icon size={16} /></span><strong>{name}</strong><small>{desc}</small></button>)}</div></Panel></div>
-          <div className="ws-proto-three"><Panel title="统一任务" action={<button className="ws-text-button" onClick={() => notify('新建任务')}>+ 新建任务</button>}><div className="ws-empty"><CheckCircle2 size={28} /><strong>今天没有待办</strong><small>点击上方“新建任务”即可安排工作，待办提醒会实时同步到工作台</small></div><div className="ws-proto-card-foot">待办提醒实时同步 <button onClick={() => notify('通知偏好')}>配置通知偏好</button></div></Panel><Panel title="协同应用状态" action={<Badge tone="green">运行正常</Badge>}><div className="ws-proto-list"><b>4 组就绪<small>4 大业务群组在线，可随时发起任务</small></b><b>跨群组通信 · 双向畅通<small>消息与文件均可互传，通信链路已验证</small></b><b>模型矩阵 · 4 个核心模型<small>支持按任务语义自动路由到最优模型</small></b></div></Panel><Panel title="OA 工作提醒 · OA 消息中心" action={<button className="ws-text-button" onClick={() => notify('打开 OA 消息中心')}>查看全部 →</button>}><div className="ws-empty"><Bell size={25} /><strong>尚未绑定个人 OA</strong><small>暂无未读消息 · 绑定本人 OA 账号后，消息与审批任务会自动双向同步到工作台</small></div><div className="ws-proto-card-foot"><Badge tone="orange">待绑定</Badge><button onClick={() => notify('绑定我的 OA')}>绑定我的 OA</button></div></Panel></div>
+  <div className="ws-proto-two ws-home-entry-grid"><HomeAiEntry value={draft} onChange={setDraft} onSend={sendFromHome} onAgent={() => notify('已打开智能体选择')} onSkill={() => notify('已打开技能库')} onAttachment={() => notify('已打开附件上传')} onModels={() => { navigate('compute'); setComputeView('market'); }} /><Panel className="ws-home-shortcuts-panel" title="快捷功能入口" subtitle="覆盖平台各功能，点击直接进入对应页面。" action={<Badge>6 大模块</Badge>}><div className="ws-proto-functions">{([['知识库','6 个知识库 · 28,452 个切片，支持检索与文件预览',BookOpen],['智能体','4 个已安装 · 可挂载模型与配置技能',Bot],['记忆','按群组隔离，可下钻到每个智能体的记忆',FileText],['算力与积分','积分余额、使用记录与模型广场',Activity],['项目与群组','2 个项目 · 4 个群组，项目内可直接建群组',Folder],['统一任务','待办 0 项 · 与群组任务实时同步',CheckCircle2],['成员管理','超管专属 · 成员、知识库权限、Token 与邀请码',Users],['平台设置','渠道 / 技能 / 工具 / 外观 / 运维管理',Settings]] as const).map(([name, desc, Icon]) => <button key={name} onClick={() => openHomeShortcut(name)}><span><Icon size={16} /></span><strong>{name}</strong><small>{desc}</small></button>)}</div></Panel></div>
+          <div className="ws-proto-three"><HomeTasksPanel identityId={activeIdentityId} onCreated={updateHomeTask} onChanged={updateHomeTask} onDeleted={removeHomeTask} focusRequest={taskFocusRequest} onFocusHandled={nonce => setTaskFocusRequest(current => current?.nonce === nonce ? null : current)} mineButtonRef={homeTasksButtonRef} key={activeIdentityId} tasks={homeTasks?.identityId === activeIdentityId ? homeTasks.tasks : null} loading={workspaceLoading} notify={notify} /><HomeCollaborationPanel groupCount={homeTasks?.identityId === activeIdentityId ? chats.length : 0} loading={workspaceLoading} workspaceReady={homeTasks?.identityId === activeIdentityId} onOpenGroups={() => navigate('projects')} onOpenCommunication={() => {
+            const chat = chats.find(item => item.id === activeChat) ?? chats[0];
+            if (!chat) { navigate('projects'); notify('请先创建群组，再查看群组消息和共享文件'); return; }
+            setActiveChat(chat.id); if (chat.projectId) setActiveProject(chat.projectId); navigate('chats');
+          }} onOpenModels={() => { setComputeView('market'); navigate('compute'); }} /><Panel title="OA 工作提醒 · OA 消息中心" action={<button className="ws-text-button" onClick={() => notify('打开 OA 消息中心')}>查看全部 →</button>}><div className="ws-empty"><Bell size={25} /><strong>尚未绑定个人 OA</strong><small>暂无未读消息 · 绑定本人 OA 账号后，消息与审批任务会自动双向同步到工作台</small></div><div className="ws-proto-card-foot"><Badge tone="orange">待绑定</Badge><button onClick={() => notify('绑定我的 OA')}>绑定我的 OA</button></div></Panel></div>
           <Panel title="快速协作模板推荐 · 多智能体群组" action={<button className="ws-text-button" onClick={() => navigate('chats')}>更多群组模板 →</button>}><div className="ws-proto-templates">{[['财务审计协同组 · 3 智能体','法务审合同 + 财务核票据 + 风险评级自动复核，输出审计结论与风险清单'],['市场调研小组 · 4 智能体','竞品爬取分析 + 舆情摘要 + 商业洞察报告编写，一次跑完调研到成稿'],['智能研发协作 · 2 智能体','架构设计评审 + API 自动化测试用例生成，评审意见与用例同步产出'],['创意营销工坊 · 3 智能体','新媒体文案裂变 + 分镜脚本 + 渠道分发策略，覆盖投放全链路']].map(([name, desc]) => <button key={name} onClick={() => { setModal('chat'); setNewName(name.split(' · ')[0]); }}><BriefcaseBusiness size={19} /><strong>{name}</strong><small>{desc}</small></button>)}</div></Panel>
         </div>}
         {section === 'projects' && (workspaceLoading ? <div className="ws-project-loading"><RefreshCw size={16} />正在加载项目…</div> : currentProject.id ? <ProjectWorkspace project={currentProject} rooms={chats} onOpenRoom={id => { setActiveChat(id); navigate('chats'); }} onCreateRoom={() => { setNewProject(currentProject.id); setNewName(''); setModal('chat'); }} onCreateProject={() => setModal('project')} notify={notify} /> : <div className="ws-project-empty-state"><Folder size={28} /><h2>还没有项目</h2><p>创建项目后，可在项目下建立群组并开始协作。</p><button className="ws-primary" onClick={() => setModal('project')}><Plus size={15} />创建项目</button></div>)}
@@ -617,12 +936,11 @@ export function Workstation(): React.JSX.Element {
 {section === 'chats' && <div className={`ws-chat-layout ${artifactPaneOpen ? 'has-artifacts' : ''}`}>
   <div className="ws-chat">
     <header><div><span className="ws-avatar">{currentChat.name.slice(0, 2)}</span><span><strong>{currentChat.name}</strong><small>{currentChat.project} · 智能体群聊 · 消息全量存档</small></span></div><div><IconButton title="管理群聊智能体" onClick={() => setRoomMembersOpen(true)}><Users size={17} /></IconButton><IconButton title="群组成果" onClick={() => { setArtifactPaneOpen(true); setArtifactPaneCollapsed(false); if (!previewArtifact && chatArtifacts[0]) setPreviewArtifact(chatArtifacts[0]); }}><Folder size={17} /></IconButton></div></header>
-    <div className="ws-chat-messages"><p className="ws-chat-date">{chatLoading ? '正在加载消息…' : '消息记录'}</p>
-      {currentChat.messages.map((m, i) => <div className={`ws-message ${m.author === '我' ? 'self' : ''}`} key={m.id ?? `${m.time}-${i}`}><span className="ws-avatar">{m.author.slice(0, 2)}</span><div><small>{m.author} · {m.time}</small><div className="ws-message-bubble"><MarkdownMessage text={m.text} />{m.files?.map(file => <button key={file.id} className="ws-text-button" onClick={() => { setArtifactPaneOpen(true); setArtifactPaneCollapsed(false); setPreviewArtifact({ id: file.id, name: file.name, mimeType: file.contentType ?? 'application/octet-stream', content: '', sizeBytes: file.sizeBytes, createdAt: '', sourceKind: 'file', storageKey: file.id }); }}><Paperclip size={14} /> {file.name}</button>)}{m.artifactIds?.map((id, index) => <button key={id} className="ws-text-button" onClick={() => void openArtifact(id)}><FileText size={14} /> {index === 0 ? '打开成果文件' : `打开成果文件 ${index + 1}`}</button>)}</div></div></div>)}
+    <div className="ws-chat-messages" ref={chatMessagesRef} onScroll={event => { const el = event.currentTarget; chatScrollPinnedRef.current = el.scrollHeight - el.clientHeight - el.scrollTop < 80; }}><p className="ws-chat-date">{chatLoading ? '正在加载消息…' : '消息记录'}</p>
+      <ConversationMessages key={`${activeIdentityId}:${activeChat}`} messages={currentChat.messages} memberNames={new Map(mentionCandidates.map(item => [`${item.type}:${item.id}`, item.name]))} run={activeRun} runs={roomRuns} steps={runSteps} events={runEvents} submitting={pendingRunId === 'submitting'} onCancel={() => void cancelActiveRun()} onOpenFile={file => { setArtifactPaneOpen(true); setArtifactPaneCollapsed(false); setPreviewArtifact({ id: file.id, name: file.name, mimeType: file.contentType ?? 'application/octet-stream', content: '', sizeBytes: file.sizeBytes, createdAt: '', sourceKind: 'file', storageKey: file.id }); }} onOpenArtifact={id => void openArtifact(id)} />
       <HomeAiReview key={`${activeIdentityId}:${activeChat}`} conversationId={activeChat} identityId={activeIdentityId} />
-      <RunActivity run={activeRun} steps={runSteps} events={runEvents} submitting={pendingRunId === 'submitting'} onCancel={() => void cancelActiveRun()} />
     </div>
-    <div className="ws-chat-compose"><ConversationAttachments key={`${activeIdentityId}:${activeChat}`} conversationId={activeChat} identityId={activeIdentityId} files={pendingAttachments[activeChat] ?? []} onChange={files => setPendingAttachments(items => ({ ...items, [activeChat]: files }))} onBusy={setAttachmentsUploading} onError={notify} /><textarea placeholder="发送消息给智能体小组…（输入 @ 召唤特定智能体，Enter 发送、Shift + Enter 换行）" aria-label="发送消息给智能体小组" value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!chatSending) void send(); } }} /><div><span><Bot size={16} /> 智能体 <select aria-label="响应模式" value={chatMode} onChange={e => setChatMode(e.target.value as typeof chatMode)}><option value="fast">快速响应</option><option value="balanced">均衡协同</option><option value="expert">专家深度推理</option></select></span><button aria-label={chatSending ? '终止生成' : '发送给群组'} className={`ws-primary ${chatSending ? 'is-stop' : ''}`} disabled={attachmentsUploading || chatLoading || !currentChat.id || pendingRunId === 'submitting'} onClick={() => chatSending ? void cancelActiveRun() : void send()}><Send size={15} />{chatSending ? '终止生成' : '发送协同指令'}</button></div></div>
+      <div className="ws-chat-compose"><ConversationAttachments key={`${activeIdentityId}:${activeChat}`} conversationId={activeChat} identityId={activeIdentityId} files={pendingAttachments[activeChat] ?? []} onChange={files => setPendingAttachments(items => ({ ...items, [activeChat]: files }))} onBusy={setAttachmentsUploading} onError={notify} /><div className="ws-chat-input-wrap"><textarea placeholder="发送消息给群聊…（输入 @ 选择群聊秘书、任务执行、智能体或成员，Enter 发送）" aria-label="发送消息给群聊" value={draft} onChange={e => { const value = e.target.value; setDraft(value); const match = value.match(/(?:^|\s)@([^\s@]*)$/); setMentionQuery(match ? match[1] : null); }} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!chatSending) void send(); } }} />{mentionQuery !== null && <div className="ws-mention-menu" role="listbox">{mentionCandidates.filter(item => item.name.toLowerCase().includes(mentionQuery.toLowerCase())).slice(0, 8).map(item => <button type="button" role="option" key={`${item.type}:${item.id}`} onMouseDown={event => event.preventDefault()} onClick={() => { setDraft(value => value.replace(/(?:^|\s)@([^\s@]*)$/, match => `${match.slice(0, match.lastIndexOf('@'))}@${item.name} `)); setSelectedMentions(items => items.some(selected => selected.id === item.id && selected.type === item.type) ? items : [...items, item]); setMentionQuery(null); }}>{item.type === 'agent' ? '智能体' : item.type === 'command' ? '系统路由' : '成员'} · {item.name}</button>)}</div>}</div><div><span><Bot size={16} /> 智能体 <select aria-label="响应模式" value={chatMode} onChange={e => setChatMode(e.target.value as typeof chatMode)}><option value="fast">快速响应</option><option value="balanced">均衡协同</option><option value="expert">专家深度推理</option></select></span><label className="ws-execution-access" title="仅控制本次运行的本地操作审批，不会改变 Windows 用户权限或本地允许目录"><ShieldCheck size={15} /><span>本地权限</span><select aria-label="本地执行权限" value={executionAccess} onChange={e => setExecutionAccess(e.target.value as typeof executionAccess)}><option value="approval">请求批准</option><option value="full">完全访问权限</option></select></label><button aria-label={chatSending ? '终止生成' : '发送给群组'} className={`ws-primary ${chatSending ? 'is-stop' : ''}`} disabled={attachmentsUploading || chatLoading || !currentChat.id || pendingRunId === 'submitting'} onClick={() => chatSending ? void cancelActiveRun() : void send()}><Send size={15} />{chatSending ? '终止生成' : '发送消息'}</button></div></div>
   </div>
   {artifactPaneOpen && <ArtifactPane artifacts={chatArtifacts} selected={previewArtifact} loading={artifactLoading} collapsed={artifactPaneCollapsed} onSelect={id => void openArtifact(id)} onCollapse={() => setArtifactPaneCollapsed(value => !value)} onClose={() => { setArtifactPaneOpen(false); setArtifactPaneCollapsed(false); setPreviewArtifact(null); }} onDownload={artifact => void klaApi.download(artifact.sourceKind === 'file' ? `/v1/files/${artifact.id}/content` : `/v1/artifacts/${artifact.id}/download`).then(result => { if (!result.ok) { notify(result.message); return; } const url = URL.createObjectURL(result.blob); const anchor = document.createElement('a'); anchor.href = url; anchor.download = artifact.name; anchor.click(); URL.revokeObjectURL(url); })} />}
 </div>}
@@ -632,12 +950,47 @@ export function Workstation(): React.JSX.Element {
         </>}
       </div>
     </main>
-    {modal === 'chat' && <CreateGroupDialog key={activeIdentityId} identityId={activeIdentityId} projects={projects} initialProjectId={newProject || activeProject || projects[0]?.id || ''} fixedProject={!!newProject} onClose={() => { setModal(null); setNewProject(''); }} onCreate={createGroup} />}
+    {modal === 'chat' && <CreateGroupDialog key={activeIdentityId} identityId={activeIdentityId} projects={projects} initialProjectId={newProject || ''} fixedProject={!!newProject} onClose={() => { setModal(null); setNewProject(''); }} onCreate={createGroup} />}
     {modal && !['chat','register','identity','create-enterprise','join-enterprise'].includes(modal) && <div className="ws-modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget && !creating) setModal(null); }}><div className="ws-modal"><header><h2>{modal === 'project' ? '创建项目' : modal === 'knowledge-create' ? '新建知识库' : '上传知识文件'}</h2><IconButton title="关闭" onClick={() => { if (!creating) setModal(null); }}><X size={19} /></IconButton></header>{modal === 'knowledge' ? <div className="ws-upload"><Upload size={28} /><p>拖拽文件到此处，或点击选择本地文件</p><small>支持 xlsx、ppt/pptx、word、pdf、mp4、mp3、png、jpg</small><input type="file" multiple accept=".xlsx,.xls,.ppt,.pptx,.doc,.docx,.pdf,.mp4,.mp3,.wav,.png,.jpg,.jpeg,.txt,.md,.html" onChange={e => addKnowledgeFiles(Array.from(e.target.files ?? []))} /></div> : modal === 'knowledge-create' ? <form onSubmit={e => { e.preventDefault(); create(); }}><label>知识库名称<input autoFocus required value={newName} onChange={e => setNewName(e.target.value)} placeholder="请输入知识库名称" /></label><label>说明（选填）<textarea value={newDescription} onChange={e => setNewDescription(e.target.value)} placeholder="说明知识库的用途和内容范围" /></label><label>知识库层级<select value={knowledgeScopeChoice} onChange={e => setKnowledgeScopeChoice(e.target.value as KnowledgeScope)}><option value="personal">个人知识库</option><option value="project">项目知识库</option><option value="enterprise">企业知识库</option></select></label><p className="ws-detail-copy">企业知识库需企业管理员权限，项目知识库默认归当前项目创建者管理。</p><footer><button type="button" disabled={creating} onClick={() => setModal(null)}>取消</button><button className="ws-primary" type="submit">创建知识库</button></footer></form> : <form onSubmit={e => { e.preventDefault(); create(); }}><label>{modal === 'project' ? '项目名称' : '名称'}<input autoFocus required value={newName} onChange={e => setNewName(e.target.value)} placeholder="请输入名称" /></label>{modal === 'project' && <label>项目说明<textarea value={newDescription} onChange={e => setNewDescription(e.target.value)} placeholder="简要描述职责与目标" /></label>}<footer><button type="button" disabled={creating} onClick={() => setModal(null)}>取消</button><button className="ws-primary" type="submit" disabled={creating || workspaceLoading}>{creating ? '创建中…' : '创建'}</button></footer></form>}</div></div>}
     {roomMembersOpen && activeChat && <RuntimeRoomMembers room={activeChat} identityId={activeIdentityId} notify={notify} onClose={() => setRoomMembersOpen(false)} />}
     {details && <div className="ws-modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setDetails(null); }}><div className="ws-modal"><header><h2>{details}</h2><IconButton title="关闭" onClick={() => setDetails(null)}><X size={19} /></IconButton></header><p className="ws-detail-copy">当前为前端预览数据。文件正文或模型参数详情将在对应服务端接口接入后展示。</p><footer><button className="ws-primary" onClick={() => setDetails(null)}>关闭</button></footer></div></div>}
     {knowledgePreview && <div className="ws-modal-backdrop" style={{ justifyContent: 'flex-end', padding: 0, background: '#15375724' }} onMouseDown={e => { if (e.target === e.currentTarget) { if (knowledgePreview.url) URL.revokeObjectURL(knowledgePreview.url); setKnowledgePreview(null); } }}><div className="ws-modal ws-knowledge-preview"><header><h2>{knowledgePreview.title}</h2><IconButton title="关闭预览" onClick={() => { if (knowledgePreview.url) URL.revokeObjectURL(knowledgePreview.url); setKnowledgePreview(null); }}><X size={19} /></IconButton></header>{knowledgePreview.url ? <iframe title={knowledgePreview.title} src={knowledgePreview.url} /> : <article>{knowledgePreview.content}</article>}</div></div>}
     {authModal}
+    {projectMenu && <div className="ws-ctx-menu" role="menu" aria-label={`项目更多操作：${projectMenu.name}`} style={{ left: Math.max(8, Math.min(projectMenu.x - 172, (globalThis.innerWidth || 1024) - 184)), top: Math.min(projectMenu.y + 6, (globalThis.innerHeight || 768) - 320) }} onMouseDown={event => event.stopPropagation()}>
+      <div className="ws-ctx-title">{projectMenu.name}</div>
+      <button type="button" role="menuitem" onClick={() => { const p = projects.find(item => item.id === projectMenu.id); setProjectMenu(null); if (p) void shareProject(p); }}><Link2 size={14} />分享项目</button>
+      <button type="button" role="menuitem" onClick={() => { const p = projects.find(item => item.id === projectMenu.id); setProjectMenu(null); if (p) { setRenameProjectValue(p.name); setRenameProjectTarget(p); } }}><Pencil size={14} />重命名项目</button>
+      <button type="button" role="menuitem" onClick={() => { const p = projects.find(item => item.id === projectMenu.id); setProjectMenu(null); if (p) { setSettingsProjectDescription(p.description); setSettingsProjectTarget(p); } }}><Settings size={14} />项目设置</button>
+      <button type="button" role="menuitem" onClick={() => { const p = projects.find(item => item.id === projectMenu.id); setProjectMenu(null); if (p) { setActiveProject(p.id); setSection('projects'); notify(`已打开项目主页「${p.name}」`); } }}><Folder size={14} />项目主页</button>
+      <div className="ws-ctx-sep" />
+      <button type="button" role="menuitem" onClick={() => { const p = projects.find(item => item.id === projectMenu.id); setProjectMenu(null); if (p) toggleProjectPin(p); }}>{projectPins.includes(projectMenu.id) ? <><PinOff size={14} />取消置顶项目</> : <><Pin size={14} />置顶项目</>}</button>
+      <button type="button" role="menuitem" className="danger" onClick={() => { const p = projects.find(item => item.id === projectMenu.id); setProjectMenu(null); if (p) setDeleteProjectTarget(p); }}><Trash2 size={14} />删除项目</button>
+    </div>}
+    {chatMenu && (() => {
+      const chat = chats.find(item => item.id === chatMenu.id);
+      return <>
+        <div className="ws-ctx-menu" role="menu" aria-label={`群组更多操作：${chatMenu.name}`} style={{ left: Math.max(8, Math.min(chatMenu.x - 172, (globalThis.innerWidth || 1024) - 184)), top: Math.min(chatMenu.y + 6, (globalThis.innerHeight || 768) - 360) }} onMouseDown={event => event.stopPropagation()}>
+          <div className="ws-ctx-title">{chatMenu.name}</div>
+          <button type="button" role="menuitem" onClick={() => { setChatMenu(null); if (chat) void shareChat(chat); }}><Link2 size={14} />分享</button>
+          <button type="button" role="menuitem" onClick={() => { setChatMenu(null); if (chat) { setRenameChatValue(chat.name); setRenameChatTarget(chat); } }}><Pencil size={14} />重命名</button>
+          <button type="button" role="menuitem" onClick={() => { setChatMenu(null); if (chat) toggleChatPin(chat); }}>{chatPins.includes(chatMenu.id) ? <><PinOff size={14} />取消置顶聊天</> : <><Pin size={14} />置顶聊天</>}</button>
+          <button type="button" role="menuitem" onClick={() => { setChatMenu(null); if (chat) toggleChatArchive(chat); }}>{chatArchived.includes(chatMenu.id) ? <><Archive size={14} />取消归档</> : <><Archive size={14} />归档</>}</button>
+          <div className="ws-ctx-sep" />
+          <button type="button" role="menuitem" className="danger" onClick={() => { setChatMenu(null); if (chat) setDeleteChatTarget(chat); }}><Trash2 size={14} />删除</button>
+          <button type="button" role="menuitem" aria-haspopup="menu" aria-expanded={!!chatMenu.moveOpen} onClick={() => setChatMenu(current => current ? { ...current, moveOpen: !current.moveOpen } : current)}><Folder size={14} />移至项目<ChevronRight size={12} style={{ marginLeft: 'auto' }} /></button>
+        </div>
+        {chatMenu.moveOpen && <div className="ws-ctx-menu ws-ctx-submenu" role="menu" aria-label="移至项目" style={{ left: Math.max(8, Math.min(chatMenu.x - 352, (globalThis.innerWidth || 1024) - 200)), top: Math.min(chatMenu.y + 6, (globalThis.innerHeight || 768) - 360) }} onMouseDown={event => event.stopPropagation()}>
+          <div className="ws-ctx-title">移至项目</div>
+          {projects.filter(p => p.id !== chat?.projectId).map(p => <button type="button" role="menuitem" key={p.id} onClick={() => { setChatMenu(null); if (chat) void submitChatMove(chat, p.id); }}><Folder size={14} />{p.name}</button>)}
+          {!projects.filter(p => p.id !== chat?.projectId).length && <div className="ws-ctx-empty">暂无其他可选项目</div>}
+        </div>}
+      </>;
+    })()}
+    {renameChatTarget && <div className="ws-modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget && !creating) setRenameChatTarget(null); }}><div className="ws-modal"><header><h2>重命名群组</h2><IconButton title="关闭" onClick={() => { if (!creating) setRenameChatTarget(null); }}><X size={19} /></IconButton></header><form onSubmit={event => { event.preventDefault(); void submitChatRename(); }}><label>群组名称<input autoFocus required value={renameChatValue} onChange={event => setRenameChatValue(event.target.value)} maxLength={100} placeholder="请输入新的群组名称" /></label><footer><button type="button" disabled={creating} onClick={() => setRenameChatTarget(null)}>取消</button><button className="ws-primary" type="submit" disabled={creating}>{creating ? '保存中…' : '保存'}</button></footer></form></div></div>}
+    {deleteChatTarget && <div className="ws-modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget && !creating) setDeleteChatTarget(null); }}><div className="ws-modal"><header><h2>删除群组</h2><IconButton title="关闭" onClick={() => { if (!creating) setDeleteChatTarget(null); }}><X size={19} /></IconButton></header><p className="ws-detail-copy">确定删除群组「{deleteChatTarget.name}」？群组内的消息记录将一并删除，此操作不可恢复。</p><footer><button type="button" disabled={creating} onClick={() => setDeleteChatTarget(null)}>取消</button><button type="button" className="ws-primary ws-danger-button" disabled={creating} onClick={() => void submitChatDelete()}>{creating ? '删除中…' : '确认删除'}</button></footer></div></div>}
+    {renameProjectTarget && <div className="ws-modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget && !creating) setRenameProjectTarget(null); }}><div className="ws-modal"><header><h2>重命名项目</h2><IconButton title="关闭" onClick={() => { if (!creating) setRenameProjectTarget(null); }}><X size={19} /></IconButton></header><form onSubmit={event => { event.preventDefault(); void submitProjectRename(); }}><label>项目名称<input autoFocus required value={renameProjectValue} onChange={event => setRenameProjectValue(event.target.value)} maxLength={80} placeholder="请输入新的项目名称" /></label><footer><button type="button" disabled={creating} onClick={() => setRenameProjectTarget(null)}>取消</button><button className="ws-primary" type="submit" disabled={creating}>{creating ? '保存中…' : '保存'}</button></footer></form></div></div>}
+    {settingsProjectTarget && <div className="ws-modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setSettingsProjectTarget(null); }}><div className="ws-modal"><header><h2>项目设置</h2><IconButton title="关闭" onClick={() => setSettingsProjectTarget(null)}><X size={19} /></IconButton></header><form onSubmit={event => { event.preventDefault(); submitProjectSettings(); }}><label>项目名称<input value={settingsProjectTarget.name} readOnly disabled /></label><label>项目说明<textarea value={settingsProjectDescription} onChange={event => setSettingsProjectDescription(event.target.value)} maxLength={200} placeholder="简要描述项目的职责与目标" /></label><p className="ws-detail-copy">置顶与分享可在项目行的「⋯ 更多操作」菜单中使用；项目说明保存在本机当前身份下。</p><footer><button type="button" onClick={() => setSettingsProjectTarget(null)}>取消</button><button className="ws-primary" type="submit">保存设置</button></footer></form></div></div>}
+    {deleteProjectTarget && <div className="ws-modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget && !creating) setDeleteProjectTarget(null); }}><div className="ws-modal"><header><h2>删除项目</h2><IconButton title="关闭" onClick={() => { if (!creating) setDeleteProjectTarget(null); }}><X size={19} /></IconButton></header><p className="ws-detail-copy">确定删除项目「{deleteProjectTarget.name}」？项目下的 {deleteProjectTarget.groupIds?.length ?? 0} 个群组及其消息记录将一并删除，此操作不可恢复。</p><footer><button type="button" disabled={creating} onClick={() => setDeleteProjectTarget(null)}>取消</button><button type="button" className="ws-primary ws-danger-button" disabled={creating} onClick={() => void submitProjectDelete()}>{creating ? '删除中…' : '确认删除'}</button></footer></div></div>}
     {notice && <div className="ws-toast">{notice}</div>}
   </div>;
 }

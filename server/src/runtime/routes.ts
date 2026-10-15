@@ -72,7 +72,7 @@ export async function registerRuntimeRoutes(app: FastifyInstance, deps: {pool:Po
     const key=await deps.computeRepo.getKey(modelKeyId,identityId);
     if (!key || key.status!=='active') throw app.httpErrors.badRequest('模型挂载 Key 不属于当前身份或已停用');
     const model=await deps.computeRepo.getCatalogModel(modelId);
-    if (!model?.enabled) throw app.httpErrors.badRequest('模型不在平台可用目录中');
+    if (model && !model.enabled) throw app.httpErrors.badRequest('模型已停用');
     const binding=await deps.computeRepo.getBinding(identityId);
     const password=resolveManagedPassword(binding?.managedPassword??null,deps.encryptionKey??'');
     if (!binding || !password) throw app.httpErrors.serviceUnavailable('当前身份算力账号不可用');
@@ -188,7 +188,7 @@ export async function registerRuntimeRoutes(app: FastifyInstance, deps: {pool:Po
           WHERE m.agent_id=a.id AND t.tool_name=ANY(c.tool_codes)))
       AND NOT EXISTS(SELECT 1 FROM runtime_tool_calls busy WHERE busy.device_id=$1 AND busy.status='running') ORDER BY t.created_at,t.id FOR UPDATE OF t SKIP LOCKED LIMIT 1)
       UPDATE runtime_tool_calls t SET status='running',dispatched_at=now() FROM next WHERE t.id=next.id RETURNING t.*`,[s.device.id,s.identity.id,s.device.capabilities])).rows[0];
-    if(call){call.arguments=parseToolArguments(call.tool_name,call.arguments);const st=(await client.query('SELECT st.run_id,r.conversation_id FROM conversation_run_steps st JOIN conversation_runs r ON r.id=st.run_id WHERE st.id=$1',[call.step_id])).rows[0];await client.query("INSERT INTO runtime_events(identity_id,conversation_id,run_id,kind,payload) VALUES($1,$2,$3,'tool.dispatched',$4)",[s.identity.id,st.conversation_id,st.run_id,JSON.stringify({callId:call.id,tool:call.tool_name,deviceId:s.device.id})]);await client.query('COMMIT');return{ok:true,data:{call:{id:call.id,tool:call.tool_name,arguments:call.arguments,stepId:call.step_id,runId:st.run_id},cancelled}};}await client.query('COMMIT');return{ok:true,data:{call:null,cancelled}};
+    if(call){call.arguments=parseToolArguments(call.tool_name,call.arguments);const st=(await client.query('SELECT st.run_id,r.conversation_id,r.execution_access FROM conversation_run_steps st JOIN conversation_runs r ON r.id=st.run_id WHERE st.id=$1',[call.step_id])).rows[0];await client.query("INSERT INTO runtime_events(identity_id,conversation_id,run_id,kind,payload) VALUES($1,$2,$3,'tool.dispatched',$4)",[s.identity.id,st.conversation_id,st.run_id,JSON.stringify({callId:call.id,tool:call.tool_name,deviceId:s.device.id})]);await client.query('COMMIT');return{ok:true,data:{call:{id:call.id,tool:call.tool_name,arguments:call.arguments,stepId:call.step_id,runId:st.run_id,executionAccess:st.execution_access==='full'?'full':'approval'},cancelled}};}await client.query('COMMIT');return{ok:true,data:{call:null,cancelled}};
     // 该路由的请求日志被 observability/logger.ts 的 shouldQuietRequestLogging（logController.
     // disableRequestLogging）降噪（本地运行时每 2 秒一次心跳，会淹没业务日志），
     // 且降噪会连失败态的自动日志一起压掉，因此失败必须在这里显式补一条，否则故障会被静默。
@@ -247,7 +247,7 @@ export async function registerRuntimeRoutes(app: FastifyInstance, deps: {pool:Po
         }
       }
       if(artifactIds.length){result.artifactId=artifactIds[0];result.artifactIds=artifactIds;result.checksum=files[0].checksum;}
-      await client.query('UPDATE runtime_tool_calls SET status=$2,result=$3,receipt_id=$4,completed_at=now() WHERE id=$1',[callId,b.status,JSON.stringify(result),b.receiptId]);await client.query('INSERT INTO runtime_events(identity_id,conversation_id,run_id,kind,payload) VALUES($1,$2,$3,$4,$5)',[s.identity.id,call.conversation_id,call.run_id,'tool.receipt',JSON.stringify({callId,deviceId:s.device.id,status:b.status,artifactId:result.artifactId,artifactIds,approval:b.approval??null})]);await client.query('COMMIT');worker.kick();return{ok:true,data:result};
+      await client.query('UPDATE runtime_tool_calls SET status=$2,result=$3,receipt_id=$4,completed_at=now() WHERE id=$1',[callId,b.status,JSON.stringify(result),b.receiptId]);await client.query("UPDATE conversation_runs SET next_attempt_at=now(),updated_at=now() WHERE id=$1 AND status IN ('waiting_tool','waiting_device')",[call.run_id]);await client.query('INSERT INTO runtime_events(identity_id,conversation_id,run_id,kind,payload) VALUES($1,$2,$3,$4,$5)',[s.identity.id,call.conversation_id,call.run_id,'tool.receipt',JSON.stringify({callId,deviceId:s.device.id,status:b.status,artifactId:result.artifactId,artifactIds,approval:b.approval??null})]);await client.query('COMMIT');worker.kick();return{ok:true,data:result};
     }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
   });
   app.get('/api/v1/runtime/events',async(request,reply)=>{const s=await scope(request,reply);if(!s)return;const q=z.object({after:z.coerce.number().int().min(0).default(0),conversationId:z.string().uuid().optional()}).parse(request.query);return{ok:true,data:(await pool.query('SELECT sequence,conversation_id,run_id,kind,payload,created_at FROM runtime_events WHERE identity_id=$1 AND sequence>$2 AND ($3::uuid IS NULL OR conversation_id=$3) ORDER BY sequence LIMIT 200',[s.identity.id,q.after,q.conversationId??null])).rows};});

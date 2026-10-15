@@ -4,6 +4,7 @@
 - 结构：`apps/desktop`（React 渲染层 + 轻量 Electron 壳）、`server`（Fastify 服务端）、`docs/`（新版设计文档）。
 - 使用 pnpm workspaces（`apps/*`、`server`）。禁止提交 `package-lock.json`；依赖一律进各包 `package.json` 后 `pnpm install`。
 - 交付前运行 `pnpm ci-check`（typecheck + lint + test + build）。
+- Excel 分析链（`desktop/local-excel.cjs`）为**纯 JS 实现**（exceljs 内置依赖 + SVG 报告），不依赖 Python，不要往回引入 .py 脚本或 venv。仓库中唯一的 Python 是 `resources/skills/deck-agent-kit/scripts/`（PPT 链，运行时经 resourcesPath 查找，改动需同步 electron-builder.yml extraResources）；IDE 里 .py 报「没有名为 argparse 的模块」属未配 Python SDK 的误报，非代码问题（本项目 IDE 已配 SDK，指向 excel-runtime venv，仅作检查用途）。
 - 客户端边界：渲染层不得访问数据库、文件系统、模型密钥或外部算力服务；Electron 壳仅提供窗口与类型化 Preload（`apps/desktop/desktop/preload.cjs`），保持 `contextIsolation: true`、`nodeIntegration: false`、`sandbox: true`。
 - 服务端 API 调用统一走 `apps/desktop/src/api/` 客户端适配器；`window.kunqing` 为迁移期遗留桥接，新代码不得新增使用，逐步收敛到 HTTP/SSE 契约。
 - 服务端权威数据（账号、身份、权限、知识、长期记忆、角色定义）只存服务端；客户端仅做缓存与草稿。

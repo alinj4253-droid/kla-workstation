@@ -53,8 +53,6 @@ export async function registerComputeAccountRoutes(app: FastifyInstance, deps: C
     const ctx = await requireIdentity(deps.accounts, request, reply);
     if (!ctx) return;
     const identity = ctx.identity;
-    // 上游直接充值后，把差额补进 KLA（失败不阻塞）
-    await deps.quota.reconcileBalanceFromSub2api(identity.id).catch(() => {});
     const [entitlement, binding, keys, modelCount, health, canViewKeys, canCreateKey, canUpdateKey, canDisableKey, canViewUsage, canUseModel, canViewOrganizationUsage, canAllocate, canReclaim] = await Promise.all([
       deps.computeRepo.getEntitlement({ identityId: identity.id }),
       deps.computeRepo.getBinding(identity.id),
@@ -116,8 +114,6 @@ export async function registerComputeAccountRoutes(app: FastifyInstance, deps: C
   app.get('/api/v1/compute/balance', async (request: FastifyRequest, reply: FastifyReply) => {
     const ctx = await requireIdentity(deps.accounts, request, reply);
     if (!ctx) return;
-    // 上游直接充值后，把差额补进 KLA（失败不阻塞）
-    await deps.quota.reconcileBalanceFromSub2api(ctx.identity.id).catch(() => {});
     const entitlement = await deps.computeRepo.getEntitlement({ identityId: ctx.identity.id });
     const available = availableBalance({
       quotaTotal: entitlement?.quotaTotal ?? 0,

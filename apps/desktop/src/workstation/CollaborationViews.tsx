@@ -1,12 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowRight, Check, ChevronDown, Download, FileText, Folder, LoaderCircle, RefreshCw, X } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { ArrowRight, CircleAlert, Check, ChevronDown, Download, FileText, Folder, LoaderCircle, RefreshCw, X } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeSanitize from 'rehype-sanitize';
 import { klaApi } from '../api/client';
 
 export type RoomArtifact = { id: string; name: string; mimeType: string; content: string; contentEncoding?: 'utf8' | 'base64'; storageKey?: string | null; sourceKind?: 'file' | 'artifact'; sizeBytes: number; createdAt: string };
-export type RoomRun = { id: string; status: string; phase?: string; currentAgent?: string; createdAt?: string; updatedAt?: string; result?: { waitingReason?: string; error?: string } };
+export type RoomRun = { id: string; status: string; phase?: string; currentAgent?: string | null; createdAt?: string; updatedAt?: string; result?: { waitingReason?: string; error?: string } };
 export type RunStep = { id: string; step_index: number; title: string; instruction: string; status: string; result?: { text?: string; error?: string; agentName?: string }; agent_snapshot?: { name?: string }; updated_at?: string };
 export type RunEvent = { sequence: number; run_id: string; kind: string; payload: Record<string, unknown>; created_at: string };
 export type ProjectItem = { id: string; name: string; description: string; groupIds?: string[] };
@@ -24,7 +24,7 @@ export function MarkdownMessage({ text }: { text: string }) {
 function eventLabel(event: RunEvent): string {
   const data = event.payload;
   switch (event.kind) {
-    case 'plan.created': return '统筹智能体已拆解任务';
+    case 'plan.created': return '群聊秘书已拆解任务';
     case 'step.running': return `${String(data.agentName ?? '执行智能体')} · ${String(data.title ?? '执行任务')}`;
     case 'step.waiting_device': return '等待本地执行设备上线';
     case 'step.completed': return `${String(data.agentName ?? '执行智能体')}已完成任务`;
@@ -35,6 +35,8 @@ function eventLabel(event: RunEvent): string {
     case 'memory.recalled': return '已读取本群聊短期记忆';
     case 'memory.captured': return '已保存短期记忆';
     case 'run.completed': return '任务已完成';
+    case 'run.failed': return '任务执行失败';
+    case 'run.cancelled': return '任务已终止';
     case 'message.created': return '智能体已发送回复';
     default: return event.kind.replaceAll('.', ' · ');
   }
@@ -45,31 +47,40 @@ function eventDetail(event: RunEvent): string {
   if (event.kind === 'plan.created' && Array.isArray(data.tasks)) return data.tasks.map((task, index) => `${index + 1}. ${String((task as { title?: string }).title ?? '执行任务')}`).join('\n');
   if (event.kind === 'step.waiting_device') return String(data.reason ?? '等待本地执行设备上线');
   if (event.kind.startsWith('tool.')) return [data.tool ? `工具：${String(data.tool)}` : '', data.location ? `位置：${data.location === 'local' ? '本地设备' : '服务端'}` : '', data.status ? `状态：${statusName(String(data.status))}` : '', data.deviceId ? '已分配执行设备' : ''].filter(Boolean).join(' · ') || '工具调用状态已更新';
+  if (event.kind === 'run.failed') return String(data.error ?? '任务执行失败');
   if (event.kind === 'memory.recalled') return `命中 ${String(data.count ?? 0)} 条短期记忆`;
   if (event.kind === 'step.running') return `${String(data.agentName ?? '智能体')} · ${String(data.title ?? '执行任务')}`;
   return new Date(event.created_at).toLocaleString('zh-CN');
 }
 
-export function RunActivity({ run, steps, events, submitting, onCancel }: { run: RoomRun | null; steps: RunStep[]; events: RunEvent[]; submitting: boolean; onCancel: () => void }) {
-  const [open, setOpen] = useState(true);
+export function RunActivity({ run, steps, events, submitting, onCancel, author, time, children }: { run: RoomRun | null; steps: RunStep[]; events: RunEvent[]; submitting: boolean; onCancel: () => void; author?: string; time?: string; children?: ReactNode }) {
+  const [open, setOpen] = useState(() => submitting || Boolean(run && !done(run.status)));
   const [expanded, setExpanded] = useState<string | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef(true);
-  const active = submitting || (run ? !done(run.status) : false);
-  useEffect(() => { setOpen(true); setExpanded(null); }, [run?.id]);
-  useEffect(() => { if (run && done(run.status)) setOpen(false); }, [run?.status]);
+  const active = submitting || Boolean(run && !done(run.status));
+  useEffect(() => { setOpen(active); setExpanded(null); pinnedRef.current = true; }, [run?.id, active]);
   useEffect(() => { if (open && pinnedRef.current && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight; }, [open, steps.length, events.length]);
-  if (!run && !submitting) return null;
-  const phase = submitting ? '正在提交消息' : run?.status === 'failed' ? '执行失败' : run?.status === 'cancelled' ? '已终止' : run?.status === 'completed' ? '已完成' : run?.status === 'waiting_device' ? '等待本地设备' : run?.status === 'waiting_approval' ? '等待本地授权' : run?.status === 'waiting_tool' ? '调用工具中' : run?.phase === 'coordination' ? '统筹智能体 · 正在规划' : run?.phase === 'summary' ? '统筹智能体 · 正在汇总' : '智能体 · 执行中';
-  const visibleEvents = events.filter(event => event.run_id === run?.id);
-  return <div className="ws-run-activity" aria-live="polite">
-    <div className="ws-run-header"><span className="ws-avatar">统</span><strong>{run?.currentAgent ?? '统筹智能体'}</strong><button className={`ws-run-status ${active ? 'is-active' : 'is-done'}`} aria-expanded={open} onClick={() => setOpen(value => !value)}>{active ? <LoaderCircle size={13} /> : <Check size={13} />}<span>{phase}</span><ChevronDown size={13} /></button>{active && !submitting && <button className="ws-run-cancel" onClick={onCancel}>终止生成</button>}</div>
-    {open && <div className="ws-run-log" ref={logRef} onScroll={event => { const el = event.currentTarget; pinnedRef.current = el.scrollHeight - el.clientHeight - el.scrollTop < 80; }}>
-      {steps.map(step => <button className={`ws-run-row ${step.status === 'running' ? 'is-active' : ''}`} key={step.id} onClick={() => setExpanded(value => value === step.id ? null : step.id)} aria-expanded={expanded === step.id}><span className="ws-run-dot">{step.status === 'completed' ? <Check size={10} /> : null}</span><span className="ws-run-row-main"><span>{step.title}</span>{expanded === step.id && <small>{step.agent_snapshot?.name && `${step.agent_snapshot.name} · `}{step.result?.error ?? step.result?.text ?? step.instruction}</small>}</span><em>{statusName(step.status)}</em></button>)}
-      {visibleEvents.map(event => <button className="ws-run-row" key={event.sequence} onClick={() => setExpanded(value => value === `event-${event.sequence}` ? null : `event-${event.sequence}`)} aria-expanded={expanded === `event-${event.sequence}`}><span className="ws-run-dot">{event.kind.endsWith('completed') ? <Check size={10} /> : null}</span><span className="ws-run-row-main"><span>{eventLabel(event)}</span>{expanded === `event-${event.sequence}` && <small>{eventDetail(event)}</small>}</span><em>{new Date(event.created_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</em></button>)}
-      {!steps.length && !visibleEvents.length && <div className="ws-run-empty">{run?.result?.waitingReason ?? '正在等待服务端返回执行步骤…'}</div>}
-      {run?.result?.error && <div className="ws-run-error">{run.result.error}</div>}
-    </div>}
+  if (!run && !submitting && !children) return null;
+  const name = author === '统筹智能体' ? '群聊秘书' : author ?? (run?.currentAgent === '统筹智能体' ? '群聊秘书' : run?.currentAgent) ?? '群聊秘书';
+  const phase = submitting ? '正在提交消息' : run?.status === 'failed' ? '执行失败' : run?.status === 'cancelled' ? '已终止' : run?.status === 'completed' ? '已完成' : run?.status === 'queued' ? '排队中' : run?.status === 'waiting_device' ? '等待本地设备' : run?.status === 'waiting_approval' ? '等待本地授权' : run?.status === 'waiting_tool' ? '调用工具中' : run?.phase === 'coordination' ? '正在规划' : run?.phase === 'summary' ? '正在汇总' : '执行中';
+  const state = active ? 'is-active' : run?.status === 'failed' ? 'is-failed' : run?.status === 'cancelled' ? 'is-cancelled' : 'is-done';
+  // The step list is the canonical task timeline. Tool queue/dispatch/receipt
+  // events are implementation details and must not create duplicate checklist
+  // rows. Keep only high-level system events in the collapsed timeline.
+  const visibleEvents = events.filter(event => event.run_id === run?.id && !event.kind.startsWith('tool.') && !['step.running', 'step.completed', 'message.created'].includes(event.kind));
+  return <div className="ws-run-activity" aria-live={active ? 'polite' : undefined}>
+    <span className="ws-avatar" aria-hidden="true">{name.slice(0, 1)}</span>
+    <div className="ws-agent-reply-content">
+      <div className="ws-run-header"><strong>{name}</strong>{(run || submitting) ? <button className={`ws-run-status ${state}`} aria-expanded={open} onClick={() => setOpen(value => !value)}>{active ? <LoaderCircle size={13} /> : run?.status === 'failed' ? <CircleAlert size={13} /> : run?.status === 'cancelled' ? <X size={13} /> : <Check size={13} />}<span>{phase}</span><ChevronDown size={13} /></button> : <span className="ws-agent-replied">已回复</span>}{time && <time className="ws-agent-time">{time}</time>}{active && !submitting && <button className="ws-run-cancel" onClick={onCancel}>终止生成</button>}</div>
+      {open && (run || submitting) && <div className="ws-run-log" ref={logRef} onScroll={event => { const el = event.currentTarget; pinnedRef.current = el.scrollHeight - el.clientHeight - el.scrollTop < 80; }}>
+        {steps.map(step => <button className={`ws-run-row ${step.status === 'running' ? 'is-active' : ''}`} key={step.id} onClick={() => setExpanded(value => value === step.id ? null : step.id)} aria-expanded={expanded === step.id}><span className="ws-run-dot">{step.status === 'completed' ? <Check size={10} /> : null}</span><span className="ws-run-row-main"><span>{step.title}</span>{expanded === step.id && <small>{step.agent_snapshot?.name && `${step.agent_snapshot.name} · `}{step.result?.error ?? step.result?.text ?? step.instruction}</small>}</span><em>{statusName(step.status)}</em></button>)}
+        {visibleEvents.map(event => <button className="ws-run-row" key={event.sequence} onClick={() => setExpanded(value => value === `event-${event.sequence}` ? null : `event-${event.sequence}`)} aria-expanded={expanded === `event-${event.sequence}`}><span className="ws-run-dot">{event.kind.endsWith('completed') ? <Check size={10} /> : null}</span><span className="ws-run-row-main"><span>{eventLabel(event)}</span>{expanded === `event-${event.sequence}` && <small>{eventDetail(event)}</small>}</span><em>{new Date(event.created_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</em></button>)}
+        {!steps.length && !visibleEvents.length && <div className="ws-run-empty">{submitting ? '正在提交消息…' : run?.result?.waitingReason ?? (active ? '正在等待服务端返回执行步骤…' : '暂无执行记录')}</div>}
+        {run?.result?.error && <div className="ws-run-error">{run.result.error}</div>}
+      </div>}
+      {children}
+    </div>
   </div>;
 }
 
@@ -128,7 +139,7 @@ export function ArtifactPane({ artifacts, selected, loading, collapsed, onSelect
       : /\.pptx$/i.test(selected.name) ? <BinaryArtifactPreview artifact={selected} artifacts={artifacts} onSelect={onSelect} />
       : (selected.storageKey || selected.sourceKind === 'file') ? <StoredFilePreview artifact={selected} />
       : selected.contentEncoding === 'base64' ? <BinaryArtifactPreview artifact={selected} artifacts={artifacts} onSelect={onSelect} />
-      : mime.includes('html') || /\.html?$/i.test(selected.name) ? <iframe title={selected.name} srcDoc={selected.content} sandbox="" />
+      : mime.includes('html') || /\.html?$/i.test(selected.name) ? <iframe title={selected.name} srcDoc={selected.content} sandbox="allow-scripts" />
       : /\.md$/i.test(selected.name) || mime.includes('markdown') ? <article><MarkdownMessage text={selected.content} /></article> : <pre>{selected.content}</pre>}</div>
     <footer>{selected && <button onClick={() => onDownload(selected)}><Download size={14} />下载</button>}<small>服务端成果 · 当前身份可见</small></footer>
   </aside>;
@@ -155,7 +166,7 @@ function StoredFilePreview({ artifact }: { artifact: RoomArtifact }) {
   if (loading) return <div className="ws-artifact-loading"><LoaderCircle size={20} />正在加载文件…</div>;
   if (image) return <img src={url} alt={artifact.name} style={{ width: '100%', height: 'auto' }} />;
   if (pdf) return <iframe title={artifact.name} src={url} />;
-  if (/html/i.test(artifact.mimeType)) return <iframe title={artifact.name} srcDoc={content} sandbox="" />;
+  if (/html/i.test(artifact.mimeType)) return <iframe title={artifact.name} srcDoc={content} sandbox="allow-scripts" />;
   if (/markdown/i.test(artifact.mimeType) || /\.md$/i.test(artifact.name)) return <article><MarkdownMessage text={content} /></article>;
   return <pre>{content}</pre>;
 }

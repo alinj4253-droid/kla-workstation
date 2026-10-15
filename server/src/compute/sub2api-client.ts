@@ -46,6 +46,12 @@ export type Sub2ApiUsageItem = {
   amountUsd: number;
   promptTokens: number;
   completionTokens: number;
+  /** 上游缓存 token：创建/读取（未命中时为 0） */
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+  /** 上游端到端耗时（毫秒）；first_token_ms 仅流式有值 */
+  durationMs: number | null;
+  firstTokenMs: number | null;
   timestamp: string;
 };
 
@@ -266,6 +272,10 @@ export class Sub2ApiClient {
           requestId: row.request_id == null ? null : String(row.request_id),
           model: String(row.model ?? ''), amountUsd: Number(row.total_cost ?? 0),
           promptTokens: Number(row.input_tokens ?? 0), completionTokens: Number(row.output_tokens ?? 0), timestamp,
+          cacheCreationTokens: Number(row.cache_creation_tokens ?? 0),
+          cacheReadTokens: Number(row.cache_read_tokens ?? 0),
+          durationMs: row.duration_ms == null ? null : Number(row.duration_ms),
+          firstTokenMs: row.first_token_ms == null ? null : Number(row.first_token_ms),
         });
       }
       if (rows.length === 0 || page >= Number(result.pages ?? page) || (since && rows.every(row => Date.parse(String(row.created_at)) < Date.parse(since)))) break;

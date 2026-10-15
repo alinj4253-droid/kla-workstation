@@ -1,8 +1,9 @@
-const { app, BrowserWindow, shell, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, shell, ipcMain } = require('electron');
 const { join } = require('node:path');
 const { readFileSync } = require('node:fs');
 const { pathToFileURL } = require('node:url');
 const { LocalRuntime } = require('./local-runtime.cjs');
+const { createLocalApprovalBridge } = require('./local-approval.cjs');
 let localRuntime;
 function loadClientConfig() {
   if (process.defaultApp) {
@@ -18,6 +19,7 @@ function loadClientConfig() {
 }
 const clientConfig = loadClientConfig();
 function trusted(event) { return BrowserWindow.getAllWindows().some(w => w.webContents === event.sender && event.senderFrame === w.webContents.mainFrame); }
+const localApproval = createLocalApprovalBridge(ipcMain, trusted);
 ipcMain.handle('kla:runtime-connect', async (event,session) => { if(!trusted(event))throw new Error('UNTRUSTED_FRAME'); return localRuntime.connect(session); });
 ipcMain.handle('kla:runtime-disconnect', async event => {if(!trusted(event))throw new Error('UNTRUSTED_FRAME');await localRuntime.disconnect();});
 ipcMain.handle('kla:runtime-status', async event => {if(!trusted(event))throw new Error('UNTRUSTED_FRAME');return localRuntime.status();});
@@ -64,16 +66,8 @@ ipcMain.handle('kla:operation-open-external', async (_event, payload) => {
 ipcMain.handle('kla:operation-health', async () => ({ ok: true, runtime: 'electron', capabilities: ['external-navigation', 'task-bridge'] }));
 
 app.whenReady().then(() => {
-  localRuntime = new LocalRuntime(app.getPath('userData'), clientConfig.apiBaseUrl, async call => {
-    const action = { local_read: '读取本地文件', local_list: '查看本地目录', local_write: '写入本地文件', local_code: '保存代码文件', local_bat: '运行 BAT 脚本', local_cli: '运行命令行程序', local_file_fetch: '下载群聊共享文件到本地工作区', local_file_publish: '发布本地文件为群聊成果', local_ppt_doctor: '检查本地 PPT 环境', local_ppt_build: '生成 PPTX 并进行质量检查与渲染', local_ppt_inspect: '读取 PPTX 的页面内容与备注', local_ppt_render: '检查并渲染本地 PPTX' }[call.tool];
-    if (!action) return false;
-    const summary = call.tool === 'local_file_fetch' ? `${call.arguments.fileId ? '附件' : '成果'} ID：${String(call.arguments.fileId || call.arguments.artifactId)}` : call.tool === 'local_cli' ? `${String(call.arguments.executable)} ${(call.arguments.args || []).join(' ')}` : call.tool === 'local_bat' ? String(call.arguments.script).slice(0, 400) : String(call.arguments.path || call.arguments.documentId || call.arguments.fileName || 'Python 依赖、中文字体、Office/WPS 渲染器');
-    const window = BrowserWindow.getAllWindows()[0];
-    if (!window) return false;
-    const choice = await dialog.showMessageBox(window, { type: 'warning', buttons: ['拒绝', '允许本次操作'], defaultId: 0, cancelId: 0,
-      title: '鲲擎本地执行审批', message: action, detail: `当前身份的智能体请求以本机用户权限执行：\n${summary}\n\n读取内容或命令输出会回传服务端供智能体继续处理；新建文件默认回传可预览副本。\n任务 ${call.runId}` });
-    return choice.response === 1;
-  });
+  localRuntime = new LocalRuntime(app.getPath('userData'), clientConfig.apiBaseUrl, (call, signal) =>
+    localApproval.request(BrowserWindow.getAllWindows()[0], call, signal));
   createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

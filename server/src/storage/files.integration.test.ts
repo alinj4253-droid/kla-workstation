@@ -82,7 +82,7 @@ describe('real conversation files and cross-device handoff', () => {
       expect((await app.inject({ method: 'GET', url: `/api/v1/files?conversationId=${room.id}`, headers: memberHeaders })).json().data).toHaveLength(1);
       const wrongScope = await app.inject({ method: 'POST', url: `/api/v1/conversations/${otherRoom.id}/messages`, headers, payload: { text: 'bad', fileIds: [file.id] } });
       expect(wrongScope.statusCode).toBe(403);
-      const sent = await app.inject({ method: 'POST', url: `/api/v1/conversations/${room.id}/messages`, headers, payload: { fileIds: [file.id] } });
+      const sent = await app.inject({ method: 'POST', url: `/api/v1/conversations/${room.id}/messages`, headers, payload: { fileIds: [file.id], submitObject: [{ type: 'command', id: 'task_execution' }] } });
       expect(sent.statusCode, sent.body).toBe(200);
       expect(sent.json().data.message.metadata.files[0].id).toBe(file.id);
       const message = sent.json().data.message, run = sent.json().data.run;

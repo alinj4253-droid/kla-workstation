@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest';
 import Fastify from 'fastify';
 import type { AccountRepository, Identity, Session } from '../repositories/types.js';
 import type { ComputeRepository } from './compute-repository.js';
-import type { QuotaService } from './quota-service.js';
 import type { Sub2ApiClient } from './sub2api-client.js';
 import { ComputeGateway, gatewayDedupeHash, parseUsage, parseUsageFromSse, buildUpstreamBody } from './gateway.js';
 import { registerComputeGatewayRoutes } from './routes-b-gateway.js';
+import type { QuotaService } from './quota-service.js';
 
 const NOW = '2026-10-07T00:00:00.000Z';
 const PERMISSION_SQL = /FROM identity_roles/;
@@ -20,19 +20,24 @@ function authedAccounts(target: Identity): AccountRepository {
 }
 
 type Calls = {
-  reserved: Array<{ amount: number; requestId: string }>;
-  committed: Array<{ ledgerId: string; amount: number }>;
-  released: string[];
   usage: Array<Parameters<ComputeRepository['upsertUsage']>[0]>;
   /** 传给代理面的凭据（第一个参数） */
   credentials: string[];
+  /** 预扣/释放调用轨迹 */
+  reserve: Array<{ identityId: string; amount: number; requestId: string }>;
+  release: string[];
 };
 
-function buildGateway(overrides: { chat?: Partial<Sub2ApiClient>; repo?: Partial<ComputeRepository>; quota?: Partial<QuotaService> } = {}) {
-  const calls: Calls = { reserved: [], committed: [], released: [], usage: [], credentials: [] };
+function entitlement(total = 1000) {
+  return { id: 'e1', identityId: 'i1', organizationId: null, quotaTotal: total, quotaGranted: 0, quotaUsed: 0, quotaReserved: 0, version: 0, createdAt: NOW, updatedAt: NOW };
+}
+
+function buildGateway(overrides: { chat?: Partial<Sub2ApiClient>; repo?: Partial<ComputeRepository>; entitlementTotal?: number; quota?: Partial<QuotaService> } = {}) {
+  const calls: Calls = { usage: [], credentials: [], reserve: [], release: [] };
   const computeRepo = {
     pool: { query: async () => ({ rows: [], rowCount: 0 }) },
     getCatalogModel: async () => ({ id: 'm1', provider: 'demo', enabled: true }),
+    getEntitlement: async () => entitlement(overrides.entitlementTotal ?? 1000),
     getBinding: async () => ({ identityId: 'i1', sub2apiUserId: 'u1', sub2apiUsername: 'kla-personal-i1', managedPassword: 'pass', status: 'ready', provisionJobId: null, lastError: null, createdAt: NOW, updatedAt: NOW }),
     countBindingsForSub2apiUser: async () => 1,
     getActiveKey: async () => ({ id: 'k1', sub2apiKeyId: 'upstream-key-1' }),
@@ -40,12 +45,6 @@ function buildGateway(overrides: { chat?: Partial<Sub2ApiClient>; repo?: Partial
     upsertUsage: async (input: Parameters<ComputeRepository['upsertUsage']>[0]) => { calls.usage.push(input); return null; },
     ...overrides.repo,
   } as unknown as ComputeRepository;
-  const quota = {
-    reserve: async (_identityId: string, amount: number, requestId: string) => { calls.reserved.push({ amount, requestId }); return { ledgerId: 'l1' }; },
-    commit: async (ledgerId: string, amount: number) => { calls.committed.push({ ledgerId, amount }); },
-    release: async (ledgerId: string) => { calls.released.push(ledgerId); },
-    ...overrides.quota,
-  } as unknown as QuotaService;
   const sub2api = {
     getUserJwt: async () => 'jwt-token',
     resolveApiKeySecret: async () => 'sk-upstream-secret',
@@ -58,7 +57,15 @@ function buildGateway(overrides: { chat?: Partial<Sub2ApiClient>; repo?: Partial
     },
     ...overrides.chat,
   } as unknown as Sub2ApiClient;
-  const gateway = new ComputeGateway({ computeRepo, quota, sub2api, encryptionKey: '', minReserveUsd: 0.01, timeoutMs: 5000 });
+  const quota = {
+    reserve: async (identityId: string, amount: number, requestId: string) => {
+      calls.reserve.push({ identityId, amount, requestId });
+      return { ledgerId: `hold-${calls.reserve.length}` };
+    },
+    release: async (ledgerId: string) => { calls.release.push(ledgerId); },
+    ...overrides.quota,
+  } as unknown as QuotaService;
+  const gateway = new ComputeGateway({ computeRepo, sub2api, quota, encryptionKey: '', minReserveUsd: 0.01, timeoutMs: 5000 });
   return { gateway, calls, computeRepo };
 }
 
@@ -113,13 +120,13 @@ describe('§8 ComputeGateway 结算', () => {
     await expect(gateway.completeChat(identity(), { ...INPUT, keyId: 'mounted-key' })).rejects.toMatchObject({ code: 'CONFLICT', httpStatus: 409 });
     expect(calls.credentials).toHaveLength(0);
   });
-  it('成功：预扣 → 调用 → 释放预扣，等待上游明细扣费', async () => {
+  it('成功：预扣后释放，实际扣费等待上游明细', async () => {
     const { gateway, calls } = buildGateway();
     const result = await gateway.completeChat(identity({ organizationId: 'org1' }), { ...INPUT, tags: { projectId: 'p1', conversationId: 'c1', taskId: 't1', agentId: 'a1' } });
-    expect(calls.reserved).toEqual([{ amount: 10, requestId: 'req-1' }]);
+    expect(calls.reserve).toHaveLength(1);
+    expect(calls.reserve[0]).toMatchObject({ identityId: 'i1', requestId: 'req-1' });
+    expect(calls.release).toEqual(['hold-1']);
     expect(calls.usage).toHaveLength(0);
-    expect(calls.committed).toHaveLength(0);
-    expect(calls.released).toEqual(['l1']);
     expect(result.amountUsd).toBe(0);
   });
 
@@ -129,42 +136,50 @@ describe('§8 ComputeGateway 结算', () => {
       chat: { chatCompletions: async () => new Response(JSON.stringify({ usage: { prompt_tokens: 1_000_000, completion_tokens: 1_000_000 } }), { status: 200 }) },
     });
     await gateway.completeChat(identity(), INPUT);
-    expect(calls.committed).toHaveLength(0);
-    expect(calls.released).toEqual(['l1']);
+    expect(calls.usage).toHaveLength(0);
   });
 
-  it('上游报错：释放预扣并抛 GatewayError，不扣减', async () => {
+  it('上游报错：抛 GatewayError 并落 failure 用量，同时释放预扣', async () => {
     const { gateway, calls } = buildGateway({ chat: { chatCompletions: async () => new Response('boom', { status: 500 }) } });
     await expect(gateway.completeChat(identity(), INPUT)).rejects.toMatchObject({ code: 'UNAVAILABLE', httpStatus: 502 });
-    expect(calls.committed).toHaveLength(0);
-    expect(calls.released).toEqual(['l1']);
-    expect(calls.usage[0]).toMatchObject({ status: 'failure', amountUsd: 0 });
+    expect(calls.usage[0]).toMatchObject({ status: 'failure', amountUsd: 0, ledgerId: 'hold-1' });
+    expect(calls.release).toEqual(['hold-1']);
   });
 
-  it('额度不足：403 且不调用上游', async () => {
+  it('可用额度耗尽：403 且不调用上游', async () => {
     let called = false;
-    const insufficient = Object.assign(new Error('算力点不足：可用 0 点，请求 10 点'), { name: 'QuotaInsufficientError' });
-    const { gateway } = buildGateway({
+    const insufficient = new Error('算力点不足');
+    insufficient.name = 'QuotaInsufficientError';
+    const { gateway, calls } = buildGateway({
       quota: { reserve: async () => { throw insufficient; } },
       chat: { chatCompletions: async () => { called = true; return new Response('{}', { status: 200 }); } },
     });
     await expect(gateway.completeChat(identity(), INPUT)).rejects.toMatchObject({ code: 'FORBIDDEN', httpStatus: 403 });
     expect(called).toBe(false);
+    expect(calls.credentials).toHaveLength(0);
+    expect(calls.release).toHaveLength(0);
   });
 
   it('共享上游账号时拒绝调用，避免跨身份余额混用', async () => {
     const { gateway, calls } = buildGateway({ repo: { countBindingsForSub2apiUser: async () => 2 } });
     await expect(gateway.completeChat(identity(), INPUT)).rejects.toMatchObject({ code: 'CONFLICT', httpStatus: 409 });
-    expect(calls.reserved).toHaveLength(0);
     expect(calls.credentials).toHaveLength(0);
   });
 
-  it('模型不在服务端目录：404', async () => {
-    const { gateway } = buildGateway({ repo: { getCatalogModel: async () => null } });
-    await expect(gateway.completeChat(identity(), INPUT)).rejects.toMatchObject({ code: 'NOT_FOUND', httpStatus: 404 });
+  it('目录外模型放行：上游分组是可调用性的地面真相', async () => {
+    const { gateway, calls } = buildGateway({ repo: { getCatalogModel: async () => null }, chat: { chatCompletions: async () => new Response('boom', { status: 500 }) } });
+    await expect(gateway.completeChat(identity(), INPUT)).rejects.toMatchObject({ code: 'UNAVAILABLE', httpStatus: 502 });
+    expect(calls.usage[0]).toMatchObject({ model: 'm1' });
+    expect(calls.release).toEqual(['hold-1']);
   });
 
-  it('流式：逐块透传并在结束时按 usage 扣减', async () => {
+  it('目录中显式停用的模型：404', async () => {
+    const { gateway, calls } = buildGateway({ repo: { getCatalogModel: async () => ({ id: 'm1', provider: 'demo', enabled: false }) } });
+    await expect(gateway.completeChat(identity(), INPUT)).rejects.toMatchObject({ code: 'NOT_FOUND', httpStatus: 404 });
+    expect(calls.credentials).toHaveLength(0);
+  });
+
+  it('流式：逐块透传并在结束时释放预扣，实际扣费等待上游明细', async () => {
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
@@ -179,8 +194,10 @@ describe('§8 ComputeGateway 结算', () => {
     const result = await gateway.streamChat(identity(), { ...INPUT, stream: true }, (chunk) => { chunks.push(Buffer.from(chunk).toString('utf8')); });
     expect(chunks.join('')).toContain('delta');
     expect(result.usage).toMatchObject({ promptTokens: 1, completionTokens: 1 });
-    expect(calls.committed).toHaveLength(0);
-    expect(calls.released).toEqual(['l1']);
+    expect(result.amountUsd).toBe(0);
+    expect(calls.reserve).toHaveLength(1);
+    expect(calls.release).toEqual(['hold-1']);
+    expect(calls.usage).toHaveLength(0);
   });
 });
 
@@ -230,10 +247,9 @@ describe('§8 Gateway 路由', () => {
     expect(calls.credentials).toEqual(['sk-upstream-secret']);
   });
 
-  it('身份没有可用 Key 时拒绝调用且释放预扣', async () => {
+  it('身份没有可用 Key 时拒绝调用', async () => {
     const { gateway, calls } = buildGateway({ repo: { getActiveKey: async () => null } });
     await expect(gateway.completeChat(identity(), INPUT)).rejects.toMatchObject({ code: 'CONFLICT', httpStatus: 409 });
     expect(calls.credentials).toHaveLength(0);
-    expect(calls.released).toEqual(['l1']);
   });
 });

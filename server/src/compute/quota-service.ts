@@ -16,6 +16,9 @@ export class QuotaInsufficientError extends Error {
   }
 }
 
+/** 余额对账补记阈值（积分）：净额差额不超过该值视为换算/时序噪声，不补记 */
+const BALANCE_RECONCILE_THRESHOLD_POINTS = 100;
+
 export class QuotaService {
   constructor(
     private readonly pool: Pool,
@@ -33,6 +36,14 @@ export class QuotaService {
     try {
       await client.query('BEGIN');
       if (await this.repo.getLedgerByIdempotency(idempotencyKey, client)) {
+        // 上游 duration_ms / 缓存 token 是延迟回填的：首次入账时可能读到空值，
+        // 幂等命中时顺手补齐展示指标，下一轮同步（≤60s）自愈，无需独立回填任务
+        await this.repo.refreshUsageMetrics(client, {
+          identityId, sub2apiUsageId: item.id,
+          latencyMs: item.durationMs,
+          cacheCreationTokens: item.cacheCreationTokens,
+          cacheReadTokens: item.cacheReadTokens,
+        });
         await client.query('COMMIT');
         return false;
       }
@@ -47,12 +58,17 @@ export class QuotaService {
       const ledger = await this.repo.createLedger({
         entitlementId: entitlement.id, operation: 'commit', amount: amountPoints,
         status: 'completed', idempotencyKey, requestId: item.requestId,
+        // 扣减的扣费源自上游用量明细（已在上游生效），无需再推送
+        sub2apiSynced: true,
         metadata: { source: 'sub2api_usage', upstreamUsageId: item.id },
       }, client);
       const usage = await this.repo.upsertUsage({
         identityId, ledgerId: ledger.id, sub2apiUsageId: item.id, model: item.model,
         amountUsd: item.amountUsd, promptTokens: item.promptTokens,
         completionTokens: item.completionTokens,
+        cacheCreationTokens: item.cacheCreationTokens, cacheReadTokens: item.cacheReadTokens,
+        // 成功记录的耗时以上游计费明细的 duration_ms 为准（上游端到端口径）
+        latencyMs: item.durationMs,
         dedupeHash: createHash('sha256').update(idempotencyKey).digest('hex'),
         recordedAt: item.timestamp, keyId,
         metadata: { source: 'sub2api_usage', upstreamRequestId: item.requestId },
@@ -66,6 +82,109 @@ export class QuotaService {
     } finally {
       client.release();
     }
+  }
+
+  /**
+   * 预扣额度（reserve，供 Model Gateway 在调用前调用）。
+   * 先锁额度行再复查幂等：并发同 requestId 只预扣一次，避免双倍占位。
+   */
+  async reserve(identityId: string, amount: number, requestId: string): Promise<{ ledgerId: string }> {
+    if (amount <= 0) throw new Error('预扣金额必须大于 0');
+    const idempotencyKey = `reserve:${identityId}:${requestId}`;
+    const existing = await this.repo.getLedgerByIdempotency(idempotencyKey);
+    if (existing) return { ledgerId: existing.id };
+
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await this.repo.getOrCreateEntitlement({ identityId }, client as unknown as QueryClient);
+      const ent = await this.repo.lockEntitlement(client as unknown as QueryClient, { identityId });
+      const dup = await this.repo.getLedgerByIdempotency(idempotencyKey, client as unknown as QueryClient);
+      if (dup) {
+        await client.query('COMMIT');
+        return { ledgerId: dup.id };
+      }
+      const available = availableBalance(ent);
+      if (available <= 0) throw new QuotaInsufficientError(available, amount);
+      // This is a concurrency hold, not the charge. Sub2API enforces the real
+      // balance, so a small positive balance must not fail a larger fixed hold.
+      const reserved = Math.min(amount, available);
+      await this.repo.updateEntitlementAmounts(client as unknown as QueryClient, ent.id, { reserved });
+      const ledger = await this.repo.createLedger({
+        entitlementId: ent.id,
+        operation: 'reserve',
+        amount: reserved,
+        status: 'pending',
+        idempotencyKey,
+        requestId,
+        // 预扣是本地占位，不推送上游，不存在同步概念
+        sub2apiSynced: true,
+      }, client as unknown as QueryClient);
+      await client.query('COMMIT');
+      return { ledgerId: ledger.id };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * 释放预扣（release，调用结算时调用）。
+   * 事务内锁定流水行并复查状态：重复/并发释放只生效一次，防止 reserved 被减成负数。
+   */
+  async release(ledgerId: string, amount?: number): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const ledger = await this.repo.lockLedger(ledgerId, client as unknown as QueryClient);
+      if (!ledger || ledger.status !== 'pending') {
+        await client.query('ROLLBACK');
+        return;
+      }
+      const releaseAmount = amount ?? ledger.amount;
+      const ent = await this.repo.lockEntitlement(client as unknown as QueryClient, { identityId: await this.identityIdByLedger(client as unknown as QueryClient, ledgerId) });
+      await this.repo.updateEntitlementAmounts(client as unknown as QueryClient, ent.id, { reserved: -releaseAmount });
+      await this.repo.updateLedgerStatus(ledgerId, 'released', undefined, client as unknown as QueryClient);
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * 兜底：释放超龄仍未结算的预扣流水（进程异常终止、释放失败等残留），
+   * 保证可用余额自愈，不依赖调用方一定走到 release。
+   */
+  async releaseExpiredReserves(timeoutMs: number, limit = 200): Promise<number> {
+    if (timeoutMs <= 0) return 0;
+    const expired = await this.repo.listExpiredPendingReserves(timeoutMs, limit);
+    let released = 0;
+    for (const ledger of expired) {
+      try {
+        await this.release(ledger.id);
+        released += 1;
+      } catch (error) {
+        await this.repo.insertSyncLog({
+          syncType: 'balance', identityId: null, status: 'error',
+          message: `释放超龄预扣失败 ledger=${ledger.id}：${error instanceof Error ? error.message : 'unknown'}`,
+        });
+      }
+    }
+    return released;
+  }
+
+  private async identityIdByLedger(client: QueryClient, ledgerId: string): Promise<string> {
+    const { rows } = await client.query(
+      'SELECT e.identity_id FROM compute_allocation_ledger l JOIN compute_entitlements e ON e.id = l.entitlement_id WHERE l.id = $1',
+      [ledgerId],
+    );
+    if (!rows[0]?.identity_id) throw new Error('流水对应的身份不存在');
+    return rows[0].identity_id as string;
   }
 
   /** 发放额度（平台充值/运营发放，增加 quota_total） */
@@ -90,8 +209,9 @@ export class QuotaService {
         requestId,
         metadata: { source: 'platform_grant' },
       }, client as unknown as QueryClient);
-      // 充值需同步到 Sub2API
-      await this.syncBalanceToSub2Api(client as unknown as QueryClient, owner, amount);
+      // 充值需同步到 Sub2API；同步失败仅记 sync_log，流水保持待同步
+      const synced = await this.syncBalanceToSub2Api(client as unknown as QueryClient, owner, amount);
+      if (!synced) await this.repo.updateLedgerStatus(ledger.id, 'completed', false, client as unknown as QueryClient);
       await client.query('COMMIT');
       return { entitlementId: ent.id, ledgerId: ledger.id };
     } catch (error) {
@@ -100,6 +220,47 @@ export class QuotaService {
     } finally {
       client.release();
     }
+  }
+
+  /** 平台收回额度，只允许从指定身份的可用余额中扣减。 */
+  async revoke(owner: { identityId?: string; organizationId?: string }, amount: number, requestId: string): Promise<{ entitlementId: string; ledgerId: string; sub2apiSynced: boolean }> {
+    if (amount <= 0) throw new Error('收回金额必须大于 0');
+    const idempotencyKey = `revoke:${owner.identityId ?? owner.organizationId}:${requestId}`;
+    const existing = await this.repo.getLedgerByIdempotency(idempotencyKey);
+    if (existing) return { entitlementId: existing.entitlementId, ledgerId: existing.id, sub2apiSynced: existing.sub2apiSynced };
+
+    const client = await this.pool.connect();
+    let entitlementId = '';
+    let ledgerId = '';
+    let synced = false;
+    try {
+      await client.query('BEGIN');
+      const ent = await this.repo.getOrCreateEntitlement(owner, client as unknown as QueryClient);
+      const locked = await this.repo.lockEntitlement(client as unknown as QueryClient, owner);
+      const available = availableBalance(locked);
+      if (available < amount) throw new QuotaInsufficientError(available, amount);
+      await this.repo.updateEntitlementAmounts(client as unknown as QueryClient, locked.id, { total: -amount });
+      const ledger = await this.repo.createLedger({
+        entitlementId: ent.id,
+        operation: 'revoke',
+        amount,
+        status: 'completed',
+        idempotencyKey,
+        requestId,
+        metadata: { source: 'platform_revoke' },
+      }, client as unknown as QueryClient);
+      entitlementId = ent.id;
+      ledgerId = ledger.id;
+      await client.query('COMMIT');
+      synced = await this.syncBalanceToSub2Api(client as unknown as QueryClient, owner, -amount);
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+    if (synced) await this.repo.updateLedgerStatus(ledgerId, 'completed', true);
+    return { entitlementId, ledgerId, sub2apiSynced: synced };
   }
 
   /**
@@ -313,71 +474,14 @@ export class QuotaService {
     }
   }
 
-  /** 预扣额度（reserve，供 Model Gateway 在调用前调用） */
-  async reserve(identityId: string, amount: number, requestId: string): Promise<{ ledgerId: string }> {
-    if (amount <= 0) throw new Error('预扣金额必须大于 0');
-    const idempotencyKey = `reserve:${identityId}:${requestId}`;
-    const existing = await this.repo.getLedgerByIdempotency(idempotencyKey);
-    if (existing) return { ledgerId: existing.id };
-
-    const client = await this.pool.connect();
-    try {
-      await client.query('BEGIN');
-      await this.repo.getOrCreateEntitlement({ identityId }, client as unknown as QueryClient);
-      const ent = await this.repo.lockEntitlement(client as unknown as QueryClient, { identityId });
-      const available = availableBalance(ent);
-      if (available <= 0) throw new QuotaInsufficientError(available, amount);
-      // This is a concurrency hold, not the charge. Sub2API enforces the real
-      // balance, so a small positive balance must not fail a larger fixed hold.
-      const reserved = Math.min(amount, available);
-      await this.repo.updateEntitlementAmounts(client as unknown as QueryClient, ent.id, { reserved });
-      const ledger = await this.repo.createLedger({
-        entitlementId: ent.id,
-        operation: 'reserve',
-        amount: reserved,
-        status: 'pending',
-        idempotencyKey,
-        requestId,
-      }, client as unknown as QueryClient);
-      await client.query('COMMIT');
-      return { ledgerId: ledger.id };
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
-  }
-
-  /** 释放预扣（release，调用失败时调用） */
-  async release(ledgerId: string, amount?: number): Promise<void> {
-    const ledger = await this.repo.getLedger(ledgerId);
-    if (!ledger) throw new Error('流水不存在');
-    if (ledger.status !== 'pending') return;
-
-    const releaseAmount = amount ?? ledger.amount;
-    const client = await this.pool.connect();
-    try {
-      await client.query('BEGIN');
-      const ent = await this.repo.lockEntitlement(client as unknown as QueryClient, { identityId: await this.identityIdByLedger(client, ledgerId) });
-      await this.repo.updateEntitlementAmounts(client as unknown as QueryClient, ent.id, { reserved: -releaseAmount });
-      await this.repo.updateLedgerStatus(ledgerId, 'released', undefined, client as unknown as QueryClient);
-      await client.query('COMMIT');
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
-  }
-
   /** 发放额度时同步本次增量；Sub2API 的余额接口不是设置绝对值。 */
-  private async syncBalanceToSub2Api(client: QueryClient, owner: { identityId?: string; organizationId?: string }, delta: number): Promise<void> {
-    if (!owner.identityId) return; // 企业池不同步到 Sub2API
+  private async syncBalanceToSub2Api(client: QueryClient, owner: { identityId?: string; organizationId?: string }, delta: number): Promise<boolean> {
+    if (!owner.identityId) return false; // 企业池不同步到 Sub2API
     const binding = await this.repo.getBinding(owner.identityId, client);
-    if (!binding || !binding.sub2apiUserId) return;
+    if (!binding || !binding.sub2apiUserId) return false;
     try {
       await this.sub2api.adjustBalance(binding.sub2apiUserId, this.points.toUsd(delta));
+      return true;
     } catch (error) {
       // 同步失败仅记录，不影响主事务；后续由对账/重试修复
       await this.repo.insertSyncLog({
@@ -386,94 +490,76 @@ export class QuotaService {
         status: 'error',
         message: error instanceof Error ? error.message : 'Sub2API 余额同步失败',
       }, client);
+      return false;
     }
+  }
+
+  // ==================== 上游余额对账（双向同步：上游 → KLA） ====================
+
+  /**
+   * 余额对账：对每个已绑定身份，比对 Sub2API 侧实际余额与 KLA 已同步流水净额。
+   * 上游余额高于净额（如直接在上游管理面充值、注册赠送）时补记充值流水，实现两边同步；
+   * 负差额不处理：用量部分由用量同步追平，KLA 多记的部分保持台账原样（上游是消费事实源）。
+   * 基准在补记后自愈，周期执行天然幂等。
+   */
+  async reconcileUpstreamBalances(opts: { thresholdPoints?: number } = {}): Promise<{ checked: number; recorded: number }> {
+    const thresholdPoints = opts.thresholdPoints ?? BALANCE_RECONCILE_THRESHOLD_POINTS;
+    const { rows } = await this.pool.query<{ identity_id: string; sub2api_user_id: string }>(
+      "SELECT identity_id, sub2api_user_id FROM compute_bindings WHERE sub2api_user_id IS NOT NULL AND sub2api_status = 'ready'",
+    );
+    let recorded = 0;
+    for (const row of rows) {
+      try {
+        const upstream = await this.sub2api.getUser(row.sub2api_user_id);
+        if (!upstream) continue; // 上游账号不存在（环境重置/已删除）：等待重新建号，不做本地推断
+        if (await this.recordUpstreamRecharge(row.identity_id, row.sub2api_user_id, upstream.balance, thresholdPoints)) recorded += 1;
+      } catch (error) {
+        await this.repo.insertSyncLog({
+          syncType: 'balance', identityId: row.identity_id, status: 'error',
+          message: `余额对账失败（上游用户 ${row.sub2api_user_id}）：${error instanceof Error ? error.message : String(error)}`,
+        });
+      }
+    }
+    return { checked: rows.length, recorded };
   }
 
   /**
-   * Sub2API → KLA 余额对账：上游直接充值后，把差额补进 KLA 台账。
-   *
-   * 方向约束：仅当 Sub2API 实际余额 > KLA 已同步到上游的预期余额时才补记（充值方向）。
-   * 绝不从 KLA 扣减（KLA → Sub2API 的方向由 grant/allocate/reclaim 负责）。
-   *
-   * 防幽灵充值：用「已同步流水净额」而非 KLA 可用余额作为对比基准。
-   * 若某笔 grant 在 KLA 台账存在但未真正推送到 Sub2API（如手动 SQL 误设 synced=true），
-   * 它会被计入预期余额，从而避免把「KLA 多记」误判为「上游充值」。
-   *
-   * 幂等：idempotency_key 包含按百位取整的 Sub2API 积分余额，
-   * 同一上游余额不会重复入账；余额变化（再次充值）会生成新流水。
-   *
-   * 阈值：漂移需超过 100 积分（$0.01）才入账，避免浮点/舍入噪声产生幽灵流水。
-   * 失败不抛异常，仅记日志，不阻塞余额查询。
+   * 单身份余额补记：事务内锁定台账行后重读净额（与并发对账/用量落库串行化，防双倍补记），
+   * 正向差额超过阈值才落一条 recharge 流水（差额源自上游实际余额，补记即视为已在上游生效）。
    */
-  async reconcileBalanceFromSub2api(identityId: string): Promise<{ driftPoints: number; applied: boolean }> {
-    const THRESHOLD_POINTS = 100; // $0.01
-    const binding = await this.repo.getBinding(identityId);
-    if (!binding?.sub2apiUserId) return { driftPoints: 0, applied: false };
-
-    let sub2apiUsd: number;
-    try {
-      const user = await this.sub2api.getUser(binding.sub2apiUserId);
-      if (!user) return { driftPoints: 0, applied: false };
-      sub2apiUsd = user.balance;
-    } catch {
-      return { driftPoints: 0, applied: false };
-    }
-
-    // 用已同步流水净额作为 KLA 在 Sub2API 的预期余额，而非 KLA 可用余额。
-    // 这样未真正同步到上游的 grant 不会制造虚假漂移。
-    // 台账不存在时自动创建：只建过号、从未发放过的身份也能在上游充值后入账。
-    const entitlement = await this.repo.getOrCreateEntitlement({ identityId });
-    const expectedUsd = await this.repo.getSyncedSub2ApiBalanceUsd(entitlement.id);
-    const driftUsd = sub2apiUsd - expectedUsd;
-    const driftPoints = Math.round(driftUsd * this.points.pointsPerUsd * 1000) / 1000;
-    if (driftPoints <= THRESHOLD_POINTS) return { driftPoints, applied: false };
-
-    // 按百位取整上游余额作为幂等键，避免同余额重复入账
-    const sub2apiPoints = Math.round(sub2apiUsd * this.points.pointsPerUsd);
-    const roundedSub2api = Math.round(sub2apiPoints / 100) * 100;
-    const idempotencyKey = `sub2api-recharge:${identityId}:${roundedSub2api}`;
-
+  private async recordUpstreamRecharge(identityId: string, sub2apiUserId: string, upstreamBalanceUsd: number, thresholdPoints: number): Promise<boolean> {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      if (await this.repo.getLedgerByIdempotency(idempotencyKey, client)) {
-        await client.query('COMMIT');
-        return { driftPoints, applied: false };
-      }
+      await this.repo.getOrCreateEntitlement({ identityId }, client);
       const ent = await this.repo.lockEntitlement(client, { identityId });
-      await this.repo.updateEntitlementAmounts(client, ent.id, { total: driftPoints });
+      const klaNetUsd = await this.repo.sumSyncedLedgerNet(identityId, client);
+      const deltaUsd = roundUsd(upstreamBalanceUsd - klaNetUsd);
+      const amountPoints = deltaUsd > 0 ? this.points.fromUsd(deltaUsd) : 0;
+      if (amountPoints <= thresholdPoints) {
+        await client.query('COMMIT');
+        return false;
+      }
+      await this.repo.updateEntitlementAmounts(client, ent.id, { total: amountPoints });
+      const at = new Date().toISOString();
       await this.repo.createLedger({
         entitlementId: ent.id,
         operation: 'recharge',
-        amount: driftPoints,
+        amount: amountPoints,
         status: 'completed',
-        idempotencyKey,
-        requestId: `balance-sync:${roundedSub2api}`,
-        metadata: { source: 'sub2api_reconcile', sub2apiBalanceUsd: roundUsd(sub2apiUsd), sub2apiUserId: binding.sub2apiUserId },
+        idempotencyKey: `upstream-recharge:${sub2apiUserId}:${at}`,
+        requestId: `upstream-reconcile:${at}`,
+        sub2apiSynced: true,
+        metadata: { source: 'upstream_reconciliation', upstreamUserId: sub2apiUserId, upstreamBalanceUsd, klaNetUsd },
       }, client);
       await client.query('COMMIT');
-      return { driftPoints, applied: true };
+      return true;
     } catch (error) {
       await client.query('ROLLBACK');
-      await this.repo.insertSyncLog({
-        syncType: 'balance',
-        identityId,
-        status: 'error',
-        message: `Sub2API→KLA 余额对账失败：${error instanceof Error ? error.message : 'unknown'}`,
-      });
-      return { driftPoints, applied: false };
+      throw error;
     } finally {
       client.release();
     }
-  }
-
-  private async identityIdByLedger(client: QueryClient, ledgerId: string): Promise<string> {
-    const { rows } = await client.query(
-      'SELECT e.identity_id FROM compute_allocation_ledger l JOIN compute_entitlements e ON e.id = l.entitlement_id WHERE l.id = $1',
-      [ledgerId],
-    );
-    if (!rows[0]?.identity_id) throw new Error('流水对应的身份不存在');
-    return rows[0].identity_id as string;
   }
 
 }

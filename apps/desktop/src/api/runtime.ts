@@ -4,6 +4,7 @@ export type RuntimeAgent={id:string;name:string;role:string;modelId?:string|null
 export type RuntimeDevice={id:string;name:string;platform:string;online:boolean};
 export type RuntimeSkill={code:string;name:string;description:string;tool_codes:string[];enabled:boolean};
 export type RuntimeTool={code:string;name:string;description:string;location:'server'|'local';deviceOnline:boolean|null};
+export type ConversationMember={identity_id:string;role:string;joined_at:string;display_name:string};
 export type AgentCapabilities={skills:Array<RuntimeSkill & {mounted:boolean}>;tools:Array<RuntimeTool & {mounted:boolean}>;effectiveTools:string[]};
 export const runtimeApi={
   agents:()=>klaApi.request<RuntimeAgent[]>('/v1/agents'),
@@ -20,6 +21,7 @@ export const runtimeApi={
   toggleAgent:(id:string,enabled:boolean)=>klaApi.request<RuntimeAgent>(`/v1/agents/${id}`,{method:'PATCH',body:JSON.stringify({enabled})}),
   toggleSkill:(code:string,enabled:boolean)=>klaApi.request<RuntimeSkill>(`/v1/skills/${encodeURIComponent(code)}`,{method:'PATCH',body:JSON.stringify({enabled})}),
   members:(room:string)=>klaApi.request<RuntimeAgent[]>(`/v1/conversations/${room}/agents`),
+  conversationMembers:(room:string)=>klaApi.request<ConversationMember[]>(`/v1/conversations/${room}/members`),
   addMember:(room:string,agentId:string)=>klaApi.request(`/v1/conversations/${room}/agents`,{method:'POST',body:JSON.stringify({agentId})}),
   removeMember:(room:string,agentId:string)=>klaApi.request(`/v1/conversations/${room}/agents/${agentId}`,{method:'DELETE'}),
 };

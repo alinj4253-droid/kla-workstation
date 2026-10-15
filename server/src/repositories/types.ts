@@ -28,12 +28,15 @@ export type Organization = {
   inviteCode: string;
   status: 'active' | 'disabled';
 };
-export type Project = { id: string; name: string; ownerIdentityId: string; createdAt: string };
+export type ProjectKind = 'normal' | 'standalone';
+export type Project = { id: string; name: string; ownerIdentityId: string; createdAt: string; kind?: ProjectKind };
 export type Conversation = { id: string; projectId: string; name: string; createdAt: string };
-export type Message = { id: string; conversationId: string; senderId: string; senderType: 'user' | 'agent' | 'system'; senderName?: string | null; kind: string; text: string; metadata?: Record<string, unknown>; createdAt: string };
+export type Message = { id: string; conversationId: string; senderId: string; senderIdentityId?: string | null; senderType: 'user' | 'agent' | 'system'; senderName?: string | null; kind: string; text: string; metadata?: Record<string, unknown>; createdAt: string };
 export type AgentProfile = { id: string; name: string; role: string; type: string; modelId: string | null; enabled: boolean };
 export type Artifact = { id: string; conversationId: string | null; name: string; mimeType: string; content: string; contentEncoding?: 'utf8' | 'base64'; storageKey?: string | null; storageStatus?: 'inline' | 'stored' | 'deleted'; sizeBytes: number; createdAt: string };
-export type ConversationRun = { id: string; conversationId: string; triggerMessageId: string | null; status: string; mode: string; currentAgent: string | null; result: Record<string, unknown>; createdAt: string; updatedAt: string };
+export type ExecutionAccess = 'approval' | 'full';
+export type ConversationRunRouteMode = 'direct_agent' | 'coordinator_simple' | 'coordinator_complex';
+export type ConversationRun = { id: string; conversationId: string; triggerMessageId: string | null; status: string; mode: string; executionAccess: ExecutionAccess; routeMode?: ConversationRunRouteMode; triggerIdentityId?: string | null; currentAgent: string | null; result: Record<string, unknown>; createdAt: string; updatedAt: string };
 
 export interface AccountRepository {
   getUser(id: string): Promise<UserAccount | null>;
@@ -48,16 +51,23 @@ export interface AccountRepository {
   listSessions(userId: string): Promise<Array<{ id: string; deviceId: string | null; deviceName: string | null; userAgent: string | null; ipAddress: string | null; expiresAt: string; lastSeenAt: string; current: boolean }>>;
   revokeAllSessions(userId: string, exceptSessionId?: string): Promise<void>;
   listProjects(identityId: string): Promise<Project[]>;
+  /** 获取（或懒创建）当前身份的「独立群组」容器项目，用于承载不归属任何项目的群组。 */
+  ensureStandaloneProject(identityId: string): Promise<Project>;
   listAllConversations(identityId: string): Promise<Array<Conversation & { projectName: string }>>;
   createProject(identityId: string, name: string): Promise<Project>;
+  renameProject(identityId: string, projectId: string, name: string): Promise<Project | null>;
+  deleteProject(identityId: string, projectId: string): Promise<boolean>;
   listConversations(projectId?: string, identityId?: string): Promise<Conversation[]>;
   createConversation(projectId: string, name: string): Promise<Conversation>;
+  renameConversation(identityId: string, conversationId: string, name: string): Promise<Conversation | null>;
+  moveConversation(identityId: string, conversationId: string, targetProjectId: string): Promise<Conversation | null>;
+  deleteConversation(identityId: string, conversationId: string): Promise<boolean>;
   listMessages(conversationId: string): Promise<Message[]>;
-  createMessage(conversationId: string, senderId: string, text: string, metadata?: Record<string, unknown>): Promise<Message>;
+  createMessage(conversationId: string, senderId: string, text: string, metadata?: Record<string, unknown>, senderIdentityId?: string): Promise<Message>;
   createAgentMessage(conversationId: string, agentName: string, text: string, metadata?: Record<string, unknown>): Promise<Message>;
   listAgents(identityId: string): Promise<AgentProfile[]>;
   listConversationRuns(conversationId: string): Promise<ConversationRun[]>;
-  createRun(conversationId: string, triggerMessageId: string, mode: string, leaseOwner?: string): Promise<ConversationRun>;
+  createRun(conversationId: string, triggerMessageId: string, mode: string, leaseOwner?: string, executionAccess?: ExecutionAccess, options?: { triggerIdentityId?: string; routeMode?: ConversationRunRouteMode }): Promise<ConversationRun>;
   completeRun(runId: string, status: string, agentName?: string, result?: Record<string, unknown>): Promise<ConversationRun>;
   createArtifact(identityId: string, conversationId: string, name: string, mimeType: string, content: string): Promise<Artifact>;
   listArtifacts(identityId: string, conversationId?: string): Promise<Artifact[]>;

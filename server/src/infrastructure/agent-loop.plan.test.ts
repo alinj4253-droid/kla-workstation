@@ -1,6 +1,7 @@
 import { taskPlanSchema } from '@kla-workstation/contracts';
 import { describe, expect, it } from 'vitest';
-import { normalizeTaskPlanPayload } from './agent-loop.js';
+import { GatewayError } from '../compute/gateway.js';
+import { modelRetryDecision, normalizeTaskPlanPayload } from './agent-loop.js';
 
 describe('normalizeTaskPlanPayload', () => {
   it('accepts a four-step model plan when only the fourth title is missing', () => {
@@ -21,5 +22,21 @@ describe('normalizeTaskPlanPayload', () => {
   it('still rejects a task without executable instructions', () => {
     const agentId = 'd7f241a5-5881-48b1-8f1b-02721b22f49d';
     expect(() => taskPlanSchema.parse(normalizeTaskPlanPayload({ tasks: [{ agentId, dependsOn: [] }] }))).toThrow();
+  });
+});
+
+describe('modelRetryDecision', () => {
+  it('retries upstream timeouts and 5xx with growing backoff', () => {
+    const timeout = new GatewayError('UNAVAILABLE', 'Sub2API 请求超时', 504);
+    expect(modelRetryDecision(timeout, 1)).toEqual({ retry: true, delayMs: 1000 });
+    expect(modelRetryDecision(timeout, 2)).toEqual({ retry: true, delayMs: 3000 });
+  });
+
+  it('does not retry permanent model errors, exhausted attempts, or cancellation', () => {
+    expect(modelRetryDecision(new GatewayError('NOT_FOUND', '模型已停用', 404), 1).retry).toBe(false);
+    expect(modelRetryDecision(new GatewayError('FORBIDDEN', '缺少 model.use 权限', 403), 1).retry).toBe(false);
+    expect(modelRetryDecision(new GatewayError('UNAVAILABLE', 'Sub2API 请求超时', 504), 3).retry).toBe(false);
+    expect(modelRetryDecision(new GatewayError('UNAVAILABLE', 'Sub2API 请求超时', 504), 1, 3, true).retry).toBe(false);
+    expect(modelRetryDecision(new Error('boom'), 1).retry).toBe(false);
   });
 });

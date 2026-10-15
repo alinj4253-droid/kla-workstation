@@ -1,0 +1,5 @@
+{
+  "active": "default",
+  "connections": {},
+  "_说明": "通过群聊对话或 local_biz_configure 添加连接；default 连接默认指向 192.168.128.128:3306/behavior_analysis（快照库），凭据用环境变量 KLA_BIZ_DB_USER / KLA_BIZ_DB_PASSWORD 提供，或对话中让智能体写入"
+}

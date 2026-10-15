@@ -31,6 +31,15 @@ export function formatPoints(value: number | null | undefined): string {
   return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 }).format(Math.round(value));
 }
 
+/**
+ * 积分展示（毫积分精度）：最多 3 位小数、整数不带小数点。
+ * 用于单次扣减/单笔消费等小额场景——单次提问通常不足 1 积分，取整会把扣减显示成 0。
+ */
+export function formatPointsPrecise(value: number | null | undefined): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
+  return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 3 }).format(value);
+}
+
 export function formatTokens(value: number | null | undefined): string {
   if (value === null || value === undefined) return '—';
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`;

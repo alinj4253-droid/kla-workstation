@@ -16,6 +16,7 @@
     "points:migrate": "tsx scripts/migrate-points.ts",
     "points:reconcile": "tsx scripts/reconcile-points.ts",
     "points:revalue": "tsx scripts/revalue-points.ts",
+    "points:grant": "tsx scripts/grant-points.ts",
     "build": "tsc -p tsconfig.json && node scripts/copy-migrations.mjs",
     "start": "node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.scripts.json --noEmit",

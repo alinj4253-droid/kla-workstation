@@ -8,8 +8,8 @@ import { DEFAULT_AGENT_MODEL_ID, DEFAULT_AGENT_MODEL_NAME, type ComputeKey, type
 
 type Props = { identityId: string; notify: (text: string) => void };
 type AgentKey = Pick<ComputeKey, 'id' | 'name' | 'keyPrefix' | 'status' | 'isDefault'>;
-const isBuiltinAgent = (agent: RuntimeAgent): boolean => agent.type === 'official' || ['统筹智能体', '本地执行智能体', 'PPT助手'].includes(agent.name);
-const agentDescription = (agent: RuntimeAgent): string => agent.name === 'PPT助手' ? '从材料生成可编辑 PPTX，支持大纲确认、对话改稿、质量检查及真实 PDF 预览。通过统一网关在本地执行。' : agent.role || '暂无角色说明';
+const isBuiltinAgent = (agent: RuntimeAgent): boolean => agent.type === 'official' || ['统筹智能体', '本地执行智能体', 'PPT助手', '路线规划助手', '经营分析助手'].includes(agent.name);
+const agentDescription = (agent: RuntimeAgent): string => agent.name === 'PPT助手' ? '从材料生成可编辑 PPTX，支持大纲确认、对话改稿、质量检查及真实 PDF 预览。通过统一网关在本地执行。' : agent.name === '路线规划助手' ? '调用高德矩阵与固定起终点 TSP 算法，完成里程/时间/成本三策略路线优化与多线路拆分重排。通过统一网关在本地执行。' : agent.name === '经营分析助手' ? '通用经营分析：默认内置演示数据（快照 2025-01 ~ 2026-10，公司级/作业所 × 年/季/月报、同比、趋势、分类与时段明细）；对话中提供 MySQL 连接信息即可切换任意真实库做只读 SQL 分析；上传 Excel 附件可做数据画像、溯源校验与 HTML 报告。通过统一网关在本地执行。' : agent.role || '暂无角色说明';
 
 const marketAgents = [
   { name: '家居 AI 机会诊断', category: '行业专业', description: '从真实岗位出发，核对材料和试点条件，确定性测算价值，形成由用户确认的诊断报告。', tags: ['家居', '岗位访谈', '价值测算'], rating: '待评价', installs: '—', tone: 'cyan' },
@@ -32,7 +32,7 @@ function avatarTone(name: string): string {
   return tones[Math.max(0, name.charCodeAt(0)) % tones.length];
 }
 
-export function RuntimeAgentManagement({ identityId, notify }: Props): React.JSX.Element {
+export function RuntimeAgentManagement({ identityId, notify, searchRequest }: Props & { searchRequest?: { query: string; nonce: number } | null }): React.JSX.Element {
   const [agents, setAgents] = useState<RuntimeAgent[]>([]);
   const [devices, setDevices] = useState<RuntimeDevice[]>([]);
   const [draft, setDraft] = useState<{ id: string | null; name: string; role: string; modelId: string | null; modelKeyId: string | null; executionLocation: ExecutionLocation; deviceId: string | null; enabled: boolean } | null>(null);
@@ -42,6 +42,7 @@ export function RuntimeAgentManagement({ identityId, notify }: Props): React.JSX
   const [modelLoading, setModelLoading] = useState(false);
   const [modelError, setModelError] = useState('');
   const [query, setQuery] = useState('');
+  useEffect(() => { setQuery(searchRequest?.query ?? ''); if (searchRequest) { setView('mine'); setFilter('all'); } }, [identityId, searchRequest]);
   const [filter, setFilter] = useState<'all' | 'builtin' | 'external' | 'custom'>('all');
   const [view, setView] = useState<'mine' | 'market'>('mine');
   const [busy, setBusy] = useState(false);
