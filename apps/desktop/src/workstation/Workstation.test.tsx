@@ -356,6 +356,23 @@ describe('新版项目和群聊的真实接口交互', () => {
     expect(screen.getByRole('button', { name: '发送给群组' })).toBeEnabled();
   });
 
+  it('提及群聊秘书使用系统路由，不提交统筹智能体的 agent ID', async () => {
+    overrides['GET /v1/conversations/chat-a/agents'] = () => ({ ok: true, data: groupAgents });
+    overrides['GET /v1/conversations/chat-a/members'] = () => ({ ok: true, data: [] });
+    const message = { id: 'coordinator-message', senderType: 'user', text: '@群聊秘书 请处理', createdAt: '2026-10-13T01:00:00Z' };
+    overrides['POST /v1/conversations/chat-a/messages'] = () => ({ ok: true, data: { message, run: null } });
+    const user = await openChat();
+    const input = screen.getByRole('textbox', { name: '发送消息给群聊' });
+    await user.type(input, '@群聊');
+    await user.click(screen.getByRole('option', { name: '系统路由 · 群聊秘书' }));
+    await user.type(input, '请处理');
+    await user.click(screen.getByRole('button', { name: '发送给群组' }));
+    await waitFor(() => expect(request.mock.calls.some(([path, init]) => path === '/v1/conversations/chat-a/messages' && init?.method === 'POST')).toBe(true));
+    const submission = request.mock.calls.find(([path, init]) => path === '/v1/conversations/chat-a/messages' && init?.method === 'POST');
+    expect(JSON.parse(submission![1].body).submitObject).toEqual([{ type: 'command', id: 'coordinator' }]);
+    expect(JSON.parse(submission![1].body).submitObject).not.toContainEqual({ type: 'agent', id: groupAgents[0].id });
+  });
+
   it('附件真实走上传会话、内容上传和完成接口，发送文件引用并可在右侧预览', async () => {
     const file = { id: '00000000-0000-4000-8000-000000000003', workspaceId: null, name: '共享资料.md', storageKey: 'uploads/opaque/content', checksum: null,
       contentType: 'text/markdown', sizeBytes: 23, status: 'uploaded', createdAt: '2026-10-10T01:00:00Z' };

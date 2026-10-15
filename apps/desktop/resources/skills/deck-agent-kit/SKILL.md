@@ -1,11 +1,13 @@
 ---
 name: ppt-agent
 description: Use when 从材料生成原生可编辑 PPTX 并对话改到定稿。含确定性引擎（scripts/）与完整操作说明；装上先跑环境自检，缺什么由你向用户说明。
-version: 1.0.0
+version: 1.1.0
 license: MIT
 ---
 
 # PPT 智能体 · 能力包（自包含说明）
+
+本版本在原有确定性 `DeckSpec → PPTX` 引擎外，加入新版 `@tencent/slidep 6.5.1` 的本地主题契约和 Yoga 页面布局校验能力。slidep 只作为主题/布局增强器，默认不替换稳定的 PPTX 生成链：其 `create` 和 `upsert-dsl` 需要外部文档服务，不能作为工作站离线生成的前置条件。
 
 > **读这一份文件就够了。** 它说明了包里有什么、每样东西怎么用、跑不了时该怎么告诉用户。
 > 不需要任何外部上下文——把它连同整个目录交给任何一个能读文件、能跑命令的智能体即可。
@@ -46,6 +48,7 @@ ppt-agent/
 │       └── doctor.py             环境自检
 ├── references/
 │   └── deck.schema.json         JSON Schema（给外部工具/校验器用）
+├── vendor/slidep/               新版 slidep 最小本地运行包（主题和布局校验）
 ├── assets/
 │   └── deck.sample.json         10 页样例，覆盖全部版式（可直接拿来跑通）
 └── _sample_output/              参考产出（样例跑出来的成品，供对照）
@@ -69,7 +72,15 @@ python scripts/run.py          # 等价于 python scripts/run.py doctor
 | `partial` | 能生成 pptx、能跑结构质检，**但不能真渲染** | "我可以生成 PPT 和做结构检查，但**这台机器没装渲染器**，所以我没法用渲染图做视觉自检。成品的视觉效果需要你在 PowerPoint/WPS 里打开确认一下；要补上这一步，装个 LibreOffice 就行。" |
 | `blocked` | 缺关键依赖，连生成都做不了 | "这台机器缺 Python 依赖（报告里列了），装齐后我就能开始。命令：`pip install python-pptx Pillow pypdfium2`。" |
 
-**不要假装能做。** 做不到的部分必须由你明确报出来——这是本包的设计要求，也是用户最需要知道的信息。
+**不要假装能做。** 做不到的部分必须由你明确报出来——这是本包的设计要求，也是用户最需要知道的信息。`local_ppt_doctor` 还会报告新版 slidep 是否随 Electron 安装；主题目录和页面布局校验不可用时，不影响原有 PPTX 生成。
+
+### 2.1 新版组件增强能力
+
+- `local_ppt_theme_list`：读取 `vendor/slidep/resources/themes` 中的设计契约，按关键词筛选主题。返回主题名称、描述和契约文件名，不会把主题绑定到某个智能体。
+- `local_ppt_dsl_validate`：把单页 `.slide` JSX 交给 slidep 的 Yoga 布局校验器，返回 `ok` 和诊断信息。它不会执行任意模型代码，也不会生成成果文件。
+- `local_ppt_build` 仍是交付入口。语义 JSON 是唯一内容真源，必须经过当前引擎的 schema、QC 和真实渲染门禁。
+
+slidep 的 `create`、`upsert-dsl` 在其发布包中会访问外部本地文档服务，因此没有接入默认生成路径。若未来工作站提供该服务，可通过 `KLA_SLIDEP_ENGINE` 和 `KLA_SLIDEP_NODE` 配置实验性链路，但仍需保留当前 PPTX 质检和成果回执。
 如果连命令都跑不了（例如你的运行环境没有执行能力、无法访问文件系统），就直接说：
 "这个包需要能执行 Python 命令的环境；我当前环境不具备，所以只能提供说明，不能产出文件。"
 

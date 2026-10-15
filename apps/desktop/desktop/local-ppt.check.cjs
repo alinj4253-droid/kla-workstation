@@ -14,6 +14,15 @@ test('PPT doctor, build, inspect, and render execute through the desktop tool ad
   try {
     const doctor = await call('local_ppt_doctor', {});
     assert.equal(doctor.result.environment.level, 'full');
+    const themes = await call('local_ppt_theme_list', { limit: 5 });
+    assert.equal(themes.result.available, true, JSON.stringify(themes.result));
+    assert.ok(themes.result.themes.length > 0);
+    const dsl = await call('local_ppt_dsl_validate', {
+      fileName: 'check.slide',
+      source: '<Slide style={{width:1280,height:720,background:"#ffffff"}}><Text style={{fontSize:40,height:60}}>布局校验</Text></Slide>',
+    });
+    assert.equal(dsl.result.available, true, JSON.stringify(dsl.result));
+    assert.equal(dsl.result.ok, true, JSON.stringify(dsl.result));
     const spec = { title: '测试演示文稿', design_system: 'modern-tech', pages: [
       { page_id: 'p01', kind: 'cover', page_job: '介绍主题', title: '测试演示文稿',
         meta: ['测试'], blocks: [{ type: 'lead', text: '工具链验证' }] },

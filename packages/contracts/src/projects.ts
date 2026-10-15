@@ -67,7 +67,7 @@ export const createMessageRequestSchema = z.object({
   submitObject: z.array(z.discriminatedUnion('type', [
     z.object({ type: z.literal('user'), id: z.string().uuid() }),
     z.object({ type: z.literal('agent'), id: z.string().uuid() }),
-    z.object({ type: z.literal('command'), id: z.literal('task_execution') }),
+    z.object({ type: z.literal('command'), id: z.enum(['task_execution', 'coordinator']) }),
   ])).max(32).default([]),
 }).refine(input => Boolean(input.text.trim()) || input.fileIds.length > 0, '消息不能为空');
 

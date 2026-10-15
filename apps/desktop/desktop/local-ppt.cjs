@@ -2,7 +2,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { ensureWorkspace } = require('./local-workspace.cjs');
-const capabilities = ['local_ppt_doctor', 'local_ppt_build', 'local_ppt_inspect', 'local_ppt_render'];
+const capabilities = ['local_ppt_doctor', 'local_ppt_theme_list', 'local_ppt_dsl_validate', 'local_ppt_build', 'local_ppt_inspect', 'local_ppt_render'];
 const mimes = { '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation', '.pdf': 'application/pdf', '.png': 'image/png', '.json': 'application/json' };
 async function pythonExecutable() {
   if (process.env.KLA_PPT_PYTHON) return process.env.KLA_PPT_PYTHON;
@@ -12,6 +12,73 @@ async function pythonExecutable() {
 function kitDirectory() {
   return process.resourcesPath && !process.defaultApp ? path.join(process.resourcesPath, 'skills', 'deck-agent-kit') : path.join(__dirname, '..', 'resources', 'skills', 'deck-agent-kit');
 }
+function slidepDirectory() {
+  if (process.env.KLA_SLIDEP_DIR) return path.resolve(process.env.KLA_SLIDEP_DIR);
+  return path.join(kitDirectory(), 'vendor', 'slidep');
+}
+function slidepEngine() { return process.env.KLA_SLIDEP_ENGINE || path.join(slidepDirectory(), 'index.cjs'); }
+async function slidepStatus() {
+  const engine = slidepEngine();
+  try {
+    await fs.access(engine);
+    await fs.access(path.join(slidepDirectory(), 'resources', 'pptx', 'blank.pptx'));
+    await fs.access(path.join(slidepDirectory(), 'resources', 'themes'));
+    return { available: true, engine: path.basename(engine), node: process.env.KLA_SLIDEP_NODE || 'node' };
+  } catch (error) {
+    return { available: false, engine: path.basename(engine), reason: error?.code === 'ENOENT' ? '新版 slidep 资源未随桌面端安装' : String(error?.message || error) };
+  }
+}
+function parseThemeDocument(fileName, source) {
+  const frontmatter = source.match(/^---\s*\r?\n([\s\S]*?)\r?\n---/);
+  const values = {};
+  if (frontmatter) for (const line of frontmatter[1].split(/\r?\n/)) {
+    const match = line.match(/^([\w-]+):\s*(.*)$/);
+    if (match) values[match[1]] = match[2].trim().replace(/^['"]|['"]$/g, '');
+  }
+  return { id: fileName.replace(/\.DESIGN\.md$/i, ''), fileName, name: values.name || fileName.replace(/\.DESIGN\.md$/i, ''), description: values.description || '', locale: values.locale || undefined };
+}
+async function listSlidepThemes(query, limit) {
+  const status = await slidepStatus();
+  if (!status.available) return { ...status, themes: [] };
+  const dir = path.join(slidepDirectory(), 'resources', 'themes');
+  const names = (await fs.readdir(dir)).filter(name => name.toLowerCase().endsWith('.design.md')).sort((a, b) => a.localeCompare(b));
+  const needle = String(query || '').trim().toLowerCase();
+  const themes = [];
+  for (const fileName of names) {
+    const source = await fs.readFile(path.join(dir, fileName), 'utf8');
+    const theme = parseThemeDocument(fileName, source);
+    if (!needle || `${theme.id} ${theme.name} ${theme.description}`.toLowerCase().includes(needle)) themes.push(theme);
+    if (themes.length >= limit) break;
+  }
+  return { ...status, themes, total: themes.length, query: query || null };
+}
+async function nodeExecutable() { return process.env.KLA_SLIDEP_NODE || 'node'; }
+function parseJsonOutput(output) {
+  const lines = String(output || '').trim().split(/\r?\n/).filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    try { return JSON.parse(lines[i]); } catch { /* slidep may emit converter logs before its JSON result. */ }
+  }
+  throw new Error('slidep 返回无效结果');
+}
+async function validateSlidepDsl(source, fileName, workspace, signal, command) {
+  const status = await slidepStatus();
+  if (!status.available) return { available: false, ok: false, diagnostics: [{ severity: 'error', message: status.reason }] };
+  const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const dslFile = path.join(workspace.work, safeName);
+  const blank = path.join(workspace.work, 'slidep-blank.pptx');
+  await fs.writeFile(dslFile, source, 'utf8');
+  await fs.copyFile(path.join(slidepDirectory(), 'resources', 'pptx', 'blank.pptx'), blank);
+  signal.throwIfAborted();
+  let proc;
+  const previousNodePath = process.env.NODE_PATH;
+  process.env.NODE_PATH = path.join(slidepDirectory(), 'node_modules');
+  try { proc = await command(await nodeExecutable(), [slidepEngine(), 'lint', blank, '--dsl-file', dslFile], workspace.work, 120000, signal); }
+  catch (error) { return { available: true, ok: false, diagnostics: [{ severity: 'error', message: error.message }] }; }
+  finally { if (previousNodePath === undefined) delete process.env.NODE_PATH; else process.env.NODE_PATH = previousNodePath; }
+  if (proc.exitCode !== 0) return { available: true, ok: false, diagnostics: [{ severity: 'error', message: (proc.stderr || proc.stdout).slice(-2000) }], exitCode: proc.exitCode };
+  try { return { available: true, ...parseJsonOutput(proc.stdout) }; }
+  catch (error) { return { available: true, ok: false, diagnostics: [{ severity: 'error', message: `${error.message}: ${(proc.stderr || proc.stdout).slice(-1000)}` }] }; }
+}
 async function executePpt(call, root, signal, approved, helpers) {
   const { command, absolute, filename, within, approvedReadPath } = helpers;
   const workspace = await ensureWorkspace(root, call);
@@ -19,6 +86,8 @@ async function executePpt(call, root, signal, approved, helpers) {
   const args = call.arguments;
   const action = call.tool.replace('local_ppt_', '');
   const request = { action, output: folder };
+  if (action === 'theme_list') return { result: await listSlidepThemes(args.query, args.limit || 30) };
+  if (action === 'dsl_validate') return { result: await validateSlidepDsl(args.source, args.fileName || 'page.slide', workspace, signal, command) };
   if (action === 'build') {
     if (typeof args.specJson !== 'string' || args.specJson.length > 1_000_000) throw new Error('PPT 语义 JSON 无效或过大');
     request.specJson = args.specJson;
@@ -53,6 +122,7 @@ async function executePpt(call, root, signal, approved, helpers) {
   if (proc.exitCode !== 0) return { result: { error: 'PPT 引擎启动失败：' + proc.stderr.slice(-1000) } };
   let result;
   try { result = JSON.parse(proc.stdout.trim()); } catch { throw new Error('PPT 引擎返回无效结果'); }
+  if (action === 'doctor') result.environment = { ...(result.environment || {}), slidep: await slidepStatus() };
   if (result.error) return { result: { ...result, error: result.error.split(folder).join('[任务目录]') } };
   const files = result.files || [];
   delete result.files;

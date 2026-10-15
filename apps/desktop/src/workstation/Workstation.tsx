@@ -632,7 +632,8 @@ export function Workstation(): React.JSX.Element {
     void Promise.all([runtimeApi.members(activeChat), runtimeApi.conversationMembers(activeChat)]).then(([agents, users]) => {
       const next: MentionTarget[] = [
         { type: 'command', id: 'task_execution', name: '任务执行' },
-        ...(agents.ok ? agents.data.map(agent => ({ type: 'agent' as const, id: agent.id, name: agent.name === '统筹智能体' ? '群聊秘书' : agent.name })) : []),
+        { type: 'command', id: 'coordinator', name: '群聊秘书' },
+        ...(agents.ok ? agents.data.filter(agent => agent.name !== '统筹智能体').map(agent => ({ type: 'agent' as const, id: agent.id, name: agent.name })) : []),
         ...(users.ok ? users.data.map(member => ({ type: 'user' as const, id: member.identity_id, name: member.display_name })) : []),
       ];
       setMentionCandidates(next);

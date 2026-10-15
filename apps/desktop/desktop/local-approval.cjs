@@ -10,7 +10,7 @@ const actions = {
   local_biz_configure: '管理经营分析数据源连接（可切换数据库）', local_biz_schema: '探查数据库表结构', local_biz_query: '执行只读 SQL 查询',
   local_excel_doctor: '检查 Excel 分析环境（内置引擎自检）', local_excel_profile: '执行 Excel 数据画像与质量探查（只读源文件）',
   local_excel_validate: '执行 Excel 溯源校验与双路径对账（只读源文件）', local_excel_report: '生成 Excel 分析 HTML 报告',
-  local_ppt_doctor: '检查本地 PPT 环境', local_ppt_build: '生成 PPTX 并检查与渲染', local_ppt_inspect: '读取 PPTX 内容与备注', local_ppt_render: '检查并渲染本地 PPTX',
+  local_ppt_doctor: '检查本地 PPT 环境', local_ppt_theme_list: '浏览新版 PPT 主题', local_ppt_dsl_validate: '校验 PPT 页面布局', local_ppt_build: '生成 PPTX 并检查与渲染', local_ppt_inspect: '读取 PPTX 内容与备注', local_ppt_render: '检查并渲染本地 PPTX',
 };
 function describeRequest(call) {
   const action = actions[call.tool];
@@ -51,7 +51,9 @@ function describeRequest(call) {
     else if (call.tool === 'local_excel_report') { add('输入', args.jsonPath || '内联 JSON', true); add('主题', args.theme === 'dark' ? '暗色' : '亮色'); add('报告名', args.fileName); }
     else add('检查内容', 'Python、pandas、openpyxl、matplotlib');
   }
-  else if (call.tool === 'local_ppt_doctor') add('检查内容', 'Python 依赖、中文字体及 Office / WPS 渲染器');
+  else if (call.tool === 'local_ppt_doctor') add('检查内容', 'Python 依赖、中文字体、Office / WPS 渲染器及新版 slidep');
+  else if (call.tool === 'local_ppt_theme_list') add('筛选主题', args.query || '全部');
+  else if (call.tool === 'local_ppt_dsl_validate') add('页面文件', args.fileName || 'page.slide', true);
   else add(args.path ? '文件路径' : args.documentId ? '文档编号' : '文件名称', args.path || args.documentId || args.fileName, true);
   add('工作目录', args.cwd, true);
   if (args.timeoutMs) add('执行时限', `${args.timeoutMs / 1000} 秒`);

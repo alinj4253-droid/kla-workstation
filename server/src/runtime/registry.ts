@@ -85,19 +85,6 @@ export async function ensureRuntimeRegistry(pool: Pool | PoolClient, identityId:
     }
     await pool.query('UPDATE agents SET capabilities_initialized=true WHERE id=$1', [agent.id]);
   }
-  // 官方智能体技能增量补齐：老身份此前已 capabilities_initialized，新增技能包（如 excel_analysis）也要能挂上
-  const officialAgentSkills: Record<string, string[]> = {
-    'PPT助手': ['ppt_assistant', 'local_files', 'artifact_management', 'memory_context', 'knowledge_research', 'web_research'],
-    '路线规划助手': ['route_planning', 'local_files', 'artifact_management', 'memory_context', 'knowledge_research', 'web_research'],
-    [businessPlannerAssistantName]: ['business_planning', 'local_files', 'artifact_management', 'memory_context'],
-    '经营分析助手': ['waste_analysis', 'excel_analysis', 'local_files', 'artifact_management', 'memory_context', 'knowledge_research', 'web_research'],
-  };
-  for (const [name, codes] of Object.entries(officialAgentSkills)) {
-    await pool.query(`INSERT INTO agent_skill_mounts(agent_id,skill_code)
-      SELECT a.id, v.code FROM agents a CROSS JOIN unnest($2::text[]) AS v(code)
-      WHERE a.identity_id=$1 AND a.name=$3 AND a.type='official'
-      ON CONFLICT DO NOTHING`, [identityId, codes, name]);
-  }
   await initializeDefaultAgentModels(pool, identityId);
 }
 export async function roomRegistry(pool: Pool, conversationId: string): Promise<RegisteredAgent[]> {

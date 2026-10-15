@@ -541,6 +541,7 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
             [params.conversationId, submitObject.filter(item => item.type === 'user').map(item => item.id), submitObject.filter(item => item.type === 'agent').map(item => item.id)]);
           const allowed = new Set(targets.rows.map(row => `${row.type}:${row.id}`));
           allowed.add('command:task_execution');
+          allowed.add('command:coordinator');
           if (submitObject.some(item => !allowed.has(`${item.type}:${item.id}`))) return reply.code(400).send({ ok: false, error: { code: 'INVALID_SUBMIT_OBJECT', message: '消息接收对象不属于当前群聊' } });
         }
         userMessage = await deps.accounts.createMessage(params.conversationId, session.userId, body.text.trim() || '请处理附件中的内容', {
@@ -559,7 +560,7 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
     const targetNames = deps.database?.rawPool && requestedAgents.length
       ? (await deps.database.rawPool.query('SELECT a.name FROM agents a JOIN conversation_agents ca ON ca.agent_id=a.id WHERE ca.conversation_id=$1 AND a.id=ANY($2::uuid[])',[params.conversationId,requestedAgents.map(item=>item.id)])).rows.map(row=>row.name as string)
       : [];
-    const routesToCoordinator = submitObject.some(item => item.type === 'command' && item.id === 'task_execution') || targetNames.some(name => name === '群聊秘书' || name === '统筹智能体');
+    const routesToCoordinator = submitObject.some(item => item.type === 'command' && (item.id === 'task_execution' || item.id === 'coordinator')) || targetNames.some(name => name === '群聊秘书' || name === '统筹智能体');
     // A plain member message is deliberately not an AI trigger. It remains in
     // the room history and can be answered by other human members.
     if (!requestedAgents.length && !routesToCoordinator) return reply.send({ ok: true, data: { message: userMessage, run: null } });

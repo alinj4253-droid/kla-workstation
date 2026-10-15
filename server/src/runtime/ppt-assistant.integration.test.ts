@@ -49,7 +49,7 @@ describe('PPT assistant local gateway and artifact transport', () => {
       expect(registered.statusCode, registered.body).toBe(200);
       const deviceId = registered.json().data.id;
       const catalog = await app.inject({ method: 'GET', url: '/api/v1/runtime/tools', headers });
-      expect(catalog.json().data.filter((t: { code: string }) => t.code.startsWith('local_ppt_'))).toHaveLength(4);
+      expect(catalog.json().data.filter((t: { code: string }) => t.code.startsWith('local_ppt_'))).toHaveLength(6);
       expect(catalog.json().data.find((t: { code: string }) => t.code === 'local_ppt_build')).toMatchObject({ deviceOnline: true });
       const gateway = new ToolGateway(pool, {} as RuntimeTools);
       const scope = { identityId: account.identity.id, conversationId: room.id, runId: run.id, stepId: step.id, agent, deviceId };
