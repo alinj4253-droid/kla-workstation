@@ -1,5 +1,8 @@
 import { z } from 'zod';
 import { homeAiToolArguments } from './home-ai.js';
+import { cnAlias } from './cn-alias.js';
+
+export { cnAlias };
 
 export const DEFAULT_AGENT_MODEL_ID = 'zhipu/glm-5.3-flash';
 export const DEFAULT_AGENT_MODEL_NAME = 'GLM 5.3 Flash';
@@ -19,7 +22,7 @@ export const taskPlanSchema = z.object({ tasks: z.array(z.object({
 })).min(1).max(16) });
 export type TaskPlan = z.infer<typeof taskPlanSchema>;
 export const runtimeSkillCatalog = [
-  { code: 'home_ai_session_open', name: '诊断会话创建与恢复', description: '开始新的家居AI诊断，或用已返回的sessionId恢复当前群聊会话。创建时不传编号；恢复时只传sessionId。返回修订号、已记录信息和下一问题；不确认事实。', location: 'server' },
+  { code: 'home_ai_session_open', name: '恢复当前岗位诊断', description: '每轮开始以空参数恢复服务端绑定的当前岗位完整诊断，返回真实sessionId、revision、记录、人工确认状态及下一问题；不新建或切换。可传当前sessionId核验，禁止猜编号。selection_required时请用户在诊断面板选择岗位；新建、切换及重命名仅由用户界面操作。不能从聊天或其他岗位重建事实，也不代替人工确认。', location: 'server' },
   { code: 'home_ai_interview_update', name: '诊断访谈记录', description: '记录用户明确提供的一个回答或纠正。传sessionId、最新expectedRevision、answerId及原话answer；不传完整state，不生成事实。返回最新会话和下一问题。建议未被用户采纳时不要写入。', location: 'server' },
   { code: 'home_ai_opportunity_discover', name: '诊断机会发现', description: '用sessionId读取候选场景、已有条件和信息缺口。只读；候选是规则匹配，不代表已确认可行。用户尚未描述岗位工作时先访谈。', location: 'server' },
   { code: 'home_ai_conditions_update', name: '诊断条件与方案记录', description: '记录用户提供的场景条件、理由及报告修订。传sessionId、最新expectedRevision、stageId、checks(yes/no/unknown)、notes和可选reportEdits。不自行将条件标为yes；数字由价值工具记录。修改撤销该场景旧认可。', location: 'server' },
@@ -52,6 +55,11 @@ export const runtimeSkillCatalog = [
   { code: 'local_route_optimize', name: '路线顺序优化', description: '固定起终点 TSP 优化：多初始解+2-opt+Or-opt+节点交换+ILS，支持里程/时间/成本三种策略；矩阵缺省时自动调用高德获取；优化不劣于原始顺序', location: 'local' },
   { code: 'local_route_replan', name: '线路拆分重排', description: '把一组点位重新拆分为多条线路：均衡分配或 K-means 聚类+边界交换，再逐线最近邻+2-opt 排序并汇总里程', location: 'local' },
   { code: 'local_route_map', name: '路线对比地图', description: '生成优化前后路线对比的 HTML 地图（高德 JS API，单窗/双窗切换、双窗联动），作为成果文件交付', location: 'local' },
+  { code: 'local_business_metrics', name: '经营指标查询', description: '读取鲲鹭经营规划知识包中的业绩、人力与规划指标', location: 'local' },
+  { code: 'local_business_goal_decompose', name: '经营目标拆解', description: '将公司年度或半年度目标拆解到部门与 KPI', location: 'local' },
+  { code: 'local_business_deviation', name: '经营偏差分析', description: '对比计划与实际，识别经营偏差、根因和对策', location: 'local' },
+  { code: 'local_business_plan', name: '经营规划生成', description: '生成公司整体或指定部门的经营规划', location: 'local' },
+  { code: 'local_business_ppt', name: '三一规划 PPT', description: '生成可编辑的公司整体或部门三一规划 PPTX 成果', location: 'local' },
   { code: 'local_waste_status', name: '经营分析数据源状态', description: '检查垃圾量快照库与业务库连通性、快照覆盖范围（日期/天数/作业所清单）', location: 'local' },
   { code: 'local_waste_report', name: '垃圾量经营分析报告', description: '按公司级/作业所级 × 年报/季报/月报从快照表聚合：总计量/日均/收运覆盖率/漏收率 KPI、趋势同比、作业所分解、分类结构', location: 'local' },
   { code: 'local_waste_detail', name: '垃圾量明细分析', description: '按日期区间查询明细：收运时段热力图、分类作业量同比、班次垃圾量、作业所×垃圾类型堆叠、本所与公司均值对比', location: 'local' },
@@ -75,20 +83,14 @@ export const runtimeSkillBundles = [
   { code: 'local_development', name: '本地代码开发', description: '编写代码并执行本地命令', tools: ['local_code', 'local_cli', 'local_bat'] },
   { code: 'ppt_assistant', name: 'PPT 制作与改稿', description: 'deck-agent-kit 1.0：环境检查 → 材料读取 → 大纲确认 → 语义编译 → 质量门禁 → 真实渲染 → 成果交付；本地执行', tools: ['local_ppt_doctor', 'local_ppt_build', 'local_ppt_inspect', 'local_ppt_render'] },
   { code: 'route_planning', name: '路线规划', description: 'route-agent-kit 1.0：高德距离/时间/过路费矩阵 → 固定起终点 TSP 优化（里程/时间/成本三策略）→ 多线路拆分重排 → 优化前后地图对比；本地执行', tools: ['local_route_matrix', 'local_route_optimize', 'local_route_replan', 'local_route_map'] },
+  { code: 'business_planning', name: '鲲鹭经营规划', description: 'kunlu-business-planner 1.0：经营指标、目标拆解、偏差分析、公司/部门规划与三一规划 PPT；本地执行', tools: ['local_business_metrics', 'local_business_goal_decompose', 'local_business_deviation', 'local_business_plan', 'local_business_ppt'] },
   { code: 'waste_analysis', name: '经营分析', description: 'biz-agent-kit 2.0：对话中动态连接任意 MySQL 数据源（configure/schema/query 通用只读分析）+ 垃圾量专项快路径（快照库聚合：总量/日均/收运覆盖率/漏收率、趋势同比、作业所分解、分类结构与时段明细）；本地执行', tools: ['local_waste_status', 'local_waste_report', 'local_waste_detail', 'local_biz_configure', 'local_biz_schema', 'local_biz_query'] },
   { code: 'excel_analysis', name: 'Excel 数据分析', description: 'excel-agent-kit 1.1（内置纯 JS 引擎）：环境自检 → 多表数据画像与质量探查 → 源文件指纹+独立重算+双向勾稽的溯源校验 → 自包含 HTML 分析报告；全程只读源文件，口径显式声明；本地执行', tools: ['local_excel_doctor', 'local_excel_profile', 'local_excel_validate', 'local_excel_report'] },
 ] as const satisfies ReadonlyArray<{ code: string; name: string; description: string; tools: readonly RuntimeSkillCode[] }>;
 export type RuntimeSkillBundleCode = typeof runtimeSkillBundles[number]['code'];
 // 枚举参数的中文容错：模型在自然语言场景常把 periodType 传成「年报」等值，
 // 若直接拒绝会导致整个任务续跑失败；这里统一映射为合法枚举（精确优先，其次包含匹配）
-const cnAlias = (aliases: Record<string, string>) => (v: unknown) => {
-  if (typeof v === 'string') {
-    const key = v.trim().toLowerCase();
-    if (key in aliases) return aliases[key];
-    for (const [alias, target] of Object.entries(aliases)) if (key.includes(alias)) return target;
-  }
-  return v;
-};
+// cnAlias 已提取到 cn-alias.ts（home-ai.ts 也要用，避免循环依赖）
 export const toolArguments = {
   ...homeAiToolArguments,
   weknora_search: z.object({ query: z.string().trim().min(1).max(240) }).strict(),
@@ -143,6 +145,11 @@ export const toolArguments = {
     distanceKm: z.number().optional(),
     savedPercent: z.number().optional(),
   }),
+  local_business_metrics: z.object({}),
+  local_business_goal_decompose: z.object({ year: z.number().int().min(2000).max(2100).default(2026), half: z.enum(['H1', 'H2']).default('H2') }),
+  local_business_deviation: z.object({ scope: z.enum(['all', 'revenue', 'h1', 'project']).default('all') }),
+  local_business_plan: z.object({ type: z.enum(['company', 'department', 'all']).default('all'), department: z.string().max(100).optional(), year: z.number().int().min(2000).max(2100).default(2026) }),
+  local_business_ppt: z.object({ type: z.enum(['company', 'department']).default('company'), department: z.string().max(100).optional(), fileName: z.string().min(1).max(200).regex(/^[^\\/:*?"<>|\x00-\x1f]+\.pptx$/i).default('鲲鹭科技三一规划.pptx') }),
   local_waste_status: z.object({}),
   local_waste_report: z.object({
     scope: z.string().max(100).default('company'),

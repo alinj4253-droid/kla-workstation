@@ -15,7 +15,7 @@ import { resolveManagedPassword } from '../compute/encryption.js';
 import type { ObjectStore } from '../storage/object-store.js';
 import { accessibleFile } from '../storage/file-access.js';
 import { HomeAiService, HomeAiError } from './home-ai/service.js';
-import { homeAiSessionViewSchema, homeAiConfirmationSchema } from '@kla-workstation/contracts';
+import { homeAiSessionViewSchema, homeAiConfirmationSchema, homeAiCurrentSchema, homeAiCurrentOperationSchema } from '@kla-workstation/contracts';
 import { homeAiInstallResponseSchema } from '@kla-workstation/contracts';
 import { assertKnowledgeMountPolicy, isHomeAiDiagnosis } from './home-ai/knowledge-policy.js';
 import { installHomeAi } from './home-ai/install.js';
@@ -47,12 +47,25 @@ export async function registerRuntimeRoutes(app: FastifyInstance, deps: {pool:Po
     try{return {ok:true,data:z.array(homeAiSessionViewSchema).parse(await diagnostics.list({identityId:s.identity.id,conversationId:id((request.params as any).conversationId)}))};}
     catch(error){return homeAiFailure(error,reply);}
   });
+  app.get('/api/v1/conversations/:conversationId/home-ai/current',async(request,reply)=>{
+    const s=await scope(request,reply);if(!s)return;
+    try{return {ok:true,data:homeAiCurrentSchema.parse(await diagnostics.current({identityId:s.identity.id,conversationId:id((request.params as {conversationId:string}).conversationId)}))};}
+    catch(error){return homeAiFailure(error,reply);}
+  });
+  app.post('/api/v1/conversations/:conversationId/home-ai/current',async(request,reply)=>{
+    const s=await scope(request,reply,'write');if(!s)return;
+    const key=z.string().uuid().safeParse(request.headers['idempotency-key']);
+    const input=homeAiCurrentOperationSchema.safeParse(request.body);
+    if(!key.success||!input.success)return reply.code(400).send({ok:false,error:{code:'INVALID_ARGUMENT',message:'请提交有效请求编号、当前绑定版本及新建、切换或命名操作；刷新诊断后重试。',retryable:false}});
+    try{return {ok:true,data:homeAiCurrentSchema.parse(await diagnostics.operate({identityId:s.identity.id,conversationId:id((request.params as {conversationId:string}).conversationId)},input.data,key.data))};}
+    catch(error){return homeAiFailure(error,reply);}
+  });
   app.post('/api/v1/conversations/:conversationId/home-ai/sessions/:sessionId/confirm',async(request,reply)=>{
     const s=await scope(request,reply,'write');if(!s)return;
     const params=request.params as {conversationId:string;sessionId:string};
     const key=z.string().uuid().safeParse(request.headers['idempotency-key']);
     const input=homeAiConfirmationSchema.safeParse(request.body);
-    if(!key.success||!input.success) return reply.code(400).send({ok:false,error:{code:'INVALID_ARGUMENT',message:'请使用有效请求编号，并提交 expectedRevision、kind 和报告场景 stageId；刷新界面后重试。',retryable:false}});
+    if(!key.success||!input.success||input.data.expectedBindingVersion===undefined) return reply.code(400).send({ok:false,error:{code:'INVALID_ARGUMENT',message:'请使用有效请求编号，并提交 expectedBindingVersion、expectedRevision、kind 和报告场景 stageId；刷新界面后重试。',retryable:false}});
     try{return {ok:true,data:homeAiSessionViewSchema.parse(await diagnostics.confirm({identityId:s.identity.id,conversationId:id(params.conversationId)},id(params.sessionId),input.data,key.data))};}
     catch(error){return homeAiFailure(error,reply);}
   });

@@ -6,9 +6,10 @@ const { ensureWorkspace } = require('./local-workspace.cjs');
 
 const ppt = require('./local-ppt.cjs');
 const route = require('./local-route.cjs');
+const businessPlanner = require('./local-business-planner.cjs');
 const waste = require('./local-waste.cjs');
 const excel = require('./local-excel.cjs');
-const capabilities = ['local_read','local_list','local_write','local_code','local_bat','local_cli','local_file_fetch','local_file_publish', ...ppt.capabilities, ...route.capabilities, ...waste.capabilities, ...excel.capabilities];
+const capabilities = ['local_read','local_list','local_write','local_code','local_bat','local_cli','local_file_fetch','local_file_publish', ...ppt.capabilities, ...route.capabilities, ...businessPlanner.capabilities, ...waste.capabilities, ...excel.capabilities];
 function localPath(value, root) {
   if (typeof value === 'string' && value.startsWith('workspace://')) {
     const target = path.resolve(root, value.slice('workspace://'.length));
@@ -80,6 +81,7 @@ async function executeLocal(call,root,signal,approvedRead=false,downloadInput) {
   if(!capabilities.includes(call.tool))throw new Error('不支持的本地技能');signal.throwIfAborted();
   if(ppt.capabilities.includes(call.tool))return ppt.executePpt(call,root,signal,approvedRead,{command,absolute:value=>localPath(value,root),filename,within,approvedReadPath});
   if(route.capabilities.includes(call.tool))return route.executeRoute(call,root,signal);
+  if(businessPlanner.capabilities.includes(call.tool))return businessPlanner.executeBusinessPlanner(call,root,signal,{command,within});
   if(waste.capabilities.includes(call.tool))return waste.executeWaste(call,root,signal);
   if(excel.capabilities.includes(call.tool))return excel.executeExcel(call,root,signal,approvedRead,{command,absolute:value=>localPath(value,root),filename,within,approvedReadPath});
   const a=call.arguments;

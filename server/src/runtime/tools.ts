@@ -16,6 +16,7 @@ import { knowledgeRequest } from './knowledge-transport.js';
 import { accessibleFile } from '../storage/file-access.js';
 import { HomeAiService, homeAiWriteTools } from './home-ai/service.js';
 import { assertKnowledgeToolPolicy, isHomeAiDiagnosis, type KnowledgeToolScope } from './home-ai/knowledge-policy.js';
+import { HomeAiSessionContext, type HomeAiContextScope } from './home-ai/session-context.js';
 import type { HomeAiToolCode } from '@kla-workstation/contracts';
 
 function defaultWeKnoraClient() {
@@ -88,6 +89,11 @@ const properties: Record<RuntimeSkillCode, Record<string, unknown>> = {
     optimizedOrder: arrayOfIntegers, originalOrder: arrayOfIntegers,
     strategy: string, distanceKm: { type: 'number' }, savedPercent: { type: 'number' },
   },
+  local_business_metrics: {},
+  local_business_goal_decompose: { year: integer, half: { type: 'string', enum: ['H1', 'H2'] } },
+  local_business_deviation: { scope: { type: 'string', enum: ['all', 'revenue', 'h1', 'project'] } },
+  local_business_plan: { type: { type: 'string', enum: ['company', 'department', 'all'] }, department: string, year: integer },
+  local_business_ppt: { type: { type: 'string', enum: ['company', 'department'] }, department: string, fileName: string },
   local_waste_status: {},
   local_waste_report: {
     scope: string, periodType: periodTypeEnum,
@@ -133,6 +139,7 @@ const required: Record<RuntimeSkillCode, string[]> = {
   local_ppt_doctor: [], local_ppt_build: ['specJson'], local_ppt_inspect: [], local_ppt_render: [],
   local_route_matrix: ['points'], local_route_optimize: ['points'], local_route_replan: ['points', 'numRoutes'],
   local_route_map: ['points', 'optimizedOrder'],
+  local_business_metrics: [], local_business_goal_decompose: [], local_business_deviation: [], local_business_plan: [], local_business_ppt: [],
   local_waste_status: [], local_waste_report: [], local_waste_detail: ['kind', 'start', 'end'],
   local_biz_configure: [], local_biz_schema: [], local_biz_query: ['sql'],
   local_excel_doctor: [], local_excel_profile: ['path'], local_excel_validate: ['path'], local_excel_report: [],
@@ -175,11 +182,27 @@ export class RuntimeTools {
     await assertKnowledgeToolPolicy(this.pool, name, scope, true);
     await requirePermission(this.pool, scope.identityId, homeAiWriteTools.has(name) || name === 'artifact_write' || name === 'artifact_compose' ? 'write'
       : name === 'knowledge_ocr' || name === 'web_search' ? 'execute' : 'read');
+    const diagnostic = await isHomeAiDiagnosis(this.pool, scope.identityId, scope.agentId);
+    const diagnosticContext = diagnostic ? new HomeAiSessionContext(this.pool) : null;
+    if(diagnostic&&!scope.stepId)throw new Error('诊断工具缺少可信任务步骤，请通过平台执行机制继续当前诊断。');
+    const diagnosticScope:HomeAiContextScope|null=diagnostic?{identityId:scope.identityId,conversationId:scope.conversationId,stepId:scope.stepId!,agentId:scope.agentId,runId:scope.runId}:null;
+    const currentBinding=diagnosticContext&&diagnosticScope?await diagnosticContext.assertCurrent(diagnosticScope):null;
+    if(diagnostic&&!currentBinding?.sessionId)throw new Error('尚未选择当前诊断，请在诊断核对面板选择历史诊断或新建空白诊断。');
+    if(diagnosticContext&&diagnosticScope){
+      if(name==='file_read'||name==='home_ai_materials_add'||(name==='local_file_fetch'&&args.fileId))await diagnosticContext.assertFile(diagnosticScope,String(args.fileId));
+      if(name==='artifact_read'||name==='knowledge_ocr'||(name==='local_file_fetch'&&args.artifactId))await diagnosticContext.assertArtifact(diagnosticScope,String(args.artifactId));
+      if(name==='artifact_compose')for(const id of args.artifactIds as string[])await diagnosticContext.assertArtifact(diagnosticScope,id);
+    }
     if (name === 'weknora_search') {
       if (!this.weknora) throw new Error('WeKnora 服务未配置，请在工作站服务端配置独立地址、凭据及授权库范围。');
       return this.weknora.search(String(args.query), scope.signal);
     }
-    if(name.startsWith('home_ai_')) return new HomeAiService(this.pool,this.objectStore).execute(name as HomeAiToolCode,args,scope);
+    if(name.startsWith('home_ai_')){
+      const result=await new HomeAiService(this.pool,this.objectStore).execute(name as HomeAiToolCode,args,{...scope,bindingVersion:currentBinding?.bindingVersion});
+      // Historical session summaries belong to the human picker, never the model context.
+      if(name==='home_ai_session_open'&&result&&typeof result==='object')return Object.fromEntries(Object.entries(result).filter(([key])=>key!=='sessions'));
+      return result;
+    }
     if (name === 'web_search') {
       const results = await createBochaClient({ apiKey: process.env.BOCHA_API_KEY ?? '' }).searchWeb({
         query: String(args.query), count: Number(args.count), freshness: String(args.freshness),
@@ -187,7 +210,7 @@ export class RuntimeTools {
       });
       return { results, text: formatBochaSearchResults(results) };
     }
-    if (name === 'memory_recall') return { memories: await this.memory.recall(scope, String(args.query)), longTermApplied: false };
+    if (name === 'memory_recall') return { memories: diagnosticContext&&diagnosticScope?await diagnosticContext.recall(diagnosticScope,String(args.query)):await this.memory.recall(scope, String(args.query)), longTermApplied: false };
     if (name === 'file_read') {
       const file = await accessibleFile(this.pool, scope.identityId, String(args.fileId));
       if (!file || file.conversation_id !== scope.conversationId) throw new Error('文件不存在或不属于当前群聊');
@@ -230,13 +253,14 @@ export class RuntimeTools {
       return this.execute('artifact_write', { fileName: args.fileName, content: merged, mimeType: args.mimeType }, scope);
     }
     if (name === 'artifact_write') {
-      const agentPrivate = await isHomeAiDiagnosis(this.pool, scope.identityId, scope.agentId);
+      const agentPrivate = diagnostic;
       const content = String(args.content);
       const checksum = createHash('sha256').update(content).digest('hex');
       const bytes = Buffer.from(content, 'utf8');
       const client = await this.pool.connect();
       try {
         await client.query('BEGIN');
+        if(diagnosticContext&&diagnosticScope)await diagnosticContext.assertCurrent(diagnosticScope,client);
         const {rows} = await client.query(`INSERT INTO artifacts(identity_id,conversation_id,name,mime_type,content,size_bytes,checksum,tool_call_id,source_agent_id,agent_private)
         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(tool_call_id) WHERE tool_call_id IS NOT NULL DO UPDATE SET tool_call_id=EXCLUDED.tool_call_id RETURNING *`,
         [scope.identityId,scope.conversationId,args.fileName,args.mimeType,content,bytes.byteLength,checksum,scope.toolCallId??null,scope.agentId,agentPrivate]);
@@ -249,6 +273,7 @@ export class RuntimeTools {
           await this.objectStore.put(storageKey, bytes);
           await client.query("UPDATE artifacts SET storage_key=$2,storage_status='stored',content='' WHERE id=$1", [artifact.id, storageKey]);
         }
+        if(diagnosticContext&&diagnosticScope)await diagnosticContext.recordArtifact(diagnosticScope,artifact.id,client);
         await client.query('COMMIT');
         return { artifactId: artifact.id, fileName: artifact.name, sizeBytes: Number(artifact.size_bytes), checksum: artifact.checksum, stored: true, ...(storageKey ? { storageKey } : {}) };
       } catch (error) {

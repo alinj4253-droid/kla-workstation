@@ -18,4 +18,17 @@ describe('home AI boundary contracts', () => {
     expect(homeAiConfirmationSchema.safeParse({expectedRevision:0,kind:'report'}).success).toBe(false);
     expect(homeAiConfirmationSchema.parse({expectedRevision:0,kind:'profile'}).kind).toBe('profile');
   });
+  it('accepts Chinese enum values and normalizes them like the waste/route tools', () => {
+    // answerId：模型可能写「职责」「指标」
+    const answer = homeAiToolArguments.home_ai_interview_update.parse({sessionId,expectedRevision:0,answerId:'职责',answer:'审单'});
+    expect(answer.answerId).toBe('role');
+    expect(homeAiToolArguments.home_ai_interview_update.parse({sessionId,expectedRevision:0,answerId:'指标',answer:'x'}).answerId).toBe('kpi');
+    // stageId：「报价」「拆单」「售后」
+    const stage = homeAiToolArguments.home_ai_conditions_update.parse({sessionId,expectedRevision:0,stageId:'报价',checks:{数据:'成立'}});
+    expect(stage.stageId).toBe('quote');
+    expect(stage.checks).toEqual({data:'yes'});
+    // source：「实测」；非法中文仍拒绝
+    expect(homeAiToolArguments.home_ai_value_estimate.parse({sessionId,expectedRevision:0,stageId:'拆单',numbers:{},source:'实测'}).source).toBe('measured');
+    expect(homeAiToolArguments.home_ai_interview_update.safeParse({sessionId,expectedRevision:0,answerId:'饼图',answer:'x'}).success).toBe(false);
+  });
 });

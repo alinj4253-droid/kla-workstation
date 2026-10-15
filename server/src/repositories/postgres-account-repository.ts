@@ -180,6 +180,7 @@ export class PostgresAccountRepository implements AccountRepository {
       ['本地执行智能体', '检索知识、编写材料并交付成果文件', 'local'],
       ['PPT助手', '设计、生成和检查演示文稿', 'local'],
       ['路线规划助手', '规划和优化路线并生成路线成果', 'local'],
+      ['建潘-三一规划智能体', '基于鲲鹭经营数据完成目标拆解、偏差分析、经营规划和三一规划 PPT', 'local'],
     ] as const) {
       await client.query('INSERT INTO agents (identity_id, name, role, type, execution_location) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (identity_id,name) DO NOTHING', [identityId, name, role, 'official', location]);
     }

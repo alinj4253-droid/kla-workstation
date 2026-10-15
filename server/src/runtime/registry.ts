@@ -2,7 +2,9 @@ import type { Pool, PoolClient } from 'pg';
 import { runtimeSkillBundles, runtimeSkillCatalog, type TaskPlan } from '@kla-workstation/contracts';
 import { pptAssistantRole } from './ppt-assistant.js';
 import { routeAssistantRole } from './route-assistant.js';
+import { businessPlannerAssistantName, businessPlannerAssistantRole } from './business-planner-assistant.js';
 import { wasteAssistantRole } from './waste-assistant.js';
+import { homeAiRole } from './home-ai/agent.js';
 import { initializeDefaultAgentModels } from './default-model.js';
 
 export type RegisteredAgent = { id: string; name: string; role: string; conversation_role?: string; model_id: string | null; model_key_id: string | null; execution_location: 'server'|'local'; device_id: string|null; enabled: boolean; version: number; skills: string[] };
@@ -31,16 +33,18 @@ export async function ensureRuntimeRegistry(pool: Pool | PoolClient, identityId:
     SELECT $1,'路线规划助手',$2,'official','local'
     WHERE NOT EXISTS(SELECT 1 FROM agents WHERE identity_id=$1 AND name='路线规划助手') ON CONFLICT DO NOTHING`, [identityId, routeAssistantRole]);
   await pool.query(`INSERT INTO agents(identity_id,name,role,type,execution_location)
+    SELECT $1,$2,$3,'official','local'
+    WHERE NOT EXISTS(SELECT 1 FROM agents WHERE identity_id=$1 AND name=$2) ON CONFLICT DO NOTHING`, [identityId, businessPlannerAssistantName, businessPlannerAssistantRole]);
+  await pool.query(`INSERT INTO agents(identity_id,name,role,type,execution_location)
     SELECT $1,'经营分析助手',$2,'official','local'
     WHERE NOT EXISTS(SELECT 1 FROM agents WHERE identity_id=$1 AND name='经营分析助手') ON CONFLICT DO NOTHING`, [identityId, wasteAssistantRole]);
   // 内置智能体 role 随代码同步升级：官方智能体的剧本以服务端定义为准（自定义 type='custom' 不受影响）
   await pool.query(`UPDATE agents a SET role=v.role FROM (VALUES
     ('统筹智能体','理解用户目标，规划任务依赖，协调智能体和设备，汇总成果'),
     ('本地执行智能体','分析资料、编写文档和代码，调用技能完成完整任务'),
-    ('PPT助手',$2::text),('路线规划助手',$3::text),('经营分析助手',$4::text)) v(name,role)
-    WHERE a.identity_id=$1 AND a.type='official' AND a.name=v.name AND a.role IS DISTINCT FROM v.role
-      AND NOT EXISTS(SELECT 1 FROM agent_market_installations m WHERE m.agent_id=a.id AND m.identity_id=a.identity_id AND m.template_code='home_ai_diagnosis')`,
-  [identityId, pptAssistantRole, routeAssistantRole, wasteAssistantRole]);
+    ('PPT助手',$2::text),('路线规划助手',$3::text),('建潘-三一规划智能体',$4::text),('经营分析助手',$5::text),('家居 AI 机会诊断',$6::text)) v(name,role)
+    WHERE a.identity_id=$1 AND a.type='official' AND a.name=v.name AND a.role IS DISTINCT FROM v.role`,
+  [identityId, pptAssistantRole, routeAssistantRole, businessPlannerAssistantRole, wasteAssistantRole, homeAiRole]);
   for (const bundle of runtimeSkillBundles) {
     await pool.query(`INSERT INTO runtime_skill_catalog(identity_id,code,name,description,tool_codes)
       VALUES($1,$2,$3,$4,$5::text[]) ON CONFLICT(identity_id,code) DO UPDATE SET
@@ -68,6 +72,13 @@ export async function ensureRuntimeRegistry(pool: Pool | PoolClient, identityId:
     }
     await pool.query('UPDATE agents SET capabilities_initialized=true WHERE id=$1', [agent.id]);
   }
+  const businessAgents = await pool.query(`SELECT id FROM agents WHERE identity_id=$1 AND name=$2 AND type='official' AND NOT capabilities_initialized`, [identityId, businessPlannerAssistantName]);
+  for (const agent of businessAgents.rows) {
+    for (const code of ['business_planning', 'artifact_management', 'memory_context', 'local_files']) {
+      await pool.query('INSERT INTO agent_skill_mounts(agent_id,skill_code) VALUES($1,$2) ON CONFLICT DO NOTHING', [agent.id, code]);
+    }
+    await pool.query('UPDATE agents SET capabilities_initialized=true WHERE id=$1', [agent.id]);
+  }
   const wasteAgents = await pool.query(`SELECT id FROM agents WHERE identity_id=$1 AND name='经营分析助手' AND type='official' AND NOT capabilities_initialized`, [identityId]);
   for (const agent of wasteAgents.rows) {
     for (const code of ['waste_analysis', 'excel_analysis', 'local_files', 'artifact_management', 'memory_context', 'knowledge_research', 'web_research']) {
@@ -79,16 +90,17 @@ export async function ensureRuntimeRegistry(pool: Pool | PoolClient, identityId:
   const officialAgentSkills: Record<string, string[]> = {
     'PPT助手': ['ppt_assistant', 'local_files', 'artifact_management', 'memory_context', 'knowledge_research', 'web_research'],
     '路线规划助手': ['route_planning', 'local_files', 'artifact_management', 'memory_context', 'knowledge_research', 'web_research'],
+    [businessPlannerAssistantName]: ['business_planning', 'local_files', 'artifact_management', 'memory_context'],
     '经营分析助手': ['waste_analysis', 'excel_analysis', 'local_files', 'artifact_management', 'memory_context', 'knowledge_research', 'web_research'],
+    '家居 AI 机会诊断': ['home_ai_diagnosis', 'artifact_management', 'weknora_research', 'memory_context'],
   };
   for (const [name, codes] of Object.entries(officialAgentSkills)) {
     await pool.query(`INSERT INTO agent_skill_mounts(agent_id,skill_code)
       SELECT a.id, v.code FROM agents a CROSS JOIN unnest($2::text[]) AS v(code)
       WHERE a.identity_id=$1 AND a.name=$3 AND a.type='official'
-       AND NOT EXISTS(SELECT 1 FROM agent_market_installations m WHERE m.agent_id=a.id AND m.identity_id=a.identity_id AND m.template_code='home_ai_diagnosis')
       ON CONFLICT DO NOTHING`, [identityId, codes, name]);
   }
-  // Atomically claim each legacy installation once; later initialization respects revocations.
+  // Claim each legacy knowledge migration once; default skill synchronization follows the official-agent rules above.
   await pool.query(`WITH targets AS MATERIALIZED (
     SELECT m.agent_id,
       EXISTS(SELECT 1 FROM agent_skill_mounts x WHERE x.agent_id=m.agent_id AND x.skill_code='knowledge_research') AS had_skill,

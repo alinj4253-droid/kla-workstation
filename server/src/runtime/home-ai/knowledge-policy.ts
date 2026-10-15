@@ -22,9 +22,13 @@ export async function assertKnowledgeToolPolicy(pool: Queryable, name: string, s
     JOIN conversations c ON c.id=ca.conversation_id JOIN projects p ON p.id=c.project_id AND p.owner_identity_id=a.identity_id
     JOIN conversation_members cm ON cm.conversation_id=c.id AND cm.identity_id=a.identity_id
     JOIN project_members pm ON pm.project_id=p.id AND pm.identity_id=a.identity_id
-    JOIN conversation_runs r ON r.id=$4 AND r.conversation_id=c.id AND r.status IN ('running','waiting_tool')
+    JOIN conversation_runs r ON r.id=$4 AND r.conversation_id=c.id
     JOIN conversation_run_steps s ON s.id=$5 AND s.run_id=r.id AND s.assigned_agent_id=a.id AND s.status IN ('pending','running','waiting_tool')
     WHERE a.identity_id=$1 AND a.id=$2 AND a.enabled
+      AND (r.status IN ('running','waiting_tool')
+        OR (r.status='queued' AND r.route_mode='direct_agent' AND r.phase='execution'
+          AND r.trigger_identity_id=a.identity_id AND r.lease_owner IS NOT NULL AND r.lease_until>now()
+          AND s.status IN ('running','waiting_tool')))
       AND (EXISTS(SELECT 1 FROM agent_tool_mounts m WHERE m.agent_id=a.id AND m.tool_code=$7)
         OR EXISTS(SELECT 1 FROM agent_skill_mounts m JOIN runtime_skill_catalog k ON k.identity_id=a.identity_id AND k.code=m.skill_code AND k.enabled
           WHERE m.agent_id=a.id AND $7=ANY(k.tool_codes)))
