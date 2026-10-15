@@ -159,7 +159,7 @@ describe('首页快捷键发送', () => {
     expect(submission![0]).toBe('/v1/conversations/chat-a/messages');
     expect(JSON.parse(submission![1].body)).toEqual({ text: message.text, mode: 'balanced', fileIds: [], executionAccess: 'approval', idempotencyKey: expect.any(String) });
     expect(submission![1].headers).toEqual({ 'x-identity-id': 'identity-a' });
-    await waitFor(() => expect(screen.getByRole('textbox', { name: '发送消息给智能体小组' })).toHaveValue(''));
+    await waitFor(() => expect(screen.getByRole('textbox', { name: '发送消息给群聊' })).toHaveValue(''));
     expect(screen.queryByRole('textbox', { name: '首页任务输入' })).not.toBeInTheDocument();
   });
 
@@ -319,7 +319,7 @@ describe('新版项目和群聊的真实接口交互', () => {
     expect(screen.getByLabelText('群组名称')).toHaveValue('待创建群聊');
     expect(screen.getByRole('checkbox', { name: '本地执行智能体' })).toBeChecked();
     expect(screen.getByText('2 个项目 · 1 个群组')).toBeVisible();
-    expect(screen.queryByRole('textbox', { name: '发送消息给智能体小组' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: '发送消息给群聊' })).not.toBeInTheDocument();
   });
 
   it('同名项目按 ID 关联，等待提交时阻止重复创建，成功后保留项目树', async () => {
@@ -339,7 +339,7 @@ describe('新版项目和群聊的真实接口交互', () => {
     expect(JSON.parse(submissions[0][1].body)).toEqual({ projectId: 'project-b', name: '新的真实群聊', agentIds: [groupAgents[1].id] });
     expect(submissions[0][1].headers).toEqual({ 'x-identity-id': 'identity-a' });
     resolveCreate({ ok: true, data: { id: 'chat-b', projectId: 'project-b', name: '新的真实群聊' } });
-    await screen.findByRole('textbox', { name: '发送消息给智能体小组' });
+    await screen.findByRole('textbox', { name: '发送消息给群聊' });
     expect(screen.getByText('2 个项目 · 2 个群组')).toBeVisible();
     expect(screen.queryByLabelText('群组名称')).not.toBeInTheDocument();
   });
@@ -347,7 +347,7 @@ describe('新版项目和群聊的真实接口交互', () => {
   it('发送失败保留草稿，不添加未落库的消息气泡', async () => {
     overrides['POST /v1/conversations/chat-a/messages'] = () => ({ ok: false, message: '发送服务不可用' });
     const user = await openChat();
-    const input = screen.getByRole('textbox', { name: '发送消息给智能体小组' });
+    const input = screen.getByRole('textbox', { name: '发送消息给群聊' });
     await user.type(input, '请记住项目代号蓝鲸');
     await user.click(screen.getByRole('button', { name: '发送给群组' }));
     expect(await screen.findByText('发送服务不可用')).toBeVisible();
@@ -425,7 +425,7 @@ describe('新版项目和群聊的真实接口交互', () => {
     overrides['GET /v1/conversations/chat-a/runs'] = () => ({ ok: true, data: submitted ? [{ id: 'run-new', status }] : [] });
     overrides['GET /v1/conversations/chat-a/messages'] = () => ({ ok: true, data: submitted ? [historicalReply, message, ...(status === 'completed' ? [{ ...historicalReply, id: 'reply-new', text: '本次答复' }] : [])] : [historicalReply] });
     const user = await openChat();
-    await user.type(screen.getByRole('textbox', { name: '发送消息给智能体小组' }), '本次的问题');
+    await user.type(screen.getByRole('textbox', { name: '发送消息给群聊' }), '本次的问题');
     await user.click(screen.getByRole('button', { name: '发送给群组' }));
     await screen.findByText('本次的问题', { selector: 'p' });
     await waitFor(() => expect(request.mock.calls.filter(([path]) => path.endsWith('/runs')).length).toBeGreaterThan(1));
