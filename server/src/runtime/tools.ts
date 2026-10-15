@@ -71,6 +71,11 @@ const properties: Record<RuntimeSkillCode, Record<string, unknown>> = {
     optimizedOrder: arrayOfIntegers, originalOrder: arrayOfIntegers,
     strategy: string, distanceKm: { type: 'number' }, savedPercent: { type: 'number' },
   },
+  local_business_metrics: {},
+  local_business_goal_decompose: { year: integer, half: { type: 'string', enum: ['H1', 'H2'] } },
+  local_business_deviation: { scope: { type: 'string', enum: ['all', 'revenue', 'h1', 'project'] } },
+  local_business_plan: { type: { type: 'string', enum: ['company', 'department', 'all'] }, department: string, year: integer },
+  local_business_ppt: { type: { type: 'string', enum: ['company', 'department'] }, department: string, fileName: string },
 };
 const required: Record<RuntimeSkillCode, string[]> = {
   home_ai_session_open:[],home_ai_interview_update:['sessionId','expectedRevision','answerId','answer'],
@@ -86,6 +91,7 @@ const required: Record<RuntimeSkillCode, string[]> = {
   local_ppt_doctor: [], local_ppt_build: ['specJson'], local_ppt_inspect: [], local_ppt_render: [],
   local_route_matrix: ['points'], local_route_optimize: ['points'], local_route_replan: ['points', 'numRoutes'],
   local_route_map: ['points', 'optimizedOrder'],
+  local_business_metrics: [], local_business_goal_decompose: [], local_business_deviation: [], local_business_plan: [], local_business_ppt: [],
 };
 export function agentTools(agent: RegisteredAgent) {
   return runtimeSkillCatalog.filter(s => agent.skills.includes(s.code) && (s.location === 'server' || agent.execution_location === 'local'))

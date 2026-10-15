@@ -84,6 +84,9 @@ export class MemoryAccountRepository implements AccountRepository {
     for (const [name, role, type] of [
       ['统筹智能体', '识别目标、规划协作任务并调度执行智能体', 'official'],
       ['本地执行智能体', '检索知识、编写材料并交付成果文件', 'official'],
+      ['PPT助手', '设计、生成和检查演示文稿', 'official'],
+      ['路线规划助手', '规划和优化路线并生成路线成果', 'official'],
+      ['建潘-三一规划智能体', '基于鲲鹭经营数据完成目标拆解、偏差分析、经营规划和三一规划 PPT', 'official'],
     ] as const) this.createAgentRow(identity.id, name, role, type);
     this.createConversationRow(project.id, '默认协作群聊');
     return { user: this.toUser(user), identity };

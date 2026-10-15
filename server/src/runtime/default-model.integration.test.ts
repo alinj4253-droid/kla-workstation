@@ -48,8 +48,8 @@ describe('persisted default agent mounts', () => {
       const memberKey = await defaultKey(compute, member.id);
       for (const [identityId, keyId] of [[owner.identity.id, personalKey.id], [enterprise.id, enterpriseKey.id], [member.id, memberKey.id]]) {
         const agents = (await pool.query('SELECT name,model_id,model_key_id,model_mount_initialized FROM agents WHERE identity_id=$1', [identityId])).rows;
-        expect(agents).toHaveLength(4);
-        expect(agents.map(agent => agent.name)).toEqual(expect.arrayContaining(['统筹智能体', '本地执行智能体', 'PPT助手', '路线规划助手']));
+        expect(agents).toHaveLength(5);
+        expect(agents.map(agent => agent.name)).toEqual(expect.arrayContaining(['统筹智能体', '本地执行智能体', 'PPT助手', '路线规划助手', '建潘-三一规划智能体']));
         for (const agent of agents) expect(agent).toMatchObject({ model_id: DEFAULT_AGENT_MODEL_ID, model_key_id: keyId, model_mount_initialized: true });
       }
       const versions = (await pool.query('SELECT id,version FROM agents ORDER BY id')).rows;

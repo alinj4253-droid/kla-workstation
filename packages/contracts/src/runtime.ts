@@ -51,6 +51,11 @@ export const runtimeSkillCatalog = [
   { code: 'local_route_optimize', name: '路线顺序优化', description: '固定起终点 TSP 优化：多初始解+2-opt+Or-opt+节点交换+ILS，支持里程/时间/成本三种策略；矩阵缺省时自动调用高德获取；优化不劣于原始顺序', location: 'local' },
   { code: 'local_route_replan', name: '线路拆分重排', description: '把一组点位重新拆分为多条线路：均衡分配或 K-means 聚类+边界交换，再逐线最近邻+2-opt 排序并汇总里程', location: 'local' },
   { code: 'local_route_map', name: '路线对比地图', description: '生成优化前后路线对比的 HTML 地图（高德 JS API，单窗/双窗切换、双窗联动），作为成果文件交付', location: 'local' },
+  { code: 'local_business_metrics', name: '经营指标查询', description: '读取鲲鹭经营规划知识包中的业绩、人力与规划指标', location: 'local' },
+  { code: 'local_business_goal_decompose', name: '经营目标拆解', description: '将公司年度或半年度目标拆解到部门与 KPI', location: 'local' },
+  { code: 'local_business_deviation', name: '经营偏差分析', description: '对比计划与实际，识别经营偏差、根因和对策', location: 'local' },
+  { code: 'local_business_plan', name: '经营规划生成', description: '生成公司整体或指定部门的经营规划', location: 'local' },
+  { code: 'local_business_ppt', name: '三一规划 PPT', description: '生成可编辑的公司整体或部门三一规划 PPTX 成果', location: 'local' },
 ] as const;
 export type RuntimeSkillCode = typeof runtimeSkillCatalog[number]['code'];
 export const runtimeSkillBundles = [
@@ -63,6 +68,7 @@ export const runtimeSkillBundles = [
   { code: 'local_development', name: '本地代码开发', description: '编写代码并执行本地命令', tools: ['local_code', 'local_cli', 'local_bat'] },
   { code: 'ppt_assistant', name: 'PPT 制作与改稿', description: 'deck-agent-kit 1.0：环境检查 → 材料读取 → 大纲确认 → 语义编译 → 质量门禁 → 真实渲染 → 成果交付；本地执行', tools: ['local_ppt_doctor', 'local_ppt_build', 'local_ppt_inspect', 'local_ppt_render'] },
   { code: 'route_planning', name: '路线规划', description: 'route-agent-kit 1.0：高德距离/时间/过路费矩阵 → 固定起终点 TSP 优化（里程/时间/成本三策略）→ 多线路拆分重排 → 优化前后地图对比；本地执行', tools: ['local_route_matrix', 'local_route_optimize', 'local_route_replan', 'local_route_map'] },
+  { code: 'business_planning', name: '鲲鹭经营规划', description: 'kunlu-business-planner 1.0：经营指标、目标拆解、偏差分析、公司/部门规划与三一规划 PPT；本地执行', tools: ['local_business_metrics', 'local_business_goal_decompose', 'local_business_deviation', 'local_business_plan', 'local_business_ppt'] },
 ] as const satisfies ReadonlyArray<{ code: string; name: string; description: string; tools: readonly RuntimeSkillCode[] }>;
 export type RuntimeSkillBundleCode = typeof runtimeSkillBundles[number]['code'];
 export const toolArguments = {
@@ -118,6 +124,11 @@ export const toolArguments = {
     distanceKm: z.number().optional(),
     savedPercent: z.number().optional(),
   }),
+  local_business_metrics: z.object({}),
+  local_business_goal_decompose: z.object({ year: z.number().int().min(2000).max(2100).default(2026), half: z.enum(['H1', 'H2']).default('H2') }),
+  local_business_deviation: z.object({ scope: z.enum(['all', 'revenue', 'h1', 'project']).default('all') }),
+  local_business_plan: z.object({ type: z.enum(['company', 'department', 'all']).default('all'), department: z.string().max(100).optional(), year: z.number().int().min(2000).max(2100).default(2026) }),
+  local_business_ppt: z.object({ type: z.enum(['company', 'department']).default('company'), department: z.string().max(100).optional(), fileName: z.string().min(1).max(200).regex(/^[^\\/:*?"<>|\x00-\x1f]+\.pptx$/i).default('鲲鹭科技三一规划.pptx') }),
 };
 export const localToolCodes = runtimeSkillCatalog.filter(tool => tool.location === 'local').map(tool => tool.code);
 export const deviceRegistrationSchema = z.object({ installationId: z.string().uuid(), name: z.string().min(1).max(100), platform: z.string().max(50), capabilities: z.array(z.string().refine(code => localToolCodes.includes(code as typeof localToolCodes[number]))).max(localToolCodes.length) });

@@ -35,6 +35,10 @@ dist-types/
 # Local server data and generated workspace content
 data/
 **/data/
+!apps/desktop/resources/skills/kunlu-business-planner/data/
+!apps/desktop/resources/skills/kunlu-business-planner/data/**
+!apps/desktop/resources/skills/kunlu-business-planner/scripts/data/
+!apps/desktop/resources/skills/kunlu-business-planner/scripts/data/**
 runtime/
 **/runtime/
 !server/src/runtime/
