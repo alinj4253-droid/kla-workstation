@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { KnowledgeConnection, LibraryEntry } from '@kla-workstation/contracts/knowledge';
 import { KnowledgeSection } from '../../workstation/KnowledgeSection';
-const mock = vi.hoisted(() => ({ connection: vi.fn(), configure: vi.fn(), sources: vi.fn(), health: vi.fn(), jobs: vi.fn(), catalog: vi.fn(), statistics: vi.fn() }));
+const mock = vi.hoisted(() => ({ connection: vi.fn(), configure: vi.fn(), sources: vi.fn(), health: vi.fn(), jobs: vi.fn(), catalog: vi.fn(), statistics: vi.fn(), slices: vi.fn() }));
 const catalogEntries: LibraryEntry[] = [
   { id: '00000000-0000-4000-8000-000000000001', name: '公司知识库', description: '', scope: 'company', collection: '金牌知识库', updatedAt: '2026-10-10T00:00:00.000Z', canWrite: true },
   { id: '00000000-0000-4000-8000-000000000002', name: '项目知识库', description: '', scope: 'project', collection: '项目知识库', updatedAt: '2026-10-10T00:00:00.000Z', canWrite: true },
@@ -11,6 +11,7 @@ const catalogEntries: LibraryEntry[] = [
 ];
 vi.mock('./api', async original => ({ ...await original<typeof import('./api')>(), knowledgeApi: { connection: mock.connection, configure: mock.configure, sources: mock.sources, health: mock.health, jobs: mock.jobs } }));
 vi.mock('../../api/knowledge', () => ({ knowledgeClient: {}, knowledgeCatalogApi: { get: mock.catalog }, knowledgeStatisticsApi: { get: mock.statistics } }));
+vi.mock('../knowledge-b/slices/adapter', async original => ({ ...await original<typeof import('../knowledge-b/slices/adapter')>(), fetchDocumentSlices: mock.slices }));
 vi.mock('./KnowledgeDetail', async () => {
   const { Link } = await import('react-router-dom');
   return { KnowledgeDetail: ({ base, context, onConfigure }: { base: { name: string }; context: { collection: string }; onConfigure: () => void }) => <><h2>{base.name}已连接：{context.collection}</h2><button onClick={onConfigure}>服务连接</button><Link to="/knowledge">返回知识库</Link></> };
@@ -26,6 +27,7 @@ beforeEach(() => {
   mock.jobs.mockResolvedValue({ count: 0, jobs: [] });
   mock.statistics.mockResolvedValue({ ok: true, data: { collections: catalogEntries.map(entry => ({ knowledgeBaseId: entry.id, collection: entry.collection, fileCount: 0, chunkCount: 0, sourceNames: [] })), unclassifiedCount: 0 } });
   mock.catalog.mockResolvedValue({ ok: true, data: catalogEntries });
+  mock.slices.mockResolvedValue({ doc_id: 'doc-1', collection: '金牌知识库', source: 'company.txt', count: 0, slices: [] });
 });
 describe('knowledge collection navigation', () => {
   it('switches to the latest route after a slower earlier connection', async () => {
@@ -85,6 +87,18 @@ describe('knowledge collection navigation', () => {
     const project = await screen.findByRole('heading', { name: '项目知识库' });
     fireEvent.click(within(project.closest('article')!).getByRole('link', { name: '进入知识库' }));
     expect(await screen.findByRole('heading', { name: '项目知识库已连接：项目知识库' })).toBeInTheDocument();
+  });
+  it('marks the library as abnormal when a done job produced no slices', async () => {
+    // 缺陷：上游作业报 done 但没有切片文件；库卡片不能显示为「正常/处理完成」。
+    mock.sources.mockResolvedValue({
+      documents: [{ doc_id: 'doc-1', name: 'company.txt', ext: 'txt', category: '上传文档', size: 20, modified: '2026-10-10 10:00:00', readable: true, stale: false }],
+      bindings: [{ clientUploadId: 'upload-1', serviceInstanceId: connection.serviceInstanceId, collection: '金牌知识库', displayName: 'company.txt', jobId: 'job-1', docId: 'doc-1', submittedAt: '2026-10-10T10:00:00Z' }],
+      totalWorkspaceCount: 1,
+    });
+    mock.jobs.mockResolvedValue({ count: 1, jobs: [{ job_id: 'job-1', type: 'process', filename: 'company.txt', params: {}, state: 'done', stage: 'done', artifacts: {}, created_at: '2026-10-10 10:00:00', updated_at: '2026-10-10 10:00:02' }] });
+    render(<KnowledgeSection />);
+    const company = (await screen.findByRole('heading', { name: '公司知识库' })).closest('article')!;
+    await waitFor(() => expect(company.querySelector('.kl-badge')).toHaveTextContent('异常'));
   });
   it.each(['项目知识库', '个人知识库'])('enters %s under StrictMode', async name => {
     render(<StrictMode><KnowledgeSection /></StrictMode>);

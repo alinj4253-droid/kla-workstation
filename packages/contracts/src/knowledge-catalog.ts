@@ -5,9 +5,9 @@ export const knowledgeCatalogSchema = z.array(libraryEntrySchema).max(100).refin
 export const initialKnowledgeCatalog: LibraryEntry[] = [];
 
 /**
- * 目录规范化：把历史集合名自动升级为当前约定名。
- * 服务端读到存量catalog 后调用一次并回写，**任何人拉代码重启即生效**，
- * 不需要手动改数据库或跑迁移脚本。
+ * 目录规范化只处理已知的历史别名。
+ * collection 是知识服务的真实路由键，创建知识库时允许用户连接已有
+ * 集合；按 scope 强行改名会把多个库合并到同一个集合并造成连接错配。
  */
 export const CURRENT_COLLECTIONS: Record<string, string> = {
   'company': '金牌知识库',
@@ -15,8 +15,12 @@ export const CURRENT_COLLECTIONS: Record<string, string> = {
   'personal': '个人知识库',
 };
 export function normalizeCatalogCollection(entry: LibraryEntry): LibraryEntry {
-  const expected = CURRENT_COLLECTIONS[entry.scope] ?? CURRENT_COLLECTIONS[entry.id];
-  if (expected && entry.collection !== expected) return { ...entry, collection: expected };
+  // The only shipped rename is the old company collection. Keep all other
+  // names, including user supplied project/personal collections, untouched.
+  const expected = entry.scope === 'company' && entry.collection === '年会知识库'
+    ? CURRENT_COLLECTIONS.company
+    : undefined;
+  if (expected) return { ...entry, collection: expected };
   return entry;
 }
 export function normalizeKnowledgeCatalog(entries: LibraryEntry[]): { entries: LibraryEntry[]; changed: boolean } {

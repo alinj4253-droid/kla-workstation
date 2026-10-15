@@ -26,6 +26,7 @@ export const knowledgeApi = {
   job: (serviceInstanceId: string, jobId: string) => unwrap(bridge().getJob({ serviceInstanceId, jobId })),
   cancelJob: (serviceInstanceId: string, jobId: string) => unwrap(bridge().cancelJob({ serviceInstanceId, jobId })),
   deleteJobRecord: (serviceInstanceId: string, jobId: string) => unwrap(bridge().deleteJobRecord({ serviceInstanceId, jobId })),
+  updateSlice: (input: Parameters<KnowledgeLibraryBridge['updateSlice']>[0]) => unwrap(bridge().updateSlice(input)),
 };
 export const knowledgeKeys = {
   all: ['knowledgeLibrary'] as const,

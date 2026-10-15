@@ -58,6 +58,12 @@
 .ws-agent-avatar.is-cyan{background:#dff7fb;color:#0891a6}.ws-agent-avatar.is-green{background:#e2f8ec;color:#159447}.ws-agent-avatar.is-purple{background:#eee9ff;color:#7553c6}.ws-agent-avatar.is-orange{background:#fff1dc;color:#d97706}
 .ws-agent-card-head h3{font-size:14px;margin-bottom:3px}
 .ws-agent-code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;color:#9aaabd!important}
+/* 添加自定义智能体：原型里的入口卡片（虚线描边 + 整宽主按钮） */
+.ws-agent-card-add{border-style:dashed;border-color:#cfe0f3;background:#fbfdff;justify-content:space-between}
+.ws-agent-card-add .ws-agent-card-head{align-items:flex-start}
+.ws-agent-card-add small{line-height:1.6}
+.ws-agent-avatar.is-add{background:#e8f1ff;color:#2563eb}
+.ws-agent-add{width:100%;justify-content:center;margin-top:14px}
 .ws-agent-switch{position:relative;width:32px;height:19px;flex:none;border:0;border-radius:12px;background:#d5dee8;padding:0;cursor:pointer}
 .ws-agent-switch span{position:absolute;top:3px;left:3px;width:13px;height:13px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.15);transition:transform .18s}
 .ws-agent-switch.active{background:#2563eb}.ws-agent-switch.active span{transform:translateX(13px)}.ws-agent-switch:disabled{opacity:.65;cursor:default}

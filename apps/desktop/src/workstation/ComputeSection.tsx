@@ -211,9 +211,6 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
   const refresh = useCallback(async () => {
     setLoading(true);
     setError('');
-    const identities = await klaApi.request<Array<{ id: string; isDefault: boolean; status: string }>>('/v1/me/identities');
-    const active = identities.ok ? (identities.data.find((item) => item.isDefault && item.status === 'active') ?? identities.data.find((item) => item.status === 'active')) : undefined;
-    void active;
     setSummary(null);
     setKeys([]);
     setModels([]);
@@ -221,27 +218,40 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
     setUsageSummary(null);
     setLifetimeUsage(null);
     setOrgOverview(null);
-    const [summaryResult, keysResult, modelsResult, usageResult, lifetimeResult] = await Promise.all([
-      computeApi.summary(),
-      computeApi.keys(),
-      computeApi.models(),
-      computeApi.usageSummary({ scope, from: effectiveFrom, ...(effectiveTo ? { to: effectiveTo } : {}) }),
-      computeApi.usageSummary({ scope }),
-    ]);
-    if (summaryResult.ok) {
-      setSummary(summaryResult.data);
-      onBalance(summaryResult.data.available);
-      onAdminCapability(summaryResult.data.permissions.canViewOrganizationUsage);
-    } else {
-      setError(apiErrorMessage(summaryResult));
+    try {
+      // The client adapter returns an envelope for HTTP errors, but a network
+      // outage still rejects the promise. Always settle the refresh so the
+      // page can show a retry action instead of spinning forever.
+      const [summaryResult, keysResult, modelsResult, usageResult, lifetimeResult] = await Promise.all([
+        computeApi.summary(),
+        computeApi.keys(),
+        computeApi.models(),
+        computeApi.usageSummary({ scope, from: effectiveFrom, ...(effectiveTo ? { to: effectiveTo } : {}) }),
+        computeApi.usageSummary({ scope }),
+      ]);
+      if (summaryResult.ok) {
+        setSummary(summaryResult.data);
+        onBalance(summaryResult.data.available);
+        onAdminCapability(summaryResult.data.permissions.canViewOrganizationUsage);
+      } else {
+        setError(apiErrorMessage(summaryResult));
+        onBalance(null);
+        onAdminCapability(false);
+      }
+      if (keysResult.ok) setKeys(keysResult.data.items);
+      if (modelsResult.ok) setModels(modelsResult.data.items);
+      if (usageResult.ok) setUsageSummary(usageResult.data);
+      if (lifetimeResult.ok) setLifetimeUsage(lifetimeResult.data);
+    } catch (reason) {
+      const detail = reason instanceof Error ? reason.message : '';
+      setError(/failed to fetch|networkerror|load failed/i.test(detail)
+        ? '无法连接算力服务端，请先启动 Workstation 服务后重试'
+        : detail || '算力服务暂时不可用，请稍后重试');
       onBalance(null);
       onAdminCapability(false);
+    } finally {
+      setLoading(false);
     }
-    if (keysResult.ok) setKeys(keysResult.data.items);
-    if (modelsResult.ok) setModels(modelsResult.data.items);
-    if (usageResult.ok) setUsageSummary(usageResult.data);
-    if (lifetimeResult.ok) setLifetimeUsage(lifetimeResult.data);
-    setLoading(false);
   }, [scope, effectiveFrom, effectiveTo, onBalance, onAdminCapability]);
 
   useEffect(() => { void refresh(); }, [refresh, reloadKey]);
@@ -267,19 +277,24 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
 
   useEffect(() => {
     void (async () => {
-      const result = await computeApi.usage({
-        page,
-        pageSize: 20,
-        scope,
-        from: effectiveFrom,
-        ...(effectiveTo ? { to: effectiveTo } : {}),
-        ...(filters.modelId ? { modelId: filters.modelId } : {}),
-        ...(filters.keyId ? { keyId: filters.keyId } : {}),
-        ...(filters.projectId ? { projectId: filters.projectId } : {}),
-      });
-      if (result.ok) {
-        setUsageRows(result.data.items);
-        setUsageTotal(result.data.page.total);
+      try {
+        const result = await computeApi.usage({
+          page,
+          pageSize: 20,
+          scope,
+          from: effectiveFrom,
+          ...(effectiveTo ? { to: effectiveTo } : {}),
+          ...(filters.modelId ? { modelId: filters.modelId } : {}),
+          ...(filters.keyId ? { keyId: filters.keyId } : {}),
+          ...(filters.projectId ? { projectId: filters.projectId } : {}),
+        });
+        if (result.ok) {
+          setUsageRows(result.data.items);
+          setUsageTotal(result.data.page.total);
+        }
+      } catch {
+        // Summary refresh owns the visible connection error. Usage is a
+        // secondary panel and must not create an unhandled rejection.
       }
     })();
   }, [page, scope, effectiveFrom, effectiveTo, recordsToken, filters.modelId, filters.keyId, filters.projectId]);
@@ -290,9 +305,13 @@ export function ComputeSection({ view, onNotify, onBalance, onAdminCapability, r
   useEffect(() => {
     if (view !== 'members' || !organizationId || !canManageMembers) return;
     void (async () => {
-      const result = await computeApi.orgOverview(organizationId);
-      if (result.ok) setOrgOverview(result.data);
-      else onNotify(apiErrorMessage(result));
+      try {
+        const result = await computeApi.orgOverview(organizationId);
+        if (result.ok) setOrgOverview(result.data);
+        else onNotify(apiErrorMessage(result));
+      } catch {
+        onNotify('企业成员数据暂时无法加载，请稍后重试');
+      }
     })();
   }, [view, organizationId, canManageMembers, reloadKey, orgToken, onNotify]);
 

@@ -1,6 +1,6 @@
 
 import { z } from 'zod';
-import { connectionInputSchema, jobInputSchema, serviceInputSchema, documentRequestSchema, searchRequestSchema, KNOWLEDGE_UPLOAD_NOTICE_VERSION, type UploadInput } from '@kla-workstation/contracts/knowledge';
+import { connectionInputSchema, jobInputSchema, serviceInputSchema, documentRequestSchema, searchRequestSchema, sliceEditRequestSchema, KNOWLEDGE_UPLOAD_NOTICE_VERSION, type UploadInput } from '@kla-workstation/contracts/knowledge';
 import { acceptUploadConsent, assertService, configureConnection, loadConnection, publicConnection } from './config.js';
 import { assertBoundResource, loadBindings, listSources, getBindings, verifyDocumentScope } from './documents.js';
 import { submit, cancelUpload, abortUploads } from './process.js';
@@ -24,6 +24,8 @@ const contentSchema = serviceInputSchema.extend({
 });
 
 import { currentScope } from './context.js';
+import { applySliceEdits, loadSliceEdits, saveSliceEdit } from './slice-edits.js';
+import { getAccessibleLibrary, findReadableLibraryByDocId } from '../auth/knowledge-libraries.js';
 import { uploadNameCheckSchema } from '@kla-workstation/contracts/knowledge';
 import { checkUploadNames } from './documents.js';
 const handlers = new Map<string, (owner: unknown, raw: unknown) => unknown>();
@@ -52,6 +54,18 @@ function register(name: string, work: (owner: unknown, raw: unknown) => unknown)
   register('getJob', (event, raw) => { const input = jobInputSchema.parse(raw); return getJob(currentScope().ownerNumber, input.serviceInstanceId, input.jobId); });
   register('cancelJob', (event, raw) => { const input = jobInputSchema.parse(raw); return cancelJob(currentScope().ownerNumber, input.serviceInstanceId, input.jobId); });
   register('deleteJobRecord', (event, raw) => { const input = jobInputSchema.parse(raw); return deleteJobRecord(currentScope().ownerNumber, input.serviceInstanceId, input.jobId); });
+  // 切片编辑（原型「编辑切片」）：写权限由 routes.ts 的 auth(write) 保证，
+  // 这里再按文档归属校验当前身份对该知识库是否有写权限（mock/local 模式无库表，跳过）。
+  register('updateSlice', async (_event, raw) => {
+    const input = sliceEditRequestSchema.parse(raw);
+    const { pool, owner } = currentScope();
+    if (pool) {
+      const library = await findReadableLibraryByDocId(pool, owner, input.docId);
+      if (!library || !(await getAccessibleLibrary(pool, owner, library.entry.id, 'write')))
+        throw new KnowledgeError('PERMISSION_DENIED', '当前身份无权修改该文档的切片。');
+    }
+    return saveSliceEdit(input);
+  });
   // One privileged calling chain; B's endpoint validation runs after A's access checks.
   register('contentRequest', async (event, raw) => {
     const input = contentSchema.parse(raw);
@@ -90,10 +104,14 @@ function register(name: string, work: (owner: unknown, raw: unknown) => unknown)
           : error.code === 'CHANNEL_CONNECTION_FAILED' ? 'network' : 'server');
       }
     };
-    try { return await readKnowledgeContent(transport, { serviceInstanceId: input.serviceInstanceId, endpoint: input.endpoint,
-      ...(input.docId !== undefined ? { docId: input.docId } : {}), ...(input.para !== undefined ? { para: input.para } : {}),
-      ...(input.limit !== undefined ? { limit: input.limit } : {}), ...(input.search !== undefined ? { search: input.search } : {}),
-    }, config.collection); }
+    try {
+      const result = await readKnowledgeContent(transport, { serviceInstanceId: input.serviceInstanceId, endpoint: input.endpoint,
+        ...(input.docId !== undefined ? { docId: input.docId } : {}), ...(input.para !== undefined ? { para: input.para } : {}),
+        ...(input.limit !== undefined ? { limit: input.limit } : {}), ...(input.search !== undefined ? { search: input.search } : {}),
+      }, config.collection);
+      // 切片读取叠加本身份的编辑覆盖（标题/正文），见 slice-edits.ts。
+      return input.endpoint === 'slices' && input.docId ? applySliceEdits(result, await loadSliceEdits(input.docId)) : result;
+    }
     catch (error) {
       if (!(error instanceof KnowledgeBFailure)) throw error;
       throw new KnowledgeError(error.kind === 'forbidden' || error.kind === 'unauthorized' ? 'PERMISSION_DENIED'

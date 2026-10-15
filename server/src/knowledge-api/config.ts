@@ -4,12 +4,27 @@ import { connectionInputSchema, knowledgeTransportSettingsSchema, KNOWLEDGE_UPLO
 import { encryptField, decryptField } from '../compute/encryption.js';
 import { currentScope, moduleState, readStored, atomicStored } from './context.js';
 import { KnowledgeError } from './transport.js';
-export const serviceUrl = process.env.KNOWLEDGE_BASE_URL || 'http://192.168.10.206:8120';
+/**
+ * Keep one canonical upstream origin. A trailing slash is harmless when a
+ * user enters the URL in the connection dialog, but concatenating it with an
+ * endpoint produced `//health` and made some reverse proxies reject the
+ * request. Canonicalising both env and persisted values also prevents a
+ * needless "configured upstream changed" error after a restart.
+ */
+export function normalizeServiceUrl(value: string): string {
+  return value.trim().replace(/\/+$/, '');
+}
+const configuredServiceUrl = normalizeServiceUrl(process.env.KNOWLEDGE_BASE_URL || '');
+export const serviceUrl = configuredServiceUrl || 'http://192.168.10.206:8120';
 const schema = z.object({ serviceInstanceId: z.string(), baseUrl: z.string(), collection: z.string(), secretRef: z.string().nullable(), encryptedCredential: z.string().default(''), settings: knowledgeTransportSettingsSchema, hasUploadConsent: z.boolean().default(false) });
 function state() { return moduleState('config', () => ({ connection: schema.parse({ serviceInstanceId: randomUUID(), baseUrl: serviceUrl, collection: '', secretRef: null, settings: {} }), writes: Promise.resolve() as Promise<unknown> })); }
 export const atomicJson = atomicStored;
 export async function loadConnection() {
-  try { state().connection = schema.parse(await readStored('connection.json')); if (state().connection.baseUrl !== serviceUrl) throw new Error('Configured upstream changed'); }
+  try {
+    const saved = schema.parse(await readStored('connection.json'));
+    if (normalizeServiceUrl(saved.baseUrl) !== serviceUrl) throw new Error('Configured upstream changed');
+    state().connection = { ...saved, baseUrl: serviceUrl };
+  }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new KnowledgeError('SECRET_STORAGE_UNAVAILABLE', '服务端知识配置读取失败，请联系管理员。'); }
 }
 export function publicConnection(): KnowledgeConnection {
@@ -30,7 +45,7 @@ function serialize<T>(work: () => Promise<T>): Promise<T> { const next = state()
 export async function configureConnection(raw: KnowledgeConnectionInput): Promise<KnowledgeConnection> {
   return serialize(async () => {
     const input = connectionInputSchema.parse(raw);
-    if (input.baseUrl.replace(/\/$/, '') !== serviceUrl) throw new KnowledgeError('VALIDATION_FAILED', '上游地址由服务端 KNOWLEDGE_BASE_URL 配置。');
+    if (normalizeServiceUrl(input.baseUrl) !== serviceUrl) throw new KnowledgeError('VALIDATION_FAILED', '上游地址由服务端 KNOWLEDGE_BASE_URL 配置。');
     const current = state().connection;
     let encryptedCredential = input.clearCredential ? '' : current.encryptedCredential;
     let secretRef = input.clearCredential ? null : current.secretRef;

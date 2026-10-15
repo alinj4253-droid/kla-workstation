@@ -10,6 +10,7 @@ import { associateScopedDocuments, publicBinding, storedBindings, type StoredBin
 import { getJob } from './jobs.js';
 import { jsonRequest, KnowledgeError } from './transport.js';
 import { recordConfirmedUpload, recordJobSnapshot } from './upload-records.js';
+import { applySliceEdits, loadSliceEdits } from './slice-edits.js';
 
 export const scopedCollectionSchema = z.object({ serviceInstanceId: z.string().min(1), collection: z.string().min(1), knowledgeBaseId: z.string().uuid().optional() });
 export const scopedContentSchema = z.object({
@@ -125,7 +126,8 @@ export async function readScopedDocument(pool: Pool, body: z.infer<typeof scoped
     throw new KnowledgeError('KNOWLEDGE_INGEST_FAILED', '知识服务返回的正文分页与请求不一致。');
   if (body.endpoint === 'slices') await pool.query('UPDATE knowledge_documents SET chunk_count=$3,last_seen_at=now() WHERE doc_id=$1 AND knowledge_base_id=$2',
     [body.docId, library.entry.id, raw.count]);
-  return parsed.data;
+  // 切片读取叠加本身份的编辑覆盖（标题/正文），与 mock/local 路径保持同一口径。
+  return body.endpoint === 'slices' ? applySliceEdits(parsed.data, await loadSliceEdits(body.docId)) : parsed.data;
 }
 
 export async function authorizeScopedJob(pool: Pool, serviceId: string, jobId: string, action: 'read' | 'write' = 'read') {

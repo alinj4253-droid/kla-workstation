@@ -90,6 +90,17 @@ describe('knowledge statistics refresh (local fixtures only)', () => {
   it('does not count cancelled files as failed or completed', () => {
     expect(summarizeKnowledgeFiles([doc], [binding], new Map([[done.job_id, { ...done, state: 'cancelled' }]]), new Set(), [])).toEqual({ done: 0, processing: 0, failed: 0, unknown: 0 });
   });
+  it('treats a done job whose slices are confirmed empty as an abnormal file', () => {
+    // 缺陷：上游 /v1/process/async 报 done 却没有切片文件（状态与产物不一致），不能算「已处理」。
+    expect(summarizeKnowledgeFiles([doc], [binding], new Map([[done.job_id, done]]), new Set(), [{ data: slices(0), isSuccess: true }]))
+      .toEqual({ done: 0, processing: 0, failed: 1, unknown: 0 });
+    // 切片结果尚未取到（加载中 / 临时 404）时仍按作业状态计，不误判为异常。
+    expect(summarizeKnowledgeFiles([doc], [binding], new Map([[done.job_id, done]]), new Set(), [{ data: undefined, isSuccess: false }]).done).toBe(1);
+    // 待更新（stale）的文件本来就需要重新切片，不降级。
+    expect(summarizeKnowledgeFiles([{ ...doc, stale: true }], [binding], new Map([[done.job_id, done]]), new Set(), [{ data: slices(0), isSuccess: true }]).done).toBe(1);
+    // 切片非空时仍算已完成。
+    expect(summarizeKnowledgeFiles([doc], [binding], new Map([[done.job_id, done]]), new Set(), [{ data: slices(2), isSuccess: true }]).done).toBe(1);
+  });
   it('rejects late older task history', () => {
     expect(latestJobHistory({ count: 1, jobs: [done] }, { count: 1, jobs: [running] }).jobs[0]?.state).toBe('done');
   });

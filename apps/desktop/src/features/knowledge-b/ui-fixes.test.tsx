@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { KnowledgeBApi, KnowledgeBContentRequest, KnowledgeContext } from '@kla-workstation/contracts/knowledge';
 import { TextPreview } from './content/TextPreview';
 import { MultiSourceSlices } from './slices/MultiSourceSlices';
+import { SliceDetailContent } from './slices/SliceDrawer';
 import type { QueryContext } from './shared';
 
 const api: KnowledgeBApi = { detail: vi.fn(), meta: vi.fn(), content: vi.fn(), slices: vi.fn(), search: vi.fn() };
@@ -89,4 +90,26 @@ it('turns long paragraph pages locally without another API request', async () =>
   fireEvent.click(screen.getByRole('button', { name: '下一页' }));
   expect(screen.getByLabelText('正文第 2 页')).toBeInTheDocument();
   expect(api.content).toHaveBeenCalledTimes(1);
+});
+it('编辑切片：保存把标题与正文回写，并校验空白', async () => {
+  const onSave = vi.fn().mockResolvedValue(undefined);
+  const source = { docId: 'doc-1', name: 'fixture.txt', collection: 'fixture', searchSources: [] };
+  render(<SliceDetailContent slice={{ id: 3, title: '旧标题', content: '旧正文' }} source={source} onOpenSource={() => undefined} onSave={onSave} />);
+  // 只读态：不显示编辑表单，点「编辑切片」进入编辑态。
+  expect(screen.queryByLabelText('标题')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: '编辑切片' }));
+  const title = screen.getByLabelText('标题');
+  const content = screen.getByLabelText('正文');
+  expect(title).toHaveValue('旧标题');
+  expect(content).toHaveValue('旧正文');
+  // 标题清空后不允许保存（原型要求标题与正文都不能为空）。
+  fireEvent.change(title, { target: { value: '   ' } });
+  fireEvent.click(screen.getByRole('button', { name: '保存修改' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('切片标题不能为空');
+  expect(onSave).not.toHaveBeenCalled();
+  fireEvent.change(title, { target: { value: '新标题' } });
+  fireEvent.change(content, { target: { value: '新正文' } });
+  fireEvent.click(screen.getByRole('button', { name: '保存修改' }));
+  await waitFor(() => expect(onSave).toHaveBeenCalledWith({ sliceId: 3, title: '新标题', content: '新正文' }));
+  await waitFor(() => expect(screen.queryByLabelText('标题')).not.toBeInTheDocument());
 });

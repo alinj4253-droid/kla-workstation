@@ -51,5 +51,5 @@ export const knowledgeReadingSlots: KnowledgeSlots = {
   chunksPanel: props => <KnowledgeSlicesContent {...props}/>,
   documentPanel: props => <KnowledgeDocumentContent {...props}/>,
   searchPanel: props => <KnowledgeSearchContent {...props}/>,
-  slicePanel: ({ slice, source, onOpenDocument }) => <div className="kb-b-body"><SliceDetailContent slice={slice} source={source} onOpenSource={target => onOpenDocument({ ...publicRef(source), ...(target.locateText !== undefined ? { locateText: target.locateText } : {}) }, target.sliceIndex)}/></div>,
+  slicePanel: ({ slice, source, onOpenDocument, onSaveSlice }) => <div className="kb-b-body"><SliceDetailContent slice={slice} source={source} onOpenSource={target => onOpenDocument({ ...publicRef(source), ...(target.locateText !== undefined ? { locateText: target.locateText } : {}) }, target.sliceIndex)} {...(onSaveSlice ? { onSave: onSaveSlice } : {})}/></div>,
 };

@@ -1,6 +1,6 @@
 import {klaApi} from './client';
 import type {ConversationDto, CreateConversationRequest, ExecutionLocation} from '@kla-workstation/contracts';
-export type RuntimeAgent={id:string;name:string;role:string;modelId?:string|null;model_id?:string|null;modelKeyId?:string|null;model_key_id?:string|null;modelMountInitialized?:boolean;executionLocation?:ExecutionLocation;execution_location?:ExecutionLocation;deviceId?:string|null;device_id?:string|null;enabled:boolean;type:string;version:number};
+export type RuntimeAgent={id:string;name:string;role:string;modelId?:string|null;model_id?:string|null;modelKeyId?:string|null;model_key_id?:string|null;modelMountInitialized?:boolean;executionLocation?:ExecutionLocation;execution_location?:ExecutionLocation;deviceId?:string|null;device_id?:string|null;enabled:boolean;type:string;version:number;/** 已启用技能数（/v1/agents 返回，用于「技能管理 · N」） */skillCount?:number;skill_count?:number};
 export type RuntimeDevice={id:string;name:string;platform:string;online:boolean};
 export type RuntimeSkill={code:string;name:string;description:string;tool_codes:string[];enabled:boolean};
 export type RuntimeTool={code:string;name:string;description:string;location:'server'|'local';deviceOnline:boolean|null};

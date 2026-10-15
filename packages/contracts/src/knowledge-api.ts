@@ -89,6 +89,19 @@ export interface ContentRequest {
   docId?: string; para?: number; limit?: number; knowledgeBaseId?: string;
   search?: SearchRequest;
 }
+/**
+ * 切片编辑（原型「编辑切片」）：KLA 侧按身份保存覆盖内容，读取切片时叠加，
+ * 不改动上游知识服务里的原始切片与向量，因此重新入库后覆盖仍然生效。
+ */
+export const sliceEditRequestSchema = z.object({
+  serviceInstanceId: z.string().min(1),
+  docId: z.string().min(1),
+  sliceId: z.number().int().nonnegative(),
+  title: z.string().trim().max(400),
+  content: z.string().trim().min(1).max(20000),
+  collection: z.string().min(1).optional(),
+});
+export type KnowledgeSliceEditRequest = z.infer<typeof sliceEditRequestSchema>;
 export interface KnowledgeLibraryBridge {
   checkUploadNames(input: import('./knowledge-upload-names.js').UploadNameCheck): Promise<RpcResult<import('./knowledge-upload-names.js').UploadNameCheckResult>>;
   getConnection(): Promise<RpcResult<KnowledgeConnection>>;
@@ -109,6 +122,8 @@ export interface KnowledgeLibraryBridge {
   unsubscribeJob(input: { subscriptionId: string }): Promise<RpcResult<boolean>>;
   onJobEvent(listener: (event: JobEvent) => void): () => void;
   contentRequest(input: ContentRequest): Promise<RpcResult<unknown>>;
+  /** 保存切片编辑（标题/正文），返回刷新后的更新时间。 */
+  updateSlice(input: KnowledgeSliceEditRequest): Promise<RpcResult<{ updatedAt: string }>>;
 }
 
 export const rpcFailureSchema = z.object({ ok: z.literal(false), requestId: z.string(), error: z.object({ code: z.string(), message: z.string(), retryable: z.boolean(), details: z.record(z.unknown()).optional() }) });

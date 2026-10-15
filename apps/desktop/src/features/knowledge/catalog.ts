@@ -4,7 +4,11 @@ import { knowledgeCatalogApi } from '../../api/knowledge';
 import { klaApi } from '../../api/client';
 import { unwrap } from './api';
 export type { LibraryEntry };
-export const KNOWLEDGE_SERVICE_URL = window.klaPlatform?.knowledgeServiceUrl || import.meta.env.VITE_KNOWLEDGE_BASE_URL || 'http://192.168.10.206:8120';
+export function normalizeKnowledgeServiceUrl(value: string): string {
+  return value.trim().replace(/\/+$/, '');
+}
+const configuredKnowledgeServiceUrl = normalizeKnowledgeServiceUrl(window.klaPlatform?.knowledgeServiceUrl || import.meta.env.VITE_KNOWLEDGE_BASE_URL || '');
+export const KNOWLEDGE_SERVICE_URL = configuredKnowledgeServiceUrl || 'http://192.168.10.206:8120';
 export function defaultCollection(entry: Pick<LibraryEntry, 'id' | 'name'>): string {
   if (entry.id === 'company') return '金牌知识库';
   if (entry.id === 'project') return '项目知识库';

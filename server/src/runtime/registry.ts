@@ -69,10 +69,25 @@ export async function roomRegistry(pool: Pool, conversationId: string): Promise<
   const scope = (await pool.query('SELECT p.owner_identity_id FROM conversations c JOIN projects p ON p.id=c.project_id WHERE c.id=$1', [conversationId])).rows[0];
   if (!scope) throw new Error('群聊不存在');
   await ensureRuntimeRegistry(pool, scope.owner_identity_id);
-  // Existing empty rooms are migrated lazily. New rooms are registered at creation.
+  // Existing rooms are migrated lazily. Older rooms can contain only the
+  // coordinator because the member pool was introduced after those rooms were
+  // created. Such a room cannot execute a delegated plan, so restore the
+  // enabled non-coordinator agents once; rooms with an explicit member pool
+  // remain unchanged.
   await pool.query(`INSERT INTO conversation_agents(conversation_id,agent_id,role)
     SELECT $1,a.id,CASE WHEN a.name='统筹智能体' THEN 'coordinator' ELSE 'member' END FROM agents a
-    WHERE a.identity_id=$2 AND a.enabled AND (a.name='统筹智能体' OR NOT EXISTS(SELECT 1 FROM conversation_agents WHERE conversation_id=$1))
+    WHERE a.identity_id=$2 AND a.enabled AND (
+      a.name='统筹智能体'
+      OR NOT EXISTS(SELECT 1 FROM conversation_agents WHERE conversation_id=$1)
+      OR NOT EXISTS(
+        SELECT 1
+        FROM conversation_agents existing
+        JOIN agents existing_agent ON existing_agent.id=existing.agent_id
+        WHERE existing.conversation_id=$1
+          AND existing_agent.identity_id=$2
+          AND existing_agent.name<>'统筹智能体'
+      )
+    )
     ON CONFLICT DO NOTHING`, [conversationId, scope.owner_identity_id]);
   const agents = await pool.query(`SELECT a.*,COALESCE((SELECT jsonb_agg(DISTINCT x.code) FROM (
     SELECT tool_code AS code FROM agent_tool_mounts WHERE agent_id=a.id

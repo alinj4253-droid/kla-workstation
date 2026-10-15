@@ -103,6 +103,13 @@
 .kb-b-document-content__detail-state, .kb-b-document-content__body-state { margin: 12px 0; }
 .kb-b-document-content__retry { margin-top: 8px; }
 .kb-b-slice-detail-content h3 { margin-top: 20px; }
+/* 切片编辑（原型「编辑切片」）：标题/正文表单 + 保存动作行 */
+.kb-b-slice-detail-actions, .kb-b-slice-edit-actions { display: flex; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+.kb-b-slice-edit { display: grid; gap: 12px; }
+.kb-b-slice-edit label { display: grid; gap: 6px; font-size: 12px; color: var(--kq-text-secondary); }
+.kb-b-slice-edit input, .kb-b-slice-edit textarea { width: 100%; padding: 9px 11px; border: 1px solid var(--kq-border); border-radius: 8px; background: var(--kq-surface); color: var(--kq-text); font: inherit; line-height: 1.7; }
+.kb-b-slice-edit textarea { resize: vertical; }
+.kb-b-error { margin: 8px 0 0; color: var(--kq-danger, #dc4b5c); font-size: 12px; }
 .kl-content-drawer > header > h2 { min-width: 0; overflow-wrap: anywhere; }
 .kl-content-drawer .kb-b-body { margin-top: 20px; }
 .kb-b-content-pagination { display: flex; align-items: center; justify-content: center; gap: 16px; margin-top: 16px; flex-wrap: wrap; }

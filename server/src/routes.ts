@@ -303,7 +303,9 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
     if (deps.mode !== 'mock') await ensureRuntimeRegistry(pool, identity.id);
     const [workspaces, agents, models, tasks] = await Promise.all([
       pool.query('SELECT id, type, name, project_id FROM workspaces WHERE identity_id = $1 ORDER BY created_at', [identity.id]),
-      pool.query('SELECT id, name, role, type, model_id, model_id AS "modelId", model_key_id, model_key_id AS "modelKeyId", model_mount_initialized AS "modelMountInitialized", execution_location AS "executionLocation", device_id AS "deviceId", enabled, version FROM agents WHERE identity_id = $1 ORDER BY created_at', [identity.id]),
+      pool.query(`SELECT id, name, role, type, model_id, model_id AS "modelId", model_key_id, model_key_id AS "modelKeyId", model_mount_initialized AS "modelMountInitialized", execution_location AS "executionLocation", device_id AS "deviceId", enabled, version,
+        COALESCE((SELECT count(*) FROM agent_skill_mounts m JOIN runtime_skill_catalog c ON c.identity_id=a.identity_id AND c.code=m.skill_code AND c.enabled WHERE m.agent_id=a.id),0)::int AS "skillCount"
+        FROM agents a WHERE identity_id = $1 ORDER BY created_at`, [identity.id]),
       pool.query('SELECT id, name, provider, capabilities, enabled FROM models WHERE enabled = true ORDER BY name'),
       pool.query('SELECT id, title, status, result, created_at FROM tasks WHERE identity_id = $1 ORDER BY created_at DESC LIMIT 50', [identity.id]),
     ]);
@@ -318,7 +320,9 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
     const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return;
     const identity = await enforce(session, request, 'read', reply); if (!identity) return;
     if (deps.mode !== 'mock') await ensureRuntimeRegistry(deps.database.rawPool, identity.id);
-    return reply.send({ ok: true, data: (await deps.database.rawPool.query('SELECT id, name, role, type, model_id, model_id AS "modelId", model_key_id, model_key_id AS "modelKeyId", model_mount_initialized AS "modelMountInitialized", execution_location AS "executionLocation", device_id AS "deviceId", enabled, version FROM agents WHERE identity_id = $1 ORDER BY created_at', [identity?.id ?? ''])).rows });
+    return reply.send({ ok: true, data: (await deps.database.rawPool.query(`SELECT id, name, role, type, model_id, model_id AS "modelId", model_key_id, model_key_id AS "modelKeyId", model_mount_initialized AS "modelMountInitialized", execution_location AS "executionLocation", device_id AS "deviceId", enabled, version,
+        COALESCE((SELECT count(*) FROM agent_skill_mounts m JOIN runtime_skill_catalog c ON c.identity_id=a.identity_id AND c.code=m.skill_code AND c.enabled WHERE m.agent_id=a.id),0)::int AS "skillCount"
+        FROM agents a WHERE identity_id = $1 ORDER BY created_at`, [identity?.id ?? ''])).rows });
   });
   app.get('/api/v1/models', async (_request, reply) => {
     if (!deps.database?.rawPool) return reply.code(503).send({ ok: false, error: { code: 'DATABASE_NOT_CONFIGURED', message: '数据库未配置' } });
@@ -544,7 +548,15 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
     const identity = await enforce(session, request, 'manage', reply); if (!identity) return;
     const { conversationId, agentId } = request.params as { conversationId: string; agentId: string };
     if (!identity || !(await deps.accounts.listAllConversations(identity.id)).some((item) => item.id === conversationId)) return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: '群聊不存在或无权访问' } });
-    if ((await deps.database.rawPool.query('SELECT name FROM agents WHERE id=$1', [agentId])).rows[0]?.name === '统筹智能体') return reply.code(400).send({ok:false,error:{code:'COORDINATOR_REQUIRED',message:'统筹智能体不能移出群聊'}});
+    const target = (await deps.database.rawPool.query(`SELECT a.name,a.enabled
+      FROM conversation_agents ca JOIN agents a ON a.id=ca.agent_id
+      WHERE ca.conversation_id=$1 AND ca.agent_id=$2 AND a.identity_id=$3`, [conversationId, agentId, identity.id])).rows[0];
+    if (!target) return reply.code(404).send({ ok: false, error: { code: 'AGENT_NOT_FOUND', message: '群聊智能体不存在或无权操作' } });
+    if (target.name === '统筹智能体') return reply.code(400).send({ok:false,error:{code:'COORDINATOR_REQUIRED',message:'统筹智能体不能移出群聊'}});
+    const remaining = (await deps.database.rawPool.query(`SELECT COUNT(*)::int AS count
+      FROM conversation_agents ca JOIN agents a ON a.id=ca.agent_id
+      WHERE ca.conversation_id=$1 AND a.enabled AND a.name<>'统筹智能体' AND ca.agent_id<>$2`, [conversationId, agentId])).rows[0]?.count ?? 0;
+    if (target.enabled && Number(remaining) < 1) return reply.code(409).send({ ok: false, error: { code: 'EXECUTOR_REQUIRED', message: '群聊至少需要保留一个可执行智能体' } });
     await deps.database.rawPool.query('DELETE FROM conversation_agents WHERE conversation_id=$1 AND agent_id=$2', [conversationId, agentId]); return reply.send({ ok: true, data: null });
   });
   // Read-only history browser; viewing records never reinforces their decay timestamp.
@@ -616,9 +628,8 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
   });
   app.get('/api/v1/conversations/:conversationId/runs/:runId/steps', async (request, reply) => {
     const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return;
-    const { conversationId, runId } = request.params as { conversationId: string; runId: string }; const identity = await identityFor(session.userId, request);
+    const { conversationId, runId } = request.params as { conversationId: string; runId: string }; const identity = await enforce(session, request, 'read', reply);
     if (!identity || !(await deps.accounts.listAllConversations(identity.id)).some((item) => item.id === conversationId)) return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: '运行记录不存在或无权访问' } });
-    await requirePermission(deps.database.rawPool, identity.id, 'read');
     const result = await deps.database.rawPool.query('SELECT st.id,st.run_id,st.step_index,st.title,st.instruction,st.assigned_agent_id,st.status,st.result,st.depends_on,st.agent_snapshot,st.created_at,st.updated_at FROM conversation_run_steps st JOIN conversation_runs r ON r.id=st.run_id WHERE st.run_id=$1 AND r.conversation_id=$2 ORDER BY st.step_index', [runId,conversationId]); return reply.send({ ok: true, data: result.rows });
   });
   app.post('/api/v1/conversations/:conversationId/runs/:runId/retry', async (request, reply) => {

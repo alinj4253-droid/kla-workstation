@@ -24,7 +24,15 @@ export async function registerRuntimeRoutes(app: FastifyInstance, deps: {pool:Po
   async function scope(request:FastifyRequest,reply:FastifyReply,action:PermissionAction='read') {
     const session=await accounts.getSession((request.headers.authorization??'').replace(/^Bearer /,''));
     if(!session){reply.code(401).send({ok:false,error:{code:'UNAUTHENTICATED',message:'请先登录'}});return null;}
-    const identity=(await accounts.listIdentities(session.userId)).find(i=>i.id===request.headers['x-identity-id']&&i.status==='active');
+    // Match the rest of the API: an explicit identity header is honoured, but
+    // clients that have not persisted it yet use the user's active default
+    // identity. Requiring the header here made first-login runtime calls fail
+    // with IDENTITY_REQUIRED while bootstrap and knowledge routes succeeded.
+    const identities=await accounts.listIdentities(session.userId);
+    const requested=request.headers['x-identity-id'];
+    const identity=typeof requested==='string'
+      ? identities.find(i=>i.id===requested&&i.status==='active')
+      : identities.find(i=>i.isDefault&&i.status==='active')??identities.find(i=>i.status==='active');
     if(!identity){reply.code(403).send({ok:false,error:{code:'IDENTITY_REQUIRED',message:'当前身份不可用'}});return null;}
     await requirePermission(pool,identity.id,action);return{identity,session};
   }

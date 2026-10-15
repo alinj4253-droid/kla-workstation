@@ -9,6 +9,18 @@ import { DEFAULT_AGENT_MODEL_ID, DEFAULT_AGENT_MODEL_NAME, type ComputeKey, type
 type Props = { identityId: string; notify: (text: string) => void };
 type AgentKey = Pick<ComputeKey, 'id' | 'name' | 'keyPrefix' | 'status' | 'isDefault'>;
 const isBuiltinAgent = (agent: RuntimeAgent): boolean => agent.type === 'official' || ['统筹智能体', '本地执行智能体', 'PPT助手', '路线规划助手'].includes(agent.name);
+/** 内置智能体的稳定编码（与「鲲擎2.0 交互演示版」一致）；非内置沿用 builtin.<id 前 8 位>。 */
+const builtinCodes: Record<string, string> = {
+  'GM智能体': 'builtin.gm', '统筹智能体': 'builtin.orchestrator', '统筹管理智能体': 'builtin.orchestrator',
+  '本地执行智能体': 'builtin.local-executor', 'PPT助手': 'builtin.ppt-assistant', '路线规划助手': 'builtin.route-assistant',
+};
+const agentCode = (agent: RuntimeAgent): string => agent.type === 'external' || agent.type === 'external-cli'
+  ? 'external.agent' : builtinCodes[agent.name] ?? `builtin.${agent.id.slice(0, 8)}`;
+/** 已启用技能数（后端 skillCount）；接口未提供时按钮不显示数字，保持兼容。 */
+const agentSkillCount = (agent: RuntimeAgent): number | null => {
+  const value = agent.skillCount ?? agent.skill_count;
+  return typeof value === 'number' ? value : null;
+};
 const agentDescription = (agent: RuntimeAgent): string => agent.name === 'PPT助手' ? '从材料生成可编辑 PPTX，支持大纲确认、对话改稿、质量检查及真实 PDF 预览。通过统一网关在本地执行。' : agent.name === '路线规划助手' ? '调用高德矩阵与固定起终点 TSP 算法，完成里程/时间/成本三策略路线优化与多线路拆分重排。通过统一网关在本地执行。' : agent.role || '暂无角色说明';
 
 const marketAgents = [
@@ -99,21 +111,34 @@ export function RuntimeAgentManagement({ identityId, notify, searchRequest }: Pr
     } catch { notify('保存失败，请检查后端连接'); } finally { setBusy(false); }
   };
 
+  /** 新建自定义智能体：预选当前身份的默认 Key 与平台默认模型。
+   *  「添加自定义智能体」卡片与工具栏「新建智能体」共用这一处逻辑。 */
+  const openNewAgent = () => {
+    const key = keys.find(item => item.isDefault) ?? keys[0];
+    setDraft({ id: null, name: '', role: '', modelId: key ? DEFAULT_AGENT_MODEL_ID : null, modelKeyId: key?.id ?? null, executionLocation: 'server', deviceId: null, enabled: true });
+  };
+
   return <div className="ws-agent-module">
     <div className="ws-agent-heading">
       <div><h1>智能体</h1><p>管理官方智能体、外接三方和自定义智能体；为每个角色配置模型与技能。</p></div>
-      {view === 'mine' && <button className="ws-primary" onClick={() => { const key = keys.find(item => item.isDefault); setDraft({ id: null, name: '', role: '', modelId: key ? DEFAULT_AGENT_MODEL_ID : null, modelKeyId: key?.id ?? null, executionLocation: 'server', deviceId: null, enabled: true }); }}><Plus size={15} /> 新建智能体</button>}
+      {view === 'mine' && <button className="ws-primary" onClick={openNewAgent}><Plus size={15} /> 新建智能体</button>}
     </div>
     <div className="ws-agent-tabs"><button className={view === 'mine' ? 'active' : ''} onClick={() => setView('mine')}>我的智能体 <small>· {agents.length}</small></button><button className={view === 'market' ? 'active' : ''} onClick={() => setView('market')}>智能体市场 <small>· {marketAgents.length}</small></button></div>
     {view === 'mine' ? <>
       <div className="ws-agent-toolbar"><label className="ws-agent-search"><Search size={15} /><input placeholder="搜索智能体..." value={query} onChange={(event) => setQuery(event.target.value)} /></label><div className="ws-agent-chips"><button className={filter === 'all' ? 'active' : ''} onClick={() => setFilter('all')}>全部 {agents.length}</button><button className={filter === 'builtin' ? 'active' : ''} onClick={() => setFilter('builtin')}>官方内置 {agents.filter(a => isBuiltinAgent(a)).length}</button><button className={filter === 'external' ? 'active' : ''} onClick={() => setFilter('external')}>外接三方 {agents.filter(a => a.type === 'external' || a.type === 'external-cli').length}</button><button className={filter === 'custom' ? 'active' : ''} onClick={() => setFilter('custom')}>自定义 {agents.filter(a => !isBuiltinAgent(a) && a.type !== 'external' && a.type !== 'external-cli').length}</button></div></div>
       <div className="ws-agent-grid">{visibleAgents.map(agent => <article className="ws-agent-card" key={agent.id}>
-        <div className="ws-agent-card-head"><span className={`ws-agent-avatar is-${avatarTone(agent.name)}`}>{agent.name.slice(0, 1)}</span><div><h3>{agent.name}</h3><small className="ws-agent-code">{agent.type === 'external' || agent.type === 'external-cli' ? 'external.agent' : `builtin.${agent.id.slice(0, 8)}`}</small></div><button className={`ws-agent-switch ${agent.enabled ? 'active' : ''}`} aria-label="切换启用状态" disabled={agent.name === '统筹智能体'} onClick={() => void runtimeApi.toggleAgent(agent.id, !agent.enabled).then(result => { if (result.ok) void load(); else notify(result.message); }).catch(() => notify('操作失败'))}><span /></button></div>
+        <div className="ws-agent-card-head"><span className={`ws-agent-avatar is-${avatarTone(agent.name)}`}>{agent.name.slice(0, 1)}</span><div><h3>{agent.name}</h3><small className="ws-agent-code">{agentCode(agent)}</small></div><button className={`ws-agent-switch ${agent.enabled ? 'active' : ''}`} aria-label="切换启用状态" disabled={agent.name === '统筹智能体'} onClick={() => void runtimeApi.toggleAgent(agent.id, !agent.enabled).then(result => { if (result.ok) void load(); else notify(result.message); }).catch(() => notify('操作失败'))}><span /></button></div>
         <div className="ws-agent-tags"><Badge tone={isBuiltinAgent(agent) || agent.type === 'external' || agent.type === 'external-cli' ? 'blue' : 'muted'}>{isBuiltinAgent(agent) ? '官方内置' : agent.type === 'external' || agent.type === 'external-cli' ? '外接三方' : '自定义'}</Badge><Badge tone={agent.enabled ? 'green' : 'muted'}>{agent.enabled ? '已启用' : '已停用'}</Badge></div>
         <div className="ws-agent-fields"><span><b>运行方式</b>{agent.name === '统筹智能体' ? '服务端编排智能体' : (agent.executionLocation ?? agent.execution_location) === 'local' ? '本地执行智能体' : '服务端执行'}</span><span><b>挂载模型</b>{(agent.modelId ?? agent.model_id) === DEFAULT_AGENT_MODEL_ID ? DEFAULT_AGENT_MODEL_NAME : agent.modelId ?? agent.model_id ?? (agent.modelMountInitialized === false ? '正在初始化默认 Key…' : '未挂载模型')}</span></div>
         <p className="ws-agent-description">{agentDescription(agent)}</p>
-        <footer><button onClick={() => setDraft({ id: agent.id, name: agent.name, role: agent.role, modelId: agent.modelId ?? agent.model_id ?? null, modelKeyId: agent.modelKeyId ?? agent.model_key_id ?? null, executionLocation: agent.executionLocation ?? agent.execution_location ?? 'server', deviceId: agent.deviceId ?? agent.device_id ?? null, enabled: agent.enabled })}><Cpu size={14} /> 挂载模型</button><button onClick={() => setCapabilityAgent(agent)}><Sparkles size={14} /> 技能管理</button><button onClick={() => notify(`权限管理：${agent.name}`)}><KeyRound size={14} /> 权限</button></footer>
-      </article>)}</div>
+        <footer><button onClick={() => setDraft({ id: agent.id, name: agent.name, role: agent.role, modelId: agent.modelId ?? agent.model_id ?? null, modelKeyId: agent.modelKeyId ?? agent.model_key_id ?? null, executionLocation: agent.executionLocation ?? agent.execution_location ?? 'server', deviceId: agent.deviceId ?? agent.device_id ?? null, enabled: agent.enabled })}><Cpu size={14} /> 挂载模型</button><button onClick={() => setCapabilityAgent(agent)}><Sparkles size={14} /> 技能管理{agentSkillCount(agent) === null ? '' : ` · ${agentSkillCount(agent)}`}</button><button onClick={() => notify(`权限管理：${agent.name}`)}><KeyRound size={14} /> 权限管理</button></footer>
+      </article>)}
+        {/* 原型（交互演示版）里的「添加自定义智能体」卡片：官方/自定义智能体之外的入口，固定排在网格最后 */}
+        <article className="ws-agent-card ws-agent-card-add">
+          <div className="ws-agent-card-head"><span className="ws-agent-avatar is-add"><Plus size={18} /></span><div><h3>添加自定义智能体</h3><small>连接外部三方 Agent 或基于工作流新建专属执行器</small></div></div>
+          <button className="ws-primary ws-agent-add" onClick={openNewAgent}><Plus size={15} /> 新建智能体</button>
+        </article>
+      </div>
     </> : <AgentMarket notify={notify} installedNames={agents.map(agent => agent.name)} onInstalled={load} />}
     {draft && <AgentEditor draft={draft} setDraft={setDraft} keys={keys} keyModels={keyModels} modelLoading={modelLoading} modelError={modelError} devices={devices} busy={busy} save={save} />}
     {capabilityAgent && <AgentCapabilityEditor agent={capabilityAgent} notify={notify} onClose={() => setCapabilityAgent(null)} />}

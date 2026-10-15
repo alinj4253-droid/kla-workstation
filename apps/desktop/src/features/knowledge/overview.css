@@ -28,6 +28,7 @@
 .kl-stats strong { display: block; font-size: 28px; font-weight: 650; line-height: 1.4; margin: 8px 0; overflow-wrap: anywhere; }
 .kl-stats small { display: block; color: var(--kq-text-tertiary); font-size: 11px; }
 .kl-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
+.kl-count { margin-left: auto; color: var(--kq-text-tertiary); font-size: 12px; white-space: nowrap; }
 .kl-search { display: flex; align-items: center; gap: 8px; border: 1px solid var(--kq-border); border-radius: 8px; padding: 0 12px; background: var(--kq-surface); color: var(--kq-text-tertiary); min-height: 36px; flex: 1; min-width: 220px; }
 .kl-search input { background: transparent; border: 0; width: 100%; height: 34px; color: var(--kq-text); outline: 0; }
 .kl-module .kl-search:focus-within { outline: 0; outline-offset: 0; border-color: #9fc4fa; background: #fff; box-shadow: 0 0 0 3px #edf5ff; }

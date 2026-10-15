@@ -51,12 +51,15 @@ export function KnowledgePage({ view = 'overview', slots = {}, libraries, loadin
   const records = jobs.data?.jobs ?? [];
   const sliceData = useKnowledgeSlices(activeContext, sources.data?.documents ?? [], { enabled: sources.isSuccess && Boolean(activeCollection), processing: records.some(job => ['queued', 'running'].includes(job.state)), pollIntervalMs: config?.settings.pollIntervalMs ?? 4000 });
   const sliceCount = sliceData.count;
+  // 上游「作业 done 但零切片」的静默失败：切片结果已确认取到且为 0、同时存在 done 作业、
+  // 且当前确实有原件时，库状态不能显示为正常，否则用户会以为入库成功而实际没有可检索内容。
+  const productMissing = sliceData.complete && (sliceCount ?? 0) === 0 && records.some(job => job.state === 'done') && (sources.data?.documents.length ?? 0) > 0;
   const names = new Map(sources.data?.bindings.map(binding => [binding.docId, binding.displayName]));
   const localBases: KnowledgeBase[] = catalog.entries.map(entry => {
     const current = entry.id === activeContext.knowledgeBaseId;
     const totals = statistics.data?.collections.find(item => item.knowledgeBaseId === entry.id
       || (!item.knowledgeBaseId && item.collection === entry.collection));
-    const status = health.isError || (current && (sources.isError || jobs.isError)) ? 'error' : health.data?.status !== 'ok' ? 'pending' : current && records.some(job => ['queued', 'running'].includes(job.state)) ? 'processing' : 'ready';
+    const status = health.isError || (current && (sources.isError || jobs.isError)) ? 'error' : health.data?.status !== 'ok' ? 'pending' : current && productMissing ? 'error' : current && records.some(job => ['queued', 'running'].includes(job.state)) ? 'processing' : 'ready';
     return { ...entry, status, context: { ...activeContext, collection: entry.collection, knowledgeBaseId: entry.id, scope: entry.scope, ...(entry.projectId ? { projectId: entry.projectId } : {}), ...(entry.organizationId ? { organizationId: entry.organizationId } : {}), ...(entry.personalIdentityId ? { personalIdentityId: entry.personalIdentityId } : {}), capabilities: { ...activeContext.capabilities, canUpload: entry.canWrite === true } }, ...(totals ? { fileCount: totals.fileCount, chunkCount: totals.chunkCount, sourceNames: totals.sourceNames } : {}), sourceDocIds: current ? sources.data?.documents.map(doc => doc.doc_id) ?? [] : [],
       ...(current && sources.isSuccess ? { fileCount: sources.data.documents.length, sourceNames: sources.data.documents.map(doc => names.get(doc.doc_id) ?? doc.name) } : {}), ...(current && sliceCount !== undefined && (!totals || sliceData.complete) ? { chunkCount: sliceCount } : {}),
     };

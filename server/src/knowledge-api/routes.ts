@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { Pool } from 'pg';
 import { z } from 'zod';
-import { knowledgeCatalogSchema, initialKnowledgeCatalog, normalizeKnowledgeCatalog, uploadNameCheckSchema, uploadSliceNameKey, KNOWLEDGE_UPLOAD_LIMIT, jobInputSchema, jobSnapshotSchema, isTerminalJobState, type JobEvent } from '@kla-workstation/contracts/knowledge';
+import { knowledgeCatalogSchema, libraryEntrySchema, initialKnowledgeCatalog, normalizeKnowledgeCatalog, uploadNameCheckSchema, uploadSliceNameKey, KNOWLEDGE_UPLOAD_LIMIT, jobInputSchema, jobSnapshotSchema, isTerminalJobState, type JobEvent } from '@kla-workstation/contracts/knowledge';
 import type { AccountRepository } from '../repositories/types.js';
 import { requirePermission } from '../auth/permission-service.js';
 import { createScope, inScope, readStored, atomicStored, type KnowledgeStore } from './context.js';
@@ -21,9 +21,52 @@ import { scopedSearchInputSchema, searchScopedKnowledge } from '../auth/knowledg
 import { libraryStatistics, scopedLibraryStatistics } from './statistics.js';
 import { serviceInputSchema } from '@kla-workstation/contracts/knowledge';
 
+/**
+ * 知识库错误码 → HTTP 状态码。
+ *
+ * 之前只映射了 403/404/409/400，其余一律 502：体积超限、格式不支持、重复提交、
+ * 主动取消都被报成「上游故障」，用户拿到的建议是「稍后重试」而实际要换文件/改参数。
+ * 这里按语义补齐，只有真正的上游/内部错误才留在 5xx。
+ */
+export function failureStatus(code: string): number {
+  switch (code) {
+    case 'UNAUTHENTICATED': return 401;
+    case 'PERMISSION_DENIED': return 403;
+    case 'NOT_FOUND': return 404;
+    case 'CONFLICT': case 'DUPLICATE_REQUEST': case 'RUN_CANCELLED': return 409;
+    case 'VALIDATION_FAILED': return 400;
+    case 'FILE_TOO_LARGE': return 413;
+    case 'FILE_TYPE_UNSUPPORTED': return 415;
+    case 'CHANNEL_CONNECTION_FAILED': return 503;
+    default: return 502;
+  }
+}
+
+/**
+ * 检索链路的两个哨兵错误（见 ../auth/knowledge-search.ts）是普通 Error。
+ * 不识别就会落进「未知错误 → 502 INTERNAL_ERROR」，把「越权拒绝」伪装成上游故障。
+ */
+function scopeSentinel(error: unknown): KnowledgeError {
+  if (error instanceof Error && error.message === 'KNOWLEDGE_SCOPE_DENIED') return new KnowledgeError('PERMISSION_DENIED', '当前身份无权访问该知识范围。');
+  if (error instanceof Error && error.message === 'KNOWLEDGE_SCOPE_PROTOCOL') return new KnowledgeError('KNOWLEDGE_INGEST_FAILED', '知识检索范围校验异常，请稍后重试。', true);
+  return new KnowledgeError('INTERNAL_ERROR', '知识库操作失败，请刷新后确认结果。');
+}
+
 export async function registerKnowledgeRoutes(app: FastifyInstance, deps: { accounts: AccountRepository; store: KnowledgeStore; pool?: Pool; encryptionKey?: string; mock?: boolean }) {
   const sessions = new Map<string, { scope: ReturnType<typeof createScope>; initialized: Promise<void> }>();
   let sequence = 0;
+  async function readLocalCatalog(): Promise<import('@kla-workstation/contracts/knowledge').LibraryEntry[]> {
+    try {
+      const parsed = knowledgeCatalogSchema.parse(await readStored('catalog.json'));
+      const normalized = normalizeKnowledgeCatalog(parsed);
+      if (normalized.changed) await atomicStored('catalog.json', normalized.entries);
+      return normalized.entries;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      await atomicStored('catalog.json', initialKnowledgeCatalog);
+      return initialKnowledgeCatalog;
+    }
+  }
   const auth = async (request: FastifyRequest, reply: FastifyReply, write: boolean) => {
     const token = request.headers.authorization?.replace(/^Bearer /, '') ?? '';
     const session = await deps.accounts.getSession(token);
@@ -47,9 +90,10 @@ export async function registerKnowledgeRoutes(app: FastifyInstance, deps: { acco
     return entry.scope;
   };
   const fail = (error: unknown, request: FastifyRequest, reply: FastifyReply) => {
-    const mapped = error instanceof KnowledgeError ? error : error instanceof z.ZodError ? new KnowledgeError('VALIDATION_FAILED', '请求参数不正确。') : new KnowledgeError('INTERNAL_ERROR', '知识库操作失败，请刷新后确认结果。');
-    const status = mapped.code === 'PERMISSION_DENIED' ? 403 : mapped.code === 'NOT_FOUND' ? 404 : mapped.code === 'CONFLICT' ? 409 : mapped.code === 'VALIDATION_FAILED' ? 400 : 502;
-    return reply.code(status).send({ ok: false, error: { code: mapped.code, message: mapped.message, retryable: mapped.retryable, details: mapped.details }, meta: { requestId: request.id } });
+    const mapped = error instanceof KnowledgeError ? error : error instanceof z.ZodError ? new KnowledgeError('VALIDATION_FAILED', '请求参数不正确。') : scopeSentinel(error);
+    // 服务端/上游类错误必须留痕：之前 fail() 只回包不记录，线上只能靠现象猜。
+    if (['INTERNAL_ERROR', 'KNOWLEDGE_INGEST_FAILED', 'CHANNEL_CONNECTION_FAILED'].includes(mapped.code)) request.log.error({ err: error }, 'knowledge library operation failed');
+    return reply.code(failureStatus(mapped.code)).send({ ok: false, error: { code: mapped.code, message: mapped.message, retryable: mapped.retryable, details: mapped.details }, meta: { requestId: request.id } });
   };
   if (!app.hasContentTypeParser('application/octet-stream')) {
     app.addContentTypeParser('application/octet-stream', { parseAs: 'buffer', bodyLimit: KNOWLEDGE_UPLOAD_LIMIT }, (_request, body, done) => done(null, body));
@@ -62,13 +106,10 @@ export async function registerKnowledgeRoutes(app: FastifyInstance, deps: { acco
       const data = await inScope(scope, async () => {
         if (operation === 'getCatalog') {
           if (deps.pool && !deps.mock) return listAccessibleLibraries(deps.pool, scope.owner);
-          let entries;
-          try { entries = knowledgeCatalogSchema.parse(await readStored('catalog.json')); }
-          catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; await atomicStored('catalog.json', initialKnowledgeCatalog); return initialKnowledgeCatalog; }
-          // 集合名规范化：存量目录里的旧集合名自动升级并回写（拉代码重启即生效）
-          const normalized = normalizeKnowledgeCatalog(entries);
-          if (normalized.changed) { await atomicStored('catalog.json', normalized.entries); console.log('[knowledge] catalog 集合名已自动升级为当前约定名'); }
-          return normalized.entries;
+          // Mock/local mode has no database-backed library repository. Keep a
+          // scoped catalog in the same encrypted store used by the rest of the
+          // knowledge module so the preview supports the real CRUD flow.
+          return (await readLocalCatalog()).map(entry => ({ ...entry, canWrite: true }));
         }
         if (operation === 'getStatistics') {
           const input = serviceInputSchema.parse(request.body);
@@ -85,6 +126,35 @@ export async function registerKnowledgeRoutes(app: FastifyInstance, deps: { acco
           if (deps.pool && !deps.mock) throw new KnowledgeError('PERMISSION_DENIED', '请使用知识库创建和编辑接口。');
           const entries = normalizeKnowledgeCatalog(knowledgeCatalogSchema.parse(request.body)).entries;
           await atomicStored('catalog.json', entries); return entries;
+        }
+        if (deps.mock && operation === 'createLibrary') {
+          // Keep the mock contract identical to the database-backed route:
+          // callers provide library fields, while the server owns timestamps
+          // and the write capability flag.
+          const input = libraryInputSchema.parse(request.body);
+          const entries = await readLocalCatalog();
+          if (entries.some(entry => entry.id === input.id)) throw new KnowledgeError('CONFLICT', '知识库已经存在。');
+          const entry = libraryEntrySchema.parse({ ...input, updatedAt: new Date().toISOString(), canWrite: true });
+          const normalized = normalizeKnowledgeCatalog([...entries, entry]).entries;
+          await atomicStored('catalog.json', normalized);
+          return { ...normalized.find(item => item.id === entry.id)!, canWrite: true };
+        }
+        if (deps.mock && operation === 'updateLibrary') {
+          const input = libraryUpdateSchema.parse(request.body);
+          const entries = await readLocalCatalog();
+          const current = entries.find(entry => entry.id === input.id);
+          if (!current) throw new KnowledgeError('NOT_FOUND', '知识库不存在。');
+          const updated = { ...current, name: input.name, description: input.description, updatedAt: new Date().toISOString(), canWrite: true };
+          const next = entries.map(entry => entry.id === input.id ? updated : entry);
+          await atomicStored('catalog.json', next);
+          return updated;
+        }
+        if (deps.mock && operation === 'deleteLibrary') {
+          const { id } = z.object({ id: z.string().uuid() }).parse(request.body);
+          const entries = await readLocalCatalog();
+          if (!entries.some(entry => entry.id === id)) throw new KnowledgeError('NOT_FOUND', '知识库不存在。');
+          await atomicStored('catalog.json', entries.filter(entry => entry.id !== id));
+          return true;
         }
         if (deps.pool && !deps.mock && operation === 'createLibrary') {
           const created = await createLibrary(deps.pool, scope.owner, libraryInputSchema.parse(request.body));
