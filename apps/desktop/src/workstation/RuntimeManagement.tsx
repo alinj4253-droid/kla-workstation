@@ -224,10 +224,41 @@ function AgentCapabilityEditor({ agent, notify, onClose }: { agent: RuntimeAgent
 export function RuntimeSkillManagement({ identityId, notify }: Props): React.JSX.Element {
   const [skills, setSkills] = useState<RuntimeSkill[]>([]);
   const [query, setQuery] = useState('');
+  const [agentFilter, setAgentFilter] = useState('all');
   const [loading, setLoading] = useState(true);
-  useEffect(() => { let live = true; setLoading(true); void runtimeApi.skills().then(result => { if (!live) return; if (result.ok) setSkills(result.data); else notify(result.message); }).catch(() => notify('技能加载失败')).finally(() => { if (live) setLoading(false); }); return () => { live = false; }; }, [identityId]);
-  const visible = skills.filter(skill => !query || `${skill.name} ${skill.description} ${skill.tool_codes.join(' ')}`.toLowerCase().includes(query.toLowerCase()));
-  return <div className="ws-agent-module"><div className="ws-agent-heading"><div><h1>技能</h1><p>技能包定义及其调用工具。</p></div></div><div className="ws-skill-toolbar"><label className="ws-agent-search"><Search size={15} /><input placeholder="搜索技能名称…" value={query} onChange={event => setQuery(event.target.value)} /></label><Badge tone="blue">技能目录 {skills.length}</Badge></div>{loading ? <p className="ws-empty-line">正在加载技能…</p> : <div className="ws-skill-table"><div className="ws-skill-row ws-skill-header"><span>技能</span><span>编号</span><span>所需工具</span><span>状态</span></div>{visible.map(skill => <div className="ws-skill-row" key={skill.code}><span><b>{skill.name}</b><small>{skill.description}</small></span><span>{skill.code}</span><span className="ws-skill-tools">{skill.tool_codes.join('、')}</span><Badge tone={skill.enabled ? 'green' : 'muted'}>{skill.enabled ? '可用' : '停用'}</Badge></div>)}</div>}</div>;
+  const [creating, setCreating] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [draft, setDraft] = useState({ code: '', name: '', description: '', toolCodes: '' });
+  const load = async (): Promise<void> => {
+    setLoading(true);
+    const result = await runtimeApi.skills();
+    if (result.ok) setSkills(result.data); else notify(result.message);
+    setLoading(false);
+  };
+  useEffect(() => { void load().catch(() => { setLoading(false); notify('技能加载失败'); }); }, [identityId]);
+  const agentNames = Array.from(new Set(skills.flatMap(skill => skill.agents ?? [])));
+  const visible = skills.filter(skill => (!query || `${skill.name} ${skill.description} ${skill.code} ${skill.tool_codes.join(' ')}`.toLowerCase().includes(query.toLowerCase()))
+    && (agentFilter === 'all' || (agentFilter === 'none' ? !(skill.agents ?? []).length : (skill.agents ?? []).includes(agentFilter))));
+  // 技能启停立即写回（沿用既有 PATCH /v1/skills/:code），因此不再需要单独的「保存技能配置」。
+  const toggle = async (skill: RuntimeSkill, enabled: boolean): Promise<void> => {
+    const result = await runtimeApi.toggleSkill(skill.code, enabled);
+    if (!result.ok) { notify(result.message); return; }
+    setSkills(items => items.map(item => item.code === skill.code ? { ...item, enabled } : item));
+  };
+  const create = async (): Promise<void> => {
+    if (!draft.code.trim() || !draft.name.trim()) { notify('技能编号与名称不能为空'); return; }
+    setBusy(true);
+    const result = await runtimeApi.saveSkill({ code: draft.code.trim(), name: draft.name.trim(), description: draft.description.trim(), toolCodes: draft.toolCodes.split(/[,\s、]+/).filter(Boolean) });
+    setBusy(false);
+    if (!result.ok) { notify(result.message); return; }
+    setCreating(false); setDraft({ code: '', name: '', description: '', toolCodes: '' }); await load(); notify(`技能「${result.data.name}」已创建并启用`);
+  };
+  const restore = async (): Promise<void> => {
+    const result = await runtimeApi.restoreSkills();
+    if (!result.ok) { notify(result.message); return; }
+    await load(); notify(`已恢复 ${result.data.restored} 个内置技能的默认配置`);
+  };
+  return <div className="ws-agent-module"><div className="ws-agent-heading"><div><h1>技能</h1><p>每个技能绑定到具体的内置智能体；所需工具决定该技能运行时可调用的能力边界。</p></div><button className="ws-primary" onClick={() => setCreating(true)}><Plus size={15} /> 新建技能</button></div><div className="ws-skill-toolbar"><label className="ws-agent-search"><Search size={15} /><input placeholder="搜索技能名称…" value={query} onChange={event => setQuery(event.target.value)} /></label><label className="ws-skill-filter">绑定智能体<select value={agentFilter} onChange={event => setAgentFilter(event.target.value)}><option value="all">全部智能体</option><option value="none">未绑定</option>{agentNames.map(name => <option key={name} value={name}>{name}</option>)}</select></label><Badge tone="blue">技能目录 {skills.length}</Badge></div>{loading ? <p className="ws-empty-line">正在加载技能…</p> : !visible.length ? <p className="ws-empty-line">没有匹配的技能</p> : <div className="ws-skill-table"><div className="ws-skill-row ws-skill-header"><span>技能</span><span>绑定智能体</span><span>所需工具</span><span>启用</span></div>{visible.map(skill => <div className="ws-skill-row" key={skill.code}><span><b>{skill.name}</b><small>{skill.description}</small><small className="ws-agent-code">{skill.code}</small></span><span>{(skill.agents ?? []).length ? (skill.agents ?? []).join('、') : '未绑定'}</span><span className="ws-skill-tools">{skill.tool_codes.join('、') || '—'}</span><button role="switch" aria-label={`${skill.name} 启用状态`} aria-checked={skill.enabled} className={`ws-agent-switch ${skill.enabled ? 'active' : ''}`} onClick={() => void toggle(skill, !skill.enabled)}><span /></button></div>)}</div>}<div className="ws-skill-footer"><small>技能启停立即生效；「恢复默认」按服务端定义回写内置技能并重新启用。</small><button onClick={() => void restore()}><Sparkles size={14} /> 恢复默认</button></div>{creating && <div className="ws-modal-backdrop"><div className="ws-modal"><header><h2>新建技能</h2><IconButton title="关闭" onClick={() => setCreating(false)}><X size={18} /></IconButton></header><label className="ws-settings-field">技能编号<input value={draft.code} placeholder="custom_report（小写字母/数字/下划线）" onChange={event => setDraft(current => ({ ...current, code: event.target.value }))} /></label><label className="ws-settings-field">名称<input value={draft.name} maxLength={60} onChange={event => setDraft(current => ({ ...current, name: event.target.value }))} /></label><label className="ws-settings-field">说明<input value={draft.description} maxLength={240} onChange={event => setDraft(current => ({ ...current, description: event.target.value }))} /></label><label className="ws-settings-field">所需工具<input value={draft.toolCodes} placeholder="以空格或逗号分隔，可留空" onChange={event => setDraft(current => ({ ...current, toolCodes: event.target.value }))} /></label><footer><button onClick={() => setCreating(false)}>取消</button><button className="ws-primary" disabled={busy} onClick={() => void create()}>{busy ? '创建中…' : '创建并启用'}</button></footer></div></div>}</div>;
 }
 
 export function RuntimeToolManagement({ identityId, notify }: Props): React.JSX.Element {

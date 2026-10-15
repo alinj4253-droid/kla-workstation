@@ -20,7 +20,7 @@ import type { ObjectStore } from './storage/object-store.js';
 import { registerFileRoutes } from './storage/routes.js';
 import { registerTaskRoutes } from './tasks/routes.js';
 import { messageFileReferences } from './storage/file-access.js';
-import { createMessageRequestSchema } from '@kla-workstation/contracts';
+import { createMessageRequestSchema, runtimeSkillBundles } from '@kla-workstation/contracts';
 import { channelStats, isChannelType, listActivity, listChannels, removeChannel, saveChannel, setChannelEnabled } from './channels/registry.js';
 
 /** pino 子 logger 支持运行时 setBindings；FastifyBaseLogger 类型未暴露，且 logger:false 的 noop 实现没有该方法（规范 §3）。 */
@@ -654,7 +654,37 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
   });
   app.get('/api/v1/skills', async (request, reply) => {
     const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return; const identity = await enforce(session, request, 'read', reply); if (!identity) return;
-    if (deps.mode !== 'mock') await ensureRuntimeRegistry(deps.database.rawPool, identity.id); const result = await deps.database.rawPool.query('SELECT code,name,description,tool_codes,enabled FROM runtime_skill_catalog WHERE identity_id=$1 ORDER BY created_at,code', [identity.id]); return reply.send({ ok: true, data: result.rows });
+    if (deps.mode !== 'mock') await ensureRuntimeRegistry(deps.database.rawPool, identity.id); const result = await deps.database.rawPool.query('SELECT code,name,description,tool_codes,enabled FROM runtime_skill_catalog WHERE identity_id=$1 ORDER BY created_at,code', [identity.id]);
+    // 技能 → 绑定智能体（原型技能页的「绑定智能体」列）。这条查询在 mock 模式下可能不被
+    // 目录池支持，失败时退化为空列表，不影响技能目录本身可读。
+    let bindings: Array<{ skill_code: string; agent_name: string }> = [];
+    try {
+      bindings = (await deps.database.rawPool.query(`SELECT m.skill_code, a.name AS agent_name FROM agent_skill_mounts m JOIN agents a ON a.id=m.agent_id WHERE a.identity_id=$1 ORDER BY a.created_at`, [identity.id])).rows as Array<{ skill_code: string; agent_name: string }>;
+    } catch { bindings = []; }
+    return reply.send({ ok: true, data: result.rows.map(row => ({ ...row, agents: bindings.filter(item => item.skill_code === row.code).map(item => item.agent_name) })) });
+  });
+  // 新建自定义技能（原型技能页「新建技能」）：写入该身份的技能目录，默认启用并绑定所需工具。
+  app.post('/api/v1/skills', async (request, reply) => {
+    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return; const identity = await enforce(session, request, 'manage', reply); if (!identity) return;
+    const body = (request.body ?? {}) as { code?: string; name?: string; description?: string; toolCodes?: string[] };
+    const code = (body.code ?? '').trim().toLowerCase().replace(/[^a-z0-9_]+/g, '_').slice(0, 48);
+    const name = (body.name ?? '').trim().slice(0, 60);
+    if (!code || !name) return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: '技能编号与名称不能为空' } });
+    const tools = Array.isArray(body.toolCodes) ? body.toolCodes.filter(value => typeof value === 'string') : [];
+    try {
+      const created = await deps.database.rawPool.query(`INSERT INTO runtime_skill_catalog(identity_id,code,name,description,tool_codes) VALUES($1,$2,$3,$4,$5::text[]) ON CONFLICT(identity_id,code) DO UPDATE SET name=EXCLUDED.name,description=EXCLUDED.description,tool_codes=EXCLUDED.tool_codes,enabled=true RETURNING code,name,description,tool_codes,enabled`, [identity.id, code, name, (body.description ?? '').trim().slice(0, 240), tools]);
+      return reply.send({ ok: true, data: { ...created.rows[0], agents: [] } });
+    } catch { return reply.code(502).send({ ok: false, error: { code: 'KNOWLEDGE_INGEST_FAILED', message: '技能目录写入失败，请稍后重试' } }); }
+  });
+  // 恢复默认（原型技能页「恢复默认」）：把内置技能按服务端定义回写并重新启用。
+  app.post('/api/v1/skills/restore', async (request, reply) => {
+    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return; const identity = await enforce(session, request, 'manage', reply); if (!identity) return;
+    const codes = runtimeSkillBundles.map(bundle => bundle.code);
+    try {
+      await ensureRuntimeRegistry(deps.database.rawPool, identity.id);
+      await deps.database.rawPool.query('UPDATE runtime_skill_catalog SET enabled=true WHERE identity_id=$1 AND code = ANY($2::text[])', [identity.id, codes]);
+    } catch { return reply.code(502).send({ ok: false, error: { code: 'KNOWLEDGE_INGEST_FAILED', message: '恢复默认技能失败，请稍后重试' } }); }
+    return reply.send({ ok: true, data: { restored: codes.length } });
   });
   app.post('/api/v1/conversations/:conversationId/runs/:runId/cancel', async (request, reply) => {
     const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return; const identity = await enforce(session, request, 'write', reply); if (!identity) return; const { conversationId, runId } = request.params as { conversationId: string; runId: string }; if (!(await deps.accounts.listAllConversations(identity.id)).some((item) => item.id === conversationId)) return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: '运行记录不存在或无权访问' } }); const result = await deps.database.rawPool.query("UPDATE conversation_runs SET status='cancelled', result=jsonb_build_object('cancelled',true), updated_at=now() WHERE id=$1 AND conversation_id=$2 AND status IN('queued','running','waiting_device','waiting_tool','waiting_approval') RETURNING *", [runId, conversationId]); if (!result.rows[0]) return reply.code(409).send({ ok: false, error: { code: 'RUN_NOT_ACTIVE', message: '运行已结束，无法取消' } }); await deps.database.rawPool.query("UPDATE runtime_tool_calls SET status='cancelled' WHERE step_id IN(SELECT id FROM conversation_run_steps WHERE run_id=$1) AND status IN('queued','running')", [runId]); await deps.database.rawPool.query("UPDATE conversation_run_steps SET status='cancelled' WHERE run_id=$1 AND status NOT IN('completed','failed')",[runId]); deps.loopWorker?.cancel(runId); return reply.send({ ok: true, data: result.rows[0] });

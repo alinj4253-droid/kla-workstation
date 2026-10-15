@@ -2,10 +2,10 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_AGENT_MODEL_ID } from '@kla-workstation/contracts';
-import { RuntimeAgentManagement } from './RuntimeManagement';
+import { RuntimeAgentManagement, RuntimeSkillManagement } from './RuntimeManagement';
 
-const { agents, keys, keyModels, saveAgent, installHomeAi } = vi.hoisted(() => ({ agents: vi.fn(), keys: vi.fn(), keyModels: vi.fn(), saveAgent: vi.fn(), installHomeAi:vi.fn() }));
-vi.mock('../api/runtime', () => ({ runtimeApi: { agents, devices: async () => ({ ok: true, data: [] }), keyModels, saveAgent, installHomeAi } }));
+const { agents, keys, keyModels, saveAgent, installHomeAi, skills, toggleSkill, saveSkill, restoreSkills } = vi.hoisted(() => ({ agents: vi.fn(), keys: vi.fn(), keyModels: vi.fn(), saveAgent: vi.fn(), installHomeAi:vi.fn(), skills: vi.fn(), toggleSkill: vi.fn(), saveSkill: vi.fn(), restoreSkills: vi.fn() }));
+vi.mock('../api/runtime', () => ({ runtimeApi: { agents, devices: async () => ({ ok: true, data: [] }), keyModels, saveAgent, installHomeAi, skills, toggleSkill, saveSkill, restoreSkills } }));
 vi.mock('../api/compute', () => ({ computeApi: { keys } }));
 const defaultKey = { id: 'default-key', name: '默认工作站 Key', keyPrefix: 'sk-default', status: 'active', isDefault: true };
 const alternateKey = { id: 'alternate-key', name: '自选 Key', keyPrefix: 'sk-alt', status: 'active', isDefault: false };
@@ -58,6 +58,39 @@ describe('智能体默认模型与 Key', () => {
     expect(within(local).getByRole('button', { name: /技能管理 · 3/ })).toBeInTheDocument();
     const custom = screen.getByText('邮箱操作智能体').closest('article')!;
     expect(within(custom).getByRole('button', { name: /技能管理 · 0/ })).toBeInTheDocument();
+  });
+
+  it('技能页：显示绑定智能体、开关立即写回，并支持新建与恢复默认', async () => {
+    const user = userEvent.setup();
+    const notify = vi.fn();
+    skills.mockResolvedValue({ ok: true, data: [
+      { code: 'knowledge_research', name: '知识检索', description: '检索知识库并标注来源', tool_codes: ['kb_search'], enabled: true, agents: ['本地执行智能体', 'PPT助手'] },
+      { code: 'custom_report', name: '报表生成', description: '按模板生成报表', tool_codes: [], enabled: false, agents: [] },
+    ] });
+    toggleSkill.mockResolvedValue({ ok: true, data: { code: 'knowledge_research', name: '知识检索', description: '', tool_codes: [], enabled: false } });
+    saveSkill.mockResolvedValue({ ok: true, data: { code: 'custom_x', name: '自定义技能', description: '', tool_codes: [], enabled: true } });
+    restoreSkills.mockResolvedValue({ ok: true, data: { restored: 8 } });
+    render(<RuntimeSkillManagement identityId="identity-1" notify={notify} />);
+    // 绑定智能体列（原型技能页要求）
+    expect(await screen.findByText('本地执行智能体、PPT助手')).toBeInTheDocument();
+    // 未绑定的技能在「绑定智能体」列显示未绑定（select 里也有同名选项，所以在行内断言）
+    const customRow = screen.getByText('报表生成').closest('.ws-skill-row')!;
+    expect(within(customRow).getByText('未绑定')).toBeInTheDocument();
+    // 开关直接调用既有 PATCH 接口
+    await user.click(screen.getByRole('switch', { name: '知识检索 启用状态' }));
+    await waitFor(() => expect(toggleSkill).toHaveBeenCalledWith('knowledge_research', false));
+    // 恢复默认
+    await user.click(screen.getByRole('button', { name: /恢复默认/ }));
+    await waitFor(() => expect(restoreSkills).toHaveBeenCalled());
+    await waitFor(() => expect(notify).toHaveBeenCalledWith('已恢复 8 个内置技能的默认配置'));
+    // 新建技能：编号与名称必填
+    await user.click(screen.getByRole('button', { name: /新建技能/ }));
+    await user.click(screen.getByRole('button', { name: '创建并启用' }));
+    expect(notify).toHaveBeenCalledWith('技能编号与名称不能为空');
+    await user.type(screen.getByLabelText(/技能编号/), 'custom_x');
+    await user.type(screen.getByLabelText(/名称/), '自定义技能');
+    await user.click(screen.getByRole('button', { name: '创建并启用' }));
+    await waitFor(() => expect(saveSkill).toHaveBeenCalledWith({ code: 'custom_x', name: '自定义技能', description: '', toolCodes: [] }));
   });
 
   it('新建时预选默认 Key 和 GLM，仍允许切换为其他 Key 和模型', async () => {

@@ -2,7 +2,7 @@ import {klaApi} from './client';
 import type {ConversationDto, CreateConversationRequest, ExecutionLocation} from '@kla-workstation/contracts';
 export type RuntimeAgent={id:string;name:string;role:string;modelId?:string|null;model_id?:string|null;modelKeyId?:string|null;model_key_id?:string|null;modelMountInitialized?:boolean;executionLocation?:ExecutionLocation;execution_location?:ExecutionLocation;deviceId?:string|null;device_id?:string|null;enabled:boolean;type:string;version:number;/** 已启用技能数（/v1/agents 返回，用于「技能管理 · N」） */skillCount?:number;skill_count?:number};
 export type RuntimeDevice={id:string;name:string;platform:string;online:boolean};
-export type RuntimeSkill={code:string;name:string;description:string;tool_codes:string[];enabled:boolean};
+export type RuntimeSkill={code:string;name:string;description:string;tool_codes:string[];enabled:boolean;/** 绑定了该技能的智能体名称（/v1/skills 返回） */agents?:string[]};
 export type RuntimeTool={code:string;name:string;description:string;location:'server'|'local';deviceOnline:boolean|null};
 export type AgentCapabilities={skills:Array<RuntimeSkill & {mounted:boolean}>;tools:Array<RuntimeTool & {mounted:boolean}>;effectiveTools:string[]};
 export const runtimeApi={
@@ -11,6 +11,8 @@ export const runtimeApi={
   createGroup:(input:CreateConversationRequest,identityId:string)=>klaApi.request<ConversationDto>('/v1/conversations',{method:'POST',body:JSON.stringify(input),headers:{'x-identity-id':identityId}}),
   devices:()=>klaApi.request<RuntimeDevice[]>('/v1/runtime/devices'),
   skills:()=>klaApi.request<RuntimeSkill[]>('/v1/skills'),
+  saveSkill:(input:{code:string;name:string;description?:string;toolCodes?:string[]})=>klaApi.request<RuntimeSkill>('/v1/skills',{method:'POST',body:JSON.stringify(input)}),
+  restoreSkills:()=>klaApi.request<{restored:number}>('/v1/skills/restore',{method:'POST',body:'{}'}),
   tools:()=>klaApi.request<RuntimeTool[]>('/v1/runtime/tools'),
   installHomeAi:()=>klaApi.request<{agentId:string;installed:boolean}>('/v1/runtime/market/home-ai-diagnosis/install',{method:'POST',body:JSON.stringify({}),headers:{'idempotency-key':crypto.randomUUID()}}),
   agentCapabilities:(agentId:string)=>klaApi.request<AgentCapabilities>(`/v1/agents/${agentId}/capabilities`),
