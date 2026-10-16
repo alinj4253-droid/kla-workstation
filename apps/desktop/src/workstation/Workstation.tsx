@@ -24,6 +24,7 @@ import { HomeCollaborationPanel } from './HomeCollaborationPanel';
 import { HomeAiEntry } from './HomeAiEntry';
 import { featureSearchEntries, type QuickSearchEntry, type WorkstationSection } from './quick-search';
 import { HomeTasksPanel, type TaskFocusRequest, type HomeTaskSummary } from './HomeTasksPanel';
+import { useScopedState } from './useScopedState';
 
 type Section = WorkstationSection;
 type LoginIdentity = IdentityDto & { role?: 'personal' | 'admin' | 'member' };
@@ -48,6 +49,7 @@ type DeliveryBlock = { type: 'markdown'; content: string } | { type: 'image' | '
 type MentionTarget = { type: 'user' | 'agent' | 'command'; id: string; name: string };
 type ChatMessage = { id: string; senderType: string; senderName?: string; text: string; createdAt: string; metadata?: { runId?: string; artifactId?: string; artifactIds?: string[]; files?: FileReference[]; kind?: string; recipient?: string; submitObject?: Array<{ type: 'user' | 'agent' | 'command'; id: string }>; delivery?: { submit_object?: Array<{ type: 'user' | 'agent' | 'command'; id: string }>; display_content?: { blocks?: DeliveryBlock[] } } } };
 type ChatRun = RoomRun & { executionAccess?: 'approval' | 'full' };
+type RuntimeState = { messages: ChatMessage[]; runs: ChatRun[]; steps: RunStep[]; events: RunEvent[] };
 const mapChatMessages = (messages: ChatMessage[]): Chat['messages'] => messages
   // Delegation plans and sub-agent hand-offs remain in the run event log. Keep the
   // main chat focused on user messages and user-facing results to prevent an
@@ -157,15 +159,17 @@ export function Workstation(): React.JSX.Element {
   const [activeIdentityId, setActiveIdentityId] = useState(() => klaApi.getIdentity() ?? '');
   const [identityAction, setIdentityAction] = useState<'create' | 'join' | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
-  const [chats, setChats] = useState<Chat[]>([]);
+  const [chats, setChats] = useScopedState<Chat[]>(activeIdentityId, []);
   const [docs, setDocs] = useState<Document[]>([]);
   const [activeProject, setActiveProject] = useState('');
   const [activeChat, setActiveChat] = useState('');
   const [query, setQuery] = useState('');
-  const [draft, setDraft] = useState('');
-  const [mentionCandidates, setMentionCandidates] = useState<MentionTarget[]>([]);
-  const [selectedMentions, setSelectedMentions] = useState<MentionTarget[]>([]);
-  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const roomScope = `${activeIdentityId}:${activeChat}`;
+  const composerScope = section === 'home' ? `${activeIdentityId}:home` : roomScope;
+  const [draft, setDraft] = useScopedState(composerScope, '');
+  const [mentionCandidates, setMentionCandidates] = useScopedState<MentionTarget[]>(roomScope, []);
+  const [selectedMentions, setSelectedMentions] = useScopedState<MentionTarget[]>(composerScope, []);
+  const [mentionQuery, setMentionQuery] = useScopedState<string | null>(composerScope, null);
   const [chatMode, setChatMode] = useState<'fast' | 'balanced' | 'expert'>('balanced');
   const [executionAccess, setExecutionAccess] = useState<'approval' | 'full'>('approval');
   const [newName, setNewName] = useState('');
@@ -209,20 +213,30 @@ export function Workstation(): React.JSX.Element {
   const [companyName, setCompanyName] = useState('');
   const [licenseNumber, setLicenseNumber] = useState('');
   const [inviteCode, setInviteCode] = useState('');
-  const [chatLoading, setChatLoading] = useState(false);
+  const [chatLoading, setChatLoading] = useScopedState(roomScope, false);
   const [pendingAttachments, setPendingAttachments] = useState<Record<string, FileItem[]>>({});
   const [attachmentsUploading, setAttachmentsUploading] = useState(false);
   useEffect(() => { setPendingAttachments({}); setAttachmentsUploading(false); }, [activeIdentityId]);
   useEffect(() => { setAttachmentsUploading(false); }, [activeChat]);
   const [pendingRuns, setPendingRuns] = useState<Record<string, string>>({});
-  const [activeRun, setActiveRun] = useState<ChatRun | null>(null);
-  const [roomRuns, setRoomRuns] = useState<ChatRun[]>([]);
-  const [runSteps, setRunSteps] = useState<RunStep[]>([]);
-  const [runEvents, setRunEvents] = useState<RunEvent[]>([]);
-  const [chatArtifacts, setChatArtifacts] = useState<RoomArtifact[]>([]);
-  const [artifactPaneOpen, setArtifactPaneOpen] = useState(false);
-  const [artifactPaneCollapsed, setArtifactPaneCollapsed] = useState(false);
-  const [roomMembersOpen, setRoomMembersOpen] = useState(false);
+  const [activeRun, setActiveRun, setRoomActiveRun] = useScopedState<ChatRun | null>(roomScope, null);
+  const [roomRuns, setRoomRuns, setRoomRunList] = useScopedState<ChatRun[]>(roomScope, []);
+  const [runSteps, setRunSteps, setRoomSteps] = useScopedState<RunStep[]>(roomScope, []);
+  const [runEvents, setRunEvents] = useScopedState<RunEvent[]>(roomScope, []);
+  const runEventCursorRef = useRef<Record<string, number>>({});
+  const appendRunEvents = (batch: RunEvent[]) => {
+    if (!batch.length) return;
+    runEventCursorRef.current[roomScope] = Math.max(runEventCursorRef.current[roomScope] ?? 0, ...batch.map(event => event.sequence));
+    setRunEvents(previous => {
+      const seen = new Set(previous.map(event => event.sequence));
+      const fresh = batch.filter(event => !seen.has(event.sequence));
+      return fresh.length ? [...previous, ...fresh].sort((a, b) => a.sequence - b.sequence).slice(-400) : previous;
+    });
+  };
+  const [chatArtifacts, setChatArtifacts] = useScopedState<RoomArtifact[]>(roomScope, []);
+  const [artifactPaneOpen, setArtifactPaneOpen] = useScopedState(roomScope, false);
+  const [artifactPaneCollapsed, setArtifactPaneCollapsed] = useScopedState(roomScope, false);
+  const [roomMembersOpen, setRoomMembersOpen] = useScopedState(roomScope, false);
   const [homeTasks, setHomeTasks] = useState<{ identityId: string; tasks: HomeTaskSummary[] } | null>(null);
   const [taskFocusRequest, setTaskFocusRequest] = useState<TaskFocusRequest | null>(null);
   const [searchAgents, setSearchAgents] = useState<{ identityId: string; agents: Array<{ id: string; name: string; role: string }> } | null>(null);
@@ -260,12 +274,13 @@ export function Workstation(): React.JSX.Element {
   const navTimer = useRef<number | null>(null);
   const chatSending = Boolean(pendingRuns[activeChat]);
   const pendingRunId = pendingRuns[activeChat];
-  const [previewArtifact, setPreviewArtifact] = useState<RoomArtifact | null>(null);
-  const [artifactLoading, setArtifactLoading] = useState(false);
+  const [previewArtifact, setPreviewArtifact] = useScopedState<RoomArtifact | null>(roomScope, null);
+  const [artifactLoading, setArtifactLoading] = useScopedState(roomScope, false);
+  const artifactRequests = useRef<Record<string, number>>({});
   const currentProject = projects.find(p => p.id === activeProject) ?? projects[0] ?? { id: '', name: '暂无项目', description: '创建项目后显示项目工作台', progress: 0, members: 0, color: '#2779e9', groupIds: [] };
   const canManageMembers = identities.find(identity => identity.id === activeIdentityId)?.role === 'admin';
   const currentSubpage = section === 'agents' ? { manage: '智能体管理', skills: '技能', tools: '工具' }[agentView] : { channels: '渠道', members: '成员管理', profile: '个人', appearance: '外观', ops: '运维管理' }[settingsView];
-  const currentChat = chats.find(c => c.id === activeChat) ?? chats[0] ?? { id: '', name: '暂无群组', project: '暂无项目', messages: [] };
+  const currentChat = chats.find(c => c.id === activeChat) ?? { id: '', name: '暂无群组', project: '暂无项目', messages: [] };
   const filteredDocs = useMemo(() => docs.filter(d => (knowledgeScope === '全部知识' || d.group === knowledgeScope) && d.name.toLowerCase().includes(query.toLowerCase())), [docs, knowledgeScope, query]);
   const activeSources = useMemo(() => activeKnowledgeBase ? knowledgeSources.filter(s => s.knowledgeBaseId === activeKnowledgeBase.id && s.name.toLowerCase().includes(query.toLowerCase())) : [], [activeKnowledgeBase, knowledgeSources, query]);
   const activeChunks = useMemo(() => activeKnowledgeBase ? knowledgeChunks.filter(chunk => activeSources.some(source => source.id === chunk.sourceId)) : [], [activeKnowledgeBase, knowledgeChunks, activeSources]);
@@ -289,8 +304,11 @@ export function Workstation(): React.JSX.Element {
   const apiError = (result: { message?: string; error?: { message?: string } }) => result.message ?? result.error?.message ?? '请求失败';
   const openArtifact = async (artifactId: string) => {
     const identityId = activeIdentityId;
+    const requestId = (artifactRequests.current[roomScope] ?? 0) + 1;
+    artifactRequests.current[roomScope] = requestId;
     setArtifactPaneOpen(true);
     setArtifactPaneCollapsed(false);
+    setArtifactLoading(false);
     if (previewArtifact?.id === artifactId && previewArtifact.sourceKind === 'file') return;
     const cached = chatArtifacts.find(item => item.id === artifactId);
     if (cached) { setPreviewArtifact(cached); return; }
@@ -298,12 +316,12 @@ export function Workstation(): React.JSX.Element {
     setArtifactLoading(true);
     try {
       const result = await klaApi.request<RoomArtifact>(`/v1/artifacts/${artifactId}`, { headers: { 'x-identity-id': identityId } });
-      if (klaApi.getIdentity() !== identityId) return;
+      if (klaApi.getIdentity() !== identityId || artifactRequests.current[roomScope] !== requestId) return;
       if (result.ok) setPreviewArtifact({ ...result.data, id: artifactId });
       else notify(apiError(result));
     } catch {
-      if (klaApi.getIdentity() === identityId) notify('成果文件加载失败，请重试');
-    } finally { setArtifactLoading(false); }
+      if (klaApi.getIdentity() === identityId && artifactRequests.current[roomScope] === requestId) notify('成果文件加载失败，请重试');
+    } finally { if (artifactRequests.current[roomScope] === requestId) setArtifactLoading(false); }
   };
   const navigate = (next: Section) => {
     if (navTimer.current !== null) window.clearTimeout(navTimer.current);
@@ -590,7 +608,9 @@ export function Workstation(): React.JSX.Element {
     if (!signedIn || !activeChat) { setChatLoading(false); return; }
     let cancelled = false;
     setChatLoading(true);
-    setRunSteps([]); setRunEvents([]); setRoomRuns([]); setChatArtifacts([]); setPreviewArtifact(null); setArtifactPaneOpen(false); setActiveRun(null);
+    runEventCursorRef.current[roomScope] = 0;
+    artifactRequests.current[roomScope] = (artifactRequests.current[roomScope] ?? 0) + 1;
+    setRunSteps([]); setRunEvents([]); setRoomRuns([]); setChatArtifacts([]); setPreviewArtifact(null); setArtifactPaneOpen(false); setArtifactLoading(false); setActiveRun(null);
     void (async () => {
       const result = await klaApi.request<ChatMessage[]>(`/v1/conversations/${activeChat}/messages`);
       if (cancelled) return;
@@ -615,7 +635,7 @@ export function Workstation(): React.JSX.Element {
       if (cancelled) return;
       if (artifacts.ok) setChatArtifacts(artifacts.data);
       if (steps?.ok) setRunSteps(steps.data);
-      if (events?.ok) setRunEvents(events.data);
+      if (events?.ok) appendRunEvents(events.data);
     })().catch(() => { if (!cancelled) notify('消息加载失败，请检查后端连接'); }).finally(() => { if (!cancelled) setChatLoading(false); });
     return () => { cancelled = true; };
   }, [signedIn, activeChat, activeIdentityId]);
@@ -628,8 +648,10 @@ export function Workstation(): React.JSX.Element {
   }, [currentChat.messages, activeRun, runSteps, runEvents, pendingRunId, activeChat]);
   useEffect(() => {
     if (!signedIn || !activeChat) { setMentionCandidates([]); return; }
-    setSelectedMentions([]); setMentionQuery(null);
+    let cancelled = false;
+    setMentionCandidates([]);
     void Promise.all([runtimeApi.members(activeChat), runtimeApi.conversationMembers(activeChat)]).then(([agents, users]) => {
+      if (cancelled) return;
       const next: MentionTarget[] = [
         { type: 'command', id: 'task_execution', name: '任务执行' },
         { type: 'command', id: 'coordinator', name: '群聊秘书' },
@@ -637,7 +659,8 @@ export function Workstation(): React.JSX.Element {
         ...(users.ok ? users.data.map(member => ({ type: 'user' as const, id: member.identity_id, name: member.display_name })) : []),
       ];
       setMentionCandidates(next);
-    });
+    }).catch(() => { if (!cancelled) notify('群聊成员加载失败，请重新进入群聊'); });
+    return () => { cancelled = true; };
   }, [signedIn, activeChat, activeIdentityId]);
   useEffect(() => {
     if (signedIn && activeIdentityId) void memoryApi.warm(activeIdentityId);
@@ -660,25 +683,42 @@ export function Workstation(): React.JSX.Element {
     const clearPending = () => setPendingRuns(items => { const next = { ...items }; if (next[activeChat] === pendingRunId) delete next[activeChat]; return next; });
     const poll = async () => {
       try {
-        const runs = await klaApi.request<ChatRun[]>(`/v1/conversations/${activeChat}/runs`);
+        const cursor = runEventCursorRef.current[roomScope] ?? 0;
+        const state = await klaApi.request<RuntimeState>(`/v1/conversations/${activeChat}/runtime-state?runId=${encodeURIComponent(pendingRunId)}&after=${cursor}`);
+        let runs: { ok: true; data: ChatRun[] };
+        let result: { ok: true; data: ChatMessage[] };
+        let steps: { ok: true; data: RunStep[] };
+        let events: { ok: true; data: RunEvent[] };
+        if (state.ok && !Array.isArray(state.data) && Array.isArray(state.data.runs) && Array.isArray(state.data.messages)) {
+          runs = { ok: true, data: state.data.runs };
+          result = { ok: true, data: state.data.messages };
+          steps = { ok: true, data: state.data.steps };
+          events = { ok: true, data: state.data.events };
+        } else {
+          const fallbackRuns = await klaApi.request<ChatRun[]>(`/v1/conversations/${activeChat}/runs`);
+          if (!fallbackRuns.ok) { notify(apiError(fallbackRuns)); clearPending(); return; }
+          const [fallbackResult, fallbackSteps, fallbackEvents] = await Promise.all([
+            klaApi.request<ChatMessage[]>(`/v1/conversations/${activeChat}/messages`),
+            klaApi.request<RunStep[]>(`/v1/conversations/${activeChat}/runs/${pendingRunId}/steps`),
+            klaApi.request<RunEvent[]>(`/v1/runtime/events?conversationId=${encodeURIComponent(activeChat)}&after=${cursor}`),
+          ]);
+          if (!fallbackResult.ok) { notify(apiError(fallbackResult)); clearPending(); return; }
+          runs = { ok: true, data: fallbackRuns.data };
+          result = { ok: true, data: fallbackResult.data };
+          steps = fallbackSteps.ok ? { ok: true, data: fallbackSteps.data } : { ok: true, data: [] };
+          events = fallbackEvents.ok ? { ok: true, data: fallbackEvents.data } : { ok: true, data: [] };
+        }
         if (cancelled) return;
-        if (!runs.ok) { notify(apiError(runs)); clearPending(); return; }
-        const [result, steps, events] = await Promise.all([
-          klaApi.request<ChatMessage[]>(`/v1/conversations/${activeChat}/messages`),
-          klaApi.request<RunStep[]>(`/v1/conversations/${activeChat}/runs/${pendingRunId}/steps`),
-          klaApi.request<RunEvent[]>(`/v1/runtime/events?conversationId=${encodeURIComponent(activeChat)}&after=0`),
-        ]);
-        if (cancelled) return;
-        if (!result.ok) { notify(apiError(result)); clearPending(); return; }
         setChats(items => items.map(chat => chat.id === activeChat ? { ...chat, messages: mapChatMessages(result.data) } : chat));
-        if (steps.ok) setRunSteps(steps.data);
-        if (events.ok) setRunEvents(events.data);
+        setRunSteps(steps.data);
+        appendRunEvents(events.data);
         const run = runs.data.find(item => item.id === pendingRunId);
         setActiveRun(run ?? null);
         setRoomRuns(runs.data);
         if (run && ['completed', 'failed', 'cancelled'].includes(run.status)) {
           const artifacts = await klaApi.request<RoomArtifact[]>(`/v1/conversations/${activeChat}/artifacts`);
-          if (!cancelled && artifacts.ok) setChatArtifacts(artifacts.data);
+          if (cancelled) return;
+          if (artifacts.ok) setChatArtifacts(artifacts.data);
           clearPending();
           void memoryApi.invalidate(activeIdentityId).then(() => memoryApi.warm(activeIdentityId));
           return;
@@ -780,11 +820,11 @@ export function Workstation(): React.JSX.Element {
       setPendingAttachments(items => ({ ...items, [conversationId]: (items[conversationId] ?? []).filter(file => !files.some(sent => sent.id === file.id)) }));
       if (submitted.data.run) {
         setPendingRuns(items => ({ ...items, [conversationId]: submitted.data.run!.id }));
-        setActiveRun(submitted.data.run); setRunSteps([]);
-        setRoomRuns(items => [submitted.data.run!, ...items.filter(item => item.id !== submitted.data.run!.id)]);
+        setRoomActiveRun(`${identityId}:${conversationId}`, submitted.data.run); setRoomSteps(`${identityId}:${conversationId}`, []);
+        setRoomRunList(`${identityId}:${conversationId}`, items => [submitted.data.run!, ...items.filter(item => item.id !== submitted.data.run!.id)]);
       } else {
         setPendingRuns(items => { const next = { ...items }; delete next[conversationId]; return next; });
-        setActiveRun(null); setRunSteps([]);
+        setRoomActiveRun(`${identityId}:${conversationId}`, null); setRoomSteps(`${identityId}:${conversationId}`, []);
       }
     } catch {
       if (klaApi.getIdentity() === identityId) { notify('消息发送失败，请检查后端连接后重试'); setPendingRuns(items => { const next = { ...items }; delete next[conversationId]; return next; }); }
@@ -938,12 +978,12 @@ export function Workstation(): React.JSX.Element {
   <div className="ws-chat">
     <header><div><span className="ws-avatar">{currentChat.name.slice(0, 2)}</span><span><strong>{currentChat.name}</strong><small>{currentChat.project} · 智能体群聊 · 消息全量存档</small></span></div><div><IconButton title="管理群聊智能体" onClick={() => setRoomMembersOpen(true)}><Users size={17} /></IconButton><IconButton title="群组成果" onClick={() => { setArtifactPaneOpen(true); setArtifactPaneCollapsed(false); if (!previewArtifact && chatArtifacts[0]) setPreviewArtifact(chatArtifacts[0]); }}><Folder size={17} /></IconButton></div></header>
     <div className="ws-chat-messages" ref={chatMessagesRef} onScroll={event => { const el = event.currentTarget; chatScrollPinnedRef.current = el.scrollHeight - el.clientHeight - el.scrollTop < 80; }}><p className="ws-chat-date">{chatLoading ? '正在加载消息…' : '消息记录'}</p>
-      <ConversationMessages key={`${activeIdentityId}:${activeChat}`} messages={currentChat.messages} memberNames={new Map(mentionCandidates.map(item => [`${item.type}:${item.id}`, item.name]))} run={activeRun} runs={roomRuns} steps={runSteps} events={runEvents} submitting={pendingRunId === 'submitting'} onCancel={() => void cancelActiveRun()} onOpenFile={file => { setArtifactPaneOpen(true); setArtifactPaneCollapsed(false); setPreviewArtifact({ id: file.id, name: file.name, mimeType: file.contentType ?? 'application/octet-stream', content: '', sizeBytes: file.sizeBytes, createdAt: '', sourceKind: 'file', storageKey: file.id }); }} onOpenArtifact={id => void openArtifact(id)} />
-      <HomeAiReview key={`${activeIdentityId}:${activeChat}`} conversationId={activeChat} identityId={activeIdentityId} />
+      <ConversationMessages key={roomScope} messages={currentChat.messages} memberNames={new Map(mentionCandidates.map(item => [`${item.type}:${item.id}`, item.name]))} run={activeRun} runs={roomRuns} steps={runSteps} events={runEvents} submitting={pendingRunId === 'submitting'} onCancel={() => void cancelActiveRun()} onOpenFile={file => { artifactRequests.current[roomScope] = (artifactRequests.current[roomScope] ?? 0) + 1; setArtifactLoading(false); setArtifactPaneOpen(true); setArtifactPaneCollapsed(false); setPreviewArtifact({ id: file.id, name: file.name, mimeType: file.contentType ?? 'application/octet-stream', content: '', sizeBytes: file.sizeBytes, createdAt: '', sourceKind: 'file', storageKey: file.id }); }} onOpenArtifact={id => void openArtifact(id)} />
+      <HomeAiReview key={`review:${roomScope}`} conversationId={activeChat} identityId={activeIdentityId} />
     </div>
       <div className="ws-chat-compose"><ConversationAttachments key={`${activeIdentityId}:${activeChat}`} conversationId={activeChat} identityId={activeIdentityId} files={pendingAttachments[activeChat] ?? []} onChange={files => setPendingAttachments(items => ({ ...items, [activeChat]: files }))} onBusy={setAttachmentsUploading} onError={notify} /><div className="ws-chat-input-wrap"><textarea placeholder="发送消息给群聊…（输入 @ 选择群聊秘书、任务执行、智能体或成员，Enter 发送）" aria-label="发送消息给群聊" value={draft} onChange={e => { const value = e.target.value; setDraft(value); const match = value.match(/(?:^|\s)@([^\s@]*)$/); setMentionQuery(match ? match[1] : null); }} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!chatSending) void send(); } }} />{mentionQuery !== null && <div className="ws-mention-menu" role="listbox">{mentionCandidates.filter(item => item.name.toLowerCase().includes(mentionQuery.toLowerCase())).slice(0, 8).map(item => <button type="button" role="option" key={`${item.type}:${item.id}`} onMouseDown={event => event.preventDefault()} onClick={() => { setDraft(value => value.replace(/(?:^|\s)@([^\s@]*)$/, match => `${match.slice(0, match.lastIndexOf('@'))}@${item.name} `)); setSelectedMentions(items => items.some(selected => selected.id === item.id && selected.type === item.type) ? items : [...items, item]); setMentionQuery(null); }}>{item.type === 'agent' ? '智能体' : item.type === 'command' ? '系统路由' : '成员'} · {item.name}</button>)}</div>}</div><div><span><Bot size={16} /> 智能体 <select aria-label="响应模式" value={chatMode} onChange={e => setChatMode(e.target.value as typeof chatMode)}><option value="fast">快速响应</option><option value="balanced">均衡协同</option><option value="expert">专家深度推理</option></select></span><label className="ws-execution-access" title="仅控制本次运行的本地操作审批，不会改变 Windows 用户权限或本地允许目录"><ShieldCheck size={15} /><span>本地权限</span><select aria-label="本地执行权限" value={executionAccess} onChange={e => setExecutionAccess(e.target.value as typeof executionAccess)}><option value="approval">请求批准</option><option value="full">完全访问权限</option></select></label><button aria-label={chatSending ? '终止生成' : '发送给群组'} className={`ws-primary ${chatSending ? 'is-stop' : ''}`} disabled={attachmentsUploading || chatLoading || !currentChat.id || pendingRunId === 'submitting'} onClick={() => chatSending ? void cancelActiveRun() : void send()}><Send size={15} />{chatSending ? '终止生成' : '发送消息'}</button></div></div>
   </div>
-  {artifactPaneOpen && <ArtifactPane artifacts={chatArtifacts} selected={previewArtifact} loading={artifactLoading} collapsed={artifactPaneCollapsed} onSelect={id => void openArtifact(id)} onCollapse={() => setArtifactPaneCollapsed(value => !value)} onClose={() => { setArtifactPaneOpen(false); setArtifactPaneCollapsed(false); setPreviewArtifact(null); }} onDownload={artifact => void klaApi.download(artifact.sourceKind === 'file' ? `/v1/files/${artifact.id}/content` : `/v1/artifacts/${artifact.id}/download`).then(result => { if (!result.ok) { notify(result.message); return; } const url = URL.createObjectURL(result.blob); const anchor = document.createElement('a'); anchor.href = url; anchor.download = artifact.name; anchor.click(); URL.revokeObjectURL(url); })} />}
+  {artifactPaneOpen && <ArtifactPane key={roomScope} artifacts={chatArtifacts} selected={previewArtifact} loading={artifactLoading} collapsed={artifactPaneCollapsed} onSelect={id => void openArtifact(id)} onCollapse={() => setArtifactPaneCollapsed(value => !value)} onClose={() => { artifactRequests.current[roomScope] = (artifactRequests.current[roomScope] ?? 0) + 1; setArtifactLoading(false); setArtifactPaneOpen(false); setArtifactPaneCollapsed(false); setPreviewArtifact(null); }} onDownload={artifact => void klaApi.download(artifact.sourceKind === 'file' ? `/v1/files/${artifact.id}/content` : `/v1/artifacts/${artifact.id}/download`).then(result => { if (!result.ok) { notify(result.message); return; } const url = URL.createObjectURL(result.blob); const anchor = document.createElement('a'); anchor.href = url; anchor.download = artifact.name; anchor.click(); URL.revokeObjectURL(url); })} />}
 </div>}
         {section === 'knowledge' && <KnowledgeSection key={computeReloadKey} />}
         {section === 'compute' && <>

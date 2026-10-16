@@ -71,6 +71,12 @@ function describeRequest(call) {
   else if (call.tool === 'local_ppt_doctor') add('检查内容', 'Python 依赖、中文字体、Office / WPS 渲染器及新版 slidep');
   else if (call.tool === 'local_ppt_theme_list') add('筛选主题', args.query || '全部');
   else if (call.tool === 'local_ppt_dsl_validate') add('页面文件', args.fileName || 'page.slide', true);
+  else if (call.tool === 'local_ppt_build') {
+    add('文稿名称', args.fileName || '演示文稿.pptx', true);
+    add('提交页面', Array.isArray(args.slides) ? args.slides.map(slide => slide.pageNumber).join('、') || '沿用已有页面' : '未提供');
+    add('构建方式', args.finalize === false ? '中间草稿，不上传成果' : '最终交付');
+    if (args.documentId) add('续稿文档', args.documentId, true);
+  }
   else add(args.path ? '文件路径' : args.documentId ? '文档编号' : '文件名称', args.path || args.documentId || args.fileName, true);
   add('工作目录', args.cwd, true);
   if (args.timeoutMs) add('执行时限', `${args.timeoutMs / 1000} 秒`);

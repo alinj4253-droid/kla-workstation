@@ -1,9 +1,21 @@
-import { fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ArtifactPane, MarkdownMessage, RunActivity, type RoomArtifact } from './CollaborationViews';
 
+const { download, init, load, renderSlide, destroy } = vi.hoisted(() => ({ download: vi.fn(), init: vi.fn(), load: vi.fn(), renderSlide: vi.fn(), destroy: vi.fn() }));
+vi.mock('../api/client', () => ({ klaApi: { download } }));
+vi.mock('pptx-preview', () => ({ init }));
+
 describe('群聊呈现', () => {
-  afterEach(() => vi.restoreAllMocks());
+  beforeEach(() => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+    download.mockReset(); load.mockReset().mockResolvedValue(undefined); renderSlide.mockReset(); destroy.mockReset();
+    init.mockReset().mockImplementation((host: HTMLElement) => {
+      const wrapper = document.createElement('div'); wrapper.className = 'pptx-preview-wrapper'; host.append(wrapper);
+      return { load, renderSingleSlide: renderSlide, destroy, slideCount: 3 };
+    });
+  });
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
   it('安全呈现 Markdown 表格、代码和链接', () => {
     render(<MarkdownMessage text={'**结论**\n\n| 项目 | 数值 |\n| --- | --- |\n| 收入 | 42 |\n\n```ts\nconst ok = true\n```\n\n[资料](https://example.com)\n\n<script>alert(1)</script>'} />);
     expect(screen.getByText('结论').tagName).toBe('STRONG');
@@ -64,16 +76,53 @@ describe('群聊呈现', () => {
     expect(revoke).toHaveBeenCalledTimes(2);
   });
 
-  it.each([false, true])('PPTX 引导到相同文稿的真实 PDF，不用 HTML 代替幻灯片（对象存储：%s）', (stored) => {
+  it.each(['inline', 'artifact', 'file'])('PPTX 从 %s 读取真实文件字节并支持翻页和 PDF 备用预览', async source => {
+    const stored = source !== 'inline';
+    const bytes = Uint8Array.from([80, 75]).buffer;
+    download.mockResolvedValue({ ok: true, blob: { size: 2, arrayBuffer: async () => bytes } });
     const artifacts: RoomArtifact[] = [
-      { id: 'ppt', name: '方案.pptx', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', content: stored ? '' : btoa('PK'), storageKey: stored ? 'artifacts/ppt/content' : null, contentEncoding: 'base64', sizeBytes: 2, createdAt: '' },
+      { id: 'ppt', name: '方案.pptx', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', content: stored ? '' : btoa('PK'), storageKey: stored ? 'artifacts/ppt/content' : null, sourceKind: source === 'file' ? 'file' : 'artifact', contentEncoding: 'base64', sizeBytes: 2, createdAt: '' },
       { id: 'old-pdf', name: '方案.pdf', mimeType: 'application/pdf', content: '', contentEncoding: 'base64', sizeBytes: 2, createdAt: '2026-10-09' },
       { id: 'pdf', name: '方案.pdf', mimeType: 'application/pdf', content: '', contentEncoding: 'base64', sizeBytes: 2, createdAt: '' },
     ];
     const select = vi.fn();
-    render(<ArtifactPane artifacts={artifacts} selected={artifacts[0]} loading={false} collapsed={false} onSelect={select} onCollapse={vi.fn()} onClose={vi.fn()} onDownload={vi.fn()} />);
+    const { unmount } = render(<ArtifactPane artifacts={artifacts} selected={artifacts[0]} loading={false} collapsed={false} onSelect={select} onCollapse={vi.fn()} onClose={vi.fn()} onDownload={vi.fn()} />);
+    expect(await screen.findByText('1 / 3')).toBeVisible();
+    expect([...new Uint8Array(load.mock.calls[0][0])]).toEqual([80, 75]);
+    if (stored) expect(download).toHaveBeenCalledWith(source === 'file' ? '/v1/files/ppt/content' : '/v1/artifacts/ppt/content');
+    else expect(download).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: '上一页幻灯片' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: '下一页幻灯片' }));
+    expect(renderSlide).toHaveBeenLastCalledWith(1);
+    expect(screen.getByText('2 / 3')).toBeVisible();
+    fireEvent.keyDown(screen.getByLabelText('PPTX 预览：方案.pptx'), { key: 'PageDown' });
+    expect(screen.getByText('3 / 3')).toBeVisible();
+    expect(screen.getByRole('button', { name: '下一页幻灯片' })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: '查看实际渲染的 PDF 预览' }));
     expect(select).toHaveBeenCalledWith('pdf');
     expect(document.querySelector('iframe')).toBeNull();
+    unmount();
+    expect(destroy).toHaveBeenCalledOnce();
+    expect(document.querySelector('.pptx-preview-wrapper')).toBeNull();
+  });
+
+  it('PPTX 加载失败可重试，切换文件时忽略迟到的解析结果', async () => {
+    load.mockRejectedValueOnce(new Error('损坏的演示文稿'));
+    const first: RoomArtifact = { id: 'first', name: '第一份.pptx', mimeType: 'application/octet-stream', content: btoa('PK'), contentEncoding: 'base64', sizeBytes: 2, createdAt: '' };
+    const second = { ...first, id: 'second', name: '第二份.pptx' };
+    const props = { artifacts: [first, second], loading: false, collapsed: false, onSelect: vi.fn(), onCollapse: vi.fn(), onClose: vi.fn(), onDownload: vi.fn() };
+    const { rerender } = render(<ArtifactPane {...props} selected={first} />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('损坏的演示文稿');
+    let resolveLoad!: () => void;
+    load.mockImplementationOnce(() => new Promise<void>(resolve => { resolveLoad = resolve; }));
+    fireEvent.click(screen.getByRole('button', { name: '重试' }));
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(2));
+    rerender(<ArtifactPane {...props} selected={second} />);
+    expect(await screen.findByText('1 / 3')).toBeVisible();
+    const current = document.querySelector('.ws-pptx-renderer');
+    resolveLoad();
+    await waitFor(() => expect(document.querySelectorAll('.pptx-preview-wrapper')).toHaveLength(1));
+    expect(current?.querySelector('.pptx-preview-wrapper')).not.toBeNull();
+    expect(screen.queryByText('损坏的演示文稿')).toBeNull();
   });
 });

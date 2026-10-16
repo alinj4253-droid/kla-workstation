@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeSanitize from 'rehype-sanitize';
 import { klaApi } from '../api/client';
+import { PptxPreview } from './PptxPreview';
 
 export type RoomArtifact = { id: string; name: string; mimeType: string; content: string; contentEncoding?: 'utf8' | 'base64'; storageKey?: string | null; sourceKind?: 'file' | 'artifact'; sizeBytes: number; createdAt: string };
 export type RoomRun = { id: string; status: string; phase?: string; currentAgent?: string | null; createdAt?: string; updatedAt?: string; result?: { waitingReason?: string; error?: string } };
@@ -27,6 +28,7 @@ function eventLabel(event: RunEvent): string {
     case 'plan.created': return '群聊秘书已拆解任务';
     case 'step.running': return `${String(data.agentName ?? '执行智能体')} · ${String(data.title ?? '执行任务')}`;
     case 'step.waiting_device': return '等待本地执行设备上线';
+    case 'step.waiting_approval': return '等待本地授权';
     case 'step.completed': return `${String(data.agentName ?? '执行智能体')}已完成任务`;
     case 'tool.queued': return `准备调用 ${String(data.tool ?? '工具')}`;
     case 'tool.dispatched': return `正在调用 ${String(data.tool ?? '本地工具')}`;
@@ -131,12 +133,13 @@ export function ProjectWorkspace({ project, rooms, onOpenRoom, onCreateRoom, onC
 export function ArtifactPane({ artifacts, selected, loading, collapsed, onSelect, onCollapse, onClose, onDownload }: { artifacts: RoomArtifact[]; selected: RoomArtifact | null; loading: boolean; collapsed: boolean; onSelect: (id: string) => void; onCollapse: () => void; onClose: () => void; onDownload: (artifact: RoomArtifact) => void }) {
   if (collapsed) return <button className="ws-artifact-mini" title="展开成果预览" onClick={onCollapse}><FileText size={17} /><span>{artifacts.length}</span></button>;
   const mime = selected?.mimeType ?? '';
+  const tabs = selected?.sourceKind === 'file' && !artifacts.some(artifact => artifact.id === selected.id) ? [...artifacts, selected] : artifacts;
   return <aside className="ws-artifact-pane" aria-label="成果预览">
-    <header><div className="ws-artifact-tabs">{[...artifacts, ...(selected?.sourceKind === 'file' ? [selected] : [])].map(artifact => <button key={artifact.id} className={artifact.id === selected?.id ? 'active' : ''} onClick={() => onSelect(artifact.id)} title={artifact.name}><FileText size={13} />{artifact.name}</button>)}</div><button title="收起预览" onClick={onCollapse}><ArrowRight size={16} /></button><button title="关闭预览" onClick={onClose}><X size={16} /></button></header>
+    <header><div className="ws-artifact-tabs">{tabs.map(artifact => <button key={artifact.id} className={artifact.id === selected?.id ? 'active' : ''} onClick={() => onSelect(artifact.id)} title={artifact.name}><FileText size={13} />{artifact.name}</button>)}</div><button title="收起预览" onClick={onCollapse}><ArrowRight size={16} /></button><button title="关闭预览" onClick={onClose}><X size={16} /></button></header>
     <div className="ws-artifact-meta">{selected ? `${selected.name} · 只读预览 · ${Math.max(1, Math.round((selected.sizeBytes ?? selected.content?.length ?? 0) / 1024))} KB` : loading ? '正在加载成果…' : '群组成果'}</div>
     <div className="ws-artifact-body">{loading ? <div className="ws-artifact-loading"><LoaderCircle size={20} />正在加载文件…</div>
       : !selected ? <div className="ws-artifact-loading">{artifacts.length ? '选择上方文件进行预览' : '当前群组还没有成果文件'}</div>
-      : /\.pptx$/i.test(selected.name) ? <BinaryArtifactPreview artifact={selected} artifacts={artifacts} onSelect={onSelect} />
+      : /\.pptx$/i.test(selected.name) || mime === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ? <PptxPreview key={selected.id} artifact={selected} pdf={artifacts.find(a => a.mimeType === 'application/pdf' && a.createdAt === selected.createdAt && a.name.replace(/\.pdf$/i, '') === selected.name.replace(/\.pptx$/i, ''))} onSelect={onSelect} />
       : (selected.storageKey || selected.sourceKind === 'file') ? <StoredFilePreview artifact={selected} />
       : selected.contentEncoding === 'base64' ? <BinaryArtifactPreview artifact={selected} artifacts={artifacts} onSelect={onSelect} />
       : mime.includes('html') || /\.html?$/i.test(selected.name) ? <iframe title={selected.name} srcDoc={selected.content} sandbox="allow-scripts" />

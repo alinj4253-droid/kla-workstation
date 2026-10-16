@@ -1,0 +1,22 @@
+const BG = '#F3F6FB';
+const INK = '#163052';
+const ACCENT = '#2F6BE4';
+const GRAD = 'linear-gradient(135deg, #2F6BE4 0%, #74CFCE 100%)';
+
+<Slide style={{width:1280,height:720,background:BG,padding:60}}>
+  <Text style={{fontSize:40,height:70,color:INK}}>视觉元素测试</Text>
+  <Box style={{flexDirection:'row',gap:20,height:220}}>
+    <Box style={{width:220,height:180,background:ACCENT,borderRadius:24}}>
+      <Text style={{fontSize:24,height:50,color:'#FFFFFF'}}>圆角卡片</Text>
+    </Box>
+    <Box style={{width:220,height:180,background:GRAD}} />
+    <Image src='assets/sample.png' style={{width:220,height:180,objectFit:'cover'}} />
+  </Box>
+  <Box style={{height:160,marginTop:20}}>
+    <svg width={500} height={120} viewBox='0 0 500 120'>
+      <line x1='15' y1='50' x2='450' y2='50' stroke={ACCENT} strokeWidth='2' />
+      <circle cx='45' cy='50' r='16' fill={ACCENT} />
+      <text x='80' y='55' fill={INK} fontSize='22'>矢量节点</text>
+    </svg>
+  </Box>
+</Slide>

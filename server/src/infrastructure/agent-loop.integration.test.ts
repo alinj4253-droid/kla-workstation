@@ -12,6 +12,46 @@ const config = loadConfig();
 const dbCase = config.databaseUrl ? it : it.skip;
 
 describe('persisted multi-agent loop', () => {
+  dbCase('resumes immediately after a server tool without a five-second retry delay', async () => {
+    const schema = `kla_loop_test_${randomUUID().replaceAll('-', '')}`;
+    const pool = new Pool({ connectionString: config.databaseUrl, options: `-c search_path=${schema},public`, max: 6, connectionTimeoutMillis: 5000 });
+    let worker: AgentLoopWorker | undefined;
+    try {
+      await runMigrations(pool, schema);
+      const accounts = new PostgresAccountRepository(pool);
+      const account = await accounts.register({ email: 'server-tool-resume@example.test', nickname: '工具续跑测试', password: 'TestPass2026!' });
+      const project = await accounts.createProject(account.identity.id, '服务端工具项目');
+      const room = await accounts.createConversation(project.id, '服务端工具群聊');
+      const agent = (await roomRegistry(pool, room.id)).find(item => item.name === '本地执行智能体')!;
+      await pool.query("UPDATE agents SET execution_location='server' WHERE id=$1", [agent.id]);
+      const trigger = await accounts.createMessage(room.id, account.user.id, '保存简短大纲');
+      const completeChat = vi.fn(async (_identity, request: { requestId: string }) => ({ payload: { choices: [{ message:
+        request.requestId.endsWith(':plan')
+          ? { tool_calls: [{ id: 'plan-1', type: 'function', function: { name: 'delegate_tasks', arguments: JSON.stringify({ tasks: [{ title: '保存大纲', instruction: '保存大纲', agentId: agent.id, dependsOn: [] }] }) } }] }
+          : request.requestId.endsWith(':turn:0')
+            ? { tool_calls: [{ id: 'write-1', type: 'function', function: { name: 'artifact_write', arguments: JSON.stringify({ fileName: 'outline.md', content: '# 大纲', mimeType: 'text/markdown' }) } }] }
+            : { content: '大纲已保存。' },
+      }] } }));
+      worker = new AgentLoopWorker(pool, accounts, { completeChat } as never, new ShortTermMemoryService(pool));
+      const run = await accounts.createRun(room.id, trigger.id, 'balanced');
+      const tickOnce = async () => { worker!.kick(); await (worker as unknown as { pending: Promise<void> | null }).pending; };
+      await tickOnce(); // coordination
+      await tickOnce(); // model tool call and server-side execution
+      const step = (await pool.query('SELECT status FROM conversation_run_steps WHERE run_id=$1', [run.id])).rows[0];
+      const currentRun = (await pool.query('SELECT status,next_attempt_at FROM conversation_runs WHERE id=$1', [run.id])).rows[0];
+      expect(step.status).toBe('pending');
+      expect(currentRun).toMatchObject({ status: 'running', next_attempt_at: null });
+      await tickOnce(); // next model turn
+      await tickOnce(); // finish the run
+      expect((await pool.query('SELECT status FROM conversation_runs WHERE id=$1', [run.id])).rows[0].status).toBe('completed');
+      expect(completeChat).toHaveBeenCalledTimes(3);
+    } finally {
+      await worker?.stop();
+      await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+      await pool.end();
+    }
+  }, 30_000);
+
   dbCase('resumes a failed execution from completed steps and refuses uncertain local calls', async () => {
     const schema = `kla_loop_test_${randomUUID().replaceAll('-', '')}`;
     const pool = new Pool({ connectionString: config.databaseUrl, options: `-c search_path=${schema},public`, max: 6, connectionTimeoutMillis: 5000 });
