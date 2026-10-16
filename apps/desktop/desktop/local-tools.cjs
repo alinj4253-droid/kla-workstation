@@ -64,10 +64,10 @@ function kill(child) {
   if (process.platform === 'win32') { const killer=spawn('taskkill.exe',['/PID',String(child.pid),'/T','/F'],{windowsHide:true,stdio:'ignore'}); killer.on('error',()=>child.kill()); }
   else { try { process.kill(-child.pid,'SIGKILL'); } catch { child.kill('SIGKILL'); } }
 }
-function command(executable,args,cwd,timeoutMs,signal) {
+function command(executable,args,cwd,timeoutMs,signal,env) {
   signal.throwIfAborted();
   return new Promise((resolve,reject)=>{
-    const child=spawn(executable,args,{cwd,shell:false,windowsHide:true,detached:process.platform!=='win32',stdio:['ignore','pipe','pipe']});
+    const child=spawn(executable,args,{cwd,env,shell:false,windowsHide:true,detached:process.platform!=='win32',stdio:['ignore','pipe','pipe']});
     let stdout='',stderr='',reason='';
     child.stdout.on('data',b=>{stdout=(stdout+b.toString()).slice(-100000);});child.stderr.on('data',b=>{stderr=(stderr+b.toString()).slice(-100000);});
     const abort=()=>{reason='执行已取消';kill(child);};const timer=setTimeout(()=>{reason='执行超时';kill(child);},timeoutMs);

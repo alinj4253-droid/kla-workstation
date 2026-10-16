@@ -1,0 +1,79 @@
+// ═══════════════════════════════════════════════════════════════════════
+// 主题区 —— 4 个色角色 + 中性辅助。默认值是**中性占位**（浅底 / 石墨 / 蓝强调），
+// 不含任何题材倾向，目的是让你按本项目题材重新决策配色，而不是沿用别人的。
+// 动手前必须替换成 DESIGN.md 里定下的色值。四个起步预设（中性商务浅色 /
+// 深色科技 / 学术人文 / 政务红金）见 references/theme-presets.md。
+// ═══════════════════════════════════════════════════════════════════════
+const FONT_CN  = '"Microsoft YaHei", "Noto Sans SC", sans-serif';
+const FONT_NUM = '"Bahnschrift", "Segoe UI", sans-serif';
+const BG     = '#FFFFFF';   // 主色：页面背景
+const INK    = '#1B1E23';   // 文本色
+const CARD   = '#F1F2F4';   // 辅色：卡片底 / 次级块
+const ACCENT = '#2F6BE4';   // 强调色：≤10%，只用于焦点元素
+// 以下为中性辅助，不计入 4 色池
+const DIM    = '#767B84';   // 次级文字
+const ONIMG  = '#F7F8FA';   // 图上文字色（遮罩之上的白字）
+const LINE   = 'rgba(27,30,35,0.12)';
+const GRAD   = 'linear-gradient(135deg, #2F6BE4 0%, #7FA9FF 100%)';
+const MASK   = 'linear-gradient(90deg, rgba(18,20,24,0.94) 0%, rgba(18,20,24,0.72) 48%, rgba(18,20,24,0.12) 86%)';
+
+// ───────────────────────────────────────────────────────────────────────
+// 内容页骨架 · A/B/C 三区 + 上大图卡（310）+ 下三栏（230）
+// 把 assets/hero.png 换成本项目真实图片后再 lint / 构建。
+// 顶层注释只能用 // —— 用 {/* */} 会让整份文件求值成 undefined。
+// ───────────────────────────────────────────────────────────────────────
+<Slide style={{ width: 1280, height: 720, background: BG, fontFamily: FONT_CN, padding: '20px 72px' }}>
+    <Box style={{ flexDirection: 'column', height: '100%' }}>
+        {/* A · 标题区（100） */}
+        <Box style={{ height: 100, flexDirection: 'row', alignItems: 'flex-start' }}>
+            <Box style={{ flexDirection: 'column' }}>
+                <Text style={{ fontSize: 34, fontWeight: 'bold', color: INK, letterSpacing: -0.5, height: 44 }}>页面主标题</Text>
+                <Box style={{ width: 56, height: 4, background: GRAD, borderRadius: 2, marginTop: 10 }} />
+            </Box>
+        </Box>
+
+        {/* B · 内容区（540） */}
+        <Box style={{ height: 540, flexDirection: 'column' }}>
+            {/* 大图卡（310） */}
+            <Box style={{ height: 310, position: 'relative', borderRadius: 20, overflow: 'hidden' }}>
+                <Image src='assets/hero.png' style={{ position: 'absolute', top: 0, left: 0, width: 1136, height: 310, objectFit: 'cover' }} />
+                <Box style={{ position: 'absolute', top: 0, left: 0, width: 1136, height: 310, background: MASK }} />
+                <Box style={{ position: 'absolute', top: 0, left: 0, width: 1136, height: 310, flexDirection: 'column', justifyContent: 'center', padding: '0 44px' }}>
+                    <Text style={{ fontSize: 13, color: ACCENT, letterSpacing: 5, fontFamily: FONT_NUM, height: 20 }}>SECTION · 眉标</Text>
+                    <Text style={{ fontSize: 40, fontWeight: 'bold', color: ONIMG, marginTop: 10, letterSpacing: -0.5, height: 52 }}>图上的大标题</Text>
+                    <Text style={{ fontSize: 19, color: ONIMG, opacity: 0.86, lineHeight: 1.6, marginTop: 12, height: 62 }}>图上的一句导语，大约写到两行为止，不要压住图片主体。</Text>
+                </Box>
+            </Box>
+
+            {/* 三栏卡片（230 = 540 - 310） */}
+            <Box style={{ height: 230, flexDirection: 'row' }}>
+                <Box style={{ flex: 1, flexDirection: 'column', padding: '22px 26px 22px 0' }}>
+                    <Text style={{ fontSize: 13, color: ACCENT, letterSpacing: 3, fontFamily: FONT_NUM, height: 20 }}>TAG ONE</Text>
+                    <Text style={{ fontSize: 23, fontWeight: 'bold', color: INK, marginTop: 10, height: 32 }}>第一栏标题</Text>
+                    <Text style={{ fontSize: 17, color: INK, opacity: 0.78, lineHeight: 1.6, marginTop: 10, height: 108 }}>第一栏正文。写满四行左右，它是本页三个并列论点中的第一个，要和另外两栏在高度上对齐。</Text>
+                </Box>
+                <Box style={{ flex: 1, flexDirection: 'column', padding: '22px 22px 22px 30px', borderLeft: '0.5px solid ' + LINE }}>
+                    <Text style={{ fontSize: 13, color: ACCENT, letterSpacing: 3, fontFamily: FONT_NUM, height: 20 }}>TAG TWO</Text>
+                    <Text style={{ fontSize: 23, fontWeight: 'bold', color: INK, marginTop: 10, height: 32 }}>第二栏标题</Text>
+                    <Text style={{ fontSize: 17, color: INK, opacity: 0.78, lineHeight: 1.6, marginTop: 10, height: 108 }}>第二栏正文。点分隔线靠 borderLeft 实现，不要用额外的竖条元素；三段文字要等高。</Text>
+                </Box>
+                <Box style={{ flex: 1, flexDirection: 'column', padding: '22px 0 22px 30px', borderLeft: '0.5px solid ' + LINE }}>
+                    <Text style={{ fontSize: 13, color: ACCENT, letterSpacing: 3, fontFamily: FONT_NUM, height: 20 }}>TAG THREE</Text>
+                    <Text style={{ fontSize: 23, fontWeight: 'bold', color: INK, marginTop: 10, height: 32 }}>第三栏标题</Text>
+                    <Text style={{ fontSize: 17, color: INK, opacity: 0.78, lineHeight: 1.6, marginTop: 10, height: 108 }}>第三栏正文。若需要尾部标签条钉底，把这段的 marginTop 换成 auto 并给它固定 height。</Text>
+                </Box>
+            </Box>
+        </Box>
+
+        {/* C · 页脚条（40） */}
+        <Box style={{ height: 40, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                <Box style={{ width: 32, height: 32, borderRadius: 8, background: GRAD, justifyContent: 'center', alignItems: 'center' }}>
+                    <Text style={{ fontSize: 16, fontWeight: 'bold', color: ONIMG, fontFamily: FONT_NUM, height: 20 }}>标</Text>
+                </Box>
+                <Text style={{ fontSize: 13, color: DIM, letterSpacing: 2, height: 18 }}>项目名</Text>
+            </Box>
+            <Text style={{ fontSize: 14, color: DIM, letterSpacing: 1, fontFamily: FONT_NUM, height: 18 }}>00 / 00</Text>
+        </Box>
+    </Box>
+</Slide>

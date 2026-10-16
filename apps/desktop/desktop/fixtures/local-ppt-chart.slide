@@ -1,0 +1,9 @@
+<Slide style={{ width: 1280, height: 720, background: '#FFFFFF', padding: 60 }}>
+  <Text style={{ fontSize: 40, height: 60, color: '#183153' }}>可编辑图表测试</Text>
+  <Box style={{ height: 380, marginTop: 16 }}>
+    <Chart style={{ width: 662, height: 380 }} chartType='barChart' barDirection='column'
+      title='年度增长' showLegend={false} showDataLabels={true}
+      colors={['#2F6BE4']} background='#FFFFFF'
+      data={[["年份", "销量"], ["2024", 36], ["2025", 215]]} />
+  </Box>
+</Slide>

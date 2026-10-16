@@ -14,6 +14,17 @@ extraResources:
     to: skills/deck-agent-kit
     filter:
       - '**/*'
+      - '!vendor/slidep/node_modules/**'
+      - '!**/__pycache__/**'
+      - '!**/*.pyc'
+  - from: node_modules/yoga-wasm-web
+    to: skills/deck-agent-kit/vendor/slidep/node_modules/yoga-wasm-web
+    filter:
+      - '**/*'
+  - from: resources/skills/pptx-deck-builder
+    to: skills/pptx-deck-builder
+    filter:
+      - '**/*'
       - '!**/__pycache__/**'
       - '!**/*.pyc'
   - from: resources/skills/kunlu-business-planner

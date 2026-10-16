@@ -25,6 +25,7 @@ K_Studio/
 dist-types/
 **/dist-web/
 .workbuddy/
+.slidep/
 
 # Local runtime state
 .runtime/

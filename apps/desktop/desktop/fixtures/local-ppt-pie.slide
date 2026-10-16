@@ -1,0 +1,9 @@
+<Slide style={{ width: 1280, height: 720, background: '#FFFFFF', padding: 60 }}>
+  <Text style={{ fontSize: 40, height: 60, color: '#183153' }}>饼图测试</Text>
+  <Box style={{ height: 380, marginTop: 16 }}>
+    <Chart style={{ width: 662, height: 380 }} chartType='pieChart'
+      title='市场占比' showLegend={true} showDataLabels={true}
+      colors={['#2F6BE4','#74CFCE']} background='#FFFFFF'
+      data={[["品牌", "份额"], ["甲", 36], ["乙", 64]]} />
+  </Box>
+</Slide>

@@ -23,6 +23,12 @@ function safeFileName(value) {
   return value;
 }
 
+function pythonPath(value) {
+  // The per-call UUID workspace can exceed Windows MAX_PATH. Node can write it,
+  // but Python cannot reopen the same ordinary absolute path without this prefix.
+  return process.platform === 'win32' ? path.toNamespacedPath(value) : value;
+}
+
 async function executeBusinessPlanner(call, root, signal, helpers) {
   const { command, within } = helpers;
   if (!capabilities.includes(call.tool)) throw new Error('不支持的经营规划技能');
@@ -31,10 +37,21 @@ async function executeBusinessPlanner(call, root, signal, helpers) {
   const args = { ...(call.arguments || {}) };
   if (action === 'ppt') args.fileName = safeFileName(args.fileName || '鲲鹭科技三一规划.pptx');
   const requestPath = path.join(workspace.work, 'business-planner-request.json');
-  await fs.writeFile(requestPath, JSON.stringify({ action, args, output: workspace.output }), 'utf8');
+  await fs.writeFile(requestPath, JSON.stringify({ action, args, output: pythonPath(workspace.output) }), 'utf8');
+  const bridgePath = path.join(kitDirectory(), 'scripts', 'kla_bridge.py');
+  try {
+    await fs.access(requestPath);
+  } catch (error) {
+    throw new Error(`经营规划请求文件创建失败：${requestPath}`, { cause: error });
+  }
+  try {
+    await fs.access(bridgePath);
+  } catch (error) {
+    throw new Error(`未找到建潘-三一规划技能包桥接脚本：${bridgePath}。请重启或更新 Electron 客户端。`, { cause: error });
+  }
   let proc;
   try {
-    proc = await command(await pythonExecutable(), ['-X', 'utf8', path.join(kitDirectory(), 'scripts', 'kla_bridge.py'), requestPath], workspace.work, 660000, signal);
+    proc = await command(await pythonExecutable(), ['-X', 'utf8', bridgePath, pythonPath(requestPath)], workspace.work, 660000, signal);
   } catch (error) {
     if (error?.code === 'ENOENT') return { result: { error: '未找到 Python，请安装 Python 3.10+ 并配置 KLA_BUSINESS_PLANNER_PYTHON' } };
     throw error;

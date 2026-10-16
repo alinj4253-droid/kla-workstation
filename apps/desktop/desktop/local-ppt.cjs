@@ -2,8 +2,17 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { ensureWorkspace } = require('./local-workspace.cjs');
-const capabilities = ['local_ppt_doctor', 'local_ppt_theme_list', 'local_ppt_dsl_validate', 'local_ppt_build', 'local_ppt_inspect', 'local_ppt_render'];
+const slidep = require('./local-ppt-slidep.cjs');
+const capabilities = ['local_ppt_doctor', 'local_ppt_guide', 'local_ppt_theme_list', 'local_ppt_dsl_validate', 'local_ppt_build', 'local_ppt_inspect', 'local_ppt_render'];
 const mimes = { '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation', '.pdf': 'application/pdf', '.png': 'image/png', '.json': 'application/json' };
+const guideFiles = {
+  workflow: 'references/workflow.md', story: 'references/story-md.md', design: 'references/design-md.md',
+  layout: 'references/layout-recipes.md', dsl: 'references/dsl-components.md', lint: 'references/lint-troubleshooting.md',
+  themes: 'references/theme-presets.md', theme_library: 'references/theme-library.md',
+  environment: 'references/environment.md', portability: 'references/portability.md',
+  story_template: 'assets/STORY.template.md',
+  design_template: 'assets/DESIGN.template.md', cover_template: 'assets/slide-cover.slide', content_template: 'assets/slide-content.slide',
+};
 async function pythonExecutable() {
   if (process.env.KLA_PPT_PYTHON) return process.env.KLA_PPT_PYTHON;
   const venv = path.join(process.env.LOCALAPPDATA || path.join(require('node:os').homedir(), '.local'), 'kla-workstation', 'ppt-runtime', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
@@ -37,11 +46,17 @@ function parseThemeDocument(fileName, source) {
   }
   return { id: fileName.replace(/\.DESIGN\.md$/i, ''), fileName, name: values.name || fileName.replace(/\.DESIGN\.md$/i, ''), description: values.description || '', locale: values.locale || undefined };
 }
-async function listSlidepThemes(query, limit) {
+async function listSlidepThemes(query, limit, themeId) {
   const status = await slidepStatus();
   if (!status.available) return { ...status, themes: [] };
   const dir = path.join(slidepDirectory(), 'resources', 'themes');
   const names = (await fs.readdir(dir)).filter(name => name.toLowerCase().endsWith('.design.md')).sort((a, b) => a.localeCompare(b));
+  if (themeId) {
+    const name = names.find(value => value.replace(/\.DESIGN\.md$/i, '') === themeId);
+    if (!name) return { ...status, error: '主题编号不存在', themes: [] };
+    const designMarkdown = await fs.readFile(path.join(dir, name), 'utf8');
+    return { ...status, theme: parseThemeDocument(name, designMarkdown), designMarkdown: designMarkdown.slice(0, 40_000) };
+  }
   const needle = String(query || '').trim().toLowerCase();
   const themes = [];
   for (const fileName of names) {
@@ -50,58 +65,95 @@ async function listSlidepThemes(query, limit) {
     if (!needle || `${theme.id} ${theme.name} ${theme.description}`.toLowerCase().includes(needle)) themes.push(theme);
     if (themes.length >= limit) break;
   }
-  return { ...status, themes, total: themes.length, query: query || null };
-}
-async function nodeExecutable() { return process.env.KLA_SLIDEP_NODE || 'node'; }
-function parseJsonOutput(output) {
-  const lines = String(output || '').trim().split(/\r?\n/).filter(Boolean);
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    try { return JSON.parse(lines[i]); } catch { /* slidep may emit converter logs before its JSON result. */ }
-  }
-  throw new Error('slidep 返回无效结果');
+  return { ...status, themes, total: names.length, query: query || null };
 }
 async function validateSlidepDsl(source, fileName, workspace, signal, command) {
   const status = await slidepStatus();
   if (!status.available) return { available: false, ok: false, diagnostics: [{ severity: 'error', message: status.reason }] };
-  const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const safeName = path.basename(fileName.replace(/[^a-zA-Z0-9._-]/g, '_'));
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*\.slide$/i.test(safeName)) {
+    return { available: true, ok: false, diagnostics: [{ severity: 'error', message: 'DSL 文件名必须为英文数字开头的 .slide 文件' }] };
+  }
   const dslFile = path.join(workspace.work, safeName);
   const blank = path.join(workspace.work, 'slidep-blank.pptx');
   await fs.writeFile(dslFile, source, 'utf8');
   await fs.copyFile(path.join(slidepDirectory(), 'resources', 'pptx', 'blank.pptx'), blank);
   signal.throwIfAborted();
-  let proc;
-  const previousNodePath = process.env.NODE_PATH;
-  process.env.NODE_PATH = path.join(slidepDirectory(), 'node_modules');
-  try { proc = await command(await nodeExecutable(), [slidepEngine(), 'lint', blank, '--dsl-file', dslFile], workspace.work, 120000, signal); }
+  try { return { available: true, ...await slidep.lint(slidepEngine(), blank, dslFile, workspace.work, signal, command) }; }
   catch (error) { return { available: true, ok: false, diagnostics: [{ severity: 'error', message: error.message }] }; }
-  finally { if (previousNodePath === undefined) delete process.env.NODE_PATH; else process.env.NODE_PATH = previousNodePath; }
-  if (proc.exitCode !== 0) return { available: true, ok: false, diagnostics: [{ severity: 'error', message: (proc.stderr || proc.stdout).slice(-2000) }], exitCode: proc.exitCode };
-  try { return { available: true, ...parseJsonOutput(proc.stdout) }; }
-  catch (error) { return { available: true, ok: false, diagnostics: [{ severity: 'error', message: `${error.message}: ${(proc.stderr || proc.stdout).slice(-1000)}` }] }; }
+}
+async function runPython(action, input, workspace, signal, command) {
+  const file = path.join(workspace.work, `${action}-request.json`);
+  await fs.writeFile(file, JSON.stringify({ action, output: workspace.output, ...input }), 'utf8');
+  const proc = await command(await pythonExecutable(), ['-X', 'utf8', path.join(kitDirectory(), 'scripts', 'kla_bridge.py'), file], workspace.output, 600000, signal);
+  if (proc.exitCode !== 0) throw new Error('PPT 辅助程序启动失败：' + (proc.stderr || proc.stdout).slice(-1000));
+  try { return JSON.parse(proc.stdout.trim()); } catch { throw new Error('PPT 辅助程序返回无效结果'); }
 }
 async function executePpt(call, root, signal, approved, helpers) {
-  const { command, absolute, filename, within, approvedReadPath } = helpers;
+  const { command, absolute, within, approvedReadPath } = helpers;
   const workspace = await ensureWorkspace(root, call);
   const folder = workspace.output;
-  const args = call.arguments;
+  const args = call.arguments || {};
   const action = call.tool.replace('local_ppt_', '');
-  const request = { action, output: folder };
-  if (action === 'theme_list') return { result: await listSlidepThemes(args.query, args.limit || 30) };
-  if (action === 'dsl_validate') return { result: await validateSlidepDsl(args.source, args.fileName || 'page.slide', workspace, signal, command) };
-  if (action === 'build') {
-    if (typeof args.specJson !== 'string' || args.specJson.length > 1_000_000) throw new Error('PPT 语义 JSON 无效或过大');
-    request.specJson = args.specJson;
-    request.fileName = filename(args.fileName || '演示文稿.pptx');
-    if (!request.fileName.toLowerCase().endsWith('.pptx')) throw new Error('成果文件名必须以 .pptx 结尾');
-    // Keep the generated file below the Windows MAX_PATH boundary. The
-    // per-run workspace intentionally contains several UUIDs, so a natural
-    // language file name can otherwise fail only when the engine opens it.
-    if (folder.length + 1 + request.fileName.length > 259) {
-      request.fileName = `ppt-${String(call.id).replaceAll('-', '').slice(0, 8)}.pptx`;
-    }
-    request.render = args.render !== false;
+  if (action === 'guide') {
+    const file = guideFiles[args.section];
+    if (!file) return { result: { error: '未知 PPT 制作指南章节' } };
+    const content = await fs.readFile(path.join(slidep.resourceDirectory(), file), 'utf8');
+    return { result: { section: args.section, content: content.slice(0, 35000), truncated: content.length > 35000 } };
   }
-  if (action === 'inspect' || action === 'render') {
+  if (action === 'theme_list') return { result: await listSlidepThemes(args.query, args.limit || 30, args.themeId) };
+  if (action === 'dsl_validate') return { result: await validateSlidepDsl(args.source, args.fileName || 'page.slide', workspace, signal, command) };
+  let result;
+  let files = [];
+  if (action === 'build') {
+    const status = await slidepStatus();
+    if (!status.available) return { result: { error: status.reason } };
+    const built = await slidep.build(args, root, call, workspace, signal, approved, helpers, slidepEngine());
+    result = built.result;
+    files = built.files || [];
+    if (built.deck && args.render === true) {
+      try {
+        const rendered = await runPython('render', { input: built.deck }, workspace, signal, command);
+        if (rendered.error) throw new Error(rendered.error);
+        if (rendered.pageCount !== result.pageCount) throw new Error('真实渲染页数与 PPTX 页数不一致');
+        files.push(...(rendered.files || []));
+        result.renderStatus = rendered.renderStatus;
+      } catch (error) {
+        result.renderStatus = 'unavailable';
+        result.warning = `PPTX 已生成并通过布局校验，但辅助 PDF 渲染不可用：${error.message}`;
+      }
+    }
+  } else if (action === 'doctor') {
+    const status = await slidepStatus();
+    let writing = false;
+    if (status.available) {
+      try {
+        const { writeDeck } = require('./local-ppt-writer.cjs');
+        const source = "<Slide style={{width:1280,height:720,background:'#FFFFFF'}}><Text style={{fontSize:28,height:60,color:'#183153'}}>环境检查</Text></Slide>";
+        const slides = path.join(workspace.output, 'slides');
+        await fs.mkdir(slides, { recursive: true });
+        const page = path.join(slides, '01.slide');
+        await fs.writeFile(page, source, 'utf8');
+        const blank = path.join(workspace.work, 'slidep-blank.pptx');
+        await fs.copyFile(path.join(slidepDirectory(), 'resources', 'pptx', 'blank.pptx'), blank);
+        const checked = await slidep.lint(slidepEngine(), blank, page, workspace.output, signal, command);
+        if (!checked.ok) throw new Error(checked.diagnostics?.[0]?.message || 'slidep lint 未通过');
+        await writeDeck({ pages: [{ pageNumber: 1 }], deck: path.join(workspace.output, 'doctor.pptx'),
+          output: workspace.output, engine: slidepEngine(), command, signal, nodeRuntime: slidep.nodeRuntime(),
+          runner: path.join(__dirname, 'local-ppt-layout-runner.cjs') });
+        status.writer = { available: true, kind: 'native-pptx', editorServiceRequired: false, smokeTested: true };
+        writing = true;
+      } catch (error) { status.writer = { available: false, reason: error.message }; status.reason = `本地 PPT 写入自检失败：${error.message}`; }
+    }
+    let auxiliary;
+    try { auxiliary = (await runPython('doctor', {}, workspace, signal, command)).environment; }
+    catch (error) { auxiliary = { available: false, reason: error.message }; }
+    return { result: { environment: {
+      level: !writing ? 'blocked' : auxiliary?.capabilities?.render ? 'full' : 'partial',
+      capabilities: { generate: writing, qc: writing, render: Boolean(auxiliary?.capabilities?.render), inspect: Boolean(auxiliary?.capabilities?.inspect) },
+      slidep: status, auxiliary, workflow: slidep.FORMAT,
+    } } };
+  } else if (action === 'inspect' || action === 'render') {
     if (Boolean(args.path) === Boolean(args.documentId)) throw new Error('请提供 path 或 documentId 中的一个');
     let input;
     if (args.documentId) {
@@ -111,23 +163,16 @@ async function executePpt(call, root, signal, approved, helpers) {
     } else input = await approvedReadPath(absolute(args.path), root, approved);
     if (!input.toLowerCase().endsWith('.pptx')) throw new Error('仅支持 PPTX 文件');
     if ((await fs.stat(input)).size > 16 * 1024 * 1024) throw new Error('PPTX 文件限 16 MiB');
-    request.input = input;
+    try { result = await runPython(action, { input }, workspace, signal, command); }
+    catch (error) { return { result: { error: `PPT ${action === 'inspect' ? '读取' : '渲染'}依赖不可用：${error.message}` } }; }
+    files = result.files || [];
+    delete result.files;
+  } else {
+    throw new Error('未知 PPT 操作');
   }
   signal.throwIfAborted();
-  const file = path.join(workspace.work, 'request.json');
-  await fs.writeFile(file, JSON.stringify(request), 'utf8');
-  let proc;
-  try { proc = await command(await pythonExecutable(), ['-X', 'utf8', path.join(kitDirectory(), 'scripts', 'kla_bridge.py'), file], folder, 660000, signal); }
-  catch (e) { if (e.code === 'ENOENT') return { result: { error: '未找到 Python，请安装 Python 3.10+ 并运行 scripts/setup-ppt-runtime.ps1' } }; throw e; }
-  if (proc.exitCode !== 0) return { result: { error: 'PPT 引擎启动失败：' + proc.stderr.slice(-1000) } };
-  let result;
-  try { result = JSON.parse(proc.stdout.trim()); } catch { throw new Error('PPT 引擎返回无效结果'); }
-  if (action === 'doctor') result.environment = { ...(result.environment || {}), slidep: await slidepStatus() };
   if (result.error) return { result: { ...result, error: result.error.split(folder).join('[任务目录]') } };
-  const files = result.files || [];
-  delete result.files;
-  if (result.documentPath) { result.documentId = path.relative(root, result.documentPath).split(path.sep).join('/'); delete result.documentPath; }
-  if (process.env.KLA_LOCAL_ARTIFACT_UPLOAD === 'false') return { result: { ...result, uploaded: false, localOnly: true } };
+  if (process.env.KLA_LOCAL_ARTIFACT_UPLOAD === 'false') return { result: { ...result, uploaded: false, ...(files.length ? { localOnly: true } : {}) } };
   const artifacts = [];
   let total = 0;
   for (const output of files) {

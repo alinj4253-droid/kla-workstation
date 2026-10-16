@@ -581,6 +581,22 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
   });
 
   app.get('/api/v1/conversations/:conversationId/runs', async (request, reply) => { const session = await auth(request, reply); if (!session) return; const identity = await enforce(session, request, 'read', reply); if (!identity) return; const { conversationId } = request.params as { conversationId: string }; if (!(await deps.accounts.listAllConversations(identity.id)).some((item) => item.id === conversationId)) return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: '群聊不存在或无权访问', retryable: false } }); return reply.send({ ok: true, data: await deps.accounts.listConversationRuns(conversationId) }); });
+  app.get('/api/v1/conversations/:conversationId/runtime-state', async (request, reply) => {
+    const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return;
+    const identity = await enforce(session, request, 'read', reply); if (!identity) return;
+    const { conversationId } = request.params as { conversationId: string };
+    if (!(await deps.accounts.listAllConversations(identity.id)).some((item) => item.id === conversationId)) return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: '群聊不存在或无权访问', retryable: false } });
+    const query = request.query as { runId?: string; after?: string };
+    const runs = await deps.accounts.listConversationRuns(conversationId);
+    const runId = typeof query.runId === 'string' && runs.some(run => run.id === query.runId) ? query.runId : runs.find(run => ['queued', 'running', 'waiting_device', 'waiting_tool', 'waiting_approval'].includes(run.status))?.id ?? runs[0]?.id;
+    const after = Math.max(0, Number.parseInt(query.after ?? '0', 10) || 0);
+    const [messages, steps, events] = await Promise.all([
+      deps.accounts.listMessages(conversationId),
+      runId ? deps.database.rawPool.query('SELECT st.id,st.run_id,st.step_index,st.title,st.instruction,st.assigned_agent_id,st.status,st.result,st.depends_on,st.agent_snapshot,st.created_at,st.updated_at FROM conversation_run_steps st JOIN conversation_runs r ON r.id=st.run_id WHERE st.run_id=$1 AND r.conversation_id=$2 ORDER BY st.step_index', [runId, conversationId]).then(result => result.rows) : Promise.resolve([]),
+      deps.database.rawPool.query('SELECT sequence,conversation_id,run_id,kind,payload,created_at FROM runtime_events WHERE identity_id=$1 AND conversation_id=$2 AND sequence>$3 ORDER BY sequence LIMIT 200', [identity.id, conversationId, after]).then(result => result.rows),
+    ]);
+    return reply.send({ ok: true, data: { messages, runs, steps, events } });
+  });
   app.get('/api/v1/conversations/:conversationId/artifacts', async (request, reply) => { const session = await auth(request, reply); if (!session) return; const identity = await enforce(session, request, 'read', reply); if (!identity) return; const { conversationId } = request.params as { conversationId: string }; if (!(await deps.accounts.listAllConversations(identity.id)).some((item) => item.id === conversationId)) return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: '群聊不存在或无权访问', retryable: false } }); return reply.send({ ok: true, data: await deps.accounts.listArtifacts(identity.id, conversationId) }); });
   app.get('/api/v1/artifacts/:artifactId', async (request, reply) => { const session = await auth(request, reply); if (!session) return; const identity = await enforce(session, request, 'read', reply); if (!identity) return; const { artifactId } = request.params as { artifactId: string }; const artifact = await deps.accounts.getArtifact(identity.id, artifactId); if (!artifact) return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: '成果文件不存在' } }); return reply.send({ ok: true, data: artifact }); });
 
