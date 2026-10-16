@@ -9,7 +9,8 @@ const route = require('./local-route.cjs');
 const businessPlanner = require('./local-business-planner.cjs');
 const waste = require('./local-waste.cjs');
 const excel = require('./local-excel.cjs');
-const capabilities = ['local_read','local_list','local_write','local_code','local_bat','local_cli','local_file_fetch','local_file_publish', ...ppt.capabilities, ...route.capabilities, ...businessPlanner.capabilities, ...waste.capabilities, ...excel.capabilities];
+const codeAnalysis = require('./local-code-analysis.cjs');
+const capabilities = ['local_read','local_list','local_write','local_code','local_bat','local_cli','local_file_fetch','local_file_publish', ...ppt.capabilities, ...route.capabilities, ...businessPlanner.capabilities, ...waste.capabilities, ...excel.capabilities, ...codeAnalysis.capabilities];
 function localPath(value, root) {
   if (typeof value === 'string' && value.startsWith('workspace://')) {
     const target = path.resolve(root, value.slice('workspace://'.length));
@@ -84,6 +85,7 @@ async function executeLocal(call,root,signal,approvedRead=false,downloadInput) {
   if(businessPlanner.capabilities.includes(call.tool))return businessPlanner.executeBusinessPlanner(call,root,signal,{command,within});
   if(waste.capabilities.includes(call.tool))return waste.executeWaste(call,root,signal);
   if(excel.capabilities.includes(call.tool))return excel.executeExcel(call,root,signal,approvedRead,{command,absolute:value=>localPath(value,root),filename,within,approvedReadPath});
+  if(codeAnalysis.capabilities.includes(call.tool))return codeAnalysis.executeCodeAnalysis(call,root,signal,{command});
   const a=call.arguments;
   const workspace=await ensureWorkspace(root,call);
   if(call.tool==='local_file_fetch') {

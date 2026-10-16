@@ -71,6 +71,9 @@ export const runtimeSkillCatalog = [
   { code: 'local_excel_profile', name: 'Excel 数据画像', description: '对上传的 .xlsx/.xlsm 做多表结构画像与质量探查：行列规模、字段形态、缺失分布、重复行、枚举取值域、数值区间、日期范围与风险提示；只读源文件，输出 JSON+Markdown 成果', location: 'local' },
   { code: 'local_excel_validate', name: 'Excel 溯源校验', description: '源文件 SHA256/MD5 指纹 + exceljs 独立第二路径重算（可排除取消/退款单）+ 明细汇总双向勾稽 + 源文件未修改复验；每个对外数字可追溯', location: 'local' },
   { code: 'local_excel_report', name: 'Excel 分析 HTML 报告', description: '把分析结果 JSON 编译为自包含 HTML 报告（内联 SVG 图表、涨红跌绿、明暗主题），作为成果文件交付', location: 'local' },
+  { code: 'local_code_scan', name: '项目结构扫描', description: '只读扫描本地项目：文件规模、语言分布、技术栈信号、测试现状与框架、入口文件、依赖清单、目录树；能力 A（完整项目分析）的数据采集', location: 'local' },
+  { code: 'local_code_impact', name: '变更影响分析', description: '只读分析 Git 变更影响面：变更文件清单（含未跟踪新增）、按模块聚合、反向依赖候选（引用了被改模块的位置）；无 Git 时可比较两份快照目录；能力 B（变更影响分析）的数据采集', location: 'local' },
+  { code: 'local_code_read', name: '源码行号读取', description: '按行号范围读取项目源码片段（带行号输出，单次最多 400 行），用于把每个问题定位到文件:行号证据；只读且目标必须位于项目目录内', location: 'local' },
 ] as const;
 export type RuntimeSkillCode = typeof runtimeSkillCatalog[number]['code'];
 export const runtimeSkillBundles = [
@@ -86,6 +89,7 @@ export const runtimeSkillBundles = [
   { code: 'business_planning', name: '鲲鹭经营规划', description: 'kunlu-business-planner 1.0：经营指标、目标拆解、偏差分析、公司/部门规划与三一规划 PPT；本地执行', tools: ['local_business_metrics', 'local_business_goal_decompose', 'local_business_deviation', 'local_business_plan', 'local_business_ppt'] },
   { code: 'waste_analysis', name: '经营分析', description: 'biz-agent-kit 2.0：对话中动态连接任意 MySQL 数据源（configure/schema/query 通用只读分析）+ 垃圾量专项快路径（快照库聚合：总量/日均/收运覆盖率/漏收率、趋势同比、作业所分解、分类结构与时段明细）；本地执行', tools: ['local_waste_status', 'local_waste_report', 'local_waste_detail', 'local_biz_configure', 'local_biz_schema', 'local_biz_query'] },
   { code: 'excel_analysis', name: 'Excel 数据分析', description: 'excel-agent-kit 1.1（内置纯 JS 引擎）：环境自检 → 多表数据画像与质量探查 → 源文件指纹+独立重算+双向勾稽的溯源校验 → 自包含 HTML 分析报告；全程只读源文件，口径显式声明；本地执行', tools: ['local_excel_doctor', 'local_excel_profile', 'local_excel_validate', 'local_excel_report'] },
+  { code: 'code_analysis', name: '代码分析', description: 'code-analysis-kit 1.0：四层工作流（任务识别 → 项目理解 → 分析方法 → 结果规范）；能力 A 完整项目分析（结构/依赖/风险/测试）、能力 B 变更影响分析（影响面/回归/补测）、局部专项分析（指定模块/文件/功能）；输出统一格式报告 + 测试建议清单 + 回归范围，问题按 P0-P3 分级、证据到文件:行号；本地执行', tools: ['local_code_scan', 'local_code_impact', 'local_code_read'] },
 ] as const satisfies ReadonlyArray<{ code: string; name: string; description: string; tools: readonly RuntimeSkillCode[] }>;
 export type RuntimeSkillBundleCode = typeof runtimeSkillBundles[number]['code'];
 // 枚举参数的中文容错：模型在自然语言场景常把 periodType 传成「年报」等值，
@@ -93,6 +97,9 @@ export type RuntimeSkillBundleCode = typeof runtimeSkillBundles[number]['code'];
 // cnAlias 已提取到 cn-alias.ts（home-ai.ts 也要用，避免循环依赖）
 export const toolArguments = {
   ...homeAiToolArguments,
+  local_code_scan: z.object({ root: z.string().trim().min(2).max(500), maxDepth: z.number().int().min(1).max(8).optional() }).strict(),
+  local_code_impact: z.object({ root: z.string().trim().min(2).max(500), range: z.string().trim().max(200).optional(), compareWith: z.string().trim().min(2).max(500).optional() }).strict().refine(input => Boolean(input.range) !== Boolean(input.compareWith), 'range 与 compareWith 只能二选一'),
+  local_code_read: z.object({ root: z.string().trim().min(2).max(500), file: z.string().trim().min(1).max(500), startLine: z.number().int().min(1).optional(), endLine: z.number().int().min(1).optional() }).strict(),
   knowledge_search: z.object({ query: z.string().min(1), topK: z.number().int().min(1).max(20).default(5) }),
   knowledge_read: z.object({ knowledgeBaseId: z.string().uuid(), docId: z.union([z.string(), z.number()]), offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(200).default(20) }),
   knowledge_ocr: z.object({ artifactId: z.string().uuid(), maxPages: z.number().int().min(1).max(20).default(5) }),

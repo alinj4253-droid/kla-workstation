@@ -13,6 +13,8 @@ const actions = {
   local_business_metrics: '读取鲲鹭经营规划知识包中的业绩、人力与规划指标', local_business_goal_decompose: '将公司年度或半年度目标拆解到部门与 KPI',
   local_business_deviation: '对比计划与实际，识别经营偏差、根因和对策', local_business_plan: '生成公司整体或指定部门的经营规划',
   local_business_ppt: '生成可编辑的三一规划 PPTX 成果',
+  local_code_scan: '只读扫描项目结构、技术栈、测试现状与依赖清单', local_code_impact: '只读分析 Git 变更影响面与反向依赖',
+  local_code_read: '按行号读取项目源码片段（只读，用于收集证据）',
   local_ppt_doctor: '检查本地 PPT 环境', local_ppt_theme_list: '浏览新版 PPT 主题', local_ppt_dsl_validate: '校验 PPT 页面布局', local_ppt_build: '生成 PPTX 并检查与渲染', local_ppt_inspect: '读取 PPTX 内容与备注', local_ppt_render: '检查并渲染本地 PPTX',
 };
 function describeRequest(call) {
@@ -60,6 +62,11 @@ function describeRequest(call) {
     else if (call.tool === 'local_business_plan') { add('规划类型', { company: '公司整体', department: '部门', all: '公司+部门' }[args.type] || args.type); if (args.department) add('部门', args.department); add('规划年份', args.year); }
     else if (call.tool === 'local_business_ppt') { add('规划类型', { company: '公司整体', department: '部门' }[args.type] || args.type); if (args.department) add('部门', args.department); add('报告名', args.fileName); }
     else add('操作', '读取经营规划知识包指标');
+  }
+  else if (call.tool.startsWith('local_code_')) {
+    add('项目路径', args.root, true);
+    if (call.tool === 'local_code_impact') { if (args.range) add('Git 范围', args.range, true); if (args.compareWith) add('对比快照', args.compareWith, true); }
+    if (call.tool === 'local_code_read') { add('目标文件', args.file, true); if (args.startLine) add('起始行', args.startLine); }
   }
   else if (call.tool === 'local_ppt_doctor') add('检查内容', 'Python 依赖、中文字体、Office / WPS 渲染器及新版 slidep');
   else if (call.tool === 'local_ppt_theme_list') add('筛选主题', args.query || '全部');

@@ -22,6 +22,12 @@ extraResources:
       - '**/*'
       - '!**/__pycache__/**'
       - '!**/*.pyc'
+  - from: resources/skills/code-analysis-kit
+    to: skills/code-analysis-kit
+    filter:
+      - '**/*'
+      - '!**/__pycache__/**'
+      - '!**/*.pyc'
 win:
   icon: resources/kla-app-icon.ico
   target:
