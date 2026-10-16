@@ -74,7 +74,7 @@ describe('智能体默认模型与 Key', () => {
     // 绑定智能体列（原型技能页要求）
     expect(await screen.findByText('本地执行智能体、PPT助手')).toBeInTheDocument();
     // 未绑定的技能在「绑定智能体」列显示未绑定（select 里也有同名选项，所以在行内断言）
-    const customRow = screen.getByText('报表生成').closest('.ws-skill-row')!;
+    const customRow = screen.getByText('报表生成').closest('.ws-skill-row') as HTMLElement;
     expect(within(customRow).getByText('未绑定')).toBeInTheDocument();
     // 开关直接调用既有 PATCH 接口
     await user.click(screen.getByRole('switch', { name: '知识检索 启用状态' }));
