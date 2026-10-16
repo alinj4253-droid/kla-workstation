@@ -138,6 +138,9 @@ const properties: Record<RuntimeSkillCode, Record<string, unknown>> = {
   local_excel_report: {
     jsonPath: string, content: string, theme: { type: 'string', enum: ['light', 'dark'] }, fileName: string,
   },
+  local_code_scan: { root: string, maxDepth: integer },
+  local_code_impact: { root: string, range: string, compareWith: string },
+  local_code_read: { root: string, file: string, startLine: integer, endLine: integer },
 };
 const required: Record<RuntimeSkillCode, string[]> = {
   home_ai_session_open:[],home_ai_interview_update:['sessionId','expectedRevision','answerId','answer'],
@@ -145,6 +148,7 @@ const required: Record<RuntimeSkillCode, string[]> = {
   home_ai_value_estimate:['sessionId','expectedRevision','stageId','numbers'],home_ai_report_build:['sessionId','stageId'],
   home_ai_materials_add:['sessionId','expectedRevision','fileId'],
   knowledge_search: ['query'], knowledge_read: ['knowledgeBaseId','docId'], knowledge_ocr: ['artifactId'],
+  local_code_scan:['root'],local_code_impact:['root'],local_code_read:['root','file'],
   web_search: ['query'], memory_recall: ['query'],
   artifact_write: ['fileName','content'], artifact_compose: ['fileName','artifactIds'], artifact_read: ['artifactId'], local_read: ['path'], local_list: ['path'],
   file_read: ['fileId'], local_file_fetch: [],
