@@ -8,6 +8,7 @@ import { accessibleFile } from '../../storage/file-access.js';
 import type { ObjectStore } from '../../storage/object-store.js';
 import { parseMaterial } from './materials.js';
 import { HomeAiError, lockCurrentBinding, readCurrentBinding, assertBindingVersion, assertCurrentSession } from './session-binding.js';
+import { readHomeAiReviewEntry } from './review-entry.js';
 export { HomeAiError } from './session-binding.js';
 
 export type DiagnosticScope = {identityId:string;conversationId:string;toolCallId?:string;bindingVersion?:number};
@@ -43,6 +44,10 @@ export class HomeAiService {
       session:current?sessionView(current.id,current.revision,current.state):null,
       sessions:rows.map(row=>({sessionId:row.id,roleName:String(row.display_name||row.state.answers.role||'').slice(0,60),revision:row.revision,
         profileConfirmed:row.state.profileConfirmed===true,createdAt:new Date(row.created_at).toISOString(),updatedAt:new Date(row.updated_at).toISOString()}))});
+  }
+  async reviewEntry(scope:DiagnosticScope) {
+    await requirePermission(this.pool,scope.identityId,'read');await this.authorize(this.pool,scope);
+    return readHomeAiReviewEntry(this.pool,scope);
   }
   async current(scope:DiagnosticScope):Promise<HomeAiCurrent> {
     await requirePermission(this.pool,scope.identityId,'read');await this.authorize(this.pool,scope);

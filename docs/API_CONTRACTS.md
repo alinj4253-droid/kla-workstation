@@ -1,5 +1,9 @@
 # API 契约索引与冻结流程
 
+## 诊断核对入口状态
+
+`GET /api/v1/conversations/:conversationId/home-ai/review-entry` 使用现有登录、身份及诊断群组读取权限，返回 `homeAiReviewEntrySchema`：`eligible` 为当前角色池中启用且具有 `home_ai_diagnosis` 市场安装记录的实例；`active` 表示存在该身份、群组与实例关联的诊断回复或成功诊断工具调用；`processing` 表示相关步骤正在执行；`anchorMessageId` 为最新关联诊断回复 ID，没有回复时为 `null`。接口只读，不创建会话、不返回诊断原文，不改变工具权限。客户端结合资格和活动控制入口显示，取消挂载、切换身份或群组后关闭面板；核对与人工确认继续由原有接口执行权限及版本校验。
+
 > 本文是前后端契约的**索引与流程约定**；接口的业务定义以《FULL_STACK_IMPLEMENTATION_SPEC.md》§6 为事实源，机器可读契约为 `packages/contracts`（`@kla-workstation/contracts`）。
 
 ## 1. 契约包现状（M0/M1 范围）

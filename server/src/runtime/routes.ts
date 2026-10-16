@@ -47,6 +47,13 @@ export async function registerRuntimeRoutes(app: FastifyInstance, deps: {pool:Po
     try{return {ok:true,data:z.array(homeAiSessionViewSchema).parse(await diagnostics.list({identityId:s.identity.id,conversationId:id((request.params as any).conversationId)}))};}
     catch(error){return homeAiFailure(error,reply);}
   });
+  app.get('/api/v1/conversations/:conversationId/home-ai/review-entry',async(request,reply)=>{
+    const s=await scope(request,reply);if(!s)return;
+    const entryScope={identityId:s.identity.id,conversationId:id((request.params as {conversationId:string}).conversationId)};
+    try {
+      return {ok:true,data:await diagnostics.reviewEntry(entryScope)};
+    }catch(error){return homeAiFailure(error,reply);}
+  });
   app.get('/api/v1/conversations/:conversationId/home-ai/current',async(request,reply)=>{
     const s=await scope(request,reply);if(!s)return;
     try{return {ok:true,data:homeAiCurrentSchema.parse(await diagnostics.current({identityId:s.identity.id,conversationId:id((request.params as {conversationId:string}).conversationId)}))};}

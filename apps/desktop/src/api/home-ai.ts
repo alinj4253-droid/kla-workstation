@@ -1,6 +1,10 @@
 import { klaApi } from './client';
-import { homeAiCurrentSchema, homeAiSessionViewSchema, type HomeAiCurrent, type HomeAiCurrentOperation, type HomeAiSessionView } from '@kla-workstation/contracts';
+import { homeAiCurrentSchema, homeAiSessionViewSchema, homeAiReviewEntrySchema, type HomeAiReviewEntry, type HomeAiCurrent, type HomeAiCurrentOperation, type HomeAiSessionView } from '@kla-workstation/contracts';
 export const homeAiApi={
+  reviewEntry:async(conversationId:string,identityId:string)=>{
+    const result=await klaApi.request<HomeAiReviewEntry>(`/v1/conversations/${conversationId}/home-ai/review-entry`,{headers:{'x-identity-id':identityId}});
+    return result.ok?{...result,data:homeAiReviewEntrySchema.parse(result.data)}:result;
+  },
   list:(conversationId:string,identityId:string)=>klaApi.request<HomeAiSessionView[]>(`/v1/conversations/${conversationId}/home-ai/sessions`,{headers:{'x-identity-id':identityId}}),
   current:async(conversationId:string,identityId:string)=>{
     const result=await klaApi.request<HomeAiCurrent>(`/v1/conversations/${conversationId}/home-ai/current`,{headers:{'x-identity-id':identityId}});

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { FileText, Paperclip } from 'lucide-react';
 import { MarkdownMessage, RunActivity, type RoomRun, type RunEvent, type RunStep } from './CollaborationViews';
 import { klaApi } from '../api/client';
@@ -18,6 +18,8 @@ type Props = {
   onOpenFile: (file: MessageFile) => void;
   onOpenArtifact: (id: string) => void;
   memberNames?: Map<string, string>;
+  diagnosisEntry?: ReactNode;
+  diagnosisAnchorId?: string | null;
 };
 
 function InlineMedia({ block }: { block: Extract<ConversationDisplayBlock, { type: 'image' | 'video' | 'audio' }> }) {
@@ -42,7 +44,7 @@ function InlineMedia({ block }: { block: Extract<ConversationDisplayBlock, { typ
   return <audio className="ws-inline-audio" controls><source src={source} type={block.mime_type} /></audio>;
 }
 
-export function ConversationMessages({ messages, run, runs, steps, events, submitting, onCancel, onOpenFile, onOpenArtifact, memberNames = new Map() }: Props) {
+export function ConversationMessages({ messages, run, runs, steps, events, submitting, onCancel, onOpenFile, onOpenArtifact, memberNames = new Map(), diagnosisEntry, diagnosisAnchorId }: Props) {
   const isAgent = (message: ConversationMessage) => message.senderType === 'agent';
   const eventRunIds = new Map(events.filter(event => event.kind === 'message.created' && typeof event.payload.messageId === 'string').map(event => [event.payload.messageId as string, event.run_id]));
   const runIds = messages.map(message => message.runId ?? (message.id ? eventRunIds.get(message.id) : undefined));
@@ -66,8 +68,9 @@ export function ConversationMessages({ messages, run, runs, steps, events, submi
       if (!isAgent(message)) return <div className={`ws-message ${message.author === '我' ? 'self' : ''}`} key={key}><span className="ws-avatar">{message.author.slice(0, 2)}</span><div><small>{message.author} · {message.time}</small>{body(message)}</div></div>;
       const runId = runIds[index];
       const activity = runId && activityRows.get(runId) === index ? knownRuns.get(runId) ?? null : null;
-      return <RunActivity key={key} author={message.author} time={message.time} run={activity} steps={activity?.id === run?.id ? steps : []} events={events} submitting={false} onCancel={onCancel}>{body(message)}</RunActivity>;
+      return <RunActivity key={key} author={message.author} time={message.time} run={activity} steps={activity?.id === run?.id ? steps : []} events={events} submitting={false} onCancel={onCancel}>{body(message)}{message.id===diagnosisAnchorId?diagnosisEntry:null}</RunActivity>;
     })}
     {submitting ? <RunActivity key="submitting" run={null} steps={[]} events={[]} submitting onCancel={onCancel} /> : run && !activityRows.has(run.id) ? <RunActivity key={run.id} run={run} steps={steps} events={events} submitting={false} onCancel={onCancel} /> : null}
+    {!messages.some(message=>message.senderType==='agent'&&message.id===diagnosisAnchorId)?diagnosisEntry:null}
   </>;
 }

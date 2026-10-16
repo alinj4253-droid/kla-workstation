@@ -10,7 +10,7 @@ const sessionLabel=(s:HomeAiCurrent['sessions'][number])=>`${s.sessionId.slice(0
 const stageLabels:Record<string,string>={needs:'需求对接',marketing:'营销锁客',design:'设计方案',quote:'报价',review:'审单',order:'下单',split:'拆单',schedule:'排单',production:'生产制造',quality:'质量检测',logistics:'物流',install:'安装',service:'售后',behavior:'行为审计',economic:'经济审计'};
 const answerLabels:Record<string,string>={role:'岗位',mission:'职责',handoff:'交接',workflow:'当前流程',capability:'工具与数据',kpi:'绩效',idea:'AI想法',success:'期望',constraints:'试点边界',materials:'材料说明'};
 
-export function HomeAiReview({conversationId,identityId}:{conversationId:string;identityId:string}) {
+export function HomeAiReview({conversationId,identityId,processing=false}:{conversationId:string;identityId:string;processing?:boolean}) {
   const [open,setOpen]=useState(false),[binding,setBinding]=useState<HomeAiCurrent|null>(null),[selected,setSelected]=useState('');
   const [history,setHistory]=useState<HomeAiSessionView|null>(null),[roleName,setRoleName]=useState('');
   const [busy,setBusy]=useState(false),[message,setMessage]=useState(''),[acknowledged,setAcknowledged]=useState(false),[retryable,setRetryable]=useState(false);
@@ -85,6 +85,7 @@ export function HomeAiReview({conversationId,identityId}:{conversationId:string;
   }
   return <Dialog.Root modal={false} open={open} onOpenChange={value=>{setOpen(value);setAcknowledged(false);if(value)void refresh();}}>
     <div className="ws-home-ai-review">
+      {processing&&<span role="status">诊断处理中 · </span>}
       <Dialog.Trigger asChild><button type="button" className="ws-text-button">诊断核对</button></Dialog.Trigger>
     </div>
     <Dialog.Portal>

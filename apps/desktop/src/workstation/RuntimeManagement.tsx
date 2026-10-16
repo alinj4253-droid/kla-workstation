@@ -227,11 +227,11 @@ export function RuntimeToolManagement({ identityId, notify }: Props): React.JSX.
   </div>;
 }
 
-export function RuntimeRoomMembers({ room, identityId, notify, onClose }: Props & { room: string; onClose: () => void }): React.JSX.Element {
+export function RuntimeRoomMembers({ room, identityId, notify, onClose, onChanged }: Props & { room: string; onClose: () => void; onChanged?: () => void }): React.JSX.Element {
   const [agents, setAgents] = useState<RuntimeAgent[]>([]);
   const [members, setMembers] = useState<string[]>([]);
   useEffect(() => { let live = true; void Promise.all([runtimeApi.agents(), runtimeApi.members(room)]).then(([a, m]) => { if (!live) return; if (a.ok) setAgents(a.data); if (m.ok) setMembers(m.data.map(item => item.id)); }); return () => { live = false; }; }, [room, identityId]);
-  return <div className="ws-modal-backdrop"><div className="ws-modal"><header><h2>群聊智能体角色池</h2><IconButton title="关闭" onClick={onClose}><X size={18} /></IconButton></header>{agents.map(agent => <label key={agent.id} className="ws-member-option"><input type="checkbox" checked={members.includes(agent.id)} disabled={agent.name === '统筹智能体' || !agent.enabled} onChange={event => { const add = event.target.checked; void (add ? runtimeApi.addMember(room, agent.id) : runtimeApi.removeMember(room, agent.id)).then(result => { if (result.ok) setMembers(items => add ? [...items, agent.id] : items.filter(item => item !== agent.id)); else notify(result.message); }).catch(() => notify('更新成员失败')); }} /><span><b>{agent.name}</b><small>{agentDescription(agent)}</small></span></label>)}</div></div>;
+  return <div className="ws-modal-backdrop"><div className="ws-modal"><header><h2>群聊智能体角色池</h2><IconButton title="关闭" onClick={onClose}><X size={18} /></IconButton></header>{agents.map(agent => <label key={agent.id} className="ws-member-option"><input type="checkbox" checked={members.includes(agent.id)} disabled={agent.name === '统筹智能体' || !agent.enabled} onChange={event => { const add = event.target.checked; void (add ? runtimeApi.addMember(room, agent.id) : runtimeApi.removeMember(room, agent.id)).then(result => { if (result.ok) { setMembers(items => add ? [...items, agent.id] : items.filter(item => item !== agent.id)); onChanged?.(); } else notify(result.message); }).catch(() => notify('更新成员失败')); }} /><span><b>{agent.name}</b><small>{agentDescription(agent)}</small></span></label>)}</div></div>;
 }
 
 type SettingsView = 'channels' | 'members' | 'profile' | 'appearance' | 'ops';

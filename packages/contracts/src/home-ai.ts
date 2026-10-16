@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import { cnAlias } from './cn-alias.js';
 
+export const homeAiReviewEntrySchema = z.object({
+  eligible: z.boolean(), active: z.boolean(), processing: z.boolean(), anchorMessageId: z.string().uuid().nullable(),
+}).strict();
+export type HomeAiReviewEntry = z.infer<typeof homeAiReviewEntrySchema>;
+
 // 原始 enum 供输出 schema 与 record 键使用（服务端产出恒为英文，无需容错）
 export const homeAiStageSchema = z.enum(['needs','marketing','design','quote','review','order','split','schedule','production','quality','logistics','install','service','behavior','economic']);
 // 模型入参变体：中文容错（精确优先+包含兜底），防「报价」「拆单」这类中文导致续跑失败
