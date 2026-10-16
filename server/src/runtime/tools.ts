@@ -27,6 +27,13 @@ const routeKindEnum = { type: 'string', enum: ['distance', 'toll'] };
 const routeStrategyEnum = { type: 'string', enum: ['mileage', 'time', 'cost'] };
 const routeAlgorithmEnum = { type: 'string', enum: ['balanced', 'kmeans'] };
 const coordSystemEnum = { type: 'string', enum: ['gcj02', 'wgs84'] };
+const businessContext = {
+  sourceSetId: { type: 'string', description: '必须来自本次 local_business_metrics 成功读取返回的材料凭据，不可跨任务复用' },
+  company: { type: 'string', description: '材料或用户确认的业务主体；未知先问用户' },
+  period: { type: 'string', description: '材料/用户确认的回顾与规划期间；不得默认年份' },
+  objective: { type: 'string', description: '本次用户目标和报告用途，不得凭空设定经营指标' },
+  inputQuestions: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'string', maxLength: 500 }, description: '真实材料尚缺的关键信息；传入即暂停本轮并向用户询问，不继续分析或生成报告' },
+};
 const properties: Record<RuntimeSkillCode, Record<string, unknown>> = {
   home_ai_session_open: { sessionId: string },
   home_ai_interview_update: { sessionId:string, expectedRevision:integer, answerId:{type:'string',enum:['role','mission','handoff','workflow','capability','kpi','idea','success','constraints','materials']}, answer:string },
@@ -91,11 +98,16 @@ const properties: Record<RuntimeSkillCode, Record<string, unknown>> = {
     optimizedOrder: arrayOfIntegers, originalOrder: arrayOfIntegers,
     strategy: string, distanceKm: { type: 'number' }, savedPercent: { type: 'number' },
   },
-  local_business_metrics: {},
-  local_business_goal_decompose: { year: integer, half: { type: 'string', enum: ['H1', 'H2'] } },
-  local_business_deviation: { scope: { type: 'string', enum: ['all', 'revenue', 'h1', 'project'] } },
-  local_business_plan: { type: { type: 'string', enum: ['company', 'department', 'all'] }, department: string, year: integer },
-  local_business_ppt: { type: { type: 'string', enum: ['company', 'department'] }, department: string, fileName: string },
+  local_business_metrics: { paths: { type: 'array', maxItems: 16, items: string, description: '用户明确指定的源文件/目录绝对路径，或 local_file_fetch 返回的 workspace:// 附件路径；不得猜路径或读取技能示例。与 sourceSetId 二选一' },
+    sourceSetId: businessContext.sourceSetId, offset: { ...integer, minimum: 0, description: '读取同一材料集后续原文片段，使用返回的 nextOffset' } },
+  local_business_goal_decompose: { ...businessContext },
+  local_business_deviation: { ...businessContext, scope: { type: 'string', enum: ['all', 'revenue', 'h1', 'project'] } },
+  local_business_plan: { ...businessContext, type: { type: 'string', enum: ['company', 'department', 'all'] }, department: string },
+  local_business_ppt: { ...businessContext, type: { type: 'string', enum: ['company', 'department'] }, department: string, fileName: string,
+    analysisMarkdown: { type: 'string', description: '先完成的真实分析稿，必须用 [E编号] 引用本次原文证据，区分事实/假设/建议' },
+    storyMarkdown: { type: 'string', description: '完整 STORY.md 受众、目的、逐页大纲、事实边界与证据引用' }, designMarkdown: { type: 'string', description: '完整 DESIGN.md 配色、字体、画布、版式契约' },
+    slides: { type: 'array', maxItems: 20, items: { type: 'object', properties: { pageNumber: integer, source: string }, required: ['pageNumber', 'source'], additionalProperties: false }, description: '一次交付 1-20 页完整 .slide JSX，连续页码从 1 开始，内容来自分析稿，不使用固定企业示例' },
+    assets: { type: 'array', items: { type: 'object', properties: { sourcePath: string, fileName: string }, required: ['sourcePath', 'fileName'], additionalProperties: false } }, render: { type: 'boolean' } },
   local_waste_status: {},
   local_waste_report: {
     scope: string, periodType: periodTypeEnum,

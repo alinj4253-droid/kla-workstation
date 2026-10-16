@@ -37,6 +37,15 @@ describe('群聊呈现', () => {
     expect(cancel).toHaveBeenCalledOnce();
   });
 
+  it('缺资料的本轮询问不显示为经营任务成功', () => {
+    render(<RunActivity run={{ id: 'input-run', status: 'completed', result: { needsInput: true } }} steps={[{ id: 'input-step', step_index: 1, title: '核对经营原件', instruction: '先读文件', status: 'completed', result: { needsInput: true, text: '请补充原件' } }]} events={[{ sequence: 1, run_id: 'input-run', kind: 'run.completed', payload: { needsInput: true }, created_at: '2026-10-16T01:00:00Z' }]} submitting={false} onCancel={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /待补充资料/ }));
+    expect(screen.getByRole('button', { name: /核对经营原件.*待补充资料/ })).toBeInTheDocument();
+    expect(screen.queryByText('任务已完成')).toBeNull();
+    expect(document.querySelectorAll('.lucide-check')).toHaveLength(0);
+    expect(screen.queryByRole('button', { name: '终止生成' })).toBeNull();
+  });
+
   it('成果面板切换文件并隔离 HTML 预览', () => {
     const artifacts: RoomArtifact[] = [
       { id: 'a', name: '报告.html', mimeType: 'text/html', content: '<h1>报告</h1>', sizeBytes: 15, createdAt: '2026-10-10T01:00:00Z' },

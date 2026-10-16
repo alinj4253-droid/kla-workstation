@@ -81,7 +81,7 @@ async function executeLocal(call,root,signal,approvedRead=false,downloadInput) {
   if(!capabilities.includes(call.tool))throw new Error('不支持的本地技能');signal.throwIfAborted();
   if(ppt.capabilities.includes(call.tool))return ppt.executePpt(call,root,signal,approvedRead,{command,absolute:value=>localPath(value,root),filename,within,approvedReadPath});
   if(route.capabilities.includes(call.tool))return route.executeRoute(call,root,signal);
-  if(businessPlanner.capabilities.includes(call.tool))return businessPlanner.executeBusinessPlanner(call,root,signal,{command,within});
+  if(businessPlanner.capabilities.includes(call.tool))return businessPlanner.executeBusinessPlanner(call,root,signal,approvedRead,{command,absolute:value=>localPath(value,root),filename,within,approvedReadPath});
   if(waste.capabilities.includes(call.tool))return waste.executeWaste(call,root,signal);
   if(excel.capabilities.includes(call.tool))return excel.executeExcel(call,root,signal,approvedRead,{command,absolute:value=>localPath(value,root),filename,within,approvedReadPath});
   const a=call.arguments;

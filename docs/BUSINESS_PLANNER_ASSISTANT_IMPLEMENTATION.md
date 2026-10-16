@@ -1,54 +1,100 @@
-# 建潘-三一规划智能体
+# 建潘-三一规划智能体：真实材料驱动流程
 
-## 交付范围
+## 1. 业务规则
 
-已将 `kunlu-business-planner` 技能包接入新版统一运行时，并新增官方本地智能体「建潘-三一规划智能体」。它与 PPT 助手、路线规划助手使用相同的服务端定义、技能挂载、统一工具网关、Electron 设备心跳、审批/执行权限和成果回执链路。
+先读取用户本次提供的原始经营材料，再按照目标拆解、偏差分析和三一规划方法论分析，最后按需生成可编辑 PPTX。技能包内的历史企业、指标 JSON 和旧固定报告不再作为业务数据源；正常调用不再使用旧 Python 数据引擎。
 
-每个身份首次初始化运行时目录时，服务端幂等创建该智能体并默认挂载：
+- 没有上传原件或明确的本机文件/目录完整路径，先向用户索取材料，不猜路径、不泛扫磁盘、不自造输入。
+- 原件不存在、读取失败、扫描 PDF 无文字层、空文件或格式不支持时，说明原因并请用户补充。批次中任一文件失败，不把剩余材料默认为完整输入继续分析。
+- 文字提取成功不等于资料齐全。主体、期间、目标、单位、目标/实际口径或范围无法确认时，针对缺口提问；材料已明确的信息不重复询问。
+- 事实、计算、建议、待验证假设分开说明。不能把材料不支持的数字和结论作为事实。
+- 缺资料时显示“待补充资料”，结束本轮自动执行，不运行依赖该分析的报告或成功汇总步骤。
+- 用户补充后再次 `@建潘-三一规划智能体`，或通过群聊秘书重新分派，发起新一轮。没有 `@` 不触发智能体的规则保持不变。
 
-- `business_planning`：经营规划技能包
-- `artifact_management`：成果读取与交付
-- `memory_context`：当前群聊短期记忆
-- `local_files`：本地任务文件处理
+## 2. 执行链路
 
-智能体默认 `execution_location=local`，模型和 API Key 仍由服务端按当前身份的默认挂载槽位管理。
+1. 将智能体加入当前群聊成员池，并以 `@` 触发；秘书不能分派群外智能体。
+2. 附件经 `local_file_fetch` 下载到当前任务工作区 `input`，使用工具实际返回路径；用户本机路径直接作为只读输入。
+3. `local_business_metrics` 提取真实原件，返回本次任务的 `sourceSetId`、来源 S 编号、证据 E 编号及原文位置。
+4. 分页读取并核对资料完整性；缺口经 `inputQuestions` 返回明确问题并停止。无缺口则取得方法论上下文并分析。
+5. 需要 PPT 时，读取新版 PPT 指南，准备可溯源分析稿、STORY、DESIGN 和逐页 Slide DSL。
+6. `local_business_ppt` 校验本次材料凭据和引用，内部复用新版原生可编辑 PPT 构建及质量检查，不走旧固定报告。
+7. 经现有成果回执链路上传真实成果，最终 `@用户` 一次交付，不重复发文件。
 
-## 网关工具
+定义与模型推理仍在服务端；本地执行经过统一技能/工具网关、已登录 Electron 执行设备及原有权限/审批。此变更不绕过设备在线检查，实际读取和构建仍需要对应本地执行器在线。
 
-| 工具 | 用途 |
+## 3. 工具契约
+
+机器定义以 `packages/contracts/src/runtime.ts` 为准，模型工具目录由 `server/src/runtime/tools.ts` 暴露。
+
+| 工具 | 参数与行为 |
 | --- | --- |
-| `local_business_metrics` | 查询内置经营指标、人员和规划基线 |
-| `local_business_goal_decompose` | 公司目标拆解到部门和 KPI |
-| `local_business_deviation` | 按 all/revenue/h1/project 口径分析偏差 |
-| `local_business_plan` | 生成公司整体、指定部门或全部规划 |
-| `local_business_ppt` | 生成公司整体或部门可编辑 PPTX |
+| `local_business_metrics` | 首次传 `paths`；后续传 `sourceSetId` + `offset` 分页，两种模式互斥。空参数返回资料询问。 |
+| `local_business_goal_decompose` | 公共参数；返回真实证据和“目标→部门→项目→KPI/责任/里程碑”方法论上下文。 |
+| `local_business_deviation` | 公共参数及分析范围；返回同口径偏差分析上下文，不猜目标或根因。 |
+| `local_business_plan` | 公共参数，按需 `type`/`department`；返回经营回顾、洞察、战略及三一规划上下文。 |
+| `local_business_ppt` | 公共参数、`analysisMarkdown`、`storyMarkdown`、`designMarkdown`、`slides`；最多 20 页，可选资源、文件名和渲染参数。 |
 
-工具参数由 `packages/contracts` 校验，模型只能调用已挂载且已启用的工具。经营规划工具全部通过本地执行器下发，服务端不直接执行压缩包里的 Python。
+公共参数：`sourceSetId`（本次读取回执 UUID）、`company`（真实业务主体）、`period`（确认的期间）、`objective`（目标及用途）。部门规划还须明确部门。不再默认示例公司、历史年份或固定期间。
 
-## 技能包与本地执行
+缺信息可传 `inputQuestions`（1–8 个具体问题），立即返回 `needs_input`，不执行分析或生成。
 
-技能包随 Electron `extraResources` 打包到 `resources/skills/kunlu-business-planner`，保留原始 `SKILL.md`、业务引擎、内置 `scripts/data/knowledge_base.json` 与 `metrics.json`。`scripts/kla_bridge.py` 只接受结构化 JSON 操作名，禁止模型传入任意 Python 源码。
+读取成功的核心结果：
 
-执行器使用 `KLA_BUSINESS_PLANNER_PYTHON` 指定 Python；未设置时沿用系统 `python.exe/python3`。运行环境至少需要 Python 3.10 以及技能包 `scripts/requirements.txt` 中的依赖（FastAPI、python-pptx、openpyxl 等）。经营查询和规划返回 JSON；PPT 工具返回真实 PPTX，经过 SHA-256、文件头和大小校验后写入现有 artifacts 回执链路。
+```json
+{
+  "status": "ready",
+  "sourceSetId": "UUID",
+  "sources": [{"sourceId": "S1", "fileName": "经营数据.csv", "sizeBytes": 1234, "checksum": "SHA-256"}],
+  "evidence": [{"id": "E1", "sourceId": "S1", "location": "原文位置", "text": "提取原文"}],
+  "totalEvidence": 30,
+  "nextOffset": 6,
+  "warnings": [],
+  "totalWarnings": 0
+}
+```
 
-## 群聊使用方式
+`nextOffset` 非空时继续分页，不把第一页当全部材料。每页最多 12 段、约 4500 字，单段约 700 字；警告最多展示 30 条并返回总数。分析工具的 `analysis_context` 只是证据和方法论，不是已完成的经营结论。
 
-1. 在「我的智能体」中确认该身份已出现「建潘-三一规划智能体」，并在技能管理中确认 `鲲鹭经营规划` 已挂载。
-2. 创建群聊时把该智能体加入群聊成员池；群聊秘书只能调度当前群聊成员。
-3. 用户可直接 `@建潘-三一规划智能体`，或 `@任务执行` 让群聊秘书在成员池内分派。
-4. 首次本地调用要求 Electron 登录同一账号/身份并保持设备在线；有完全访问权限时不弹审批，审批模式仍按现有本地执行策略处理。
-5. PPT 生成完成后只交付回执中的真实 artifact，不重复发送文件；右侧成果抽屉可继续使用现有预览和下载能力。
+## 4. 格式与能力边界
 
-## 数据与权限边界
+| 格式 | 读取范围与限制 |
+| --- | --- |
+| TXT / MD / CSV / TSV / JSON | 原始文字与行号；不擅自推断列含义、单位和口径。 |
+| XLSX | 纯 JS 读取单元格原值/公式缓存，不执行公式；无缓存警告，日期可能为序列值。 |
+| DOCX | 正文和表格文字，不含图片、批注、页眉页脚。 |
+| PPTX | 幻灯片文字，不含图片、讲稿备注和嵌入对象。 |
+| PDF | 仅文字层；任一无文字页要求先 OCR/换原件；复杂表格顺序需核对。 |
 
-- 经营知识包是随客户端发布的本地只读数据，不写入服务端知识库表，也不改变知识库模块的检索权限。
-- 群聊消息、运行步骤、工具审计和 PPT 成果仍按当前身份、项目和群聊隔离写入服务端数据库。
-- 经营规划智能体不能调用未挂载的工具；工具网关和本地执行器同时校验身份权限、设备归属、群聊成员池与工具能力。
-- 更新技能包数据需要更新 Electron 资源并重启客户端；更新智能体定义或挂载逻辑由服务端版本发布控制。
+旧 DOC/XLS/PPT、图片和音视频须先转换或经独立 OCR/转写后提供。本适配器不新增 OCR 服务，不修改独立知识处理模块。
 
-## 已验证
+限额：单文件 8 MiB、一次 16 份、总量 32 MiB、总文字 40 万字；指定目录仅读本层，不递归。XLSX 单表最多 10000 行、500 列，总计 100000 单元格；PDF 最多 200 页。Office 解压限制条目数与 XML 大小，拒绝 DTD/实体。
 
-- contracts/server/desktop TypeScript 检查通过。
-- Python bridge 可读取经营指标、完成目标拆解和部门规划。
-- 本地工具适配器已实际生成事业二部 PPTX，并返回有效 Office Open XML 文件头、大小和 Base64 成果。
-- 旧的知识库、算力、记忆路径没有被修改。
+原件只读。技能包示例与身份工作区生成的 `work`/`output` 文件不能冒充输入；附件使用 `input` 原件路径。
+
+## 5. 暂停与恢复语义
+
+缺输入结果包含 `status=needs_input`、`needsInput=true`、`questions`，以及可选的 `issues`（文件名与失败原因）。
+
+服务端执行层向真实用户发一次询问，步骤结果记录 `needsInput=true`、`outcome=input_required`、空成果列表；结束本轮、取消未结束依赖和排队工具，不再调用秘书生成成功汇总。记录 `step.input_required`、`run.input_required` 和携带相同结果的 `run.completed` 事件。
+
+兼容现有状态契约，数据库状态使用 `completed`/`phase=done` 表示“本轮询问结束”，不是经营任务成功。业务结果以 `result.needsInput` 和 `result.outcome` 为准；前端显示“待补充资料”，不打成功勾、不计成功成果。
+
+即使模型未遵循提示词，在没有本轮成功原件读取回执时直接给结论或先写报告，执行层也会转为资料询问。此护栏仅作用于三一规划智能体，不改变其他智能体的通用流程。
+
+## 6. 数据、隔离与证据
+
+- 材料快照存于当前身份/项目/群聊/运行工作区的 `business-sources/<sourceSetId>.json`，仅当前运行有效。跨运行、跨身份不可复用；补充后新任务重新读取原件。
+- 原件 SHA-256、来源名称和原文位置用于溯源；正常来源元数据不含绝对本机路径。原文件不修改，也不自动录入平台知识库。
+- 提取文字会通过工具回执到服务端并进入模型上下文分析，因此不是“经营数据完全不离开本机”。消息、工具审计和成果沿用现有存储策略。
+- PPT 构建必须持有本次有效凭据；分析稿至少引用一个实际存在的 `[E编号]`，不存在的引用会被拒绝。本地保存分析稿和来源清单。
+- 引用校验仅验证编号存在，不是数字、推理或结论真实性的自动语义证明，仍需据原文与人工验收核对。
+- 工具挂载、设备归属、权限、审批、群聊成员池、成果上传和 QC 沿用现有逻辑；未修改独立知识库、算力、记忆服务。
+
+## 7. 实现与验证
+
+核心实现：本地 `local-business-materials.cjs`、`local-business-planner.cjs`；服务端 `business-planner-assistant.ts`、`agent-loop.ts`；前端 `CollaborationViews.tsx`。
+
+本地分析和原生 PPTX 构建使用 JavaScript，不依赖旧经营 Python 环境。历史技能包资源/桥接文件仅留档，不作为正常业务入口；可选 PPT 渲染要求沿用新版 PPT 工具环境说明。
+
+验证覆盖真实文件只读提取、哈希与隔离、缺材料/参数/不可读文件拦截、有效材料和 DSL 构建真实可编辑 PPTX；服务端使用隔离数据库 schema 与模拟模型核对询问、依赖取消、不生成假成果和不重复发问；前端组件核对待补充资料不显示成功。模拟模型测试不代表真实在线模型或 Electron 人工端到端验收。

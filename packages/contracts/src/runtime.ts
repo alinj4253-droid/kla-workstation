@@ -57,11 +57,11 @@ export const runtimeSkillCatalog = [
   { code: 'local_route_optimize', name: '路线顺序优化', description: '固定起终点 TSP 优化：多初始解+2-opt+Or-opt+节点交换+ILS，支持里程/时间/成本三种策略；矩阵缺省时自动调用高德获取；优化不劣于原始顺序', location: 'local' },
   { code: 'local_route_replan', name: '线路拆分重排', description: '把一组点位重新拆分为多条线路：均衡分配或 K-means 聚类+边界交换，再逐线最近邻+2-opt 排序并汇总里程', location: 'local' },
   { code: 'local_route_map', name: '路线对比地图', description: '生成优化前后路线对比的 HTML 地图（高德 JS API，单窗/双窗切换、双窗联动），作为成果文件交付', location: 'local' },
-  { code: 'local_business_metrics', name: '经营指标查询', description: '读取鲲鹭经营规划知识包中的业绩、人力与规划指标', location: 'local' },
+  { code: 'local_business_metrics', name: '经营材料读取', description: '只读本次用户指定的本地文件/目录或下载附件，提取原文证据并返回 sourceSetId；支持 TXT/MD/CSV/TSV/JSON/XLSX/DOCX/PPTX/文字 PDF。缺失/不可读返回 needs_input，禁止使用技能包示例数据', location: 'local' },
   { code: 'local_business_goal_decompose', name: '经营目标拆解', description: '将公司年度或半年度目标拆解到部门与 KPI', location: 'local' },
   { code: 'local_business_deviation', name: '经营偏差分析', description: '对比计划与实际，识别经营偏差、根因和对策', location: 'local' },
   { code: 'local_business_plan', name: '经营规划生成', description: '生成公司整体或指定部门的经营规划', location: 'local' },
-  { code: 'local_business_ppt', name: '三一规划 PPT', description: '生成可编辑的公司整体或部门三一规划 PPTX 成果', location: 'local' },
+  { code: 'local_business_ppt', name: '三一规划 PPT', description: '必须有本次 sourceSetId、真实证据引用分析稿和 STORY/DESIGN/逐页 DSL，使用新版构建流程生成可编辑 PPTX；缺资料先询问，不生成固定示例报告', location: 'local' },
   { code: 'local_waste_status', name: '经营分析数据源状态', description: '检查垃圾量快照库与业务库连通性、快照覆盖范围（日期/天数/作业所清单）', location: 'local' },
   { code: 'local_waste_report', name: '垃圾量经营分析报告', description: '按公司级/作业所级 × 年报/季报/月报从快照表聚合：总计量/日均/收运覆盖率/漏收率 KPI、趋势同比、作业所分解、分类结构', location: 'local' },
   { code: 'local_waste_detail', name: '垃圾量明细分析', description: '按日期区间查询明细：收运时段热力图、分类作业量同比、班次垃圾量、作业所×垃圾类型堆叠、本所与公司均值对比', location: 'local' },
@@ -84,7 +84,7 @@ export const runtimeSkillBundles = [
   { code: 'local_development', name: '本地代码开发', description: '编写代码并执行本地命令', tools: ['local_code', 'local_cli', 'local_bat'] },
   { code: 'ppt_assistant', name: 'PPT 制作与改稿', description: 'pptx-deck-builder：事实核对 → STORY/DESIGN → 逐页 DSL → Yoga lint → 本地可编辑 PPTX；经统一网关本地执行', tools: ['local_ppt_doctor', 'local_ppt_guide', 'local_ppt_theme_list', 'local_ppt_dsl_validate', 'local_ppt_build', 'local_ppt_inspect', 'local_ppt_render'] },
   { code: 'route_planning', name: '路线规划', description: 'route-agent-kit 1.0：高德距离/时间/过路费矩阵 → 固定起终点 TSP 优化（里程/时间/成本三策略）→ 多线路拆分重排 → 优化前后地图对比；本地执行', tools: ['local_route_matrix', 'local_route_optimize', 'local_route_replan', 'local_route_map'] },
-  { code: 'business_planning', name: '鲲鹭经营规划', description: 'kunlu-business-planner 1.0：经营指标、目标拆解、偏差分析、公司/部门规划与三一规划 PPT；本地执行', tools: ['local_business_metrics', 'local_business_goal_decompose', 'local_business_deviation', 'local_business_plan', 'local_business_ppt'] },
+  { code: 'business_planning', name: '三一经营规划', description: '用户原始材料 → 证据核对/缺口询问 → 目标/偏差/规划 → 新版可编辑 PPT；缺真实输入不得继续。本地只读材料，经统一网关执行', tools: ['local_business_metrics', 'local_business_goal_decompose', 'local_business_deviation', 'local_business_plan', 'local_business_ppt', 'local_ppt_doctor', 'local_ppt_guide', 'local_ppt_theme_list', 'local_ppt_dsl_validate'] },
   { code: 'waste_analysis', name: '经营分析', description: 'biz-agent-kit 2.0：对话中动态连接任意 MySQL 数据源（configure/schema/query 通用只读分析）+ 垃圾量专项快路径（快照库聚合：总量/日均/收运覆盖率/漏收率、趋势同比、作业所分解、分类结构与时段明细）；本地执行', tools: ['local_waste_status', 'local_waste_report', 'local_waste_detail', 'local_biz_configure', 'local_biz_schema', 'local_biz_query'] },
   { code: 'excel_analysis', name: 'Excel 数据分析', description: 'excel-agent-kit 1.1（内置纯 JS 引擎）：环境自检 → 多表数据画像与质量探查 → 源文件指纹+独立重算+双向勾稽的溯源校验 → 自包含 HTML 分析报告；全程只读源文件，口径显式声明；本地执行', tools: ['local_excel_doctor', 'local_excel_profile', 'local_excel_validate', 'local_excel_report'] },
 ] as const satisfies ReadonlyArray<{ code: string; name: string; description: string; tools: readonly RuntimeSkillCode[] }>;
@@ -92,6 +92,11 @@ export type RuntimeSkillBundleCode = typeof runtimeSkillBundles[number]['code'];
 // 枚举参数的中文容错：模型在自然语言场景常把 periodType 传成「年报」等值，
 // 若直接拒绝会导致整个任务续跑失败；这里统一映射为合法枚举（精确优先，其次包含匹配）
 // cnAlias 已提取到 cn-alias.ts（home-ai.ts 也要用，避免循环依赖）
+const businessContext = {
+  sourceSetId: z.string().uuid().optional(), company: z.string().trim().max(200).optional(),
+  period: z.string().trim().max(200).optional(), objective: z.string().trim().max(2000).optional(),
+  inputQuestions: z.array(z.string().trim().min(1).max(500)).min(1).max(8).optional(),
+};
 export const toolArguments = {
   ...homeAiToolArguments,
   knowledge_search: z.object({ query: z.string().min(1), topK: z.number().int().min(1).max(20).default(5) }),
@@ -155,11 +160,17 @@ export const toolArguments = {
     distanceKm: z.number().optional(),
     savedPercent: z.number().optional(),
   }),
-  local_business_metrics: z.object({}),
-  local_business_goal_decompose: z.object({ year: z.number().int().min(2000).max(2100).default(2026), half: z.enum(['H1', 'H2']).default('H2') }),
-  local_business_deviation: z.object({ scope: z.enum(['all', 'revenue', 'h1', 'project']).default('all') }),
-  local_business_plan: z.object({ type: z.enum(['company', 'department', 'all']).default('all'), department: z.string().max(100).optional(), year: z.number().int().min(2000).max(2100).default(2026) }),
-  local_business_ppt: z.object({ type: z.enum(['company', 'department']).default('company'), department: z.string().max(100).optional(), fileName: z.string().min(1).max(200).regex(/^[^\\/:*?"<>|\x00-\x1f]+\.pptx$/i).default('鲲鹭科技三一规划.pptx') }),
+  local_business_metrics: z.object({ paths: z.array(z.string().min(1).max(2000)).min(1).max(16).optional(), sourceSetId: z.string().uuid().optional(), offset: z.number().int().min(0).default(0) }),
+  local_business_goal_decompose: z.object({ ...businessContext }),
+  local_business_deviation: z.object({ ...businessContext, scope: z.enum(['all', 'revenue', 'h1', 'project']).default('all') }),
+  local_business_plan: z.object({ ...businessContext, type: z.enum(['company', 'department', 'all']).default('all'), department: z.string().max(100).optional() }),
+  local_business_ppt: z.object({ ...businessContext,
+    type: z.enum(['company', 'department']).default('company'), department: z.string().max(100).optional(),
+    analysisMarkdown: z.string().min(20).max(100000).optional(), storyMarkdown: z.string().min(20).max(100000).optional(), designMarkdown: z.string().min(20).max(100000).optional(),
+    slides: z.array(z.object({ pageNumber: z.number().int().min(1).max(20), source: z.string().min(20).max(120000) })).min(1).max(20).optional(),
+    assets: z.array(z.object({ sourcePath: z.string().min(1).max(1000), fileName: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*\.(png|jpe?g|webp)$/i) })).max(40).optional(),
+    fileName: z.string().min(1).max(200).regex(/^[^\\/:*?"<>|\x00-\x1f]+\.pptx$/i).default('三一规划报告.pptx'), render: z.boolean().default(false),
+  }),
   local_waste_status: z.object({}),
   local_waste_report: z.object({
     scope: z.string().max(100).default('company'),
