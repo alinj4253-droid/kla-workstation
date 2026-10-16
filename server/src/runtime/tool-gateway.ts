@@ -34,6 +34,12 @@ export type PreparedToolCall = {
   action: PermissionAction;
 };
 
+type AuthorizationSnapshot = {
+  agentEnabled: boolean;
+  effectiveTools: Set<string>;
+  checkedPermissions: Set<PermissionAction>;
+};
+
 const catalog = new Map(runtimeSkillCatalog.map(skill => [skill.code, skill]));
 
 /** Single policy and routing boundary for model-facing runtime tools. */
@@ -52,8 +58,11 @@ export class ToolGateway {
 
   async completeModel(identity: Identity, input: GatewayChatInput) {
     if (!this.modelGateway) throw new Error('模型网关未配置');
-    await requirePermission(this.pool, identity.id, 'write');
-    if (!(await hasComputePermission(this.pool, identity.id, COMPUTE_PERMISSION.modelUse))) {
+    const [,canUseModel] = await Promise.all([
+      requirePermission(this.pool, identity.id, 'write'),
+      hasComputePermission(this.pool, identity.id, COMPUTE_PERMISSION.modelUse),
+    ]);
+    if (!canUseModel) {
       throw new Error('当前身份缺少 model.use 权限');
     }
     return this.modelGateway.completeChat(identity, input);
@@ -89,29 +98,77 @@ export class ToolGateway {
       JSON.stringify({ agentId: scope.agentId, sourceMessageId: input.sourceMessageId })]);
   }
 
-  private async authorize(scope: ToolScope, name: string): Promise<{ location: 'local' | 'server'; action: PermissionAction }> {
-    await assertKnowledgeToolPolicy(this.pool, name, { identityId: scope.identityId, conversationId: scope.conversationId, agentId: scope.agent.id, runId: scope.runId, stepId: scope.stepId });
+  private async authorizationSnapshot(scope: ToolScope, actions: PermissionAction[] = []): Promise<AuthorizationSnapshot> {
+    const [agent, effective] = await Promise.all([
+      this.pool.query('SELECT enabled FROM agents WHERE id=$1 AND identity_id=$2', [scope.agent.id, scope.identityId]),
+      effectiveToolCodes(this.pool, scope.agent.id),
+    ]);
+    const snapshot: AuthorizationSnapshot = { agentEnabled: Boolean(agent.rows[0]?.enabled), effectiveTools: new Set(effective), checkedPermissions: new Set() };
+    if (!snapshot.agentEnabled) throw new Error(`智能体已停用或智能体身份不匹配：${scope.agent.name}`);
+    const unique = [...new Set(actions)];
+    await Promise.all(unique.map(action => requirePermission(this.pool, scope.identityId, action)));
+    unique.forEach(action => snapshot.checkedPermissions.add(action));
+    return snapshot;
+  }
+
+  private async authorize(scope: ToolScope, name: string, snapshot?: AuthorizationSnapshot): Promise<{ location: 'local' | 'server'; action: PermissionAction }> {
     const skill = catalog.get(name as RuntimeSkillCode);
-    if (skill?.location === 'local' && await isHomeAiDiagnosis(this.pool, scope.identityId, scope.agent.id)) throw new Error('诊断智能体禁止本地工具；用户附件请使用服务端 file_read 或诊断材料工具。');
     if (!skill || !scope.agent.skills.includes(skill.code) || !this.discover(scope.agent).some(tool => tool.function.name === name)) {
       throw new Error(`智能体无权调用未挂载或已停用的工具：${name}`);
     }
-    const agent = await this.pool.query('SELECT enabled FROM agents WHERE id=$1 AND identity_id=$2', [scope.agent.id, scope.identityId]);
-    const enabled = await effectiveToolCodes(this.pool, scope.agent.id);
-    if (!agent.rows[0]?.enabled || !enabled.includes(name)) throw new Error(`工具已停用或智能体已失效：${name}`);
+    const current = snapshot ?? await this.authorizationSnapshot(scope);
+    if (!current.effectiveTools.has(name)) throw new Error(`工具已停用或智能体已失效：${name}`);
     if (skill.location === 'local' && (scope.agent.execution_location !== 'local' || !scope.deviceId)) {
       throw new Error('本地工具需要已认证的本地执行设备');
     }
     const action: PermissionAction = skill.location === 'local' || name === 'knowledge_ocr' || name === 'web_search' ? 'execute' : homeAiWriteTools.has(name) || name === 'artifact_write' || name === 'artifact_compose' ? 'write' : 'read';
-    await requirePermission(this.pool, scope.identityId, action);
+    if (!current.checkedPermissions.has(action)) await requirePermission(this.pool, scope.identityId, action);
     return { location: skill.location, action };
+  }
+
+  /** Diagnosis constraints supplement, and never replace, upstream tool authorization. */
+  private async assertDiagnosisScope(scope: ToolScope, name: string): Promise<void> {
+    await assertKnowledgeToolPolicy(this.pool, name, { identityId: scope.identityId, conversationId: scope.conversationId, agentId: scope.agent.id, runId: scope.runId, stepId: scope.stepId });
+    if (catalog.get(name as RuntimeSkillCode)?.location === 'local' && await isHomeAiDiagnosis(this.pool, scope.identityId, scope.agent.id)) throw new Error('诊断智能体禁止本地工具；用户附件请使用服务端 file_read 或诊断材料工具。');
   }
 
   async prepare(scope: ToolScope, call: ModelToolCall): Promise<PreparedToolCall> {
     if (!call.id) throw new Error('工具调用缺少模型调用编号');
     const { location, action } = await this.authorize(scope, call.function.name);
+    await this.assertDiagnosisScope(scope, call.function.name);
     const args = parseToolArguments(call.function.name, JSON.parse(call.function.arguments));
     return { id: call.id, name: call.function.name, args, location, action };
+  }
+
+  async prepareBatch(scope: ToolScope, calls: ModelToolCall[]): Promise<PreparedToolCall[]> {
+    if (!calls.length) return [];
+    const actions = calls.map(call => {
+      const skill = catalog.get(call.function.name as RuntimeSkillCode);
+      if (!skill) throw new Error(`未知工具：${call.function.name}`);
+      return skill.location === 'local' || call.function.name === 'knowledge_ocr' || call.function.name === 'web_search'
+        ? 'execute' as const
+        : homeAiWriteTools.has(call.function.name) || call.function.name === 'artifact_write' || call.function.name === 'artifact_compose'
+          ? 'write' as const : 'read' as const;
+    });
+    const snapshot = await this.authorizationSnapshot(scope, actions);
+    const prepared = calls.map(call => {
+      if (!call.id) throw new Error('工具调用缺少模型调用编号');
+      const { location, action } = this.authorizeWithSnapshot(scope, call, snapshot);
+      const args = parseToolArguments(call.function.name, JSON.parse(call.function.arguments));
+      return { id: call.id, name: call.function.name, args, location, action };
+    });
+    await Promise.all(prepared.map(call => this.assertDiagnosisScope(scope, call.name)));
+    return prepared;
+  }
+
+  private authorizeWithSnapshot(scope: ToolScope, call: ModelToolCall, snapshot: AuthorizationSnapshot): { location: 'local' | 'server'; action: PermissionAction } {
+    const skill = catalog.get(call.function.name as RuntimeSkillCode);
+    if (!skill || !scope.agent.skills.includes(skill.code) || !this.discover(scope.agent).some(tool => tool.function.name === call.function.name)) throw new Error(`智能体无权调用未挂载或已停用的工具：${call.function.name}`);
+    if (!snapshot.effectiveTools.has(call.function.name)) throw new Error(`工具已停用或智能体已失效：${call.function.name}`);
+    if (skill.location === 'local' && (scope.agent.execution_location !== 'local' || !scope.deviceId)) throw new Error('本地工具需要已认证的本地执行设备');
+    const action: PermissionAction = skill.location === 'local' || call.function.name === 'knowledge_ocr' || call.function.name === 'web_search' ? 'execute' : homeAiWriteTools.has(call.function.name) || call.function.name === 'artifact_write' || call.function.name === 'artifact_compose' ? 'write' : 'read';
+    if (!snapshot.checkedPermissions.has(action)) throw new Error(`当前身份缺少 ${action} 权限`);
+    return { location: skill.location, action };
   }
 
   async enqueue(client: PoolClient, scope: ToolScope, call: PreparedToolCall): Promise<void> {
@@ -127,12 +184,17 @@ export class ToolGateway {
   async executeServerCalls(scope: ToolScope, assertActive: () => Promise<void>): Promise<void> {
     const queued = await this.pool.query(`SELECT * FROM runtime_tool_calls WHERE step_id=$1 AND device_id IS NULL
       AND status='queued' ORDER BY created_at,id`, [scope.stepId]);
+    const snapshot = await this.authorizationSnapshot(scope, queued.rows.map(call => {
+      const skill = catalog.get(call.tool_name as RuntimeSkillCode);
+      return skill?.location === 'local' || call.tool_name === 'knowledge_ocr' || call.tool_name === 'web_search' ? 'execute' as const : homeAiWriteTools.has(call.tool_name) || call.tool_name === 'artifact_write' || call.tool_name === 'artifact_compose' ? 'write' as const : 'read' as const;
+    }));
     for (const call of queued.rows) {
       await assertActive();
       let result: unknown;
       try {
-        await this.authorize(scope, call.tool_name);
-        if (catalog.get(call.tool_name as RuntimeSkillCode)?.location !== 'server') throw new Error('本地工具不能由服务端执行');
+        const prepared = this.authorizeWithSnapshot(scope, { id: String(call.model_call_id), function: { name: call.tool_name, arguments: JSON.stringify(call.arguments) } }, snapshot);
+        if (prepared.location !== 'server') throw new Error('本地工具不能由服务端执行');
+        await this.assertDiagnosisScope(scope, call.tool_name);
         result = await this.serverTools.execute(call.tool_name, call.arguments,
           { identityId: scope.identityId, conversationId: scope.conversationId, agentId: scope.agent.id, toolCallId: call.id, runId: scope.runId, stepId: scope.stepId, signal: scope.signal });
       } catch (error) {

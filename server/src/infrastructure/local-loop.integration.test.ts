@@ -36,7 +36,12 @@ describe('local multi-agent conversation loop', () => {
           name: 'delegate_tasks', arguments: JSON.stringify({ tasks: [{ title: '编写代码', instruction: '保存 app.py', agentId: agent.id, dependsOn: [] }] }),
         } }] };
         else if (request.requestId.endsWith(':turn:0')) message = { tool_calls: [{ id: 'code-local', type: 'function', function: {
-          name: tool, arguments: JSON.stringify(tool === 'local_code' ? { fileName: 'app.py', content: 'print(42)\n' } : { fileName: '方案.pptx', specJson: '{}' }),
+          name: tool, arguments: JSON.stringify(tool === 'local_code' ? { fileName: 'app.py', content: 'print(42)\n' } : {
+            fileName: '方案.pptx',
+            storyMarkdown: '# STORY\n\n目标：验证本地 PPT 链路。',
+            designMarkdown: '# DESIGN\n\n画布：16:9；风格：简洁。',
+            slides: [{ pageNumber: 1, source: '<Slide><Text x={40} y={40} width={640} height={120}>链路测试</Text></Slide>' }],
+          }),
         } }] };
         else message = { content: '代码文件已完成，可以预览。' };
         return { payload: { choices: [{ message }] } };

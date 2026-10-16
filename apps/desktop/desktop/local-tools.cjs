@@ -9,7 +9,8 @@ const route = require('./local-route.cjs');
 const businessPlanner = require('./local-business-planner.cjs');
 const waste = require('./local-waste.cjs');
 const excel = require('./local-excel.cjs');
-const capabilities = ['local_read','local_list','local_write','local_code','local_bat','local_cli','local_file_fetch','local_file_publish', ...ppt.capabilities, ...route.capabilities, ...businessPlanner.capabilities, ...waste.capabilities, ...excel.capabilities];
+const codeAnalysis = require('./local-code-analysis.cjs');
+const capabilities = ['local_read','local_list','local_write','local_code','local_bat','local_cli','local_file_fetch','local_file_publish', ...ppt.capabilities, ...route.capabilities, ...businessPlanner.capabilities, ...waste.capabilities, ...excel.capabilities, ...codeAnalysis.capabilities];
 function localPath(value, root) {
   if (typeof value === 'string' && value.startsWith('workspace://')) {
     const target = path.resolve(root, value.slice('workspace://'.length));
@@ -64,10 +65,10 @@ function kill(child) {
   if (process.platform === 'win32') { const killer=spawn('taskkill.exe',['/PID',String(child.pid),'/T','/F'],{windowsHide:true,stdio:'ignore'}); killer.on('error',()=>child.kill()); }
   else { try { process.kill(-child.pid,'SIGKILL'); } catch { child.kill('SIGKILL'); } }
 }
-function command(executable,args,cwd,timeoutMs,signal) {
+function command(executable,args,cwd,timeoutMs,signal,env) {
   signal.throwIfAborted();
   return new Promise((resolve,reject)=>{
-    const child=spawn(executable,args,{cwd,shell:false,windowsHide:true,detached:process.platform!=='win32',stdio:['ignore','pipe','pipe']});
+    const child=spawn(executable,args,{cwd,env,shell:false,windowsHide:true,detached:process.platform!=='win32',stdio:['ignore','pipe','pipe']});
     let stdout='',stderr='',reason='';
     child.stdout.on('data',b=>{stdout=(stdout+b.toString()).slice(-100000);});child.stderr.on('data',b=>{stderr=(stderr+b.toString()).slice(-100000);});
     const abort=()=>{reason='执行已取消';kill(child);};const timer=setTimeout(()=>{reason='执行超时';kill(child);},timeoutMs);
@@ -81,9 +82,10 @@ async function executeLocal(call,root,signal,approvedRead=false,downloadInput) {
   if(!capabilities.includes(call.tool))throw new Error('不支持的本地技能');signal.throwIfAborted();
   if(ppt.capabilities.includes(call.tool))return ppt.executePpt(call,root,signal,approvedRead,{command,absolute:value=>localPath(value,root),filename,within,approvedReadPath});
   if(route.capabilities.includes(call.tool))return route.executeRoute(call,root,signal);
-  if(businessPlanner.capabilities.includes(call.tool))return businessPlanner.executeBusinessPlanner(call,root,signal,{command,within});
+  if(businessPlanner.capabilities.includes(call.tool))return businessPlanner.executeBusinessPlanner(call,root,signal,approvedRead,{command,absolute:value=>localPath(value,root),filename,within,approvedReadPath});
   if(waste.capabilities.includes(call.tool))return waste.executeWaste(call,root,signal);
   if(excel.capabilities.includes(call.tool))return excel.executeExcel(call,root,signal,approvedRead,{command,absolute:value=>localPath(value,root),filename,within,approvedReadPath});
+  if(codeAnalysis.capabilities.includes(call.tool))return codeAnalysis.executeCodeAnalysis(call,root,signal,{command});
   const a=call.arguments;
   const workspace=await ensureWorkspace(root,call);
   if(call.tool==='local_file_fetch') {

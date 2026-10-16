@@ -54,16 +54,21 @@ describe('short-term recall and retention', () => {
       await add('bluewhale 另一个群组私密内容', 'short_term', 0, coordinator.id, chatTwo.id);
       const scope = { identityId: owner.identity.id, conversationId: chat.id, agentId: coordinator.id };
       expect(await memory.recall(scope, 'bluewhale')).toEqual(['bluewhale 当前项目负责人小林']);
+      expect(await memory.recall({ ...scope, conversationId: chatTwo.id }, 'bluewhale')).toEqual(['bluewhale 另一个群组私密内容']);
       const afterRead = (await pool.query('SELECT last_reinforced_at,access_count FROM memories WHERE id=$1', [active.id])).rows[0];
       expect(afterRead.last_reinforced_at.toISOString()).toBe(active.last_reinforced_at.toISOString());
       expect(afterRead.access_count).toBe(1);
       expect(await memory.recall({ ...scope, identityId: other.identity.id }, 'bluewhale')).toEqual([]);
       expect(await memory.recall({ ...scope, agentId: foreignAgent.id }, 'bluewhale')).toEqual([]);
 
+      await accounts.createMessage(chatTwo.id, owner.user.id, '二群专属用户输入，代号 redfox');
+      const otherRoomMessage = await accounts.createAgentMessage(chatTwo.id, coordinator.name, '二群专属智能体历史，代号 redfox', { agentId: coordinator.id });
       await accounts.createAgentMessage(chat.id, '独立执行智能体', '其他执行智能体的私密结果', { agentId: executor.id });
       const trigger = await accounts.createMessage(chat.id, owner.user.id, 'bluewhale 请接续回答');
       const history = await memory.history(scope, trigger.id);
       expect(history.map(message => message.content)).toEqual(['bluewhale 请接续回答']);
+      expect(await memory.history(scope, otherRoomMessage.id)).toEqual([]);
+      expect((await accounts.listMessages(chat.id)).every(message => message.conversationId === chat.id)).toBe(true);
       const capture = { runId: randomUUID(), agentName: coordinator.name, request: 'bluewhale', answer: '完成', sourceMessageId: trigger.id };
       await memory.capture(scope, capture); await memory.capture(scope, capture);
       expect((await pool.query("SELECT count(*)::int AS count FROM memories WHERE metadata->>'runId'=$1", [capture.runId])).rows[0].count).toBe(1);
@@ -76,7 +81,7 @@ describe('short-term recall and retention', () => {
       const headers = { authorization: `Bearer ${session.accessToken}`, 'x-identity-id': owner.identity.id };
       const response = await app.inject({ method: 'POST', url: `/api/v1/conversations/${chat.id}/messages`, headers, payload: { text: 'bluewhale 谁负责？', submitObject: [{ type: 'command', id: 'task_execution' }] } });
       expect(response.statusCode).toBe(200);
-      await vi.waitFor(async () => expect((await accounts.listConversationRuns(chat.id))[0].status).toBe('completed'));
+      await vi.waitFor(async () => expect((await accounts.listConversationRuns(chat.id))[0].status).toBe('completed'), { timeout: 10_000, interval: 100 });
       const context = JSON.stringify(completeChat.mock.calls[0][1].messages);
       expect(context).toContain('当前项目负责人小林');
       expect(context).not.toContain('长期秘密');
@@ -86,6 +91,25 @@ describe('short-term recall and retention', () => {
       const saved = (await pool.query("SELECT metadata FROM memories WHERE metadata->>'runId'=$1", [response.json().data.run.id])).rows;
       expect(saved).toHaveLength(1);
       expect(saved[0].metadata.agentId).toBe(coordinator.id);
+      expect(saved[0].metadata.conversationId).toBe(chat.id);
+
+      // Reuse the very same definition in another room in the same project.
+      // Its model context, generated messages and captured memory stay separate.
+      const second = await app.inject({ method: 'POST', url: `/api/v1/conversations/${chatTwo.id}/messages`, headers, payload: { text: 'redfox 只接续二群任务', submitObject: [{ type: 'command', id: 'task_execution' }] } });
+      expect(second.statusCode).toBe(200);
+      await vi.waitFor(async () => expect((await accounts.listConversationRuns(chatTwo.id))[0].status).toBe('completed'), { timeout: 10_000, interval: 100 });
+      const secondCalls = completeChat.mock.calls.filter(call => call[1].tags.conversationId === chatTwo.id);
+      expect(secondCalls.length).toBeGreaterThan(0);
+      const secondContext = JSON.stringify(secondCalls.map(call => call[1].messages));
+      expect(secondContext).toContain('二群专属用户输入');
+      expect(secondContext).toContain('二群专属智能体历史');
+      expect(secondContext).not.toContain('当前项目负责人小林');
+      expect(secondContext).not.toContain('bluewhale 请接续回答');
+      expect((await accounts.listMessages(chat.id)).some(message => message.text.includes('二群专属'))).toBe(false);
+      expect((await accounts.listConversationRuns(chat.id)).some(run => run.id === second.json().data.run.id)).toBe(false);
+      const secondSaved = (await pool.query("SELECT metadata FROM memories WHERE metadata->>'runId'=$1", [second.json().data.run.id])).rows;
+      expect(secondSaved).toHaveLength(1);
+      expect(secondSaved[0].metadata).toMatchObject({ agentId: coordinator.id, conversationId: chatTwo.id });
 
       const browser = await app.inject({ method: 'GET', url: `/api/v1/memories/browser?term=short_term&conversationId=${chat.id}&from=${new Date(Date.now() - 365 * MEMORY_DAY_MS).toISOString()}`, headers });
       expect(browser.statusCode).toBe(200);

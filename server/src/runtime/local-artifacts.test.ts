@@ -30,6 +30,11 @@ describe('local artifact quality and transport boundary', () => {
     body.artifacts![2].checksum = '0'.repeat(64);
     expect(() => validateLocalArtifacts('local_ppt_build', body)).toThrow('校验和');
   });
+  it('applies the same PPT quality gate to the sourced business report', () => {
+    const body = receipt(); expect(validateLocalArtifacts('local_business_ppt', body)).toHaveLength(3);
+    body.result.qc = { ok: false, blocked: 1 };
+    expect(() => validateLocalArtifacts('local_business_ppt', body)).toThrow('质检');
+  });
   it('requires successful quality checks, approval and a successful render if requested', () => {
     const body = receipt();
     body.result.qc = { ok: false, blocked: 1 };

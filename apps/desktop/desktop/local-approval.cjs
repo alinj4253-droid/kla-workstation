@@ -10,10 +10,12 @@ const actions = {
   local_biz_configure: '管理经营分析数据源连接（可切换数据库）', local_biz_schema: '探查数据库表结构', local_biz_query: '执行只读 SQL 查询',
   local_excel_doctor: '检查 Excel 分析环境（内置引擎自检）', local_excel_profile: '执行 Excel 数据画像与质量探查（只读源文件）',
   local_excel_validate: '执行 Excel 溯源校验与双路径对账（只读源文件）', local_excel_report: '生成 Excel 分析 HTML 报告',
-  local_business_metrics: '读取鲲鹭经营规划知识包中的业绩、人力与规划指标', local_business_goal_decompose: '将公司年度或半年度目标拆解到部门与 KPI',
+  local_business_metrics: '只读用户指定的本次原始经营材料并提取证据', local_business_goal_decompose: '依据真实材料拆解公司目标到部门与 KPI',
   local_business_deviation: '对比计划与实际，识别经营偏差、根因和对策', local_business_plan: '生成公司整体或指定部门的经营规划',
   local_business_ppt: '生成可编辑的三一规划 PPTX 成果',
-  local_ppt_doctor: '检查本地 PPT 环境', local_ppt_build: '生成 PPTX 并检查与渲染', local_ppt_inspect: '读取 PPTX 内容与备注', local_ppt_render: '检查并渲染本地 PPTX',
+  local_code_scan: '只读扫描项目结构、技术栈、测试现状与依赖清单', local_code_impact: '只读分析 Git 变更影响面与反向依赖',
+  local_code_read: '按行号读取项目源码片段（只读，用于收集证据）',
+  local_ppt_doctor: '检查本地 PPT 环境', local_ppt_theme_list: '浏览新版 PPT 主题', local_ppt_dsl_validate: '校验 PPT 页面布局', local_ppt_build: '生成 PPTX 并检查与渲染', local_ppt_inspect: '读取 PPTX 内容与备注', local_ppt_render: '检查并渲染本地 PPTX',
 };
 function describeRequest(call) {
   const action = actions[call.tool];
@@ -55,13 +57,26 @@ function describeRequest(call) {
     else add('检查内容', '内置引擎（exceljs）');
   }
   else if (call.tool.startsWith('local_business')) {
-    if (call.tool === 'local_business_goal_decompose') { add('拆解年份', args.year); add('半年度', args.half === 'H1' ? '上半年' : '下半年'); }
-    else if (call.tool === 'local_business_deviation') { add('分析范围', { all: '全部', revenue: '营收', h1: '上半年', project: '项目' }[args.scope] || args.scope); }
-    else if (call.tool === 'local_business_plan') { add('规划类型', { company: '公司整体', department: '部门', all: '公司+部门' }[args.type] || args.type); if (args.department) add('部门', args.department); add('规划年份', args.year); }
-    else if (call.tool === 'local_business_ppt') { add('规划类型', { company: '公司整体', department: '部门' }[args.type] || args.type); if (args.department) add('部门', args.department); add('报告名', args.fileName); }
-    else add('操作', '读取经营规划知识包指标');
+    if (Array.isArray(args.paths)) add('本次源材料', args.paths.join('\n'), true);
+    add('材料凭据', args.sourceSetId, true); add('业务主体', args.company); add('分析/规划期间', args.period); add('用户目标', args.objective);
+    add('部门', args.department); add('报告名', args.fileName);
+    if (call.tool === 'local_business_metrics') add('读取方式', '只读指定文件或目录本层，不扫描其他目录；不使用内置历史数据');
+    if (call.tool === 'local_business_ppt') add('构建流程', '真实材料分析 → STORY/DESIGN → 页面校验 → 可编辑 PPTX');
   }
-  else if (call.tool === 'local_ppt_doctor') add('检查内容', 'Python 依赖、中文字体及 Office / WPS 渲染器');
+  else if (call.tool.startsWith('local_code_')) {
+    add('项目路径', args.root, true);
+    if (call.tool === 'local_code_impact') { if (args.range) add('Git 范围', args.range, true); if (args.compareWith) add('对比快照', args.compareWith, true); }
+    if (call.tool === 'local_code_read') { add('目标文件', args.file, true); if (args.startLine) add('起始行', args.startLine); }
+  }
+  else if (call.tool === 'local_ppt_doctor') add('检查内容', 'Python 依赖、中文字体、Office / WPS 渲染器及新版 slidep');
+  else if (call.tool === 'local_ppt_theme_list') add('筛选主题', args.query || '全部');
+  else if (call.tool === 'local_ppt_dsl_validate') add('页面文件', args.fileName || 'page.slide', true);
+  else if (call.tool === 'local_ppt_build') {
+    add('文稿名称', args.fileName || '演示文稿.pptx', true);
+    add('提交页面', Array.isArray(args.slides) ? args.slides.map(slide => slide.pageNumber).join('、') || '沿用已有页面' : '未提供');
+    add('构建方式', args.finalize === false ? '中间草稿，不上传成果' : '最终交付');
+    if (args.documentId) add('续稿文档', args.documentId, true);
+  }
   else add(args.path ? '文件路径' : args.documentId ? '文档编号' : '文件名称', args.path || args.documentId || args.fileName, true);
   add('工作目录', args.cwd, true);
   if (args.timeoutMs) add('执行时限', `${args.timeoutMs / 1000} 秒`);

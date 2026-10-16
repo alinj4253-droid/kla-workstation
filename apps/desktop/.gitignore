@@ -1,4 +1,8 @@
 node_modules/
+!resources/skills/deck-agent-kit/vendor/
+!resources/skills/deck-agent-kit/vendor/slidep/
+!resources/skills/deck-agent-kit/vendor/slidep/node_modules/
+!resources/skills/deck-agent-kit/vendor/slidep/node_modules/**
 dist/
 coverage/
 release/

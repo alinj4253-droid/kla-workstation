@@ -18,7 +18,7 @@ export function validateLocalArtifacts(tool: string, receipt: Receipt) {
   if (publish && files.length !== 1) throw new Error('文件发布仅接受一份成果');
   if (!ppt && !businessPpt && !publish && (files.length !== 1 || files[0].contentEncoding !== 'utf8' || files[0].content.length > 1_000_000)) throw new Error('文本工具仅接受一份不超过 100 万字符的文本成果');
   const qc = receipt.result.qc as { ok?: boolean; blocked?: number } | undefined;
-  if (ppt && (qc?.ok !== true || qc.blocked !== 0 || receipt.result.error || receipt.result.renderStatus === 'failed')) throw new Error('PPT 质检未通过，不能交付成果');
+  if ((ppt || businessPpt) && (qc?.ok !== true || qc.blocked !== 0 || receipt.result.error || receipt.result.renderStatus === 'failed')) throw new Error('PPT 质检未通过，不能交付成果');
   const names = new Set<string>();
   let total = 0;
   return files.map(file => {

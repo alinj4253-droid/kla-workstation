@@ -36,6 +36,13 @@ const routeKindEnum = { type: 'string', enum: ['distance', 'toll'] };
 const routeStrategyEnum = { type: 'string', enum: ['mileage', 'time', 'cost'] };
 const routeAlgorithmEnum = { type: 'string', enum: ['balanced', 'kmeans'] };
 const coordSystemEnum = { type: 'string', enum: ['gcj02', 'wgs84'] };
+const businessContext = {
+  sourceSetId: { type: 'string', description: '必须来自本次 local_business_metrics 成功读取返回的材料凭据，不可跨任务复用' },
+  company: { type: 'string', description: '材料或用户确认的业务主体；未知先问用户' },
+  period: { type: 'string', description: '材料/用户确认的回顾与规划期间；不得默认年份' },
+  objective: { type: 'string', description: '本次用户目标和报告用途，不得凭空设定经营指标' },
+  inputQuestions: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'string', maxLength: 500 }, description: '真实材料尚缺的关键信息；传入即暂停本轮并向用户询问，不继续分析或生成报告' },
+};
 const properties: Record<RuntimeSkillCode, Record<string, unknown>> = {
   home_ai_session_open: { sessionId: string },
   home_ai_interview_update: { sessionId:string, expectedRevision:integer, answerId:{type:'string',enum:['role','mission','handoff','workflow','capability','kpi','idea','success','constraints','materials']}, answer:string },
@@ -65,7 +72,19 @@ const properties: Record<RuntimeSkillCode, Record<string, unknown>> = {
   local_bat: { script: string, cwd: string, timeoutMs: integer },
   local_cli: { executable: string, args: { type: 'array', items: string }, cwd: string, timeoutMs: integer },
   local_ppt_doctor: {},
-  local_ppt_build: { specJson: { type: 'string', description: '完整 DeckSpec JSON 字符串；必须有 cover 和语义块，禁止几何字段' }, fileName: string, render: { type: 'boolean', description: '默认 true，调用真实 PPTX 渲染器' } },
+  local_ppt_guide: { section: { type: 'string', enum: ['workflow','story','design','layout','dsl','lint','themes','theme_library','environment','portability','story_template','design_template','cover_template','content_template'] } },
+  local_ppt_theme_list: { query: string, limit: integer, themeId: string },
+  local_ppt_dsl_validate: { source: { type: 'string', description: '完整 .slide JSX 页面源码；只做布局校验，不执行任意脚本' }, fileName: string },
+  local_ppt_build: {
+    storyMarkdown: { type: 'string', description: '首次构建必填：完整 STORY.md，含受众、目标、逐页大纲与事实边界；续稿可沿用' },
+    designMarkdown: { type: 'string', description: '首次构建必填：完整 DESIGN.md，含画布、配色、字体、版式及逐页映射；续稿可沿用' },
+    slides: { type: 'array', description: '首次至少一页；每次最多 20 页，页码从 1 开始。已有页码表示整页替换，末尾下一页表示追加', items: { type: 'object', properties: { pageNumber: integer, source: { type: 'string', description: '完整 .slide JSX 页面源码；所有 Text 显式高度，Image 显式宽高' } }, required: ['pageNumber','source'], additionalProperties: false } },
+    assets: { type: 'array', description: '可选的已获准本地图片；DSL 中以 assets/fileName 引用', items: { type: 'object', properties: { sourcePath: string, fileName: string }, required: ['sourcePath','fileName'], additionalProperties: false } },
+    documentId: { type: 'string', description: '续稿/改稿时传上一轮返回的本机文档编号；首次留空' },
+    fileName: string,
+    finalize: { type: 'boolean', description: '默认 true，完成时一次性回传成果；长文稿中间批次设 false，仅返回草稿 documentId' },
+    render: { type: 'boolean', description: '默认 false；可选用本地 Office/WPS 或 LibreOffice 生成辅助 PDF/PNG，渲染不可用不阻断 PPTX' },
+  },
   local_ppt_inspect: { path: string, documentId: string },
   local_ppt_render: { path: string, documentId: string },
   local_route_matrix: {
@@ -89,11 +108,16 @@ const properties: Record<RuntimeSkillCode, Record<string, unknown>> = {
     optimizedOrder: arrayOfIntegers, originalOrder: arrayOfIntegers,
     strategy: string, distanceKm: { type: 'number' }, savedPercent: { type: 'number' },
   },
-  local_business_metrics: {},
-  local_business_goal_decompose: { year: integer, half: { type: 'string', enum: ['H1', 'H2'] } },
-  local_business_deviation: { scope: { type: 'string', enum: ['all', 'revenue', 'h1', 'project'] } },
-  local_business_plan: { type: { type: 'string', enum: ['company', 'department', 'all'] }, department: string, year: integer },
-  local_business_ppt: { type: { type: 'string', enum: ['company', 'department'] }, department: string, fileName: string },
+  local_business_metrics: { paths: { type: 'array', maxItems: 16, items: string, description: '用户明确指定的源文件/目录绝对路径，或 local_file_fetch 返回的 workspace:// 附件路径；不得猜路径或读取技能示例。与 sourceSetId 二选一' },
+    sourceSetId: businessContext.sourceSetId, offset: { ...integer, minimum: 0, description: '读取同一材料集后续原文片段，使用返回的 nextOffset' } },
+  local_business_goal_decompose: { ...businessContext },
+  local_business_deviation: { ...businessContext, scope: { type: 'string', enum: ['all', 'revenue', 'h1', 'project'] } },
+  local_business_plan: { ...businessContext, type: { type: 'string', enum: ['company', 'department', 'all'] }, department: string },
+  local_business_ppt: { ...businessContext, type: { type: 'string', enum: ['company', 'department'] }, department: string, fileName: string,
+    analysisMarkdown: { type: 'string', description: '先完成的真实分析稿，必须用 [E编号] 引用本次原文证据，区分事实/假设/建议' },
+    storyMarkdown: { type: 'string', description: '完整 STORY.md 受众、目的、逐页大纲、事实边界与证据引用' }, designMarkdown: { type: 'string', description: '完整 DESIGN.md 配色、字体、画布、版式契约' },
+    slides: { type: 'array', maxItems: 20, items: { type: 'object', properties: { pageNumber: integer, source: string }, required: ['pageNumber', 'source'], additionalProperties: false }, description: '一次交付 1-20 页完整 .slide JSX，连续页码从 1 开始，内容来自分析稿，不使用固定企业示例' },
+    assets: { type: 'array', items: { type: 'object', properties: { sourcePath: string, fileName: string }, required: ['sourcePath', 'fileName'], additionalProperties: false } }, render: { type: 'boolean' } },
   local_waste_status: {},
   local_waste_report: {
     scope: string, periodType: periodTypeEnum,
@@ -124,6 +148,9 @@ const properties: Record<RuntimeSkillCode, Record<string, unknown>> = {
   local_excel_report: {
     jsonPath: string, content: string, theme: { type: 'string', enum: ['light', 'dark'] }, fileName: string,
   },
+  local_code_scan: { root: string, maxDepth: integer },
+  local_code_impact: { root: string, range: string, compareWith: string },
+  local_code_read: { root: string, file: string, startLine: integer, endLine: integer },
 };
 const required: Record<RuntimeSkillCode, string[]> = {
   home_ai_session_open:[],home_ai_interview_update:['sessionId','expectedRevision','answerId','answer'],
@@ -131,12 +158,13 @@ const required: Record<RuntimeSkillCode, string[]> = {
   home_ai_value_estimate:['sessionId','expectedRevision','stageId','numbers'],home_ai_report_build:['sessionId','stageId'],
   home_ai_materials_add:['sessionId','expectedRevision','fileId'],
   weknora_search: ['query'], knowledge_search: ['query'], knowledge_read: ['knowledgeBaseId','docId'], knowledge_ocr: ['artifactId'],
+  local_code_scan:['root'],local_code_impact:['root'],local_code_read:['root','file'],
   web_search: ['query'], memory_recall: ['query'],
   artifact_write: ['fileName','content'], artifact_compose: ['fileName','artifactIds'], artifact_read: ['artifactId'], local_read: ['path'], local_list: ['path'],
   file_read: ['fileId'], local_file_fetch: [],
   local_file_publish: ['path'],
   local_write: ['fileName','content'], local_code: ['fileName','content'], local_bat: ['script'], local_cli: ['executable'],
-  local_ppt_doctor: [], local_ppt_build: ['specJson'], local_ppt_inspect: [], local_ppt_render: [],
+  local_ppt_doctor: [], local_ppt_guide: ['section'], local_ppt_theme_list: [], local_ppt_dsl_validate: ['source'], local_ppt_build: [], local_ppt_inspect: [], local_ppt_render: [],
   local_route_matrix: ['points'], local_route_optimize: ['points'], local_route_replan: ['points', 'numRoutes'],
   local_route_map: ['points', 'optimizedOrder'],
   local_business_metrics: [], local_business_goal_decompose: [], local_business_deviation: [], local_business_plan: [], local_business_ppt: [],

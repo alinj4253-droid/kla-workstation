@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Workstation } from './Workstation';
@@ -64,6 +64,119 @@ async function openChat() {
   await waitFor(() => expect(screen.getByRole('button', { name: '发送给群组' })).toBeEnabled());
   return user;
 }
+
+function deferredResult() {
+  let resolve!: (result: Result) => void;
+  const promise = new Promise<Result>(done => { resolve = done; });
+  return { promise, resolve };
+}
+
+async function openSameProjectRooms() {
+  overrides['GET /v1/bootstrap'] = () => ({ ok: true, data: { projects, conversations: [conversations[0], { id: 'chat-b', projectId: 'project-a', name: '同项目二群' }] } });
+  const user = userEvent.setup();
+  render(<Workstation />);
+  await user.click(await screen.findByRole('button', { name: '项目' }));
+  await screen.findByText('2 个项目 · 2 个群组');
+  await user.click(screen.getByRole('button', { name: /^已有群聊/ }));
+  return user;
+}
+
+describe('同项目群聊隔离', () => {
+  it('发送响应迟到时只更新原群聊，保留另一群的草稿和执行状态', async () => {
+    const pending = deferredResult();
+    const message = { id: 'a-message', senderType: 'user', text: '一群的专属任务', createdAt: '2026-10-16T01:00:00Z' };
+    const run = { id: 'a-run', status: 'waiting_device', currentAgent: '一群专属执行智能体' };
+    let saved = false;
+    overrides['POST /v1/conversations/chat-a/messages'] = () => pending.promise;
+    overrides['GET /v1/conversations/chat-a/messages'] = () => ({ ok: true, data: saved ? [message] : [] });
+    overrides['GET /v1/conversations/chat-a/runs'] = () => ({ ok: true, data: saved ? [run] : [] });
+    overrides['GET /v1/conversations/chat-b/messages'] = () => ({ ok: true, data: [{ ...historicalReply, id: 'b-history', text: '二群独立历史' }] });
+    const user = await openSameProjectRooms();
+    await waitFor(() => expect(screen.getByRole('button', { name: '发送给群组' })).toBeEnabled());
+    await user.type(screen.getByRole('textbox', { name: '发送消息给群聊' }), message.text);
+    await user.click(screen.getByRole('button', { name: '发送给群组' }));
+    await user.click(screen.getByRole('button', { name: /^同项目二群/ }));
+    await screen.findByText('二群独立历史');
+    const input = screen.getByRole('textbox', { name: '发送消息给群聊' });
+    expect(input).toHaveValue('');
+    await user.type(input, '二群尚未发送的草稿');
+    await act(async () => { saved = true; pending.resolve({ ok: true, data: { message, run } }); await pending.promise; });
+    expect(input).toHaveValue('二群尚未发送的草稿');
+    expect(screen.queryByText(message.text, { selector: 'p' })).not.toBeInTheDocument();
+    expect(screen.queryByText('一群专属执行智能体')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '终止生成' })).not.toBeInTheDocument();
+    expect(screen.getByText('二群独立历史')).toBeVisible();
+    await user.click(screen.getByRole('button', { name: /^已有群聊/ }));
+    expect(await screen.findByText(message.text, { selector: 'p' })).toBeVisible();
+    expect(screen.queryByText('二群独立历史')).not.toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: '等待本地设备' })).toBeVisible();
+    expect(screen.getByRole('textbox', { name: '发送消息给群聊' })).toHaveValue('');
+    await user.click(screen.getByRole('button', { name: /^同项目二群/ }));
+    expect(screen.getByRole('textbox', { name: '发送消息给群聊' })).toHaveValue('二群尚未发送的草稿');
+    expect(screen.queryByRole('button', { name: '等待本地设备' })).not.toBeInTheDocument();
+  });
+
+  it('旧群的消息和成员请求迟到不会污染当前群的记录与可提及成员池', async () => {
+    const messages = deferredResult();
+    const members = deferredResult();
+    overrides['GET /v1/conversations/chat-a/messages'] = () => messages.promise;
+    overrides['GET /v1/conversations/chat-a/agents'] = () => members.promise;
+    overrides['GET /v1/conversations/chat-b/messages'] = () => ({ ok: true, data: [{ ...historicalReply, text: '二群真实历史' }] });
+    overrides['GET /v1/conversations/chat-b/agents'] = () => ({ ok: true, data: [{ ...groupAgents[1], name: '二群专属智能体' }] });
+    const user = await openSameProjectRooms();
+    await user.click(screen.getByRole('button', { name: /^同项目二群/ }));
+    await screen.findByText('二群真实历史');
+    await act(async () => {
+      messages.resolve({ ok: true, data: [{ ...historicalReply, text: '一群迟到历史' }] });
+      members.resolve({ ok: true, data: [{ ...groupAgents[1], name: '一群专属智能体' }] });
+      await Promise.all([messages.promise, members.promise]);
+    });
+    expect(screen.queryByText('一群迟到历史')).not.toBeInTheDocument();
+    expect(screen.getByText('二群真实历史')).toBeVisible();
+    await user.type(screen.getByRole('textbox', { name: '发送消息给群聊' }), '@');
+    expect(await screen.findByRole('option', { name: '智能体 · 二群专属智能体' })).toBeVisible();
+    expect(screen.queryByRole('option', { name: '智能体 · 一群专属智能体' })).not.toBeInTheDocument();
+  });
+
+  it('切群后迟到的成果响应不覆盖当前群的右侧预览', async () => {
+    const pending = deferredResult();
+    overrides['GET /v1/conversations/chat-a/messages'] = () => ({ ok: true, data: [{ ...historicalReply, text: '一群成果', metadata: { artifactId: 'a-report' } }] });
+    overrides['GET /v1/conversations/chat-b/messages'] = () => ({ ok: true, data: [{ ...historicalReply, text: '二群成果', metadata: { artifactId: 'b-report' } }] });
+    overrides['GET /v1/artifacts/a-report'] = () => pending.promise;
+    overrides['GET /v1/artifacts/b-report'] = () => ({ ok: true, data: { name: '二群报告.md', mimeType: 'text/markdown', content: '# 二群报告内容' } });
+    const user = await openSameProjectRooms();
+    await user.click(await screen.findByRole('button', { name: '打开成果文件' }));
+    await user.click(screen.getByRole('button', { name: /^同项目二群/ }));
+    await screen.findByText('二群成果');
+    expect(screen.queryByLabelText('成果预览')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '打开成果文件' }));
+    await screen.findByRole('heading', { name: '二群报告内容' });
+    await act(async () => { pending.resolve({ ok: true, data: { name: '一群报告.md', mimeType: 'text/markdown', content: '# 一群报告内容' } }); await pending.promise; });
+    expect(screen.queryByRole('heading', { name: '一群报告内容' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '二群报告内容' })).toBeVisible();
+  });
+
+  it('打开上传文件或关闭抽屉后不再接受先前的成果响应', async () => {
+    const pending = deferredResult();
+    const file = { id: 'file-a', name: '本群资料.md', contentType: 'text/markdown', sizeBytes: 10 };
+    overrides['GET /v1/conversations/chat-a/messages'] = () => ({ ok: true, data: [{ ...historicalReply, metadata: { artifactId: 'old-report', files: [file] } }] });
+    overrides['GET /v1/artifacts/old-report'] = () => pending.promise;
+    download.mockResolvedValue({ ok: true, blob: { text: async () => '# 当前上传文件内容' } });
+    const user = await openChat();
+    await user.click(screen.getByRole('button', { name: '打开成果文件' }));
+    await user.click(screen.getByRole('button', { name: file.name }));
+    await screen.findByRole('heading', { name: '当前上传文件内容' });
+    await act(async () => { pending.resolve({ ok: true, data: { name: '过期成果.md', mimeType: 'text/markdown', content: '# 不应覆盖当前文件' } }); await pending.promise; });
+    expect(screen.queryByRole('heading', { name: '不应覆盖当前文件' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '当前上传文件内容' })).toBeVisible();
+    const another = deferredResult();
+    overrides['GET /v1/artifacts/old-report'] = () => another.promise;
+    await user.click(screen.getByRole('button', { name: '打开成果文件' }));
+    await user.click(screen.getByRole('button', { name: '关闭预览' }));
+    await act(async () => { another.resolve({ ok: true, data: { name: '过期成果.md', content: '# 已关闭' } }); await another.promise; });
+    expect(screen.queryByLabelText('成果预览')).not.toBeInTheDocument();
+  });
+});
 
 describe('登录与注册入口', () => {
   it('未登录时显示空白凭据和卡片内的注册入口，注册表单可以打开并取消', async () => {
@@ -356,6 +469,23 @@ describe('新版项目和群聊的真实接口交互', () => {
     expect(screen.getByRole('button', { name: '发送给群组' })).toBeEnabled();
   });
 
+  it('提及群聊秘书使用系统路由，不提交统筹智能体的 agent ID', async () => {
+    overrides['GET /v1/conversations/chat-a/agents'] = () => ({ ok: true, data: groupAgents });
+    overrides['GET /v1/conversations/chat-a/members'] = () => ({ ok: true, data: [] });
+    const message = { id: 'coordinator-message', senderType: 'user', text: '@群聊秘书 请处理', createdAt: '2026-10-13T01:00:00Z' };
+    overrides['POST /v1/conversations/chat-a/messages'] = () => ({ ok: true, data: { message, run: null } });
+    const user = await openChat();
+    const input = screen.getByRole('textbox', { name: '发送消息给群聊' });
+    await user.type(input, '@群聊');
+    await user.click(screen.getByRole('option', { name: '系统路由 · 群聊秘书' }));
+    await user.type(input, '请处理');
+    await user.click(screen.getByRole('button', { name: '发送给群组' }));
+    await waitFor(() => expect(request.mock.calls.some(([path, init]) => path === '/v1/conversations/chat-a/messages' && init?.method === 'POST')).toBe(true));
+    const submission = request.mock.calls.find(([path, init]) => path === '/v1/conversations/chat-a/messages' && init?.method === 'POST');
+    expect(JSON.parse(submission![1].body).submitObject).toEqual([{ type: 'command', id: 'coordinator' }]);
+    expect(JSON.parse(submission![1].body).submitObject).not.toContainEqual({ type: 'agent', id: groupAgents[0].id });
+  });
+
   it('附件真实走上传会话、内容上传和完成接口，发送文件引用并可在右侧预览', async () => {
     const file = { id: '00000000-0000-4000-8000-000000000003', workspaceId: null, name: '共享资料.md', storageKey: 'uploads/opaque/content', checksum: null,
       contentType: 'text/markdown', sizeBytes: 23, status: 'uploaded', createdAt: '2026-10-10T01:00:00Z' };
@@ -436,5 +566,21 @@ describe('新版项目和群聊的真实接口交互', () => {
     expect(screen.getByRole('button', { name: '发送给群组' })).toBeEnabled();
     expect(screen.getAllByText('本次的问题', { selector: 'p' })).toHaveLength(1);
     await waitFor(() => expect(invalidate).toHaveBeenCalledWith('identity-a'));
+  });
+
+  it('执行事件使用游标增量拉取并去除重复序号', async () => {
+    const at = '2026-10-15T08:00:00Z';
+    const first = { sequence: 1, run_id: 'run-events', kind: 'plan.created', payload: { tasks: [] }, created_at: at };
+    const second = { sequence: 2, run_id: 'run-events', kind: 'memory.recalled', payload: { count: 1 }, created_at: at };
+    const third = { sequence: 3, run_id: 'run-events', kind: 'step.waiting_device', payload: { reason: '等待设备' }, created_at: at };
+    overrides['GET /v1/conversations/chat-a/runs'] = () => ({ ok: true, data: [{ id: 'run-events', status: 'running', phase: 'execution' }] });
+    overrides['GET /v1/runtime/events?conversationId=chat-a&after=0'] = () => ({ ok: true, data: [first, second] });
+    overrides['GET /v1/runtime/events?conversationId=chat-a&after=2'] = () => ({ ok: true, data: [second, third] });
+    const user = await openProjects();
+    await user.click(screen.getByRole('button', { name: /^已有群聊/ }));
+    expect(await screen.findByText('群聊秘书已拆解任务')).toBeVisible();
+    await waitFor(() => expect(request.mock.calls.some(([path]) => path === '/v1/runtime/events?conversationId=chat-a&after=2')).toBe(true), { timeout: 3_000 });
+    expect(await screen.findByText('等待本地执行设备上线')).toBeVisible();
+    expect(screen.getAllByText('已读取本群聊短期记忆')).toHaveLength(1);
   });
 });

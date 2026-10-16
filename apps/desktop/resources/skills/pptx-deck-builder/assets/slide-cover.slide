@@ -1,0 +1,56 @@
+// ═══════════════════════════════════════════════════════════════════════
+// 主题区 —— 4 个色角色 + 中性辅助。默认值是**中性占位**（浅底 / 石墨 / 蓝强调），
+// 不含任何题材倾向，目的是让你按本项目题材重新决策配色，而不是沿用别人的。
+// 动手前必须替换成 DESIGN.md 里定下的色值。四个起步预设（中性商务浅色 /
+// 深色科技 / 学术人文 / 政务红金）见 references/theme-presets.md。
+// ═══════════════════════════════════════════════════════════════════════
+const FONT_CN  = '"Microsoft YaHei", "Noto Sans SC", sans-serif';
+const FONT_NUM = '"Bahnschrift", "Segoe UI", sans-serif';
+const BG     = '#FFFFFF';   // 主色：页面背景
+const INK    = '#1B1E23';   // 文本色
+const CARD   = '#F1F2F4';   // 辅色：卡片底 / 次级块
+const ACCENT = '#2F6BE4';   // 强调色：≤10%，只用于焦点元素
+// 以下为中性辅助，不计入 4 色池
+const DIM    = '#767B84';   // 次级文字
+const ONIMG  = '#F7F8FA';   // 图上文字色（遮罩之上的白字）
+const LINE   = 'rgba(27,30,35,0.12)';
+const GRAD   = 'linear-gradient(135deg, #2F6BE4 0%, #7FA9FF 100%)';
+const MASK   = 'linear-gradient(90deg, rgba(18,20,24,0.97) 0%, rgba(18,20,24,0.82) 34%, rgba(18,20,24,0.34) 64%, rgba(18,20,24,0.58) 100%)';
+
+// ───────────────────────────────────────────────────────────────────────
+// 封面骨架 · 全幅底图 + 独立遮罩层 + 骑线文字 + 角标
+// 把 assets/cover.png 换成本项目真实图片后再 lint / 构建。
+// 顶层注释只能用 // —— 用 {/* */} 会让整份文件求值成 undefined。
+// ───────────────────────────────────────────────────────────────────────
+<Slide style={{ width: 1280, height: 720, background: BG, fontFamily: FONT_CN, position: 'relative', overflow: 'hidden' }}>
+    {/* ① 满版铺底图 —— 必须有显式宽高 + objectFit cover */}
+    <Image src='assets/cover.png' style={{ position: 'absolute', top: 0, left: 0, width: 1280, height: 720, objectFit: 'cover' }} />
+    {/* ② 遮罩层 —— 独立一层，绝不设 Image 的 opacity；左边压暗让白字可读 */}
+    <Box style={{ position: 'absolute', top: 0, left: 0, width: 1280, height: 720, background: MASK }} />
+    {/* ③ 文字层 —— 三块纵向分布 */}
+    <Box style={{ position: 'absolute', top: 0, left: 0, width: 1280, height: 720, flexDirection: 'column', justifyContent: 'space-between', padding: '72px 88px 150px 88px' }}>
+        <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 12, height: 22 }}>
+            <Box style={{ width: 10, height: 10, borderRadius: 5, background: ACCENT }} />
+            <Text style={{ fontSize: 15, color: ONIMG, opacity: 0.82, letterSpacing: 4, fontFamily: FONT_NUM, height: 22 }}>SUBTITLE · YEAR</Text>
+        </Box>
+        <Box style={{ flexDirection: 'column' }}>
+            <Text style={{ fontSize: 84, fontWeight: 'bold', color: ONIMG, lineHeight: 1.05, letterSpacing: -1, height: 92 }}>演示主标题</Text>
+            <Text style={{ fontSize: 26, color: ONIMG, opacity: 0.86, letterSpacing: 1, marginTop: 18, height: 38 }}>一句话副标题，写清这份材料的定位</Text>
+            <Box style={{ width: 120, height: 5, background: GRAD, borderRadius: 3, marginTop: 26 }} />
+        </Box>
+        <Box style={{ flexDirection: 'row', alignItems: 'center', height: 22 }}>
+            <Text style={{ fontSize: 15, color: ONIMG, opacity: 0.72, letterSpacing: 2 }}>章节一</Text>
+            <Text style={{ fontSize: 15, color: ACCENT, marginLeft: 14, marginRight: 14 }}>·</Text>
+            <Text style={{ fontSize: 15, color: ONIMG, opacity: 0.72, letterSpacing: 2 }}>章节二</Text>
+            <Text style={{ fontSize: 15, color: ACCENT, marginLeft: 14, marginRight: 14 }}>·</Text>
+            <Text style={{ fontSize: 15, color: ONIMG, opacity: 0.72, letterSpacing: 2 }}>章节三</Text>
+        </Box>
+    </Box>
+    {/* 角标（L3） */}
+    <Box style={{ position: 'absolute', left: 88, top: 656, flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+        <Box style={{ width: 32, height: 32, borderRadius: 8, background: GRAD, justifyContent: 'center', alignItems: 'center' }}>
+            <Text style={{ fontSize: 16, fontWeight: 'bold', color: ONIMG, fontFamily: FONT_NUM, height: 20 }}>标</Text>
+        </Box>
+        <Text style={{ fontSize: 13, color: ONIMG, opacity: 0.6, letterSpacing: 2, height: 18 }}>项目名</Text>
+    </Box>
+</Slide>

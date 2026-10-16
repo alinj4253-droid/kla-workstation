@@ -142,10 +142,12 @@ export class ComputeGateway {
   /** §8.1–§8.4：模型校验、凭据、预扣额度、选 Key。 */
   private async prepare(identity: Identity, input: GatewayChatInput): Promise<Prepared> {
     // 上游 /v1/models 是可调用性的地面真相（按 Key 分组生效）；本地目录只用于显式停用拦截与展示元数据。
-    const catalogModel = await this.deps.computeRepo.getCatalogModel(input.model);
+    const [catalogModel,binding] = await Promise.all([
+      this.deps.computeRepo.getCatalogModel(input.model),
+      this.deps.computeRepo.getBinding(identity.id),
+    ]);
     if (catalogModel && !catalogModel.enabled) throw new GatewayError('NOT_FOUND', `模型已停用：${input.model}`, 404);
 
-    const binding = await this.deps.computeRepo.getBinding(identity.id);
     if (!binding) throw new GatewayError('CONFLICT', '算力账号尚未初始化，请先重试初始化', 409);
     if (!COMPUTE_READY_STATES.has(binding.status)) throw new GatewayError('CONFLICT', `算力账号未就绪（${binding.status}）`, 409);
     if (await this.deps.computeRepo.countBindingsForSub2apiUser(binding.sub2apiUserId) > 1) {
@@ -164,18 +166,23 @@ export class ComputeGateway {
       throw error;
     }
 
+    // JWT 和身份下的 Key 查询互不依赖，同时执行以缩短每轮准备时间。
+    // 仍逐轮读取绑定与 Key，避免缓存让撤销和权限变更延迟生效。
     let jwt: string;
+    let key: Awaited<ReturnType<ComputeRepository['getActiveKey']>>;
     try {
-      jwt = await this.deps.sub2api.getUserJwt(binding.sub2apiUserId, binding.sub2apiUsername, password);
+      [jwt,key] = await Promise.all([
+        this.deps.sub2api.getUserJwt(binding.sub2apiUserId, binding.sub2apiUsername, password).catch(error => {
+          throw new GatewayError('UNAVAILABLE', error instanceof Error ? error.message : 'Sub2API 不可用', 503);
+        }),
+        input.keyId ? this.deps.computeRepo.getKey(input.keyId, identity.id) : this.deps.computeRepo.getActiveKey(identity.id),
+      ]);
     } catch (error) {
       await this.settle({ identity, ledgerId, credential: '', keyId: null, modelId: catalogModel?.id ?? input.model, startedAt: Date.now() }, input, EMPTY_USAGE, 'failure');
-      throw new GatewayError('UNAVAILABLE', error instanceof Error ? error.message : 'Sub2API 不可用', 503);
+      throw error;
     }
 
     // §8.4 按身份选 Key（默认优先、状态 active）
-    const key = input.keyId
-      ? await this.deps.computeRepo.getKey(input.keyId, identity.id)
-      : await this.deps.computeRepo.getActiveKey(identity.id);
     if (!key?.sub2apiKeyId || (input.keyId && key.status !== 'active')) {
       await this.settle({ identity, ledgerId, credential: '', keyId: null, modelId: catalogModel?.id ?? input.model, startedAt: Date.now() }, input, EMPTY_USAGE, 'failure');
       throw new GatewayError('CONFLICT', input.keyId ? '智能体挂载的 API Key 已不可用，请重新挂载' : '当前身份没有可用的 API Key，请先在「API 密钥」页创建', 409);

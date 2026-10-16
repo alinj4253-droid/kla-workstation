@@ -49,13 +49,23 @@ describe('PPT assistant local gateway and artifact transport', () => {
       expect(registered.statusCode, registered.body).toBe(200);
       const deviceId = registered.json().data.id;
       const catalog = await app.inject({ method: 'GET', url: '/api/v1/runtime/tools', headers });
-      expect(catalog.json().data.filter((t: { code: string }) => t.code.startsWith('local_ppt_'))).toHaveLength(4);
+      const pptTools = catalog.json().data.filter((t: { code: string }) => t.code.startsWith('local_ppt_')).map((t: { code: string }) => t.code);
+      expect(pptTools).toEqual(expect.arrayContaining([
+        'local_ppt_doctor', 'local_ppt_guide', 'local_ppt_theme_list', 'local_ppt_dsl_validate',
+        'local_ppt_build', 'local_ppt_inspect', 'local_ppt_render',
+      ]));
       expect(catalog.json().data.find((t: { code: string }) => t.code === 'local_ppt_build')).toMatchObject({ deviceOnline: true });
       const gateway = new ToolGateway(pool, {} as RuntimeTools);
       const scope = { identityId: account.identity.id, conversationId: room.id, runId: run.id, stepId: step.id, agent, deviceId };
       expect(gateway.discover(agent).some(t => t.function.name === 'local_ppt_build')).toBe(true);
-      await expect(gateway.prepare({ ...scope, deviceId: null }, { id: 'no-device', function: { name: 'local_ppt_build', arguments: '{"specJson":"{}"}' } })).rejects.toThrow('本地执行设备');
-      const prepared = await gateway.prepare(scope, { id: 'ppt-build-1', function: { name: 'local_ppt_build', arguments: '{"specJson":"{}","fileName":"方案.pptx"}' } });
+      const buildArguments = JSON.stringify({
+        fileName: '方案.pptx',
+        storyMarkdown: '# STORY\n\n目标：验证本地 PPT 网关。',
+        designMarkdown: '# DESIGN\n\n画布：16:9；风格：简洁。',
+        slides: [{ pageNumber: 1, source: '<Slide><Text x={40} y={40} width={640} height={120}>网关测试</Text></Slide>' }],
+      });
+      await expect(gateway.prepare({ ...scope, deviceId: null }, { id: 'no-device', function: { name: 'local_ppt_build', arguments: buildArguments } })).rejects.toThrow('本地执行设备');
+      const prepared = await gateway.prepare(scope, { id: 'ppt-build-1', function: { name: 'local_ppt_build', arguments: buildArguments } });
       const client = await pool.connect();
       try { await client.query('BEGIN'); await gateway.enqueue(client, scope, prepared); await client.query('COMMIT'); }
       finally { client.release(); }

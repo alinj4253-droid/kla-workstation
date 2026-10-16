@@ -51,4 +51,23 @@ describe('durable conversation entry point', () => {
       expect(await accounts.listConversationRuns(conversation.id)).toHaveLength(1);
     } finally { await app.close(); }
   });
+
+  it('routes the coordinator mention command without treating it as an agent recipient', async () => {
+    const accounts = new MemoryAccountRepository();
+    const { user } = await accounts.register({ email: 'coordinator-route@example.test', password: 'TestPass2026!', nickname: '群聊秘书路由' });
+    const identity = await accounts.createOrganization(user.id, '群聊秘书企业', 'coordinator-route-license');
+    const session = await accounts.createSession(user.id);
+    const project = await accounts.createProject(identity.id, '群聊秘书项目');
+    const conversation = await accounts.createConversation(project.id, '群聊秘书群聊');
+    const app = Fastify({ logger: false });
+    const database = { rawPool: new CatalogPool(accounts) } as unknown as PostgresDatabase;
+    await registerRoutes(app, { accounts, database, gateway: { completeChat: vi.fn() }, mode: 'mock' });
+    try {
+      const response = await app.inject({ method: 'POST', url: `/api/v1/conversations/${conversation.id}/messages`,
+        headers: { authorization: `Bearer ${session.accessToken}`, 'x-identity-id': identity.id }, payload: { text: '@群聊秘书 请处理', submitObject: [{ type: 'command', id: 'coordinator' }] } });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().data.run.status).toBe('failed');
+      expect((await accounts.listMessages(conversation.id))[0].metadata?.submitObject).toEqual([{ type: 'command', id: 'coordinator' }]);
+    } finally { await app.close(); }
+  });
 });

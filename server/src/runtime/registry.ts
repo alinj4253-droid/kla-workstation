@@ -4,6 +4,7 @@ import { pptAssistantRole } from './ppt-assistant.js';
 import { routeAssistantRole } from './route-assistant.js';
 import { businessPlannerAssistantName, businessPlannerAssistantRole } from './business-planner-assistant.js';
 import { wasteAssistantRole } from './waste-assistant.js';
+import { codeAnalysisAssistantRole } from './code-analysis-assistant.js';
 import { homeAiRole } from './home-ai/agent.js';
 import { initializeDefaultAgentModels } from './default-model.js';
 
@@ -38,13 +39,16 @@ export async function ensureRuntimeRegistry(pool: Pool | PoolClient, identityId:
   await pool.query(`INSERT INTO agents(identity_id,name,role,type,execution_location)
     SELECT $1,'经营分析助手',$2,'official','local'
     WHERE NOT EXISTS(SELECT 1 FROM agents WHERE identity_id=$1 AND name='经营分析助手') ON CONFLICT DO NOTHING`, [identityId, wasteAssistantRole]);
+  await pool.query(`INSERT INTO agents(identity_id,name,role,type,execution_location)
+    SELECT $1,'代码分析助手',$2,'official','local'
+    WHERE NOT EXISTS(SELECT 1 FROM agents WHERE identity_id=$1 AND name='代码分析助手') ON CONFLICT DO NOTHING`, [identityId, codeAnalysisAssistantRole]);
   // 内置智能体 role 随代码同步升级：官方智能体的剧本以服务端定义为准（自定义 type='custom' 不受影响）
   await pool.query(`UPDATE agents a SET role=v.role FROM (VALUES
     ('统筹智能体','理解用户目标，规划任务依赖，协调智能体和设备，汇总成果'),
     ('本地执行智能体','分析资料、编写文档和代码，调用技能完成完整任务'),
-    ('PPT助手',$2::text),('路线规划助手',$3::text),('建潘-三一规划智能体',$4::text),('经营分析助手',$5::text),('家居 AI 机会诊断',$6::text)) v(name,role)
+    ('PPT助手',$2::text),('路线规划助手',$3::text),('建潘-三一规划智能体',$4::text),('经营分析助手',$5::text),('家居 AI 机会诊断',$6::text),('代码分析助手',$7::text)) v(name,role)
     WHERE a.identity_id=$1 AND a.type='official' AND a.name=v.name AND a.role IS DISTINCT FROM v.role`,
-  [identityId, pptAssistantRole, routeAssistantRole, businessPlannerAssistantRole, wasteAssistantRole, homeAiRole]);
+  [identityId, pptAssistantRole, routeAssistantRole, businessPlannerAssistantRole, wasteAssistantRole, homeAiRole, codeAnalysisAssistantRole]);
   for (const bundle of runtimeSkillBundles) {
     await pool.query(`INSERT INTO runtime_skill_catalog(identity_id,code,name,description,tool_codes)
       VALUES($1,$2,$3,$4,$5::text[]) ON CONFLICT(identity_id,code) DO UPDATE SET
@@ -79,6 +83,13 @@ export async function ensureRuntimeRegistry(pool: Pool | PoolClient, identityId:
     }
     await pool.query('UPDATE agents SET capabilities_initialized=true WHERE id=$1', [agent.id]);
   }
+  const codeAnalysisAgents = await pool.query(`SELECT id FROM agents WHERE identity_id=$1 AND name='代码分析助手' AND type='official' AND NOT capabilities_initialized`, [identityId]);
+  for (const agent of codeAnalysisAgents.rows) {
+    for (const code of ['code_analysis', 'artifact_management', 'memory_context', 'local_files']) {
+      await pool.query('INSERT INTO agent_skill_mounts(agent_id,skill_code) VALUES($1,$2) ON CONFLICT DO NOTHING', [agent.id, code]);
+    }
+    await pool.query('UPDATE agents SET capabilities_initialized=true WHERE id=$1', [agent.id]);
+  }
   const wasteAgents = await pool.query(`SELECT id FROM agents WHERE identity_id=$1 AND name='经营分析助手' AND type='official' AND NOT capabilities_initialized`, [identityId]);
   for (const agent of wasteAgents.rows) {
     for (const code of ['waste_analysis', 'excel_analysis', 'local_files', 'artifact_management', 'memory_context', 'knowledge_research', 'web_research']) {
@@ -86,13 +97,14 @@ export async function ensureRuntimeRegistry(pool: Pool | PoolClient, identityId:
     }
     await pool.query('UPDATE agents SET capabilities_initialized=true WHERE id=$1', [agent.id]);
   }
-  // 官方智能体技能增量补齐：老身份此前已 capabilities_initialized，新增技能包（如 excel_analysis）也要能挂上
+  // 官方智能体技能增量补齐：老身份此前已 capabilities_initialized，新增技能包（如 excel_analysis、code_analysis）也要能挂上
   const officialAgentSkills: Record<string, string[]> = {
     'PPT助手': ['ppt_assistant', 'local_files', 'artifact_management', 'memory_context', 'knowledge_research', 'web_research'],
     '路线规划助手': ['route_planning', 'local_files', 'artifact_management', 'memory_context', 'knowledge_research', 'web_research'],
     [businessPlannerAssistantName]: ['business_planning', 'local_files', 'artifact_management', 'memory_context'],
     '经营分析助手': ['waste_analysis', 'excel_analysis', 'local_files', 'artifact_management', 'memory_context', 'knowledge_research', 'web_research'],
     '家居 AI 机会诊断': ['home_ai_diagnosis', 'artifact_management', 'weknora_research', 'memory_context'],
+    '代码分析助手': ['code_analysis', 'local_files', 'artifact_management', 'memory_context'],
   };
   for (const [name, codes] of Object.entries(officialAgentSkills)) {
     await pool.query(`INSERT INTO agent_skill_mounts(agent_id,skill_code)

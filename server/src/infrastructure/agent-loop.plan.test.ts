@@ -1,7 +1,28 @@
 import { taskPlanSchema } from '@kla-workstation/contracts';
 import { describe, expect, it } from 'vitest';
 import { GatewayError } from '../compute/gateway.js';
-import { modelRetryDecision, normalizeTaskPlanPayload } from './agent-loop.js';
+import { compactTranscriptForModel, modelRetryDecision, normalizeTaskPlanPayload } from './agent-loop.js';
+
+describe('compactTranscriptForModel', () => {
+  it('omits only confirmed long artifact contents from model input while keeping the checkpoint intact', () => {
+    const longContent = '报告正文'.repeat(3_000);
+    const call = { id: 'saved-1', type: 'function', function: { name: 'artifact_write', arguments: JSON.stringify({ fileName: 'report.md', content: longContent, mimeType: 'text/markdown' }) } };
+    const failed = { id: 'failed-1', type: 'function', function: { name: 'artifact_write', arguments: JSON.stringify({ fileName: 'retry.md', content: longContent, mimeType: 'text/markdown' }) } };
+    const messages = [
+      { role: 'system', content: '保留当前任务约束' },
+      { role: 'assistant', tool_calls: [call, failed] },
+      { role: 'tool', tool_call_id: 'saved-1', content: JSON.stringify({ stored: true, artifactId: 'artifact-1', checksum: 'abc' }) },
+      { role: 'tool', tool_call_id: 'failed-1', content: JSON.stringify({ error: '写入失败' }) },
+    ];
+    const compacted = compactTranscriptForModel(messages);
+    expect(compacted[1].tool_calls[0].function.arguments).not.toContain(longContent);
+    expect(JSON.parse(compacted[1].tool_calls[0].function.arguments)).toMatchObject({ fileName: 'report.md', mimeType: 'text/markdown' });
+    expect(compacted[1].tool_calls[1]).toEqual(failed);
+    expect(compacted[2]).toEqual(messages[2]);
+    expect(compacted[0]).toEqual(messages[0]);
+    expect(call.function.arguments).toContain(longContent);
+  });
+});
 
 describe('normalizeTaskPlanPayload', () => {
   it('accepts a four-step model plan when only the fourth title is missing', () => {
