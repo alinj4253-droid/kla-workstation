@@ -1,6 +1,6 @@
 import type { ComputeView } from './ComputeSection';
 
-export type WorkstationSection = 'home' | 'apps' | 'projects' | 'knowledge' | 'agents' | 'memory' | 'compute' | 'chats' | 'settings';
+export type WorkstationSection = 'home' | 'apps' | 'sany' | 'projects' | 'knowledge' | 'agents' | 'memory' | 'compute' | 'chats' | 'settings';
 export type SearchTarget =
   | { kind: 'page'; section: WorkstationSection; agentView?: 'manage' | 'skills' | 'tools'; settingsView?: 'channels' | 'members' | 'profile' | 'appearance' | 'ops'; computeView?: ComputeView }
   | { kind: 'tasks'; taskId?: string; create?: boolean }

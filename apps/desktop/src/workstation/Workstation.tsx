@@ -3,7 +3,7 @@ import { ConversationAttachments } from './ConversationAttachments';
 import { HomeAiReview } from './HomeAiReview';
 import { useHomeAiReviewEntry } from './useHomeAiReviewEntry';
 import type { FileItem } from '@kla-workstation/contracts';
-import { Activity, Archive, ArrowRight, Bell, BookOpen, Bot, BriefcaseBusiness, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronRight, CircleHelp, Clock3, Cloud, Code2, Copy, CreditCard, Database, Download, Eye, EyeOff, FileText, Folder, FolderPlus, Home, KeyRound, LayoutDashboard, LayoutGrid, Link2, LogOut, Menu, MessageSquare, MoreHorizontal, Paperclip, Pencil, Pin, PinOff, Plus, Search, Send, Settings, ShieldCheck, Sparkles, Trash2, Upload, UserCircle, Users, Wallet, X, Wrench, Route, RefreshCw, Brain as BrainIcon } from 'lucide-react';
+import { Activity, Archive, ArrowLeft, ArrowRight, Bell, BookOpen, Bot, BriefcaseBusiness, Building2, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronRight, CircleHelp, Clock3, Cloud, Code2, Copy, CreditCard, Database, Download, Eye, EyeOff, FileText, Folder, FolderPlus, Home, KeyRound, LayoutDashboard, LayoutGrid, Link2, LogOut, Menu, MessageSquare, MoreHorizontal, Paperclip, Pencil, Pin, PinOff, Plus, Search, Send, Settings, ShieldCheck, Sparkles, Trash2, Upload, UserCircle, Users, Wallet, X, Wrench, Route, RefreshCw, Brain as BrainIcon } from 'lucide-react';
 import logo from '../assets/kla-sidebar-logo.png';
 import type { CreateConversationRequest, IdentityDto } from '@kla-workstation/contracts';
 import { authExpiredEventName, klaApi, sessionChangedEventName } from '../api/client';
@@ -967,11 +967,13 @@ export function Workstation(): React.JSX.Element {
       {section === 'apps' && <>
         <header className="ws-panel-heading">
           <span className="ws-panel-heading-icon"><LayoutGrid size={17} /></span>
-          <span><strong>应用中心</strong><small>{agentApps.length} 个应用 · {agentApps.filter(item => item.enabled).length} 个已启用</small></span>
+          <span><strong>应用中心</strong><small>1 个已添加</small></span>
         </header>
-        <div className="ws-settings-menu"><small>我的应用</small>
-          {agentApps.map(agent => <button key={agent.id} className={appFocusRequest?.id === agent.id ? 'active' : ''} onClick={() => setAppFocusRequest({ id: agent.id, nonce: (appFocusRequest?.nonce ?? 0) + 1 })}><span className={`apps-menu-avatar is-${avatarTone(agent.name)}`}>{agent.name.slice(0, 1)}</span> {agent.name}</button>)}
-          {agentApps.length === 0 && <p className="ws-empty-line">暂无应用</p>}
+        <div className="ws-settings-menu"><small>应用中心</small>
+          <button className="active"><LayoutGrid size={16} /> 应用中心</button>
+        </div>
+        <div className="ws-settings-menu"><small>已添加的应用</small>
+          <button onClick={() => navigate('sany')}><span className="apps-menu-avatar is-purple"><Building2 size={12} /></span> 集团三一规划</button>
         </div>
       </>}
       {section === 'agents' && <><header className="ws-compute-title"><span className="ws-tiny-icon"><Bot size={18} /></span><span>智能体<small>Agent Control · 我的智能体与市场</small></span></header><div className="ws-settings-menu"><small>智能体</small><button className={agentView === 'manage' ? 'active' : ''} onClick={() => setAgentView('manage')}><Bot size={16} /> 智能体管理</button><button className={agentView === 'skills' ? 'active' : ''} onClick={() => setAgentView('skills')}><Sparkles size={16} /> 技能</button><button className={agentView === 'tools' ? 'active' : ''} onClick={() => setAgentView('tools')}><Wrench size={16} /> 工具</button></div></>}
@@ -991,7 +993,15 @@ export function Workstation(): React.JSX.Element {
       </div></div></div>
       <div className={`ws-content ${navProgress ? 'ws-content-transition' : ''}`}>
         {section === 'agents' && (agentView === 'manage' ? <RuntimeAgentManagement searchRequest={agentSearchRequest} identityId={activeIdentityId} notify={notify} /> : agentView === 'skills' ? <RuntimeSkillManagement identityId={activeIdentityId} notify={notify} /> : <RuntimeToolManagement identityId={activeIdentityId} notify={notify} />)}
-        {section === 'apps' && <AgentAppsSection identityId={activeIdentityId} notify={notify} focusRequest={appFocusRequest} onOpenApp={agent => { navigate('home'); setDraft(`@${agent.name} `); notify(`已打开「${agent.name}」：回到首页输入框 @ 该智能体，输入任务即可开始`); }} onOpenSettings={agent => { setAgentSearchRequest(current => ({ query: agent.name, nonce: (current?.nonce ?? 0) + 1 })); setAgentView('manage'); navigate('agents'); }} />}
+        {section === 'apps' && <AgentAppsSection notify={notify} onOpenApp={() => setSection('sany')} />}
+        {section === 'sany' && <div className="sany-app-page">
+          <div className="sany-app-bar">
+            <button type="button" onClick={() => navigate('apps')}><ArrowLeft size={15} /> 返回应用中心</button>
+            <span className="sany-app-bar__title"><Building2 size={15} /> 集团三一规划 · 三一规划助手</span>
+            <Badge tone="green">已添加</Badge>
+          </div>
+          <iframe className="sany-app-frame" src="./sany-plan-assistant.html" title="集团三一规划 · 三一规划助手" />
+        </div>}
         {section === 'settings' && <RuntimeSettingsView view={settingsView === 'members' && !canManageMembers ? 'channels' : settingsView} identityId={activeIdentityId} notify={notify} />}
         {section === 'home' && <div className="ws-home-prototype">
           <section className="ws-proto-welcome"><span className="ws-proto-avatar">{displayName.slice(0, 1)}</span><div className="ws-proto-welcome-copy"><h1>你好，{displayName} · 开启高效多智能体协同的一天</h1><p>{displayName} · 数字化员工 ｜ 已自动识别身份 · 员工目录 ｜ 科技BG · 数字化中心 · 数字化员工</p><div className="ws-proto-tags"><Badge tone="green">全域智能调度引擎运行中</Badge><Badge tone="green">算力响应正常 · 延迟 &lt; 85ms</Badge><Badge>4 大业务群组在线协同</Badge><Badge>已连接 4 个核心模型</Badge><Badge tone="muted">岗位语义智能自动匹配</Badge></div></div><div className="ws-proto-summary"><b>4<small>在线协同群组</small></b><b>6<small>可访问知识库</small></b><b>18<small>工作记忆条目</small></b></div><div className="ws-proto-actions"><button className="ws-primary" onClick={() => { navigate('compute'); setComputeView('market'); }}>查看模型矩阵与算力 <ArrowRight size={14} /></button><button onClick={() => navigate('knowledge')}>进入知识库</button></div></section>
