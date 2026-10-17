@@ -15,8 +15,9 @@ import { resolveManagedPassword } from '../compute/encryption.js';
 import type { ObjectStore } from '../storage/object-store.js';
 import { accessibleFile } from '../storage/file-access.js';
 import { HomeAiService, HomeAiError } from './home-ai/service.js';
-import { homeAiSessionViewSchema, homeAiConfirmationSchema } from '@kla-workstation/contracts';
+import { homeAiSessionViewSchema, homeAiConfirmationSchema, homeAiCurrentSchema, homeAiCurrentOperationSchema } from '@kla-workstation/contracts';
 import { homeAiInstallResponseSchema } from '@kla-workstation/contracts';
+import { assertKnowledgeMountPolicy, isHomeAiDiagnosis } from './home-ai/knowledge-policy.js';
 import { installHomeAi } from './home-ai/install.js';
 
 export async function registerRuntimeRoutes(app: FastifyInstance, deps: {pool:Pool;accounts:AccountRepository;worker:AgentLoopWorker;computeRepo?:ComputeRepository;sub2api?:Sub2ApiClient;encryptionKey?:string;objectStore?:ObjectStore}) {
@@ -46,12 +47,32 @@ export async function registerRuntimeRoutes(app: FastifyInstance, deps: {pool:Po
     try{return {ok:true,data:z.array(homeAiSessionViewSchema).parse(await diagnostics.list({identityId:s.identity.id,conversationId:id((request.params as any).conversationId)}))};}
     catch(error){return homeAiFailure(error,reply);}
   });
+  app.get('/api/v1/conversations/:conversationId/home-ai/review-entry',async(request,reply)=>{
+    const s=await scope(request,reply);if(!s)return;
+    const entryScope={identityId:s.identity.id,conversationId:id((request.params as {conversationId:string}).conversationId)};
+    try {
+      return {ok:true,data:await diagnostics.reviewEntry(entryScope)};
+    }catch(error){return homeAiFailure(error,reply);}
+  });
+  app.get('/api/v1/conversations/:conversationId/home-ai/current',async(request,reply)=>{
+    const s=await scope(request,reply);if(!s)return;
+    try{return {ok:true,data:homeAiCurrentSchema.parse(await diagnostics.current({identityId:s.identity.id,conversationId:id((request.params as {conversationId:string}).conversationId)}))};}
+    catch(error){return homeAiFailure(error,reply);}
+  });
+  app.post('/api/v1/conversations/:conversationId/home-ai/current',async(request,reply)=>{
+    const s=await scope(request,reply,'write');if(!s)return;
+    const key=z.string().uuid().safeParse(request.headers['idempotency-key']);
+    const input=homeAiCurrentOperationSchema.safeParse(request.body);
+    if(!key.success||!input.success)return reply.code(400).send({ok:false,error:{code:'INVALID_ARGUMENT',message:'请提交有效请求编号、当前绑定版本及新建、切换或命名操作；刷新诊断后重试。',retryable:false}});
+    try{return {ok:true,data:homeAiCurrentSchema.parse(await diagnostics.operate({identityId:s.identity.id,conversationId:id((request.params as {conversationId:string}).conversationId)},input.data,key.data))};}
+    catch(error){return homeAiFailure(error,reply);}
+  });
   app.post('/api/v1/conversations/:conversationId/home-ai/sessions/:sessionId/confirm',async(request,reply)=>{
     const s=await scope(request,reply,'write');if(!s)return;
     const params=request.params as {conversationId:string;sessionId:string};
     const key=z.string().uuid().safeParse(request.headers['idempotency-key']);
     const input=homeAiConfirmationSchema.safeParse(request.body);
-    if(!key.success||!input.success) return reply.code(400).send({ok:false,error:{code:'INVALID_ARGUMENT',message:'请使用有效请求编号，并提交 expectedRevision、kind 和报告场景 stageId；刷新界面后重试。',retryable:false}});
+    if(!key.success||!input.success||input.data.expectedBindingVersion===undefined) return reply.code(400).send({ok:false,error:{code:'INVALID_ARGUMENT',message:'请使用有效请求编号，并提交 expectedBindingVersion、expectedRevision、kind 和报告场景 stageId；刷新界面后重试。',retryable:false}});
     try{return {ok:true,data:homeAiSessionViewSchema.parse(await diagnostics.confirm({identityId:s.identity.id,conversationId:id(params.conversationId)},id(params.sessionId),input.data,key.data))};}
     catch(error){return homeAiFailure(error,reply);}
   });
@@ -133,6 +154,9 @@ export async function registerRuntimeRoutes(app: FastifyInstance, deps: {pool:Po
     if (body.skillCodes.some(code => !knownSkills.has(code)) || body.toolCodes.some(code => !knownTools.has(code))) {
       return reply.code(400).send({ ok: false, error: { code: 'INVALID_ARGUMENT', message: '技能或工具不在当前身份的能力目录中' } });
     }
+    const skillTools = (await pool.query('SELECT unnest(tool_codes) AS code FROM runtime_skill_catalog WHERE identity_id=$1 AND code=ANY($2::text[]) AND enabled', [s.identity.id, body.skillCodes])).rows.map(row => String(row.code));
+    try { await assertKnowledgeMountPolicy(pool, s.identity.id, agentId, [...body.toolCodes, ...skillTools, ...(body.skillCodes.includes('home_ai_diagnosis') ? ['home_ai_session_open'] : []), ...(body.skillCodes.includes('weknora_research') ? ['weknora_search'] : []), ...(body.skillCodes.includes('knowledge_research') ? ['knowledge_search','knowledge_read'] : [])]); }
+    catch (error) { return reply.code(403).send({ ok: false, error: { code: 'FORBIDDEN', message: (error as Error).message } }); }
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -168,6 +192,7 @@ export async function registerRuntimeRoutes(app: FastifyInstance, deps: {pool:Po
       WHERE t.device_id=$1 AND t.status IN('queued','running') AND NOT EXISTS(
         SELECT 1 FROM conversation_run_steps st JOIN agents a ON a.id=st.assigned_agent_id
         WHERE st.id=t.step_id AND a.identity_id=t.identity_id AND a.enabled AND a.execution_location='local'
+        AND NOT EXISTS(SELECT 1 FROM agent_market_installations mi WHERE mi.agent_id=a.id AND mi.identity_id=a.identity_id AND mi.template_code='home_ai_diagnosis')
         AND (EXISTS(SELECT 1 FROM agent_tool_mounts m WHERE m.agent_id=a.id AND m.tool_code=t.tool_name)
           OR EXISTS(SELECT 1 FROM agent_skill_mounts m JOIN runtime_skill_catalog c
             ON c.identity_id=a.identity_id AND c.code=m.skill_code AND c.enabled
@@ -176,6 +201,7 @@ export async function registerRuntimeRoutes(app: FastifyInstance, deps: {pool:Po
     const call=(await client.query(`WITH next AS(SELECT t.id FROM runtime_tool_calls t JOIN conversation_run_steps st ON st.id=t.step_id JOIN conversation_runs r ON r.id=st.run_id JOIN agents a ON a.id=st.assigned_agent_id
       WHERE t.device_id=$1 AND t.identity_id=$2 AND t.status='queued' AND r.status IN('running','waiting_tool','waiting_approval') AND t.tool_name=ANY($3::text[])
       AND a.enabled AND a.identity_id=$2 AND a.execution_location='local'
+        AND NOT EXISTS(SELECT 1 FROM agent_market_installations mi WHERE mi.agent_id=a.id AND mi.identity_id=a.identity_id AND mi.template_code='home_ai_diagnosis')
       AND (EXISTS(SELECT 1 FROM agent_tool_mounts m WHERE m.agent_id=a.id AND m.tool_code=t.tool_name)
         OR EXISTS(SELECT 1 FROM agent_skill_mounts m JOIN runtime_skill_catalog c
           ON c.identity_id=a.identity_id AND c.code=m.skill_code AND c.enabled
@@ -197,10 +223,11 @@ export async function registerRuntimeRoutes(app: FastifyInstance, deps: {pool:Po
   });
   app.get('/api/v1/runtime/devices/:deviceId/calls/:callId/input', async (request, reply) => {
     const s = await device(request, reply); if (!s) return;
-    const call = (await pool.query(`SELECT t.*,r.conversation_id,r.status AS run_status FROM runtime_tool_calls t
+    const call = (await pool.query(`SELECT t.*,st.assigned_agent_id,r.conversation_id,r.status AS run_status FROM runtime_tool_calls t
       JOIN conversation_run_steps st ON st.id=t.step_id JOIN conversation_runs r ON r.id=st.run_id
       WHERE t.id=$1 AND t.device_id=$2 AND t.identity_id=$3`, [id((request.params as { callId: string }).callId), s.device.id, s.identity.id])).rows[0];
     if (!call || call.tool_name !== 'local_file_fetch' || call.status !== 'running' || !['running','waiting_tool','waiting_approval'].includes(call.run_status)) throw app.httpErrors.notFound('文件下载调用不可用');
+    if (await isHomeAiDiagnosis(pool, s.identity.id, call.assigned_agent_id)) throw app.httpErrors.forbidden('诊断智能体不能下载文件到本地工具上下文。');
     const args = parseToolArguments(call.tool_name, call.arguments);
     let bytes: Buffer | null | undefined, name: string, mime: string, checksum: string | null;
     if (args.fileId) {
@@ -210,6 +237,8 @@ export async function registerRuntimeRoutes(app: FastifyInstance, deps: {pool:Po
     } else {
       const artifact = await accounts.getArtifact(s.identity.id, String(args.artifactId));
       if (!artifact || artifact.conversationId !== call.conversation_id) throw app.httpErrors.notFound('成果不属于当前群聊');
+      const provenance = (await pool.query('SELECT source_agent_id,agent_private FROM artifacts WHERE id=$1', [artifact.id])).rows[0];
+      if (!provenance || (provenance.agent_private && provenance.source_agent_id !== call.assigned_agent_id)) throw app.httpErrors.forbidden('诊断私有成果不能下载到其他智能体上下文。');
       bytes = artifact.storageKey ? await deps.objectStore?.get(artifact.storageKey) : Buffer.from(artifact.content, artifact.contentEncoding === 'base64' ? 'base64' : 'utf8');
       name = artifact.name; mime = artifact.mimeType; checksum = bytes ? createHash('sha256').update(bytes).digest('hex') : null;
     }
@@ -218,14 +247,16 @@ export async function registerRuntimeRoutes(app: FastifyInstance, deps: {pool:Po
   });
   app.post('/api/v1/runtime/devices/:deviceId/calls/:callId/receipt',{bodyLimit:48*1024*1024},async(request,reply)=>{
     const s=await device(request,reply);if(!s)return;const callId=id((request.params as {callId:string}).callId);const b=toolReceiptSchema.parse(request.body);
-    const client=await pool.connect();try{await client.query('BEGIN');const call=(await client.query(`SELECT t.*,st.run_id,r.conversation_id,r.status AS run_status FROM runtime_tool_calls t JOIN conversation_run_steps st ON st.id=t.step_id JOIN conversation_runs r ON r.id=st.run_id WHERE t.id=$1 AND t.device_id=$2 AND t.identity_id=$3 FOR UPDATE OF t,r`,[callId,s.device.id,s.identity.id])).rows[0];
+    const client=await pool.connect();try{await client.query('BEGIN');const call=(await client.query(`SELECT t.*,st.run_id,st.assigned_agent_id,r.conversation_id,r.status AS run_status FROM runtime_tool_calls t JOIN conversation_run_steps st ON st.id=t.step_id JOIN conversation_runs r ON r.id=st.run_id WHERE t.id=$1 AND t.device_id=$2 AND t.identity_id=$3 FOR UPDATE OF t,r`,[callId,s.device.id,s.identity.id])).rows[0];
       if(!call)throw app.httpErrors.notFound('工具调用不存在');if(call.receipt_id){if(call.receipt_id!==b.receiptId)throw app.httpErrors.conflict('调用已提交其他回执');await client.query('COMMIT');return{ok:true,data:call.result};}
       if(call.status!=='running'||['cancelled','failed','completed'].includes(call.run_status))throw app.httpErrors.conflict('任务已结束或调用未被领取');
       if(b.status==='completed'&&!b.approval.approved)throw app.httpErrors.badRequest('未经本地用户审批的操作不能提交成功回执');
+      const agentPrivate=await isHomeAiDiagnosis(client,s.identity.id,call.assigned_agent_id);
+      if(agentPrivate)throw app.httpErrors.forbidden('诊断智能体禁止本地工具回执；请使用服务端诊断流程。');
       let files;try{files=validateLocalArtifacts(call.tool_name,b);}catch(error){throw app.httpErrors.badRequest((error as Error).message);}
       const result:Record<string,unknown>={...b.result};const artifactIds:string[]=[];
       for(const [index,a] of files.entries()){
-        const artifact=(await client.query('INSERT INTO artifacts(identity_id,conversation_id,name,mime_type,content,content_encoding,size_bytes,checksum,source_device_id,tool_call_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id',[s.identity.id,call.conversation_id,a.fileName,a.mimeType,a.content,a.contentEncoding,a.sizeBytes,a.checksum,s.device.id,index===0?callId:null])).rows[0];artifactIds.push(artifact.id);
+        const artifact=(await client.query('INSERT INTO artifacts(identity_id,conversation_id,name,mime_type,content,content_encoding,size_bytes,checksum,source_device_id,tool_call_id,source_agent_id,agent_private) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id',[s.identity.id,call.conversation_id,a.fileName,a.mimeType,a.content,a.contentEncoding,a.sizeBytes,a.checksum,s.device.id,index===0?callId:null,call.assigned_agent_id,agentPrivate])).rows[0];artifactIds.push(artifact.id);
         // Binary or large results are durable objects. Keep small text inline for
         // fast model access and backwards compatibility with old databases.
         if(deps.objectStore && (a.contentEncoding==='base64' || a.sizeBytes>256*1024)){

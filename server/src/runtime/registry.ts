@@ -57,7 +57,7 @@ export async function ensureRuntimeRegistry(pool: Pool | PoolClient, identityId:
   }
   const uninitialized = await pool.query(`SELECT id FROM agents WHERE identity_id=$1 AND name='本地执行智能体' AND NOT capabilities_initialized`, [identityId]);
   for (const agent of uninitialized.rows) {
-    for (const tool of runtimeSkillCatalog.filter(tool => !tool.code.startsWith('local_ppt_') && !tool.code.startsWith('home_ai_'))) {
+    for (const tool of runtimeSkillCatalog.filter(tool => !tool.code.startsWith('local_ppt_') && !tool.code.startsWith('home_ai_') && tool.code !== 'weknora_search')) {
       await pool.query('INSERT INTO agent_tool_mounts(agent_id,tool_code) VALUES($1,$2) ON CONFLICT DO NOTHING', [agent.id, tool.code]);
     }
     await pool.query('UPDATE agents SET capabilities_initialized=true WHERE id=$1', [agent.id]);
@@ -103,7 +103,7 @@ export async function ensureRuntimeRegistry(pool: Pool | PoolClient, identityId:
     '路线规划助手': ['route_planning', 'local_files', 'artifact_management', 'memory_context', 'knowledge_research', 'web_research'],
     [businessPlannerAssistantName]: ['business_planning', 'local_files', 'artifact_management', 'memory_context'],
     '经营分析助手': ['waste_analysis', 'excel_analysis', 'local_files', 'artifact_management', 'memory_context', 'knowledge_research', 'web_research'],
-    '家居 AI 机会诊断': ['home_ai_diagnosis', 'artifact_management', 'knowledge_research', 'memory_context'],
+    '家居 AI 机会诊断': ['home_ai_diagnosis', 'artifact_management', 'weknora_research', 'memory_context'],
     '代码分析助手': ['code_analysis', 'local_files', 'artifact_management', 'memory_context'],
   };
   for (const [name, codes] of Object.entries(officialAgentSkills)) {
@@ -112,6 +112,26 @@ export async function ensureRuntimeRegistry(pool: Pool | PoolClient, identityId:
       WHERE a.identity_id=$1 AND a.name=$3 AND a.type='official'
       ON CONFLICT DO NOTHING`, [identityId, codes, name]);
   }
+  // Claim each legacy knowledge migration once; default skill synchronization follows the official-agent rules above.
+  await pool.query(`WITH targets AS MATERIALIZED (
+    SELECT m.agent_id,
+      EXISTS(SELECT 1 FROM agent_skill_mounts x WHERE x.agent_id=m.agent_id AND x.skill_code='knowledge_research') AS had_skill,
+      (EXISTS(SELECT 1 FROM agent_skill_mounts x JOIN runtime_skill_catalog k ON k.identity_id=m.identity_id AND k.code=x.skill_code AND k.enabled WHERE x.agent_id=m.agent_id AND x.skill_code='knowledge_research')
+       OR EXISTS(SELECT 1 FROM agent_tool_mounts x WHERE x.agent_id=m.agent_id AND x.tool_code IN ('knowledge_search','knowledge_read'))) AS replace_binding
+    FROM agent_market_installations m WHERE m.identity_id=$1 AND m.template_code='home_ai_diagnosis' AND m.knowledge_binding_version=0 FOR UPDATE
+  ), claimed AS (
+    UPDATE agent_market_installations m SET knowledge_binding_version=1 FROM targets t
+    WHERE m.agent_id=t.agent_id AND m.identity_id=$1 AND m.knowledge_binding_version=0 RETURNING m.agent_id
+  ), removed_skills AS (
+    DELETE FROM agent_skill_mounts x USING claimed c WHERE x.agent_id=c.agent_id AND x.skill_code='knowledge_research'
+  ), removed_tools AS (
+    DELETE FROM agent_tool_mounts x USING claimed c WHERE x.agent_id=c.agent_id AND x.tool_code IN ('knowledge_search','knowledge_read')
+  ), preserve_ocr AS (
+    INSERT INTO agent_tool_mounts(agent_id,tool_code) SELECT t.agent_id,'knowledge_ocr' FROM targets t JOIN claimed c ON c.agent_id=t.agent_id
+    WHERE t.had_skill AND EXISTS(SELECT 1 FROM runtime_skill_catalog k WHERE k.identity_id=$1 AND k.code='knowledge_research' AND k.enabled)
+    ON CONFLICT DO NOTHING
+  ) INSERT INTO agent_skill_mounts(agent_id,skill_code) SELECT t.agent_id,'weknora_research' FROM targets t JOIN claimed c ON c.agent_id=t.agent_id
+    WHERE t.replace_binding ON CONFLICT DO NOTHING`, [identityId]);
   await initializeDefaultAgentModels(pool, identityId);
 }
 export async function roomRegistry(pool: Pool, conversationId: string): Promise<RegisteredAgent[]> {

@@ -8,6 +8,7 @@ import type { ComputeGateway, GatewayChatInput } from '../compute/gateway.js';
 import type { Identity } from '../repositories/types.js';
 import type { AgentMemoryScope, ShortTermMemoryService } from '../memories/short-term.js';
 import { effectiveToolCodes } from './registry.js';
+import { assertKnowledgeToolPolicy, isHomeAiDiagnosis } from './home-ai/knowledge-policy.js';
 import { homeAiWriteTools } from './home-ai/service.js';
 
 export type ToolScope = {
@@ -17,6 +18,7 @@ export type ToolScope = {
   stepId: string;
   agent: RegisteredAgent;
   deviceId: string | null;
+  signal?: AbortSignal;
 };
 
 export type ModelToolCall = {
@@ -124,9 +126,16 @@ export class ToolGateway {
     return { location: skill.location, action };
   }
 
+  /** Diagnosis constraints supplement, and never replace, upstream tool authorization. */
+  private async assertDiagnosisScope(scope: ToolScope, name: string): Promise<void> {
+    await assertKnowledgeToolPolicy(this.pool, name, { identityId: scope.identityId, conversationId: scope.conversationId, agentId: scope.agent.id, runId: scope.runId, stepId: scope.stepId });
+    if (catalog.get(name as RuntimeSkillCode)?.location === 'local' && await isHomeAiDiagnosis(this.pool, scope.identityId, scope.agent.id)) throw new Error('诊断智能体禁止本地工具；用户附件请使用服务端 file_read 或诊断材料工具。');
+  }
+
   async prepare(scope: ToolScope, call: ModelToolCall): Promise<PreparedToolCall> {
     if (!call.id) throw new Error('工具调用缺少模型调用编号');
     const { location, action } = await this.authorize(scope, call.function.name);
+    await this.assertDiagnosisScope(scope, call.function.name);
     const args = parseToolArguments(call.function.name, JSON.parse(call.function.arguments));
     return { id: call.id, name: call.function.name, args, location, action };
   }
@@ -142,12 +151,14 @@ export class ToolGateway {
           ? 'write' as const : 'read' as const;
     });
     const snapshot = await this.authorizationSnapshot(scope, actions);
-    return calls.map(call => {
+    const prepared = calls.map(call => {
       if (!call.id) throw new Error('工具调用缺少模型调用编号');
       const { location, action } = this.authorizeWithSnapshot(scope, call, snapshot);
       const args = parseToolArguments(call.function.name, JSON.parse(call.function.arguments));
       return { id: call.id, name: call.function.name, args, location, action };
     });
+    await Promise.all(prepared.map(call => this.assertDiagnosisScope(scope, call.name)));
+    return prepared;
   }
 
   private authorizeWithSnapshot(scope: ToolScope, call: ModelToolCall, snapshot: AuthorizationSnapshot): { location: 'local' | 'server'; action: PermissionAction } {
@@ -183,8 +194,9 @@ export class ToolGateway {
       try {
         const prepared = this.authorizeWithSnapshot(scope, { id: String(call.model_call_id), function: { name: call.tool_name, arguments: JSON.stringify(call.arguments) } }, snapshot);
         if (prepared.location !== 'server') throw new Error('本地工具不能由服务端执行');
+        await this.assertDiagnosisScope(scope, call.tool_name);
         result = await this.serverTools.execute(call.tool_name, call.arguments,
-          { identityId: scope.identityId, conversationId: scope.conversationId, agentId: scope.agent.id, toolCallId: call.id });
+          { identityId: scope.identityId, conversationId: scope.conversationId, agentId: scope.agent.id, toolCallId: call.id, runId: scope.runId, stepId: scope.stepId, signal: scope.signal });
       } catch (error) {
         result = { error: error instanceof Error ? error.message : String(error) };
       }

@@ -6,6 +6,7 @@ import { Workstation } from './workstation/Workstation';
 import { LocalApprovalDialog } from './workstation/LocalApprovalDialog';
 import './workstation/workstation.css';
 import './workstation/agents.css';
+import './apps.css';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

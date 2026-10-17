@@ -1,3 +1,5 @@
+import { loadConfig } from '../config.js';
+import { createWeKnoraClient } from '../tools/weknora-client.js';
 import { createHash } from 'node:crypto';
 import type { Pool } from 'pg';
 import { toolArguments, runtimeSkillCatalog, type RuntimeSkillCode } from '@kla-workstation/contracts';
@@ -13,7 +15,14 @@ import type { ObjectStore } from '../storage/object-store.js';
 import { knowledgeRequest } from './knowledge-transport.js';
 import { accessibleFile } from '../storage/file-access.js';
 import { HomeAiService, homeAiWriteTools } from './home-ai/service.js';
+import { assertKnowledgeToolPolicy, isHomeAiDiagnosis, type KnowledgeToolScope } from './home-ai/knowledge-policy.js';
+import { HomeAiSessionContext, type HomeAiContextScope } from './home-ai/session-context.js';
 import type { HomeAiToolCode } from '@kla-workstation/contracts';
+
+function defaultWeKnoraClient() {
+  const config = loadConfig().weknora;
+  return config ? createWeKnoraClient(config) : undefined;
+}
 
 const string = { type: 'string' }, integer = { type: 'integer' };
 const matrixOfNumbers = { type: 'array', items: { type: 'array', items: { type: 'number' } } };
@@ -47,6 +56,7 @@ const properties: Record<RuntimeSkillCode, Record<string, unknown>> = {
     source:{type:'string',enum:['estimate','measured']},targetHours:{anyOf:[{type:'number',minimum:0,maximum:1e9},{type:'string',enum:['']}]}},
   home_ai_report_build:{sessionId:string,stageId:string},
   home_ai_materials_add:{sessionId:string,expectedRevision:integer,fileId:string},
+  weknora_search: { query: { type: 'string', minLength: 1, maxLength: 240 } },
   knowledge_search: { query: string, topK: integer },
   knowledge_read: { knowledgeBaseId: string, docId: string, offset: integer, limit: integer },
   knowledge_ocr: { artifactId: string, maxPages: integer },
@@ -147,7 +157,7 @@ const required: Record<RuntimeSkillCode, string[]> = {
   home_ai_opportunity_discover:['sessionId'],home_ai_conditions_update:['sessionId','expectedRevision','stageId'],
   home_ai_value_estimate:['sessionId','expectedRevision','stageId','numbers'],home_ai_report_build:['sessionId','stageId'],
   home_ai_materials_add:['sessionId','expectedRevision','fileId'],
-  knowledge_search: ['query'], knowledge_read: ['knowledgeBaseId','docId'], knowledge_ocr: ['artifactId'],
+  weknora_search: ['query'], knowledge_search: ['query'], knowledge_read: ['knowledgeBaseId','docId'], knowledge_ocr: ['artifactId'],
   local_code_scan:['root'],local_code_impact:['root'],local_code_read:['root','file'],
   web_search: ['query'], memory_recall: ['query'],
   artifact_write: ['fileName','content'], artifact_compose: ['fileName','artifactIds'], artifact_read: ['artifactId'], local_read: ['path'], local_list: ['path'],
@@ -185,17 +195,42 @@ export function parseToolArguments(name: string, raw: unknown): Record<string, u
   }
 }
 export class RuntimeTools {
-  constructor(private readonly pool: Pool, private readonly accounts: AccountRepository, private readonly memory: ShortTermMemoryService, private readonly encryptionKey: string, private readonly objectStore?: ObjectStore) {}
+  constructor(private readonly pool: Pool, private readonly accounts: AccountRepository, private readonly memory: ShortTermMemoryService, private readonly encryptionKey: string, private readonly objectStore?: ObjectStore, private readonly weknora: { search(query: string, signal?: AbortSignal): Promise<unknown> } | undefined = defaultWeKnoraClient()) {}
+  private async assertArtifactAgentAccess(artifactId: string, agentId: string) {
+    const row = (await this.pool.query('SELECT source_agent_id,agent_private FROM artifacts WHERE id=$1', [artifactId])).rows[0];
+    if (!row || (row.agent_private && row.source_agent_id !== agentId)) throw new Error('诊断私有成果仅允许来源诊断智能体读取；协作请委派诊断智能体并使用受控交接。');
+  }
   async knowledgeInfo(identityId:string, conversationId:string):Promise<unknown> {
     try { const targets = await resolveSearchTargets(this.pool, identityId, { conversationId });
       return targets?.libraries.length ? { libraries: targets.libraries.map(item => ({ id: item.id, name: item.name, scope: item.scope })) } : null; }
     catch { return null; }
   }
-  async execute(name: string, raw: unknown, scope: { identityId: string; conversationId: string; agentId: string; toolCallId?: string }): Promise<unknown> {
+  async execute(name: string, raw: unknown, scope: KnowledgeToolScope & { signal?: AbortSignal }): Promise<unknown> {
     const args = parseToolArguments(name, raw);
+    await assertKnowledgeToolPolicy(this.pool, name, scope, true);
     await requirePermission(this.pool, scope.identityId, homeAiWriteTools.has(name) || name === 'artifact_write' || name === 'artifact_compose' ? 'write'
       : name === 'knowledge_ocr' || name === 'web_search' ? 'execute' : 'read');
-    if(name.startsWith('home_ai_')) return new HomeAiService(this.pool,this.objectStore).execute(name as HomeAiToolCode,args,scope);
+    const diagnostic = await isHomeAiDiagnosis(this.pool, scope.identityId, scope.agentId);
+    const diagnosticContext = diagnostic ? new HomeAiSessionContext(this.pool) : null;
+    if(diagnostic&&!scope.stepId)throw new Error('诊断工具缺少可信任务步骤，请通过平台执行机制继续当前诊断。');
+    const diagnosticScope:HomeAiContextScope|null=diagnostic?{identityId:scope.identityId,conversationId:scope.conversationId,stepId:scope.stepId!,agentId:scope.agentId,runId:scope.runId}:null;
+    const currentBinding=diagnosticContext&&diagnosticScope?await diagnosticContext.assertCurrent(diagnosticScope):null;
+    if(diagnostic&&!currentBinding?.sessionId)throw new Error('尚未选择当前诊断，请在诊断核对面板选择历史诊断或新建空白诊断。');
+    if(diagnosticContext&&diagnosticScope){
+      if(name==='file_read'||name==='home_ai_materials_add'||(name==='local_file_fetch'&&args.fileId))await diagnosticContext.assertFile(diagnosticScope,String(args.fileId));
+      if(name==='artifact_read'||name==='knowledge_ocr'||(name==='local_file_fetch'&&args.artifactId))await diagnosticContext.assertArtifact(diagnosticScope,String(args.artifactId));
+      if(name==='artifact_compose')for(const id of args.artifactIds as string[])await diagnosticContext.assertArtifact(diagnosticScope,id);
+    }
+    if (name === 'weknora_search') {
+      if (!this.weknora) throw new Error('WeKnora 服务未配置，请在工作站服务端配置独立地址、凭据及授权库范围。');
+      return this.weknora.search(String(args.query), scope.signal);
+    }
+    if(name.startsWith('home_ai_')){
+      const result=await new HomeAiService(this.pool,this.objectStore).execute(name as HomeAiToolCode,args,{...scope,bindingVersion:currentBinding?.bindingVersion});
+      // Historical session summaries belong to the human picker, never the model context.
+      if(name==='home_ai_session_open'&&result&&typeof result==='object')return Object.fromEntries(Object.entries(result).filter(([key])=>key!=='sessions'));
+      return result;
+    }
     if (name === 'web_search') {
       const results = await createBochaClient({ apiKey: process.env.BOCHA_API_KEY ?? '' }).searchWeb({
         query: String(args.query), count: Number(args.count), freshness: String(args.freshness),
@@ -203,7 +238,7 @@ export class RuntimeTools {
       });
       return { results, text: formatBochaSearchResults(results) };
     }
-    if (name === 'memory_recall') return { memories: await this.memory.recall(scope, String(args.query)), longTermApplied: false };
+    if (name === 'memory_recall') return { memories: diagnosticContext&&diagnosticScope?await diagnosticContext.recall(diagnosticScope,String(args.query)):await this.memory.recall(scope, String(args.query)), longTermApplied: false };
     if (name === 'file_read') {
       const file = await accessibleFile(this.pool, scope.identityId, String(args.fileId));
       if (!file || file.conversation_id !== scope.conversationId) throw new Error('文件不存在或不属于当前群聊');
@@ -219,6 +254,7 @@ export class RuntimeTools {
       const artifact = await this.accounts.getArtifact(scope.identityId, String(args.artifactId));
       if (!artifact) throw new Error('成果不存在或当前身份无权访问');
       if (artifact.conversationId !== scope.conversationId) throw new Error('成果不属于当前群聊');
+      await this.assertArtifactAgentAccess(artifact.id, scope.agentId);
       if (artifact.storageKey && !this.objectStore) throw new Error('对象存储未配置');
       if (artifact.storageKey && this.objectStore) {
         const bytes = await this.objectStore.get(artifact.storageKey);
@@ -235,6 +271,7 @@ export class RuntimeTools {
         const artifact = await this.accounts.getArtifact(scope.identityId, id);
         if (!artifact || artifact.conversationId !== scope.conversationId || artifact.contentEncoding === 'base64')
           throw new Error('章节成果不存在、无权访问或不是文本文件');
+        await this.assertArtifactAgentAccess(artifact.id, scope.agentId);
         const content = artifact.storageKey ? await this.objectStore?.get(artifact.storageKey) : null;
         if (artifact.storageKey && !content) throw new Error('章节成果对象不可用');
         parts.push(content ? content.toString('utf8') : artifact.content);
@@ -244,15 +281,17 @@ export class RuntimeTools {
       return this.execute('artifact_write', { fileName: args.fileName, content: merged, mimeType: args.mimeType }, scope);
     }
     if (name === 'artifact_write') {
+      const agentPrivate = diagnostic;
       const content = String(args.content);
       const checksum = createHash('sha256').update(content).digest('hex');
       const bytes = Buffer.from(content, 'utf8');
       const client = await this.pool.connect();
       try {
         await client.query('BEGIN');
-        const {rows} = await client.query(`INSERT INTO artifacts(identity_id,conversation_id,name,mime_type,content,size_bytes,checksum,tool_call_id)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(tool_call_id) WHERE tool_call_id IS NOT NULL DO UPDATE SET tool_call_id=EXCLUDED.tool_call_id RETURNING *`,
-        [scope.identityId,scope.conversationId,args.fileName,args.mimeType,content,bytes.byteLength,checksum,scope.toolCallId??null]);
+        if(diagnosticContext&&diagnosticScope)await diagnosticContext.assertCurrent(diagnosticScope,client);
+        const {rows} = await client.query(`INSERT INTO artifacts(identity_id,conversation_id,name,mime_type,content,size_bytes,checksum,tool_call_id,source_agent_id,agent_private)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(tool_call_id) WHERE tool_call_id IS NOT NULL DO UPDATE SET tool_call_id=EXCLUDED.tool_call_id RETURNING *`,
+        [scope.identityId,scope.conversationId,args.fileName,args.mimeType,content,bytes.byteLength,checksum,scope.toolCallId??null,scope.agentId,agentPrivate]);
         const artifact = rows[0];
         if (artifact.identity_id !== scope.identityId || artifact.conversation_id !== scope.conversationId) throw new Error('成果调用不属于当前身份或群聊');
         if (artifact.checksum !== checksum || artifact.name !== args.fileName || artifact.mime_type !== args.mimeType) throw new Error('同一工具调用不可覆盖已有成果');
@@ -262,6 +301,7 @@ export class RuntimeTools {
           await this.objectStore.put(storageKey, bytes);
           await client.query("UPDATE artifacts SET storage_key=$2,storage_status='stored',content='' WHERE id=$1", [artifact.id, storageKey]);
         }
+        if(diagnosticContext&&diagnosticScope)await diagnosticContext.recordArtifact(diagnosticScope,artifact.id,client);
         await client.query('COMMIT');
         return { artifactId: artifact.id, fileName: artifact.name, sizeBytes: Number(artifact.size_bytes), checksum: artifact.checksum, stored: true, ...(storageKey ? { storageKey } : {}) };
       } catch (error) {
@@ -275,6 +315,7 @@ export class RuntimeTools {
       const artifact = await this.accounts.getArtifact(scope.identityId, String(args.artifactId));
       if (!artifact) throw new Error('成果不存在或当前身份无权访问');
       if (artifact.conversationId !== scope.conversationId) throw new Error('成果不属于当前群聊');
+      await this.assertArtifactAgentAccess(artifact.id, scope.agentId);
       if (artifact.mimeType !== 'application/pdf' || artifact.sizeBytes > 16 * 1024 * 1024)
         throw new Error('OCR 仅支持不超过 16 MiB 的 PDF 成果');
       const bytes = artifact.storageKey

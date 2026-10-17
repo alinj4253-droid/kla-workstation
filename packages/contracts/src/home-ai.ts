@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import { cnAlias } from './cn-alias.js';
 
+export const homeAiReviewEntrySchema = z.object({
+  eligible: z.boolean(), active: z.boolean(), processing: z.boolean(), anchorMessageId: z.string().uuid().nullable(),
+}).strict();
+export type HomeAiReviewEntry = z.infer<typeof homeAiReviewEntrySchema>;
+
 // 原始 enum 供输出 schema 与 record 键使用（服务端产出恒为英文，无需容错）
 export const homeAiStageSchema = z.enum(['needs','marketing','design','quote','review','order','split','schedule','production','quality','logistics','install','service','behavior','economic']);
 // 模型入参变体：中文容错（精确优先+包含兜底），防「报价」「拆单」这类中文导致续跑失败
@@ -69,6 +74,7 @@ export const homeAiToolArguments = {
 export type HomeAiToolCode = keyof typeof homeAiToolArguments;
 // Confirmation is a human HTTP action, deliberately absent from the model tool catalog.
 export const homeAiConfirmationSchema = z.object({ expectedRevision: z.number().int().nonnegative(),
+  expectedBindingVersion: z.number().int().nonnegative().optional(),
   kind: z.enum(['profile','report']), stageId: homeAiStageSchema.optional(),
 }).strict().refine(input => input.kind !== 'report' || Boolean(input.stageId), '确认报告时必须选择场景');
 export const homeAiSessionViewSchema = z.object({
@@ -82,4 +88,19 @@ export const homeAiSessionViewSchema = z.object({
   })), nextQuestion: z.object({ id: homeAiAnswerSchema, text: z.string(), hint: z.string() }).nullable(),
 });
 export type HomeAiSessionView = z.infer<typeof homeAiSessionViewSchema>;
+export const homeAiSessionSummarySchema = z.object({
+  sessionId: z.string().uuid(), roleName: z.string().max(60), revision: z.number().int().nonnegative(),
+  profileConfirmed: z.boolean(), createdAt: z.string(), updatedAt: z.string(),
+}).strict();
+export const homeAiCurrentSchema = z.object({
+  status: z.enum(['active','empty','selection_required']), bindingVersion: z.number().int().nonnegative(),
+  session: homeAiSessionViewSchema.nullable(), sessions: z.array(homeAiSessionSummarySchema),
+}).strict();
+export type HomeAiCurrent = z.infer<typeof homeAiCurrentSchema>;
+export const homeAiCurrentOperationSchema = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('create'), expectedBindingVersion: z.number().int().nonnegative(), roleName: z.string().trim().min(1).max(60).optional() }).strict(),
+  z.object({ action: z.literal('activate'), expectedBindingVersion: z.number().int().nonnegative(), sessionId: z.string().uuid() }).strict(),
+  z.object({ action: z.literal('rename'), expectedBindingVersion: z.number().int().nonnegative(), sessionId: z.string().uuid(), roleName: z.string().trim().min(1).max(60) }).strict(),
+]);
+export type HomeAiCurrentOperation = z.infer<typeof homeAiCurrentOperationSchema>;
 export const homeAiInstallResponseSchema = z.object({ agentId: z.string().uuid(), installed: z.boolean() });

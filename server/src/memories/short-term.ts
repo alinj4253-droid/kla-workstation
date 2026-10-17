@@ -43,6 +43,7 @@ export class ShortTermMemoryService {
       WHERE COALESCE(m.metadata->>'conversationId',m.metadata->>'chatId')=c.id::text
         AND (COALESCE(m.metadata->>'agentId',m.metadata->>'sourceAgentId')=$3::text
           OR (COALESCE(m.metadata->>'agentId',m.metadata->>'sourceAgentId') IS NULL
+            AND COALESCE(m.metadata->>'diagnosisPrivate','false')<>'true'
             AND COALESCE(m.metadata->>'agentName',m.metadata->>'sourceAgentName')=a.name))
         AND (w.project_id IS NULL OR w.project_id=p.id)
         AND (m.metadata->>'projectId' IS NULL OR m.metadata->>'projectId'=p.id::text)
@@ -66,7 +67,7 @@ export class ShortTermMemoryService {
       WHERE c.id=$2 AND m.created_at<=trigger.created_at
         AND m.created_at>now()-interval '30 days'
         AND (m.sender_type='user' OR (m.sender_type='agent' AND (m.metadata->>'agentId'=$3::text
-          OR (m.metadata->>'agentId' IS NULL AND m.sender_name=(SELECT name FROM agents WHERE id=$3::uuid)))))
+          OR (m.metadata->>'agentId' IS NULL AND COALESCE(m.metadata->>'diagnosisPrivate','false')<>'true' AND m.sender_name=(SELECT name FROM agents WHERE id=$3::uuid)))))
       ORDER BY m.created_at DESC,m.id DESC LIMIT 12`, [scope.identityId, scope.conversationId, scope.agentId, triggerMessageId]);
     return result.rows.reverse().map(row => ({ role: row.sender_type === 'agent' ? 'assistant' : 'user', content: row.text.slice(0, 6000) }));
   }

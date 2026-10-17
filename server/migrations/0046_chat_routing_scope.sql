@@ -25,4 +25,3 @@ JOIN projects p ON p.id = c.project_id
 WHERE m.conversation_id = c.id
   AND m.sender_type = 'user'
   AND m.sender_identity_id IS NULL;
-
