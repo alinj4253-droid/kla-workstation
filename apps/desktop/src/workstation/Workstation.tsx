@@ -3,11 +3,12 @@ import { ConversationAttachments } from './ConversationAttachments';
 import { HomeAiReview } from './HomeAiReview';
 import { useHomeAiReviewEntry } from './useHomeAiReviewEntry';
 import type { FileItem } from '@kla-workstation/contracts';
-import { Activity, Archive, ArrowRight, Bell, BookOpen, Bot, BriefcaseBusiness, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronRight, CircleHelp, Clock3, Cloud, Code2, Copy, CreditCard, Database, Download, Eye, EyeOff, FileText, Folder, FolderPlus, Home, KeyRound, LayoutDashboard, Link2, LogOut, Menu, MessageSquare, MoreHorizontal, Paperclip, Pencil, Pin, PinOff, Plus, Search, Send, Settings, ShieldCheck, Sparkles, Trash2, Upload, UserCircle, Users, Wallet, X, Wrench, Route, RefreshCw, Brain as BrainIcon } from 'lucide-react';
+import { Activity, Archive, ArrowRight, Bell, BookOpen, Bot, BriefcaseBusiness, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronRight, CircleHelp, Clock3, Cloud, Code2, Copy, CreditCard, Database, Download, Eye, EyeOff, FileText, Folder, FolderPlus, Home, KeyRound, LayoutDashboard, LayoutGrid, Link2, LogOut, Menu, MessageSquare, MoreHorizontal, Paperclip, Pencil, Pin, PinOff, Plus, Search, Send, Settings, ShieldCheck, Sparkles, Trash2, Upload, UserCircle, Users, Wallet, X, Wrench, Route, RefreshCw, Brain as BrainIcon } from 'lucide-react';
 import logo from '../assets/kla-sidebar-logo.png';
 import type { CreateConversationRequest, IdentityDto } from '@kla-workstation/contracts';
 import { authExpiredEventName, klaApi, sessionChangedEventName } from '../api/client';
-import { RuntimeAgentManagement, RuntimeRoomMembers, RuntimeSkillManagement, RuntimeToolManagement, RuntimeSettingsView } from './RuntimeManagement';
+import { RuntimeAgentManagement, RuntimeRoomMembers, RuntimeSkillManagement, RuntimeToolManagement, RuntimeSettingsView, agentDescription, avatarTone } from './RuntimeManagement';
+import { AgentAppsSection, sortAgentApps } from './AgentAppsSection';
 import { memoryApi } from '../api/memories';
 import { ComputeSection, type ComputeView } from './ComputeSection';
 import { KnowledgeSection } from './KnowledgeSection';
@@ -18,7 +19,7 @@ import { ArtifactPane, ProjectWorkspace, type RoomRun, type RoomArtifact, type R
 import './collaboration.css';
 import { ConversationMessages, type ConversationMessage } from './ConversationMessages';
 import { CreateGroupDialog } from './CreateGroupDialog';
-import { runtimeApi } from '../api/runtime';
+import { runtimeApi, type RuntimeAgent } from '../api/runtime';
 import { v4 as randomUUID } from 'uuid';
 import { QuickSearch } from './QuickSearch';
 import { HomeCollaborationPanel } from './HomeCollaborationPanel';
@@ -134,8 +135,10 @@ const initialModels = [
   { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', vendor: 'deepseek / deepseek-v4-flash', category: '通用模型', context: '128K', latency: '服务端探测', cost: '待配置密钥', icon: '◈' },
   { id: 'qwen-plus', name: 'Qwen Plus', vendor: 'qwen / qwen-plus', category: '深度思考', context: '128K', latency: '服务端探测', cost: '待配置密钥', icon: '✣' },
 ];
+const appIcon = (name: string) => name === '建潘-三一规划智能体' ? BriefcaseBusiness : name === '代码分析助手' ? Code2 : name === 'PPT助手' ? FileText : name === '路线规划助手' ? Route : name === '经营分析助手' ? Database : name === '家居 AI 机会诊断' ? Home : Bot;
 const nav = [
   { id: 'home', label: '首页', Icon: Home }, { id: 'projects', label: '项目', Icon: Folder },
+  { id: 'apps', label: '应用', Icon: LayoutGrid },
   { id: 'knowledge', label: '知识库', Icon: BookOpen }, { id: 'agents', label: '智能体', Icon: Bot },
   { id: 'memory', label: '记忆', Icon: BrainIcon }, { id: 'compute', label: '算力', Icon: Activity },
 ] as const;
@@ -218,6 +221,15 @@ export function Workstation(): React.JSX.Element {
   const [pendingAttachments, setPendingAttachments] = useState<Record<string, FileItem[]>>({});
   const [attachmentsUploading, setAttachmentsUploading] = useState(false);
   useEffect(() => { setPendingAttachments({}); setAttachmentsUploading(false); }, [activeIdentityId]);
+  // 首页「我的智能体」模块数据：与「应用」模块同源（官方智能体清单，三一规划置顶）
+  useEffect(() => {
+    let cancelled = false;
+    void runtimeApi.agents().then(result => {
+      if (cancelled) return;
+      if (result.ok) setAgentApps(sortAgentApps(result.data));
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [activeIdentityId]);
   useEffect(() => { setAttachmentsUploading(false); }, [activeChat]);
   const [pendingRuns, setPendingRuns] = useState<Record<string, string>>({});
   const [activeRun, setActiveRun, setRoomActiveRun] = useScopedState<ChatRun | null>(roomScope, null);
@@ -242,6 +254,8 @@ export function Workstation(): React.JSX.Element {
   const [taskFocusRequest, setTaskFocusRequest] = useState<TaskFocusRequest | null>(null);
   const [searchAgents, setSearchAgents] = useState<{ identityId: string; agents: Array<{ id: string; name: string; role: string }> } | null>(null);
   const [agentSearchRequest, setAgentSearchRequest] = useState<{ query: string; nonce: number } | null>(null);
+  const [agentApps, setAgentApps] = useState<RuntimeAgent[]>([]);
+  const [appFocusRequest, setAppFocusRequest] = useState<{ id: string; nonce: number } | null>(null);
   const homeTasksButtonRef = useRef<HTMLButtonElement>(null);
   const [agentView, setAgentView] = useState<'manage' | 'skills' | 'tools'>('manage');
   const [settingsView, setSettingsView] = useState<'channels' | 'members' | 'profile' | 'appearance' | 'ops'>('channels');
@@ -917,8 +931,8 @@ export function Workstation(): React.JSX.Element {
   return <div className={`ws-app ${section === 'compute' && computeView === 'keys' ? 'ws-key-layout' : ''}`}>
     <div className={`ws-navigation-progress ${navProgress || workspaceLoading ? 'is-active' : ''}`} aria-hidden="true" />
     <aside className="ws-sidebar"><div><div className="ws-brand"><img src={logo} alt="鲲擎" /><span>鲲擎平台<small>AI INTELLIGENCE</small></span></div><nav>{nav.map(({ id, label, Icon }) => <button key={id} className={section === id ? 'active' : ''} onClick={() => navigate(id)}><Icon size={19} />{label}</button>)}</nav></div><div className="ws-sidebar-bottom"><button onClick={() => { navigate('compute'); setComputeView('dashboard'); }}><Sparkles size={15} /> 积分余额 <b>{formatPoints(computeBalancePoints)}</b><span className="ws-side-chevron">›</span></button><button onClick={() => navigate('settings')}><Settings size={17} /> 设置</button></div></aside>
-    <main className={`ws-main ${section === 'compute' && computeView === 'keys' ? 'ws-compute-keys-layout' : ''} ${(section === 'projects' || section === 'chats' || section === 'compute' || section === 'agents' || section === 'settings') ? 'has-subnav' : 'wide'}`}>
-    {(section === 'projects' || section === 'chats' || section === 'compute' || section === 'agents' || section === 'settings') && <aside className="ws-subnav">
+    <main className={`ws-main ${section === 'compute' && computeView === 'keys' ? 'ws-compute-keys-layout' : ''} ${(section === 'projects' || section === 'chats' || section === 'compute' || section === 'agents' || section === 'apps' || section === 'settings') ? 'has-subnav' : 'wide'}`}>
+    {(section === 'projects' || section === 'chats' || section === 'compute' || section === 'agents' || section === 'apps' || section === 'settings') && <aside className="ws-subnav">
         {(section === 'projects' || section === 'chats') && <>
           <header className="ws-panel-heading">
             <span className="ws-panel-heading-icon"><Folder size={17} /></span>
@@ -950,6 +964,16 @@ export function Workstation(): React.JSX.Element {
           </div>
         </>}
       {section === 'compute' && <><header className="ws-compute-title"><span className="ws-tiny-icon"><Activity size={18} /></span><span>算力与计费中心<small>Cluster Mesh v4.8</small></span></header><div className="ws-compute-links">{computeNav.filter(item => item.id !== 'members' || computeAdmin).map(({ id, label, Icon }) => <button key={id} className={computeView === id ? 'active' : ''} onClick={() => { setComputeView(id); setQuery(''); }}><Icon size={16} />{label}</button>)}</div><div className="ws-wallet"><small>账户可用积分余额 <b>{computeBalancePoints === null ? '待加载' : computeBalancePoints > 0 ? '可用' : '不足'}</b></small><strong>{formatPoints(computeBalancePoints)}</strong><button className="ws-primary" onClick={() => setComputeView('dashboard')}>查看余额与额度</button></div></>}
+      {section === 'apps' && <>
+        <header className="ws-panel-heading">
+          <span className="ws-panel-heading-icon"><LayoutGrid size={17} /></span>
+          <span><strong>应用中心</strong><small>{agentApps.length} 个应用 · {agentApps.filter(item => item.enabled).length} 个已启用</small></span>
+        </header>
+        <div className="ws-settings-menu"><small>我的应用</small>
+          {agentApps.map(agent => <button key={agent.id} className={appFocusRequest?.id === agent.id ? 'active' : ''} onClick={() => setAppFocusRequest({ id: agent.id, nonce: (appFocusRequest?.nonce ?? 0) + 1 })}><span className={`apps-menu-avatar is-${avatarTone(agent.name)}`}>{agent.name.slice(0, 1)}</span> {agent.name}</button>)}
+          {agentApps.length === 0 && <p className="ws-empty-line">暂无应用</p>}
+        </div>
+      </>}
       {section === 'agents' && <><header className="ws-compute-title"><span className="ws-tiny-icon"><Bot size={18} /></span><span>智能体<small>Agent Control · 我的智能体与市场</small></span></header><div className="ws-settings-menu"><small>智能体</small><button className={agentView === 'manage' ? 'active' : ''} onClick={() => setAgentView('manage')}><Bot size={16} /> 智能体管理</button><button className={agentView === 'skills' ? 'active' : ''} onClick={() => setAgentView('skills')}><Sparkles size={16} /> 技能</button><button className={agentView === 'tools' ? 'active' : ''} onClick={() => setAgentView('tools')}><Wrench size={16} /> 工具</button></div></>}
       {section === 'settings' && <><header className="ws-compute-title"><span className="ws-tiny-icon"><Settings size={18} /></span><span>平台设置<small>v2.4.0</small></span></header><div className="ws-settings-menu"><small>AI 核心</small><button className={settingsView === 'channels' ? 'active' : ''} onClick={() => setSettingsView('channels')}><Route size={16} /> 渠道</button>{canManageMembers && <><small>企业治理</small><button className={settingsView === 'members' ? 'active' : ''} onClick={() => setSettingsView('members')}><Users size={16} /> 成员管理</button></>}<small>扩展设置</small><button className={settingsView === 'profile' ? 'active' : ''} onClick={() => setSettingsView('profile')}><UserCircle size={16} /> 个人</button><button className={settingsView === 'appearance' ? 'active' : ''} onClick={() => setSettingsView('appearance')}><Sparkles size={16} /> 外观</button><button className={settingsView === 'ops' ? 'active' : ''} onClick={() => setSettingsView('ops')}><ShieldCheck size={16} /> 运维管理</button></div></>}
     </aside>}
@@ -967,11 +991,12 @@ export function Workstation(): React.JSX.Element {
       </div></div></div>
       <div className={`ws-content ${navProgress ? 'ws-content-transition' : ''}`}>
         {section === 'agents' && (agentView === 'manage' ? <RuntimeAgentManagement searchRequest={agentSearchRequest} identityId={activeIdentityId} notify={notify} /> : agentView === 'skills' ? <RuntimeSkillManagement identityId={activeIdentityId} notify={notify} /> : <RuntimeToolManagement identityId={activeIdentityId} notify={notify} />)}
+        {section === 'apps' && <AgentAppsSection identityId={activeIdentityId} notify={notify} focusRequest={appFocusRequest} onOpenApp={agent => { navigate('home'); setDraft(`@${agent.name} `); notify(`已打开「${agent.name}」：回到首页输入框 @ 该智能体，输入任务即可开始`); }} onOpenSettings={agent => { setAgentSearchRequest(current => ({ query: agent.name, nonce: (current?.nonce ?? 0) + 1 })); setAgentView('manage'); navigate('agents'); }} />}
         {section === 'settings' && <RuntimeSettingsView view={settingsView === 'members' && !canManageMembers ? 'channels' : settingsView} identityId={activeIdentityId} notify={notify} />}
         {section === 'home' && <div className="ws-home-prototype">
           <section className="ws-proto-welcome"><span className="ws-proto-avatar">{displayName.slice(0, 1)}</span><div className="ws-proto-welcome-copy"><h1>你好，{displayName} · 开启高效多智能体协同的一天</h1><p>{displayName} · 数字化员工 ｜ 已自动识别身份 · 员工目录 ｜ 科技BG · 数字化中心 · 数字化员工</p><div className="ws-proto-tags"><Badge tone="green">全域智能调度引擎运行中</Badge><Badge tone="green">算力响应正常 · 延迟 &lt; 85ms</Badge><Badge>4 大业务群组在线协同</Badge><Badge>已连接 4 个核心模型</Badge><Badge tone="muted">岗位语义智能自动匹配</Badge></div></div><div className="ws-proto-summary"><b>4<small>在线协同群组</small></b><b>6<small>可访问知识库</small></b><b>18<small>工作记忆条目</small></b></div><div className="ws-proto-actions"><button className="ws-primary" onClick={() => { navigate('compute'); setComputeView('market'); }}>查看模型矩阵与算力 <ArrowRight size={14} /></button><button onClick={() => navigate('knowledge')}>进入知识库</button></div></section>
           <div className="ws-proto-stats"><Stat icon={<Wallet />} label="积分余额" value={formatPoints(computeBalancePoints)} hint="当前身份可用额度，可在算力与计费中心查看明细" /><Stat icon={<Bot />} label="已安装应用" value="4 个" hint="可选 4 个 · 均由管理员统一授权" color="green" /><Stat icon={<BookOpen />} label="可访问知识" value="12 份" hint="按 BG 与权限过滤 · 可见范围随岗位权限变化" color="teal" /><Stat icon={<FileText />} label="工作记忆" value="18 条" hint="员工可查看、可删除 · 记忆随时由本人管理" color="orange" /></div>
-  <div className="ws-proto-two ws-home-entry-grid"><HomeAiEntry value={draft} onChange={setDraft} onSend={sendFromHome} onAgent={() => notify('已打开智能体选择')} onSkill={() => notify('已打开技能库')} onAttachment={() => notify('已打开附件上传')} onModels={() => { navigate('compute'); setComputeView('market'); }} /><Panel className="ws-home-shortcuts-panel" title="快捷功能入口" subtitle="覆盖平台各功能，点击直接进入对应页面。" action={<Badge>6 大模块</Badge>}><div className="ws-proto-functions">{([['知识库','6 个知识库 · 28,452 个切片，支持检索与文件预览',BookOpen],['智能体','4 个已安装 · 可挂载模型与配置技能',Bot],['记忆','按群组隔离，可下钻到每个智能体的记忆',FileText],['算力与积分','积分余额、使用记录与模型广场',Activity],['项目与群组','2 个项目 · 4 个群组，项目内可直接建群组',Folder],['统一任务','待办 0 项 · 与群组任务实时同步',CheckCircle2],['成员管理','超管专属 · 成员、知识库权限、Token 与邀请码',Users],['平台设置','渠道 / 技能 / 工具 / 外观 / 运维管理',Settings]] as const).map(([name, desc, Icon]) => <button key={name} onClick={() => openHomeShortcut(name)}><span><Icon size={16} /></span><strong>{name}</strong><small>{desc}</small></button>)}</div></Panel></div>
+  <div className="ws-proto-two ws-home-entry-grid"><HomeAiEntry value={draft} onChange={setDraft} onSend={sendFromHome} onAgent={() => notify('已打开智能体选择')} onSkill={() => notify('已打开技能库')} onAttachment={() => notify('已打开附件上传')} onModels={() => { navigate('compute'); setComputeView('market'); }} /><Panel className="ws-home-apps-panel" title="我的智能体" subtitle="与「智能体」模块同源，点击任一智能体直接进入应用模块的对应应用。" action={<div className="apps-home-actions"><Badge tone="green">{agentApps.filter(item => item.enabled).length} 个已启用</Badge><button className="ws-text-button" onClick={() => navigate('agents')}>管理智能体 ›</button></div>}><div className="apps-grid home-apps-grid">{agentApps.length === 0 ? <p className="apps-empty">正在加载智能体应用…</p> : agentApps.map(agent => <button key={agent.id} type="button" className="home-app-card" onClick={() => { setAppFocusRequest({ id: agent.id, nonce: (appFocusRequest?.nonce ?? 0) + 1 }); navigate('apps'); }}><div className="home-app-card__top"><span className="home-app-card__icon">{(() => { const Icon = appIcon(agent.name); return <Icon size={15} />; })()}</span><h4>{agent.name}</h4></div><p>{agentDescription(agent)}</p><div className="home-app-card__meta"><span className={`home-app-card__state${agent.enabled ? ' is-on' : ''}`}>{agent.enabled ? '已启用' : '未启用'}</span><span className="home-app-card__enter">进入应用 <ChevronRight size={14} /></span></div></button>)}</div></Panel></div>
           <div className="ws-proto-three"><HomeTasksPanel identityId={activeIdentityId} onCreated={updateHomeTask} onChanged={updateHomeTask} onDeleted={removeHomeTask} focusRequest={taskFocusRequest} onFocusHandled={nonce => setTaskFocusRequest(current => current?.nonce === nonce ? null : current)} mineButtonRef={homeTasksButtonRef} key={activeIdentityId} tasks={homeTasks?.identityId === activeIdentityId ? homeTasks.tasks : null} loading={workspaceLoading} notify={notify} /><HomeCollaborationPanel groupCount={homeTasks?.identityId === activeIdentityId ? chats.length : 0} loading={workspaceLoading} workspaceReady={homeTasks?.identityId === activeIdentityId} onOpenGroups={() => navigate('projects')} onOpenCommunication={() => {
             const chat = chats.find(item => item.id === activeChat) ?? chats[0];
             if (!chat) { navigate('projects'); notify('请先创建群组，再查看群组消息和共享文件'); return; }
