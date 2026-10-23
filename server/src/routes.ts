@@ -19,6 +19,7 @@ import { serviceUrl } from './knowledge-api/config.js';
 import type { ObjectStore } from './storage/object-store.js';
 import { registerFileRoutes } from './storage/routes.js';
 import { registerTaskRoutes } from './tasks/routes.js';
+import { registerSanyRoutes } from './sany/routes.js';
 import { messageFileReferences } from './storage/file-access.js';
 import { createMessageRequestSchema } from '@kla-workstation/contracts';
 
@@ -686,6 +687,11 @@ export async function registerRoutes(app: FastifyInstance, deps: { accounts: Acc
     } });
   await registerFileRoutes(app, { pool: deps.database?.rawPool ?? undefined, objectStore: deps.objectStore, maxBytes: deps.objectStorageMaxFileBytes,
     authorize: async (request, reply, action) => { const session = await auth(request, reply); return session ? enforce(session, request, action, reply) : null; } });
+  await registerSanyRoutes(app, { pool: deps.database?.rawPool ?? undefined,
+    authorize: async (request, reply, action) => {
+      const session = await auth(request, reply);
+      return session ? enforce(session, request, action, reply) : null;
+    } });
   app.get('/api/v1/me/permissions', async (request, reply) => {
     const session = await auth(request, reply); if (!session || !deps.database?.rawPool) return;
     const identity = await enforce(session, request, 'read', reply); if (!identity) return;

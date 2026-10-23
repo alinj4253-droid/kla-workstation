@@ -3,7 +3,7 @@ import { ConversationAttachments } from './ConversationAttachments';
 import { HomeAiReview } from './HomeAiReview';
 import { useHomeAiReviewEntry } from './useHomeAiReviewEntry';
 import type { FileItem } from '@kla-workstation/contracts';
-import { Activity, Archive, ArrowLeft, ArrowRight, Bell, BookOpen, Bot, BriefcaseBusiness, Building2, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronRight, CircleHelp, Clock3, Cloud, Code2, Copy, CreditCard, Database, Download, Eye, EyeOff, FileText, Folder, FolderPlus, Home, KeyRound, LayoutDashboard, LayoutGrid, Link2, LogOut, Menu, MessageSquare, MoreHorizontal, Paperclip, Pencil, Pin, PinOff, Plus, Search, Send, Settings, ShieldCheck, Sparkles, Trash2, Upload, UserCircle, Users, Wallet, X, Wrench, Route, RefreshCw, Brain as BrainIcon } from 'lucide-react';
+import { Activity, Archive, ArrowRight, Bell, BookOpen, Bot, BriefcaseBusiness, Building2, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronRight, CircleHelp, Clock3, Cloud, Code2, Copy, CreditCard, Database, Download, Eye, EyeOff, FileText, Folder, FolderPlus, Home, KeyRound, LayoutDashboard, LayoutGrid, Link2, LogOut, Menu, MessageSquare, MoreHorizontal, Paperclip, Pencil, Pin, PinOff, Plus, Search, Send, Settings, ShieldCheck, Sparkles, Trash2, Upload, UserCircle, Users, Wallet, X, Wrench, Route, RefreshCw, Brain as BrainIcon } from 'lucide-react';
 import logo from '../assets/kla-sidebar-logo.png';
 import type { CreateConversationRequest, IdentityDto } from '@kla-workstation/contracts';
 import { authExpiredEventName, klaApi, sessionChangedEventName } from '../api/client';
@@ -27,6 +27,7 @@ import { HomeAiEntry } from './HomeAiEntry';
 import { featureSearchEntries, type QuickSearchEntry, type WorkstationSection } from './quick-search';
 import { HomeTasksPanel, type TaskFocusRequest, type HomeTaskSummary } from './HomeTasksPanel';
 import { useScopedState } from './useScopedState';
+import { SanyPlanningSection, SANY_ADMIN_NAV, SANY_OWNER_NAV, sanyNavLabel, type SanyRole, type SanyView } from '../features/sany-planning/SanyPlanningSection';
 
 type Section = WorkstationSection;
 type LoginIdentity = IdentityDto & { role?: 'personal' | 'admin' | 'member' };
@@ -158,6 +159,8 @@ export function Workstation(): React.JSX.Element {
   const [showPassword, setShowPassword] = useState(false);
   const [section, setSection] = useState<Section>('home');
   const [computeView, setComputeView] = useState<ComputeView>('dashboard');
+  const [sanyRole, setSanyRole] = useState<SanyRole>('admin');
+  const [sanyView, setSanyView] = useState<SanyView>('home');
   const [modal, setModal] = useState<Modal>(null);
   const [identities, setIdentities] = useState<LoginIdentity[]>([]);
   const [activeIdentityId, setActiveIdentityId] = useState(() => klaApi.getIdentity() ?? '');
@@ -931,8 +934,8 @@ export function Workstation(): React.JSX.Element {
   return <div className={`ws-app ${section === 'compute' && computeView === 'keys' ? 'ws-key-layout' : ''}`}>
     <div className={`ws-navigation-progress ${navProgress || workspaceLoading ? 'is-active' : ''}`} aria-hidden="true" />
     <aside className="ws-sidebar"><div><div className="ws-brand"><img src={logo} alt="鲲擎" /><span>鲲擎平台<small>AI INTELLIGENCE</small></span></div><nav>{nav.map(({ id, label, Icon }) => <button key={id} className={section === id ? 'active' : ''} onClick={() => navigate(id)}><Icon size={19} />{label}</button>)}</nav></div><div className="ws-sidebar-bottom"><button onClick={() => { navigate('compute'); setComputeView('dashboard'); }}><Sparkles size={15} /> 积分余额 <b>{formatPoints(computeBalancePoints)}</b><span className="ws-side-chevron">›</span></button><button onClick={() => navigate('settings')}><Settings size={17} /> 设置</button></div></aside>
-    <main className={`ws-main ${section === 'compute' && computeView === 'keys' ? 'ws-compute-keys-layout' : ''} ${(section === 'projects' || section === 'chats' || section === 'compute' || section === 'agents' || section === 'apps' || section === 'settings') ? 'has-subnav' : 'wide'}`}>
-    {(section === 'projects' || section === 'chats' || section === 'compute' || section === 'agents' || section === 'apps' || section === 'settings') && <aside className="ws-subnav">
+    <main className={`ws-main ${section === 'compute' && computeView === 'keys' ? 'ws-compute-keys-layout' : ''} ${(section === 'projects' || section === 'chats' || section === 'compute' || section === 'agents' || section === 'apps' || section === 'settings' || section === 'sany') ? 'has-subnav' : 'wide'}`}>
+    {(section === 'projects' || section === 'chats' || section === 'compute' || section === 'agents' || section === 'apps' || section === 'settings' || section === 'sany') && <aside className="ws-subnav">
         {(section === 'projects' || section === 'chats') && <>
           <header className="ws-panel-heading">
             <span className="ws-panel-heading-icon"><Folder size={17} /></span>
@@ -978,8 +981,21 @@ export function Workstation(): React.JSX.Element {
       </>}
       {section === 'agents' && <><header className="ws-compute-title"><span className="ws-tiny-icon"><Bot size={18} /></span><span>智能体<small>Agent Control · 我的智能体与市场</small></span></header><div className="ws-settings-menu"><small>智能体</small><button className={agentView === 'manage' ? 'active' : ''} onClick={() => setAgentView('manage')}><Bot size={16} /> 智能体管理</button><button className={agentView === 'skills' ? 'active' : ''} onClick={() => setAgentView('skills')}><Sparkles size={16} /> 技能</button><button className={agentView === 'tools' ? 'active' : ''} onClick={() => setAgentView('tools')}><Wrench size={16} /> 工具</button></div></>}
       {section === 'settings' && <><header className="ws-compute-title"><span className="ws-tiny-icon"><Settings size={18} /></span><span>平台设置<small>v2.4.0</small></span></header><div className="ws-settings-menu"><small>AI 核心</small><button className={settingsView === 'channels' ? 'active' : ''} onClick={() => setSettingsView('channels')}><Route size={16} /> 渠道</button>{canManageMembers && <><small>企业治理</small><button className={settingsView === 'members' ? 'active' : ''} onClick={() => setSettingsView('members')}><Users size={16} /> 成员管理</button></>}<small>扩展设置</small><button className={settingsView === 'profile' ? 'active' : ''} onClick={() => setSettingsView('profile')}><UserCircle size={16} /> 个人</button><button className={settingsView === 'appearance' ? 'active' : ''} onClick={() => setSettingsView('appearance')}><Sparkles size={16} /> 外观</button><button className={settingsView === 'ops' ? 'active' : ''} onClick={() => setSettingsView('ops')}><ShieldCheck size={16} /> 运维管理</button></div></>}
+      {section === 'sany' && <>
+        <header className="ws-compute-title"><span className="ws-tiny-icon"><Building2 size={18} /></span><span>三一战略规划<small>集团三年战略规划</small></span></header>
+        <div className="ws-sany-role">
+          <button className={sanyRole === 'admin' ? 'active' : ''} onClick={() => { setSanyRole('admin'); setSanyView('home'); }}>管理员</button>
+          <button className={sanyRole === 'owner' ? 'active' : ''} onClick={() => { setSanyRole('owner'); setSanyView('home'); }}>负责人</button>
+        </div>
+        {(sanyRole === 'admin' ? SANY_ADMIN_NAV : SANY_OWNER_NAV).map(({ group, items }) => (
+          <div className="ws-settings-menu" key={group}>
+            <small>{group}</small>
+            {items.map(({ id, label, Icon }) => <button key={id} className={sanyView === id ? 'active' : ''} onClick={() => setSanyView(id)}><Icon size={16} /> {label}</button>)}
+          </div>
+        ))}
+      </>}
     </aside>}
-    <div className="ws-topbar"><div className="ws-breadcrumb"><span>协同工作台</span><b>/</b><strong>{section === 'home' ? '总览主页' : section === 'compute' ? `算力平台 / ${computeNav.find(n => n.id === computeView)?.label}` : section === 'settings' ? `平台设置 / ${currentSubpage}` : section === 'agents' ? `智能体 / ${currentSubpage}` : section === 'chats' ? '群聊 / 工作空间' : `${nav.find(n => n.id === section)?.label ?? '工作空间'} / 工作空间`}</strong></div><Badge tone="green">系统正常运行</Badge><div className="ws-top-actions"><QuickSearch key={activeIdentityId} entries={searchEntries} currentSection={section} onSelect={openSearchResult} /><IconButton title="通知" onClick={() => notify('暂无新通知')}><Bell size={16} /></IconButton><IconButton title="帮助" onClick={() => notify('帮助中心')}><CircleHelp size={16} /></IconButton>
+    <div className="ws-topbar"><div className="ws-breadcrumb"><span>协同工作台</span><b>/</b><strong>{section === 'home' ? '总览主页' : section === 'sany' ? `三一战略规划 / ${sanyNavLabel(sanyRole, sanyView)}` : section === 'compute' ? `算力平台 / ${computeNav.find(n => n.id === computeView)?.label}` : section === 'settings' ? `平台设置 / ${currentSubpage}` : section === 'agents' ? `智能体 / ${currentSubpage}` : section === 'chats' ? '群聊 / 工作空间' : `${nav.find(n => n.id === section)?.label ?? '工作空间'} / 工作空间`}</strong></div><Badge tone="green">系统正常运行</Badge><div className="ws-top-actions"><QuickSearch key={activeIdentityId} entries={searchEntries} currentSection={section} onSelect={openSearchResult} /><IconButton title="通知" onClick={() => notify('暂无新通知')}><Bell size={16} /></IconButton><IconButton title="帮助" onClick={() => notify('帮助中心')}><CircleHelp size={16} /></IconButton>
       <div className="ws-user-menu-wrap" ref={userMenuRef}>
         <button className="ws-user ws-user-button" aria-haspopup="menu" aria-expanded={userMenuOpen} onClick={() => setUserMenuOpen(open => !open)}><span className="ws-user-avatar">{localProfile.avatar ? <img src={localProfile.avatar} alt="" /> : displayName.slice(0, 1)}</span><span>{displayName}<small>{identities.find(item => item.id === activeIdentityId)?.displayName ?? '个人身份'}</small></span></button>
         {userMenuOpen && <div className="ws-user-popover" role="menu">
@@ -994,14 +1010,7 @@ export function Workstation(): React.JSX.Element {
       <div className={`ws-content ${navProgress ? 'ws-content-transition' : ''}`}>
         {section === 'agents' && (agentView === 'manage' ? <RuntimeAgentManagement searchRequest={agentSearchRequest} identityId={activeIdentityId} notify={notify} /> : agentView === 'skills' ? <RuntimeSkillManagement identityId={activeIdentityId} notify={notify} /> : <RuntimeToolManagement identityId={activeIdentityId} notify={notify} />)}
         {section === 'apps' && <AgentAppsSection notify={notify} onOpenApp={() => setSection('sany')} />}
-        {section === 'sany' && <div className="sany-app-page">
-          <div className="sany-app-bar">
-            <button type="button" onClick={() => navigate('apps')}><ArrowLeft size={15} /> 返回应用中心</button>
-            <span className="sany-app-bar__title"><Building2 size={15} /> 集团三一规划 · 三一规划助手</span>
-            <Badge tone="green">已添加</Badge>
-          </div>
-          <iframe className="sany-app-frame" src="./sany-plan-assistant.html" title="集团三一规划 · 三一规划助手" />
-        </div>}
+        {section === 'sany' && <SanyPlanningSection role={sanyRole} view={sanyView} onNavigate={setSanyView} />}
         {section === 'settings' && <RuntimeSettingsView view={settingsView === 'members' && !canManageMembers ? 'channels' : settingsView} identityId={activeIdentityId} notify={notify} />}
         {section === 'home' && <div className="ws-home-prototype">
           <section className="ws-proto-welcome"><span className="ws-proto-avatar">{displayName.slice(0, 1)}</span><div className="ws-proto-welcome-copy"><h1>你好，{displayName} · 开启高效多智能体协同的一天</h1><p>{displayName} · 数字化员工 ｜ 已自动识别身份 · 员工目录 ｜ 科技BG · 数字化中心 · 数字化员工</p><div className="ws-proto-tags"><Badge tone="green">全域智能调度引擎运行中</Badge><Badge tone="green">算力响应正常 · 延迟 &lt; 85ms</Badge><Badge>4 大业务群组在线协同</Badge><Badge>已连接 4 个核心模型</Badge><Badge tone="muted">岗位语义智能自动匹配</Badge></div></div><div className="ws-proto-summary"><b>4<small>在线协同群组</small></b><b>6<small>可访问知识库</small></b><b>18<small>工作记忆条目</small></b></div><div className="ws-proto-actions"><button className="ws-primary" onClick={() => { navigate('compute'); setComputeView('market'); }}>查看模型矩阵与算力 <ArrowRight size={14} /></button><button onClick={() => navigate('knowledge')}>进入知识库</button></div></section>
