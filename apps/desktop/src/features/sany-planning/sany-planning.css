@@ -240,6 +240,14 @@
 .sany-req { color: var(--danger); margin-left: 2px; }
 .sany-frow { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 
+.sany-sel { border: 1px solid var(--line-strong); border-radius: 6px; padding: 5px 10px; font-size: 12.5px; background: #fff; color: var(--ink); cursor: pointer; outline: none; }
+.sany-sel:focus { border-color: #b8c6e6; }
+
+.sany-taskbar { display: flex; align-items: center; gap: 8px; padding: 10px 14px; background: #fafbfc; border: 1px solid var(--line2); border-radius: 9px; margin-bottom: 16px; }
+.sany-taskbar__l { font-size: 12px; color: var(--ink3); white-space: nowrap; }
+.sany-taskbar__grow { flex: 1; min-width: 0; }
+.sany-taskbar__t { font-size: 13px; font-weight: 600; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .sany-chkbx { display: flex; align-items: center; gap: 8px; padding: 8px; border: 1px solid var(--line2); border-radius: 8px; margin-bottom: 6px; font-size: 12.5px; }
 .sany-chkbx--tight { padding: 5px 8px; border-color: transparent; margin-bottom: 2px; }
 .sany-chkbx--tight:hover { background: #fafbfc; }

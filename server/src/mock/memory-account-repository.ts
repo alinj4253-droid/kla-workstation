@@ -339,6 +339,10 @@ export class MemoryAccountRepository implements AccountRepository {
     return [...codes];
   }
 
+  getIdentityDisplayName(identityId: string): string {
+    return this.identities.get(identityId)?.displayName ?? '';
+  }
+
   getOrganizationRow(id: string): { id: string; name: string; invite_code: string; status: string } | null {
     const organization = this.organizations.get(id);
     return organization ? { id: organization.id, name: organization.name, invite_code: organization.inviteCode, status: organization.status } : null;

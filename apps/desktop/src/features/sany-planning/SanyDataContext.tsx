@@ -6,9 +6,12 @@ import {
   type SanyDocumentInput,
   type SanyFieldDto,
   type SanyMemberDto,
+  type SanyOutputVersionDto,
   type SanyProjectDto,
   type SanyRole,
+  type SanySubmissionDto,
   type SanyTaskDto,
+  type SanyWorkflowDto,
 } from '../../api/sany';
 import { Btn, Card } from './ui';
 
@@ -20,11 +23,14 @@ type SanyActions = {
   removeDocument: (documentId: string) => Promise<void>;
   addField: (input: { scope: 'company' | 'unit'; moduleKey: SanyFieldDto['moduleKey']; taskId?: string | null; label: string; type?: string; ai?: string; human?: string | null }) => Promise<void>;
   patchField: (fieldId: string, patch: { status?: SanyFieldDto['status']; human?: string | null; removed?: boolean; removedReason?: string | null }) => Promise<void>;
-  createTask: (input: { title: string; intent: string; deadline: string; owners: Array<{ name: string; unit: string }>; requirements: string[] }) => Promise<void>;
+  createTask: (input: { title: string; intent: string; deadline: string; planningPeriod?: string; owners: Array<{ name: string; unit: string; note?: string }>; requirements: string[] }) => Promise<void>;
   patchIssue: (issueId: string, status: string) => Promise<void>;
+  submitTask: (taskId: string, input: { summary: string; deliverables: Array<{ name: string; kind: string }>; note?: string }) => Promise<SanySubmissionDto | undefined>;
+  closeTask: (taskId: string, input: { action: 'returned' | 'accepted' | 'closed' | 'reminded'; note?: string }) => Promise<{ taskStatus: string } | undefined>;
+  fetchTaskWorkflow: (taskId: string) => Promise<SanyWorkflowDto | undefined>;
   patchProject: (input: { conclusion?: string; decisions?: Record<string, string>; outputGenerated?: boolean; outputReleased?: boolean; deliveryChecks?: Record<string, boolean> }) => Promise<void>;
   addFeedback: (content: string) => Promise<void>;
-  addVersion: (outputKey: string, input: { summary: string; changes: string; size: string; file: string; status?: string }) => Promise<void>;
+  addVersion: (outputKey: string, input: { summary: string; changes: string; size: string; file: string; status?: string }) => Promise<SanyOutputVersionDto | undefined>;
 };
 
 type SanyDataValue = {
@@ -32,6 +38,8 @@ type SanyDataValue = {
   actions: SanyActions;
   actionError: string | null;
   clearActionError: () => void;
+  workflow: SanyWorkflowDto | null;
+  setWorkflow: (workflow: SanyWorkflowDto | null) => void;
 };
 
 const SanyDataContext = createContext<SanyDataValue | null>(null);
@@ -43,6 +51,7 @@ export function SanyDataProvider({ children }: Props): React.JSX.Element {
   const [data, setData] = useState<SanyBootstrapDto | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [workflow, setWorkflow] = useState<SanyWorkflowDto | null>(null);
   const started = useRef(false);
 
   const load = useCallback(async () => {
@@ -66,18 +75,20 @@ export function SanyDataProvider({ children }: Props): React.JSX.Element {
     const onSessionChanged = () => {
       setData(null);
       setError(null);
+      setWorkflow(null);
       void load();
     };
     window.addEventListener(sessionChangedEventName, onSessionChanged);
     return () => window.removeEventListener(sessionChangedEventName, onSessionChanged);
   }, [load]);
 
-  const run = useCallback(async (task: () => Promise<void>) => {
+  const run = useCallback(async <T,>(task: () => Promise<T>): Promise<T | undefined> => {
     try {
       setActionError(null);
-      await task();
+      return await task();
     } catch (cause) {
       setActionError(cause instanceof Error ? cause.message : '操作失败，请稍后重试');
+      return undefined;
     }
   }, []);
 
@@ -116,6 +127,22 @@ export function SanyDataProvider({ children }: Props): React.JSX.Element {
       const result = await sanyApi.patchIssue(issueId, status);
       setData(prev => (prev ? { ...prev, issues: prev.issues.map(issue => (issue.id === issueId ? { ...issue, status: result.status } : issue)) } : prev));
     }),
+    submitTask: (taskId, input) => run(async () => {
+      const submission = await sanyApi.submitTask(taskId, input);
+      setData(prev => (prev ? {
+        ...prev,
+        tasks: prev.tasks.map(task => (task.id === taskId
+          ? { ...task, status: '已提交', submissions: task.submissions + 1, latestSubmission: { no: submission.no, status: submission.status, summary: submission.summary, submittedAt: submission.submittedAt.slice(0, 10) } }
+          : task)),
+      } : prev));
+      return submission;
+    }),
+    closeTask: (taskId, input) => run(async () => {
+      const result = await sanyApi.closeTask(taskId, input);
+      setData(prev => (prev ? { ...prev, tasks: prev.tasks.map(task => (task.id === taskId ? { ...task, status: result.taskStatus } : task)) } : prev));
+      return result;
+    }),
+    fetchTaskWorkflow: taskId => run(async () => sanyApi.getTaskWorkflow(taskId)),
     patchProject: input => run(async () => {
       await sanyApi.patchProject(input);
       setData(prev => {
@@ -141,6 +168,7 @@ export function SanyDataProvider({ children }: Props): React.JSX.Element {
         ...prev,
         outputs: prev.outputs.map(output => (output.key === outputKey ? { ...output, versions: [...output.versions, version] } : output)),
       } : prev));
+      return version;
     }),
   }), [load, run]);
 
@@ -177,6 +205,8 @@ export function SanyDataProvider({ children }: Props): React.JSX.Element {
     actions,
     actionError,
     clearActionError: () => setActionError(null),
+    workflow,
+    setWorkflow,
   };
 
   return (

@@ -34,7 +34,8 @@ export function AdminAssignPage(): React.JSX.Element {
       title,
       intent,
       deadline,
-      owners: targets.map(member => ({ name: member.name, unit: member.unit })),
+      planningPeriod: period,
+      owners: targets.map(member => ({ name: member.name, unit: member.unit, note: notes[member.name] ?? '' })),
       requirements: reqs.filter(item => item.on).map(item => item.t),
     });
     return true;

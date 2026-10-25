@@ -77,6 +77,7 @@ const REQ_TONE: Record<string, TagTone> = {
   已提交: 'g',
   已通过: 'g',
   已退回: 'r',
+  已收束: 'g',
 };
 
 export function StatusTag({ status }: { status: string }): React.JSX.Element {

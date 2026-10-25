@@ -49,6 +49,61 @@ export type SanyTaskDto = {
   prefill: number;
   verified: number;
   gaps: number;
+  submissions: number;
+  latestSubmission: { no: number; status: string; summary: string; submittedAt: string } | null;
+};
+
+export type SanyAssignmentDto = {
+  id: string;
+  taskId: string;
+  memberId: string;
+  status: string;
+  assigneeIdentityId: string | null;
+  individualNote: string;
+  assignedAt: string;
+  submittedAt: string | null;
+  acceptedAt: string | null;
+  closedAt: string | null;
+};
+
+export type SanySubmissionDto = {
+  id: string;
+  no: number;
+  status: string;
+  summary: string;
+  deliverables: Array<{ name: string; kind: string }>;
+  fieldSnapshot: Array<{ total: number; accepted: number; edited: number; rejected: number; missing: number; pending: number }>;
+  reviewerNote: string;
+  submittedAt: string;
+  reviewedAt: string | null;
+};
+
+export type SanyClosureDto = {
+  id: string;
+  action: string;
+  note: string;
+  actor: string;
+  createdAt: string;
+};
+
+export type SanyTaskEventDto = {
+  id: string;
+  eventType: string;
+  fromStatus: string | null;
+  toStatus: string | null;
+  detail: Record<string, unknown>;
+  actor: string;
+  createdAt: string;
+};
+
+export type SanyWorkflowTaskDto = Pick<SanyTaskDto, 'id' | 'code' | 'title' | 'unit' | 'owner' | 'type' | 'typeName' | 'deadline' | 'assignedAt' | 'status' | 'intent' | 'requirements'>;
+
+export type SanyWorkflowDto = {
+  task: SanyWorkflowTaskDto;
+  assignment: SanyAssignmentDto | null;
+  submissions: SanySubmissionDto[];
+  closures: SanyClosureDto[];
+  events: SanyTaskEventDto[];
 };
 
 export type SanyDocumentDto = {
@@ -126,6 +181,7 @@ export type SanyBootstrapDto = {
   issues: SanyIssueDto[];
   outputs: SanyOutputDto[];
   feedback: SanyFeedbackDto[];
+  assignments: SanyAssignmentDto[];
 };
 
 export type SanyDocumentInput = {
@@ -168,8 +224,14 @@ export const sanyApi = {
         removedReason: patch.removedReason,
       }),
     }).then(unwrap),
-  createTask: (input: { title: string; intent: string; deadline: string; owners: Array<{ name: string; unit: string }>; requirements: string[] }) =>
+  createTask: (input: { title: string; intent: string; deadline: string; planningPeriod?: string; owners: Array<{ name: string; unit: string; note?: string }>; requirements: string[] }) =>
     klaApi.request<{ created: number }>('/v1/sany/tasks', { method: 'POST', body: JSON.stringify(input) }).then(unwrap),
+  getTaskWorkflow: (taskId: string) =>
+    klaApi.request<SanyWorkflowDto>(`/v1/sany/tasks/${taskId}/workflow`).then(unwrap),
+  submitTask: (taskId: string, input: { summary: string; deliverables: Array<{ name: string; kind: string }>; note?: string }) =>
+    klaApi.request<SanySubmissionDto>(`/v1/sany/tasks/${taskId}/submissions`, { method: 'POST', body: JSON.stringify(input) }).then(unwrap),
+  closeTask: (taskId: string, input: { action: 'returned' | 'accepted' | 'closed' | 'reminded'; note?: string }) =>
+    klaApi.request<{ id: string; action: string; note: string; taskStatus: string; createdAt: string }>(`/v1/sany/tasks/${taskId}/closures`, { method: 'POST', body: JSON.stringify(input) }).then(unwrap),
   patchIssue: (issueId: string, status: string) =>
     klaApi.request<{ id: string; status: string }>(`/v1/sany/issues/${issueId}`, { method: 'PATCH', body: JSON.stringify({ status }) }).then(unwrap),
   patchProject: (input: { conclusion?: string; decisions?: Record<string, string>; outputGenerated?: boolean; outputReleased?: boolean; deliveryChecks?: Record<string, boolean> }) =>

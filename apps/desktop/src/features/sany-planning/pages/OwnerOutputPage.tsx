@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { PageHead, Card, Tag, Btn, Section, Alert, Modal } from '../ui';
 import { useSanyData } from '../SanyDataContext';
+import { klaApi } from '../../../api/client';
 import { OWNER_DECKS } from '../mock';
 
 const KIND_LABEL: Record<string, string> = { doc: 'DOC', ppt: 'PPT', diag: 'PDF', package: 'ZIP' };
@@ -12,30 +13,60 @@ export function OwnerOutputPage(): React.JSX.Element {
   const [versionNo, setVersionNo] = useState(0);
   const [submitOpen, setSubmitOpen] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  const currentIdentityId = klaApi.getIdentity();
+  const myAssignments = data.assignments.filter(
+    assignment => assignment.assigneeIdentityId === currentIdentityId || assignment.assigneeIdentityId === null,
+  );
+  const myTaskIds = new Set(myAssignments.map(assignment => assignment.taskId));
+  const myTasks = data.tasks.filter(task => myTaskIds.has(task.id));
+  const taskList = myTasks.length ? myTasks : data.tasks;
+  const [taskId, setTaskId] = useState<string>(() => taskList[0]?.id ?? '');
+  const task = taskList.find(item => item.id === taskId) ?? taskList[0];
 
   const outputs = data.outputs;
   const output = outputs.find(item => item.key === outputKey) ?? outputs[0];
   const version = output?.versions.find(item => item.v === versionNo) ?? output?.versions[output.versions.length - 1];
   const isPpt = output?.key === 'ppt';
-  const unitFields = data.fields.filter(field => field.scope === 'unit' && !field.removed);
+  const unitFields = data.fields.filter(field => field.scope === 'unit' && !field.removed && field.taskId === (task?.id ?? null));
   const confirmed = unitFields.filter(field => field.status === 'accepted' || field.status === 'edited');
   const missing = unitFields.filter(field => field.status === 'missing').length;
   const lowConf = unitFields.filter(field => field.status === 'pending' && field.conf > 0 && field.conf < 85).length;
   const unitDocs = data.documents.filter(document => document.scope === 'unit');
 
-  const submitVersion = () => {
-    if (!output || !version) return;
-    void actions.addVersion(output.key, {
+  const submitVersion = async () => {
+    if (!output || !version || !task) return;
+    setSubmitting(true);
+    try {
+    const newVersion = await actions.addVersion(output.key, {
       summary: '按最新一次校验结果重新提交',
       changes: '同步最近一次校验中的采纳与修改内容',
       size: version.size,
       file: version.file,
       status: '待审核',
     });
-    setSubmitted(true);
+    if (!newVersion) return;
+    const deliverables = [
+        { name: `${output.name} V${newVersion.v}`, kind: output.key },
+        ...outputs
+          .filter(item => item.key !== output.key && item.versions.length)
+          .map(item => {
+            const latest = item.versions[item.versions.length - 1];
+            return { name: `${item.name} V${latest.v}`, kind: item.key };
+          }),
+      ];
+      await actions.submitTask(task.id, {
+        summary: `${output.name} V${newVersion.v} + 诊断 + ${unitDocs.length} 份材料`,
+        deliverables,
+      });
+      setSubmitted(true);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
-  if (!output || !version) {
+  if (!output || !version || !task) {
     return (
       <section className="sany-page">
         <PageHead title="我的成果" sub="正文、汇报 PPT、诊断报告与提交包分开管理" />
@@ -62,9 +93,17 @@ export function OwnerOutputPage(): React.JSX.Element {
         )}
       />
 
+      <div className="sany-taskbar">
+        <span className="sany-taskbar__l">当前任务</span>
+        <select className="sany-sel sany-taskbar__grow" value={task.id} onChange={event => setTaskId(event.target.value)}>
+          {taskList.map(item => <option key={item.id} value={item.id}>{item.code} · {item.title}</option>)}
+        </select>
+        <span className="sany-taskbar__t">{task.unit}</span>
+      </div>
+
       {submitted ? (
         <div className="sany-mb16">
-          <Alert tone="g" icon="✓">提交包已重新提交，管理员将在任务收束中看到；旧版本仍保留在版本链中。</Alert>
+          <Alert tone="g" icon="✓">提交包已提交给管理员，管理员将在任务收束中看到；旧版本仍保留在版本链中。</Alert>
         </div>
       ) : null}
 
@@ -210,12 +249,14 @@ export function OwnerOutputPage(): React.JSX.Element {
       <Modal
         open={submitOpen}
         title="提交给管理员"
-        sub="提交后生成新版本，旧版本保留"
+        sub={`任务：${task.code} · ${task.title}`}
         onClose={() => setSubmitOpen(false)}
         footer={(
           <>
             <Btn onClick={() => setSubmitOpen(false)}>取消</Btn>
-            <Btn tone="pri" onClick={() => { setSubmitOpen(false); submitVersion(); }}>确认提交</Btn>
+            <Btn tone="pri" disabled={submitting} onClick={() => { setSubmitOpen(false); void submitVersion(); }}>
+              {submitting ? '提交中…' : '确认提交'}
+            </Btn>
           </>
         )}
       >
@@ -226,7 +267,7 @@ export function OwnerOutputPage(): React.JSX.Element {
           <div className="sany-row sany-mb4">
             <span className="sany-small">交付内容</span>
             <span className="sany-spacer" />
-            <b>{output.name} V{version.v} + 诊断 + {unitDocs.length} 份材料</b>
+            <b>{output.name} V{version.v + 1} + 诊断 + {unitDocs.length} 份材料</b>
           </div>
           <div className="sany-row sany-mb4"><span className="sany-small">版本号</span><span className="sany-spacer" /><b>V{version.v + 1}</b></div>
           <div className="sany-row"><span className="sany-small">接收人</span><span className="sany-spacer" /><b>{data.members.find(member => member.role === 'admin')?.name ?? '管理员'}</b></div>

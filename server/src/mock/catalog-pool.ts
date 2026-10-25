@@ -1,4 +1,5 @@
 import type { MemoryAccountRepository } from './memory-account-repository.js';
+import { SanyMemoryPool } from './sany-memory-pool.js';
 
 type QueryResult = { rows: Array<Record<string, unknown>>; rowCount?: number };
 
@@ -30,7 +31,11 @@ export class CatalogPool {
   private readonly conversationAgents = new Map<string, Map<string, string>>();
   private readonly tasks = new Map<string, Record<string, unknown>>();
 
-  constructor(private readonly accounts: MemoryAccountRepository) {}
+  constructor(private readonly accounts: MemoryAccountRepository) {
+    this.sanyPool = new SanyMemoryPool(accounts);
+  }
+
+  private readonly sanyPool: SanyMemoryPool;
 
   hasPermission(identityId: string, action: 'read' | 'write' | 'execute' | 'manage' | 'export'): boolean {
     const permissions = this.accounts.getPermissionCodes(identityId);
@@ -38,6 +43,7 @@ export class CatalogPool {
   }
 
   async query(sql: string, params: readonly unknown[] = []): Promise<QueryResult> {
+    if (this.sanyPool.handles(sql)) return this.sanyPool.query(sql, params);
     const normalized = sql.toLowerCase();
     const empty = (): QueryResult => ({ rows: [], rowCount: 0 });
     const result = (rows: Array<Record<string, unknown>>): QueryResult => ({ rows, rowCount: rows.length });
@@ -183,6 +189,6 @@ export class CatalogPool {
   }
 
   async connect(): Promise<{ query: (sql: string, params?: readonly unknown[]) => Promise<QueryResult>; release: () => void }> {
-    return { query: (sql, params) => this.query(sql, params), release: () => undefined };
+    return { query: (sql, params) => this.sanyPool.handles(sql) ? this.sanyPool.query(sql, params) : this.query(sql, params), release: () => undefined };
   }
 }
