@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import type { PostgresDatabase } from '../database/postgres.js';
 import { loadConfig } from '../config.js';
+import { corsOptions } from '../server.js';
 import { registerKnowledgeRoutes } from '../knowledge-api/routes.js';
 import { MemoryKnowledgeStore } from '../knowledge-api/context.js';
 import { registerRoutes } from '../routes.js';
@@ -24,7 +25,7 @@ export async function createMockServer(options: { seedDemoAccount?: boolean; log
     genReqId: createRequestIdGenerator(),
     logController: new LogController({ disableRequestLogging: shouldQuietRequestLogging }),
   });
-  await app.register(cors, { origin: true });
+  await app.register(cors, corsOptions);
   await app.register(sensible);
   const accounts = new MemoryAccountRepository();
   if (options.seedDemoAccount !== false) accounts.seedDemoAccount();
