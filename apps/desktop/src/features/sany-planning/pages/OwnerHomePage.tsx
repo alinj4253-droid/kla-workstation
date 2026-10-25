@@ -6,15 +6,15 @@ import type { SanyView } from '../SanyPlanningSection';
 type Props = { onNavigate?: (view: SanyView) => void };
 
 export function OwnerHomePage({ onNavigate }: Props): React.JSX.Element {
-  const { data } = useSanyData();
-  const req = data.tasks[0];
-  const fields = data.fields.filter(field => field.scope === 'unit' && !field.removed);
+  const { data, ownerTask, ownerTasks, setOwnerTaskId } = useSanyData();
+  const req = ownerTask;
+  const fields = data.fields.filter(field => field.scope === 'unit' && !field.removed && field.taskId === (ownerTask?.id ?? ''));
   const confirmed = fields.filter(field => field.status === 'accepted' || field.status === 'edited' || field.status === 'rejected').length;
   const pending = fields.filter(field => field.status === 'pending').length;
   const lowConf = fields.filter(field => field.status === 'pending' && field.conf > 0 && field.conf < 85);
   const total = fields.length;
   const pct = total ? Math.round(confirmed / total * 100) : 0;
-  const docs = data.documents.filter(document => document.scope === 'unit').length;
+  const docs = data.documents.filter(document => document.scope === 'unit' && document.taskId === (ownerTask?.id ?? null)).length;
   const daysLeft = data.project.deadline
     ? Math.max(0, Math.ceil((new Date(data.project.deadline).getTime() - Date.now()) / 86400000))
     : null;
@@ -70,6 +70,15 @@ export function OwnerHomePage({ onNavigate }: Props): React.JSX.Element {
 
   return (
     <section className="sany-page">
+      {ownerTasks.length > 1 ? (
+        <div className="sany-taskbar">
+          <span className="sany-taskbar__l">当前任务</span>
+          <select className="sany-sel sany-taskbar__grow" value={ownerTask?.id ?? ''} onChange={event => setOwnerTaskId(event.target.value)}>
+            {ownerTasks.map(item => <option key={item.id} value={item.id}>{item.code} · {item.title}</option>)}
+          </select>
+          <span className="sany-taskbar__t">{ownerTask?.unit}</span>
+        </div>
+      ) : null}
       <PageHead
         title="工作台"
         sub={`${req.title} · 截止 ${req.deadline}${daysLeft === null ? '' : `（还有 ${daysLeft} 天）`}`}

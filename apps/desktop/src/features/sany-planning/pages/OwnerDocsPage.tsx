@@ -6,9 +6,9 @@ import type { SanyView } from '../SanyPlanningSection';
 type Props = { onNavigate?: (view: SanyView) => void };
 
 export function OwnerDocsPage({ onNavigate }: Props): React.JSX.Element {
-  const { data, actions } = useSanyData();
-  const task = data.tasks[0];
-  const docsOf = (key: ModuleKey) => data.documents.filter(document => document.scope === 'unit' && document.moduleKey === key);
+  const { data, actions, ownerTask, ownerTasks, setOwnerTaskId } = useSanyData();
+  const task = ownerTask;
+  const docsOf = (key: ModuleKey) => data.documents.filter(document => document.scope === 'unit' && document.moduleKey === key && document.taskId === (ownerTask?.id ?? null));
   const withDocs = MODULES.filter(module => docsOf(module.k).length > 0).length;
 
   const loadModule = (key: ModuleKey) => {
@@ -35,6 +35,15 @@ export function OwnerDocsPage({ onNavigate }: Props): React.JSX.Element {
 
   return (
     <section className="sany-page">
+      {ownerTasks.length > 1 ? (
+        <div className="sany-taskbar">
+          <span className="sany-taskbar__l">当前任务</span>
+          <select className="sany-sel sany-taskbar__grow" value={ownerTask?.id ?? ''} onChange={event => setOwnerTaskId(event.target.value)}>
+            {ownerTasks.map(item => <option key={item.id} value={item.id}>{item.code} · {item.title}</option>)}
+          </select>
+          <span className="sany-taskbar__t">{ownerTask?.unit}</span>
+        </div>
+      ) : null}
       <PageHead
         title="材料准备"
         sub="四模块分别上传本单元材料；系统自动读取结论并生成初稿；无需你逐行阅读，缺料会自动列出"

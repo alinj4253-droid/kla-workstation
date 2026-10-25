@@ -1,29 +1,21 @@
 import { useState } from 'react';
 import { PageHead, Card, Tag, Btn, Section, Alert, Modal } from '../ui';
 import { useSanyData } from '../SanyDataContext';
-import { klaApi } from '../../../api/client';
 import { OWNER_DECKS } from '../mock';
 
 const KIND_LABEL: Record<string, string> = { doc: 'DOC', ppt: 'PPT', diag: 'PDF', package: 'ZIP' };
 const STATUS_TONE: Record<string, 'g' | 'v' | 'r'> = { 已归档: 'g', 待审核: 'v', 已退回: 'r', 已通过: 'g' };
 
 export function OwnerOutputPage(): React.JSX.Element {
-  const { data, actions } = useSanyData();
+  const { data, actions, ownerTask, ownerTasks, setOwnerTaskId } = useSanyData();
   const [outputKey, setOutputKey] = useState<'doc' | 'ppt' | 'diag' | 'package'>('package');
   const [versionNo, setVersionNo] = useState(0);
   const [submitOpen, setSubmitOpen] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
-  const currentIdentityId = klaApi.getIdentity();
-  const myAssignments = data.assignments.filter(
-    assignment => assignment.assigneeIdentityId === currentIdentityId || assignment.assigneeIdentityId === null,
-  );
-  const myTaskIds = new Set(myAssignments.map(assignment => assignment.taskId));
-  const myTasks = data.tasks.filter(task => myTaskIds.has(task.id));
-  const taskList = myTasks.length ? myTasks : data.tasks;
-  const [taskId, setTaskId] = useState<string>(() => taskList[0]?.id ?? '');
-  const task = taskList.find(item => item.id === taskId) ?? taskList[0];
+  const task = ownerTask;
+  const taskList = ownerTasks;
 
   const outputs = data.outputs;
   const output = outputs.find(item => item.key === outputKey) ?? outputs[0];
@@ -95,10 +87,10 @@ export function OwnerOutputPage(): React.JSX.Element {
 
       <div className="sany-taskbar">
         <span className="sany-taskbar__l">当前任务</span>
-        <select className="sany-sel sany-taskbar__grow" value={task.id} onChange={event => setTaskId(event.target.value)}>
+        <select className="sany-sel sany-taskbar__grow" value={task?.id ?? ''} onChange={event => setOwnerTaskId(event.target.value)}>
           {taskList.map(item => <option key={item.id} value={item.id}>{item.code} · {item.title}</option>)}
         </select>
-        <span className="sany-taskbar__t">{task.unit}</span>
+        <span className="sany-taskbar__t">{task?.unit}</span>
       </div>
 
       {submitted ? (

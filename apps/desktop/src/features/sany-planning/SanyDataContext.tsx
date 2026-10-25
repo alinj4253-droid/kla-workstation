@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { sessionChangedEventName } from '../../api/client';
+import { klaApi, sessionChangedEventName } from '../../api/client';
 import {
   sanyApi,
   type SanyBootstrapDto,
@@ -40,6 +40,10 @@ type SanyDataValue = {
   clearActionError: () => void;
   workflow: SanyWorkflowDto | null;
   setWorkflow: (workflow: SanyWorkflowDto | null) => void;
+  ownerTaskId: string | null;
+  setOwnerTaskId: (taskId: string | null) => void;
+  ownerTask: SanyTaskDto | null;
+  ownerTasks: SanyTaskDto[];
 };
 
 const SanyDataContext = createContext<SanyDataValue | null>(null);
@@ -52,6 +56,7 @@ export function SanyDataProvider({ children }: Props): React.JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [workflow, setWorkflow] = useState<SanyWorkflowDto | null>(null);
+  const [ownerTaskId, setOwnerTaskId] = useState<string | null>(null);
   const started = useRef(false);
 
   const load = useCallback(async () => {
@@ -200,6 +205,15 @@ export function SanyDataProvider({ children }: Props): React.JSX.Element {
     );
   }
 
+  const currentIdentityId = klaApi.getIdentity();
+  const ownerTasks = data.tasks.filter(task => {
+    const assignment = data.assignments.find(item => item.taskId === task.id);
+    if (!assignment) return true;
+    return assignment.assigneeIdentityId === currentIdentityId || assignment.assigneeIdentityId === null;
+  });
+  const taskList = ownerTasks.length ? ownerTasks : data.tasks;
+  const ownerTask = taskList.find(task => task.id === ownerTaskId) ?? taskList[0] ?? null;
+
   const value: SanyDataValue = {
     data,
     actions,
@@ -207,6 +221,10 @@ export function SanyDataProvider({ children }: Props): React.JSX.Element {
     clearActionError: () => setActionError(null),
     workflow,
     setWorkflow,
+    ownerTaskId: ownerTask?.id ?? null,
+    setOwnerTaskId,
+    ownerTask,
+    ownerTasks: taskList,
   };
 
   return (

@@ -14,12 +14,12 @@ const MODULE_NAME: Record<ModuleKey, string> = {
 };
 
 export function OwnerGapsPage({ onNavigate }: Props): React.JSX.Element {
-  const { data, actions } = useSanyData();
+  const { data, actions, ownerTask, ownerTasks, setOwnerTaskId } = useSanyData();
   const [feedback, setFeedback] = useState('');
   const [sent, setSent] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
 
-  const unitFields = data.fields.filter(field => field.scope === 'unit' && !field.removed);
+  const unitFields = data.fields.filter(field => field.scope === 'unit' && !field.removed && field.taskId === (ownerTask?.id ?? ''));
   const missingFields = unitFields.filter(field => field.status === 'missing');
   const lowFields = unitFields.filter(field => field.status === 'pending' && field.conf > 0 && field.conf < 85);
   const confirmed = unitFields.filter(field => field.status === 'accepted' || field.status === 'edited' || field.status === 'rejected').length;
@@ -49,6 +49,15 @@ export function OwnerGapsPage({ onNavigate }: Props): React.JSX.Element {
 
   return (
     <section className="sany-page">
+      {ownerTasks.length > 1 ? (
+        <div className="sany-taskbar">
+          <span className="sany-taskbar__l">当前任务</span>
+          <select className="sany-sel sany-taskbar__grow" value={ownerTask?.id ?? ''} onChange={event => setOwnerTaskId(event.target.value)}>
+            {ownerTasks.map(item => <option key={item.id} value={item.id}>{item.code} · {item.title}</option>)}
+          </select>
+          <span className="sany-taskbar__t">{ownerTask?.unit}</span>
+        </div>
+      ) : null}
       <PageHead
         title="缺口处理"
         sub="缺什么、为什么缺、影响哪些内容，一条条列出；补不齐的可以反馈给管理员"
