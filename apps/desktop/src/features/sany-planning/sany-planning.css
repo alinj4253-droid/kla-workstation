@@ -293,7 +293,7 @@
 .sany-needrow { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 12px; color: var(--ink2); }
 .sany-needrow__d { color: var(--ink4); }
 .sany-drop { width: 100%; border: 1px dashed #d9dde3; border-radius: 9px; background: #fafbfc; padding: 14px; cursor: pointer; text-align: center; color: var(--ink3); transition: border-color 0.15s, background 0.15s; }
-.sany-drop:hover { border-color: #b8c6e6; background: #f6f9ff; }
+.sany-drop:hover, .sany-drop.over { border-color: #b8c6e6; background: #f6f9ff; }
 .sany-drop__i { font-size: 16px; color: var(--ink4); margin-bottom: 4px; }
 .sany-drop__t { font-size: 12.5px; font-weight: 500; color: var(--ink2); }
 .sany-drop__s { margin-top: 3px; font-size: 11px; color: var(--ink4); }

@@ -41,6 +41,21 @@ export class SanyMemoryPool {
 
     if (normalized.startsWith('begin') || normalized.startsWith('commit') || normalized.startsWith('rollback')) return this.empty();
 
+    // DELETE 必须先于 FROM 判断：DELETE FROM sany_xxx 会被 SELECT 分支抢先命中，导致误删失败。
+    if (normalized.includes('delete from sany_members')) {
+      const row = this.members.get(String(asParams[0] ?? ''));
+      if (!row || row.project_id !== asParams[1]) return this.empty();
+      this.members.delete(String(asParams[0] ?? ''));
+      return this.result([{ id: row.id }]);
+    }
+
+    if (normalized.includes('delete from sany_documents')) {
+      const row = this.documents.get(String(asParams[0] ?? ''));
+      if (!row || row.project_id !== asParams[1]) return this.empty();
+      this.documents.delete(String(asParams[0] ?? ''));
+      return this.result([{ id: row.id }]);
+    }
+
     if (normalized.includes('insert into sany_projects')) {
       const owner = String(asParams[0] ?? '');
       const existing = [...this.projects.values()].find(item => item.owner_identity_id === owner && item.status === 'active');
@@ -111,13 +126,6 @@ export class SanyMemoryPool {
       }
       const rows = [...this.members.values()].filter(item => item.project_id === asParams[0]);
       return this.result(rows.sort((a, b) => Number(a.sort_order) - Number(b.sort_order)));
-    }
-
-    if (normalized.includes('delete from sany_members')) {
-      const row = this.members.get(String(asParams[0] ?? ''));
-      if (!row || row.project_id !== asParams[1]) return this.empty();
-      this.members.delete(String(asParams[0] ?? ''));
-      return this.result([{ id: row.id }]);
     }
 
     if (normalized.includes('from sany_tasks')) {
@@ -198,13 +206,6 @@ export class SanyMemoryPool {
         return this.result([...this.documents.values()].filter(item => item.task_id === asParams[0]).length ? [{ id: 'ok' }] : []);
       }
       return this.result([...this.documents.values()].filter(item => item.project_id === asParams[0]));
-    }
-
-    if (normalized.includes('delete from sany_documents')) {
-      const row = this.documents.get(String(asParams[0] ?? ''));
-      if (!row || row.project_id !== asParams[1]) return this.empty();
-      this.documents.delete(String(asParams[0] ?? ''));
-      return this.result([{ id: row.id }]);
     }
 
     if (normalized.includes('from sany_fields')) {

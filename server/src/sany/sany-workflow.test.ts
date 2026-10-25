@@ -159,6 +159,30 @@ describe('三一规划任务工作流', () => {
     } finally { await first.app.close(); await second.app.close(); }
   });
 
+  it('真实文件元数据可登记为材料并支持移除', async () => {
+    const { app, headers } = await setup();
+    try {
+      await app.inject({ method: 'GET', url: '/api/v1/sany/bootstrap', headers });
+      const boot = await app.inject({ method: 'GET', url: '/api/v1/sany/bootstrap', headers });
+      const task = boot.json().data.tasks.find((item: { code: string }) => item.code === 'R-01');
+      const before = boot.json().data.tasks.find((item: { id: string }) => item.id === task.id).docs;
+
+      const add = await app.inject({ method: 'POST', url: '/api/v1/sany/documents', headers, payload: {
+        scope: 'unit', moduleKey: 'review', taskId: task.id,
+        name: '事业1部-26年业绩.xlsx', ext: 'xlsx', size: '15 KB', color: '#1f7a4d',
+        pages: 0, claims: 0, fields: 0,
+      } });
+      expect(add.statusCode).toBe(201);
+      const added = add.json().data;
+
+      const remove = await app.inject({ method: 'DELETE', url: `/api/v1/sany/documents/${added.id}`, headers });
+      expect(remove.statusCode).toBe(200);
+      const final = await app.inject({ method: 'GET', url: '/api/v1/sany/bootstrap', headers });
+      const finalDocs = final.json().data.tasks.find((item: { id: string }) => item.id === task.id).docs;
+      expect(finalDocs).toBe(before);
+    } finally { await app.close(); }
+  });
+
   it('派发时负责人不在组织中返回 400', async () => {
     const { app, headers } = await setup();
     try {
