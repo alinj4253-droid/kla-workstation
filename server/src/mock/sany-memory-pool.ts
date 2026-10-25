@@ -328,6 +328,13 @@ export class SanyMemoryPool {
       return this.empty();
     }
 
+    if (normalized.includes("update sany_output_versions set status='已归档'")) {
+      for (const row of this.versions.values()) {
+        if (row.output_id === asParams[0] && row.status === '待审核') row.status = '已归档';
+      }
+      return this.empty();
+    }
+
     return this.empty();
   }
 

@@ -499,6 +499,7 @@ export async function registerSanyRoutes(app: FastifyInstance, deps: Dependencie
     if (!output.rows[0]) return fail(reply, request, 404, 'NOT_FOUND', '产出物不存在');
     const next = await deps.pool.query('SELECT COALESCE(max(version_no),0)+1 AS v FROM sany_output_versions WHERE output_id=$1', [output.rows[0].id]);
     const createdLabel = new Date().toISOString().slice(0, 16).replace('T', ' ');
+    await deps.pool.query("UPDATE sany_output_versions SET status='已归档' WHERE output_id=$1 AND status='待审核'", [output.rows[0].id]);
     const result = await deps.pool.query(`INSERT INTO sany_output_versions
       (output_id, version_no, created_label, created_by, status, summary, changes, size_label, file_name)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`, [

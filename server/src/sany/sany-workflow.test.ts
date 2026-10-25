@@ -183,6 +183,30 @@ describe('三一规划任务工作流', () => {
     } finally { await app.close(); }
   });
 
+  it('生成新版本时旧的待审核版本自动归档', async () => {
+    const { app, headers } = await setup();
+    try {
+      const boot = await app.inject({ method: 'GET', url: '/api/v1/sany/bootstrap', headers });
+      const pkg = boot.json().data.outputs.find((output: { key: string }) => output.key === 'package');
+      const pendingBefore = pkg.versions.filter((version: { status: string }) => version.status === '待审核').length;
+      expect(pendingBefore).toBeGreaterThan(0);
+
+      const created = await app.inject({ method: 'POST', url: '/api/v1/sany/outputs/package/versions', headers, payload: {
+        summary: '重新提交版本', changes: '补充材料', size: '21 项', file: '重提_V3.zip', status: '待审核',
+      } });
+      expect(created.statusCode).toBe(201);
+      expect(created.json().data.status).toBe('待审核');
+
+      const after = await app.inject({ method: 'GET', url: '/api/v1/sany/bootstrap', headers });
+      const versions = after.json().data.outputs.find((output: { key: string }) => output.key === 'package').versions;
+      const pending = versions.filter((version: { status: string }) => version.status === '待审核');
+      expect(pending).toHaveLength(1);
+      expect(pending[0].v).toBe(created.json().data.v);
+      expect(versions.filter((version: { status: string }) => version.status === '已归档').length)
+        .toBeGreaterThanOrEqual(pkg.versions.filter((version: { status: string }) => version.status === '待审核').length);
+    } finally { await app.close(); }
+  });
+
   it('派发时负责人不在组织中返回 400', async () => {
     const { app, headers } = await setup();
     try {

@@ -169,6 +169,10 @@ export function OwnerHomePage({ onNavigate }: Props): React.JSX.Element {
             <div className="sany-strong sany-mb8">{req.title}</div>
             <div className="sany-small sany-mb8"><b>规划意图</b> {req.intent}</div>
             <div className="sany-small sany-mb8"><b>下发要求</b> {req.requirements.join('；')}</div>
+            {(() => {
+              const note = data.assignments.find(assignment => assignment.taskId === req.id)?.individualNote;
+              return note ? <div className="sany-small sany-mb8"><b>个别要求（仅你可见）</b> {note}</div> : null;
+            })()}
             <div className="sany-hr" />
             <div className="sany-row">
               <span className="sany-small">截止 {req.deadline}{daysLeft === null ? '' : ` · 还剩 ${daysLeft} 天`}</span>

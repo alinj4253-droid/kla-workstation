@@ -291,6 +291,18 @@ export function AdminOrgPage({ onNavigate }: Props): React.JSX.Element {
         )}
       >
         <Alert tone="w" icon="!">移出后该成员无法再进入本项目。已提交的产出物与材料会保留为历史版本，不会删除。</Alert>
+        {(() => {
+          const owned = removeTarget ? data.tasks.filter(task => task.owner === removeTarget.name) : [];
+          return owned.length ? (
+            <div className="sany-mt12">
+              <Alert tone="r" icon="!">
+                <b>{removeTarget?.name} 当前承接 {owned.length} 项任务：</b>
+                {owned.map(task => `${task.unit}（${task.status}）`).join('、')}。
+                移出后这些任务将无人负责，在汇总合并中标注为缺报；如需继续推进，请先在派发任务中为对应单元重新指派负责人。
+              </Alert>
+            </div>
+          ) : null;
+        })()}
         <div className="sany-note sany-mt12">
           进行中的任务会在移出后需要重新指派负责人，否则将标记为缺报。
         </div>

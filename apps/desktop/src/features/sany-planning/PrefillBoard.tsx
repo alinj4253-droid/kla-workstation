@@ -262,11 +262,11 @@ export function PrefillBoard({ scope, title, subtitle, modules, fields, taskId, 
                   )}
                   {!isEditing ? (
                     <div className="sany-field__act">
-                      {field.status !== 'accepted' && field.ai ? (
+                      {field.status !== 'accepted' && field.status !== 'missing' && field.ai ? (
                         <Btn size="sm" tone={field.status === 'pending' ? 'pri' : undefined} onClick={() => setStatus(field, 'accepted')}>采纳</Btn>
                       ) : null}
                       <Btn size="sm" onClick={() => startEdit(field)}>{field.ai ? '修改' : '填写'}</Btn>
-                      {field.status !== 'rejected' ? (
+                      {field.status !== 'rejected' && field.status !== 'missing' ? (
                         <Btn size="sm" onClick={() => setStatus(field, 'rejected')}>驳回</Btn>
                       ) : null}
                       <Btn size="sm" tone="ghost" onClick={() => markRemoved(field)}>
