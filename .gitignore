@@ -90,6 +90,12 @@ __pycache__/
 # Local-only demonstration assets (product source and docs are tracked separately)
 演示材料/
 
+# Local thesis / defense materials and intermediate fix reports — never commit
+docs/智能体记忆引用_论文调研与优化方案.docx
+docs/AGENT_MEMORY_RETRIEVAL_RESEARCH.md
+docs/_build/
+PROJECT_FIX_REPORT.md
+
 # Keep the local preview launcher and its helper in source control.
 !/start-local-preview.bat
 !/scripts/start-local-preview.ps1
