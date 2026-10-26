@@ -8,5 +8,11 @@ export default defineConfig({
     setupFiles: ['./src/test/setup.ts'],
     globals: true,
     testTimeout: 15000,
+    // Each test file runs in its own process to prevent cross-file state
+    // leakage (e.g. module mocks, sessionStorage, Radix portal state).
+    pool: 'forks',
+    poolOptions: {
+      forks: { singleFork: false },
+    },
   },
 });
