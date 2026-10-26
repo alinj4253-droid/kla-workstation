@@ -13,6 +13,47 @@ export function OwnerOutputPage(): React.JSX.Element {
   const [submitOpen, setSubmitOpen] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const downloadVersion = () => {
+    if (!output || !version || !task) return;
+    const deliverables = task.latestSubmission
+      ? { 最新提交: task.latestSubmission.summary, 提交状态: task.latestSubmission.status }
+      : { 最新提交: '尚未提交' };
+    const manifest = {
+      项目: data.project.name,
+      产出物: output.name,
+      版本: `V${version.v}`,
+      状态: version.status,
+      生成时间: version.at,
+      生成人: version.by,
+      摘要: version.summary,
+      本版变更: version.changes,
+      交付文件: version.file,
+      任务: `${task.code} ${task.title}`,
+      所属单元: task.unit,
+      ...deliverables,
+    };
+    const blob = new Blob([JSON.stringify(manifest, null, 2)], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `${data.project.name}_${output.name}_V${version.v}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const copyShareLink = async () => {
+    if (!output || !version || !task) return;
+    const text = `${data.project.name} · ${task.unit} · ${output.name} V${version.v}（${version.status}）· ${version.summary}`;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      window.prompt('复制以下内容', text);
+    }
+  };
 
   const task = ownerTask;
   const taskList = ownerTasks;
@@ -169,8 +210,8 @@ export function OwnerOutputPage(): React.JSX.Element {
             ) : null}
 
             <div className="sany-row">
-              <Btn size="sm" onClick={() => setSubmitOpen(true)}>下载</Btn>
-              <Btn size="sm" onClick={() => setSubmitOpen(true)}>复制分享链接</Btn>
+              <Btn size="sm" onClick={downloadVersion}>下载版本记录</Btn>
+              <Btn size="sm" onClick={() => void copyShareLink()}>{copied ? '已复制' : '复制分享链接'}</Btn>
               <span className="sany-spacer" />
               {version.status === '已退回' || version.status === '已归档' ? (
                 <Btn size="sm" tone="pri" onClick={() => setSubmitOpen(true)}>基于本版新建版本</Btn>

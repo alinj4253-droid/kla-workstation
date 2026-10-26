@@ -51,6 +51,26 @@ export function AdminTrackPage({ onNavigate }: Props): React.JSX.Element {
   const [closureTaskId, setClosureTaskId] = useState<string | null>(null);
   const [closureAction, setClosureAction] = useState<'reminded' | 'returned' | 'accepted' | 'closed'>('reminded');
   const [closureNote, setClosureNote] = useState('');
+  const [batchRunning, setBatchRunning] = useState(false);
+  const [batchResult, setBatchResult] = useState<string | null>(null);
+
+  const batchRemind = async () => {
+    const targets = tasks.filter(task => task.status !== '已收束' && task.status !== '已通过');
+    if (!targets.length) {
+      setBatchResult('所有任务均已通过或收束，无需提醒');
+      return;
+    }
+    setBatchRunning(true);
+    setBatchResult(null);
+    let done = 0;
+    let failed = 0;
+    for (const task of targets) {
+      const result = await actions.closeTask(task.id, { action: 'reminded', note: '截止临近，请尽快提交成果' });
+      if (result) done += 1; else failed += 1;
+    }
+    setBatchRunning(false);
+    setBatchResult(failed ? `已向 ${done} 个单元发送催办，${failed} 个失败，请查看错误提示` : `已向 ${done} 个单元发送催办提醒，计入收束历史`);
+  };
 
   const openDetail = async (taskId: string) => {
     setDetailTaskId(taskId);
@@ -97,11 +117,20 @@ export function AdminTrackPage({ onNavigate }: Props): React.JSX.Element {
         sub="按单元查看材料齐备度、内容生成与校验进度；负责人提交成果后在此核验、退回或收束"
         actions={(
           <>
-            <Btn>批量提醒</Btn>
+            <Btn disabled={batchRunning} onClick={() => void batchRemind()}>{batchRunning ? '提醒中…' : '批量提醒'}</Btn>
             <Btn tone="pri" onClick={() => onNavigate?.('review')}>进入汇总审阅</Btn>
           </>
         )}
       />
+
+      {batchResult ? (
+        <div className="sany-mb16">
+          <Alert tone="g" icon="✓">
+            {batchResult}
+            <button type="button" className="sany-link" onClick={() => setBatchResult(null)} style={{ marginLeft: 8 }}>关闭</button>
+          </Alert>
+        </div>
+      ) : null}
 
       <Card className="sany-card--pad sany-mb16">
         <div className="sany-row sany-gap20 sany-mb12">
