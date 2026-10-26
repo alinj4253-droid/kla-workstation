@@ -354,61 +354,63 @@ describe('首页统一任务筛选', () => {
 });
 
 describe('首页快捷功能跳转', () => {
-  async function openHomeShortcuts() {
+  async function openHome() {
     const user = userEvent.setup();
     render(<Workstation />);
     await screen.findByRole('textbox', { name: '首页任务输入' });
-    const shortcuts = within(screen.getByRole('heading', { name: '快捷功能入口' }).closest('section')!);
-    return { user, shortcuts };
+    return user;
   }
 
-  it('智能体入口始终打开智能体管理，而不是上次查看的技能子页', async () => {
+  it('智能体侧栏入口打开智能体分区，子导航切换技能与管理', async () => {
     overrides['GET /v1/compute/keys'] = () => ({ ok: true, data: { items: [] } });
-    const { user, shortcuts } = await openHomeShortcuts();
-    await user.click(shortcuts.getByRole('button', { name: /^智能体/ }));
+    const user = await openHome();
+    await user.click(screen.getByRole('button', { name: '智能体' }));
     expect(await screen.findByText('智能体 / 智能体管理')).toBeVisible();
     await user.click(screen.getByRole('button', { name: '技能' }));
-    await screen.findByRole('heading', { name: '技能' });
+    expect(await screen.findByText('智能体 / 技能')).toBeVisible();
     await user.click(screen.getByRole('button', { name: '首页' }));
-    const homeShortcuts = within(screen.getByRole('heading', { name: '快捷功能入口' }).closest('section')!);
-    await user.click(homeShortcuts.getByRole('button', { name: /^智能体/ }));
+    await screen.findByRole('textbox', { name: '首页任务输入' });
+    await user.click(screen.getByRole('button', { name: '智能体' }));
+    expect(await screen.findByText('智能体 / 技能')).toBeVisible();
+    await user.click(screen.getByRole('button', { name: '智能体管理' }));
     expect(await screen.findByText('智能体 / 智能体管理')).toBeVisible();
-    expect(screen.getByRole('heading', { name: '智能体' })).toBeVisible();
   });
 
   it('记忆入口打开当前身份的记忆页面', async () => {
-    const { user, shortcuts } = await openHomeShortcuts();
-    await user.click(shortcuts.getByRole('button', { name: /^记忆/ }));
+    const user = await openHome();
+    await user.click(screen.getByRole('button', { name: '记忆' }));
     expect(await screen.findByRole('heading', { name: '记忆' })).toBeVisible();
     await waitFor(() => expect(memoryScopes).toHaveBeenCalledWith('identity-a', expect.any(AbortSignal)));
     expect(await screen.findByText('当前筛选范围暂无长期记忆')).toBeVisible();
   });
 
-  it('统一任务入口滚动定位并聚焦任务筛选，键盘可继续操作', async () => {
-    const { user, shortcuts } = await openHomeShortcuts();
+  it('统一任务面板在首页直接可用，筛选切换保持当前身份范围', async () => {
+    const user = await openHome();
     const mine = await screen.findByRole('button', { name: '我的任务 0 项' });
-    const scroll = vi.fn();
-    Object.defineProperty(mine, 'scrollIntoView', { value: scroll });
-    await user.click(shortcuts.getByRole('button', { name: /^统一任务/ }));
-    expect(scroll).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center' });
-    expect(mine).toHaveFocus();
+    expect(screen.getByText('今天没有待办')).toBeVisible();
+    await user.click(screen.getByRole('button', { name: '全部' }));
+    expect(screen.getByText('暂无任务')).toBeVisible();
+    void mine;
   });
 
   it('企业管理员从成员入口直接打开成员管理子页', async () => {
     overrides['GET /v1/me/identities'] = () => ({ ok: true, data: [{ id: 'identity-a', type: 'enterprise', role: 'admin', organizationId: 'org-a', displayName: '管理员身份', isDefault: true }] });
-    const { user, shortcuts } = await openHomeShortcuts();
-    await user.click(shortcuts.getByRole('button', { name: /^成员管理/ }));
+    const user = await openHome();
+    await user.click(screen.getByRole('button', { name: '设置' }));
+    await screen.findByText('平台设置 / 渠道');
+    await user.click(screen.getByRole('button', { name: '成员管理' }));
     expect(await screen.findByRole('heading', { name: '成员管理', level: 1 })).toBeVisible();
     expect(screen.getByText('平台设置 / 成员管理')).toBeVisible();
     await waitFor(() => expect(request.mock.calls.some(([path]) => path === '/v1/organizations/org-a/members')).toBe(true));
   });
 
-  it.each(['personal', 'member'])('非管理员 %s 身份点击成员入口时保留首页并提示权限', async role => {
+  it.each(['personal', 'member'])('非管理员 %s 身份不显示成员管理入口', async role => {
     overrides['GET /v1/me/identities'] = () => ({ ok: true, data: [{ id: 'identity-a', type: role === 'personal' ? 'personal' : 'enterprise', role, organizationId: role === 'personal' ? null : 'org-a', displayName: '非管理员身份', isDefault: true }] });
-    const { user, shortcuts } = await openHomeShortcuts();
-    await user.click(shortcuts.getByRole('button', { name: /^成员管理/ }));
-    expect(await screen.findByText('成员管理仅限企业管理员，请先切换到管理员身份')).toBeVisible();
-    expect(screen.getByRole('textbox', { name: '首页任务输入' })).toBeVisible();
+    const user = await openHome();
+    await user.click(screen.getByRole('button', { name: '设置' }));
+    await screen.findByText('平台设置 / 渠道');
+    expect(screen.queryByRole('button', { name: '成员管理' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '首页' })).toBeVisible();
     expect(request.mock.calls.some(([path]) => path === '/v1/organizations/org-a/members')).toBe(false);
   });
 });

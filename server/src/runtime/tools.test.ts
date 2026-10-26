@@ -11,7 +11,16 @@ const scope = { identityId, conversationId, agentId: '40000000-0000-4000-8000-00
 const pdf = Buffer.from('%PDF-1.7\n%%EOF');
 
 function fixture(artifact?: Partial<Artifact>, allowed = true) {
-  const pool = { hasPermission: () => allowed, query: vi.fn(async () => ({ rows: [] })) } as unknown as Pool;
+  const pool = {
+    hasPermission: () => allowed,
+    query: vi.fn(async (sql: string) => {
+      // assertArtifactAgentAccess 查询 artifacts 表校验成果归属
+      if (sql.includes('FROM artifacts')) {
+        return { rows: [{ source_agent_id: null, agent_private: false }] };
+      }
+      return { rows: [] };
+    })
+  } as unknown as Pool;
   const accounts = { getArtifact: vi.fn(async () => artifact === null ? null : ({
     id: artifactId, conversationId, name: 'source.pdf', mimeType: 'application/pdf',
     content: pdf.toString('base64'), contentEncoding: 'base64', sizeBytes: pdf.length,

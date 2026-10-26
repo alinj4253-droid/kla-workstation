@@ -226,13 +226,14 @@ export function Workstation(): React.JSX.Element {
   useEffect(() => { setPendingAttachments({}); setAttachmentsUploading(false); }, [activeIdentityId]);
   // 首页「我的智能体」模块数据：与「应用」模块同源（官方智能体清单，三一规划置顶）
   useEffect(() => {
+    if (!signedIn) return;
     let cancelled = false;
     void runtimeApi.agents().then(result => {
       if (cancelled) return;
       if (result.ok) setAgentApps(sortAgentApps(result.data));
     }).catch(() => undefined);
     return () => { cancelled = true; };
-  }, [activeIdentityId]);
+  }, [activeIdentityId, signedIn]);
   useEffect(() => { setAttachmentsUploading(false); }, [activeChat]);
   const [pendingRuns, setPendingRuns] = useState<Record<string, string>>({});
   const [activeRun, setActiveRun, setRoomActiveRun] = useScopedState<ChatRun | null>(roomScope, null);
